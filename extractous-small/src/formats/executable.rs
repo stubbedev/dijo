@@ -6,7 +6,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::java::time::format_instant;
 
 const PLATFORM: &str = "machine:platform";
@@ -149,6 +149,10 @@ impl Parser for ExecutableParser {
             "application/x-mach-o-dsym",
             "application/x-mach-o-kext-bundle",
         ]
+    }
+
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     fn prepare<'a>(
@@ -371,6 +375,10 @@ impl Parser for UniversalExecutableParser {
         ]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -463,11 +471,15 @@ fn read_architectures<'a>(input: &'a [u8], found: &mut Vec<&'a [u8]>) -> Result<
     Ok(())
 }
 
-#[cfg(all(test, feature = "tika"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    use extractous_core::large::LargeFile;
+
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
         conformance_corpus, documents, Departure, Scratch,
@@ -530,6 +542,24 @@ mod tests {
         file
     }
 
+    /// An executable too large to read whole is read as far as its header.
+    #[test]
+    fn reads_executables_too_large_to_read_whole() {
+        let file = LargeFile::padded("long.so", &elf(2, 1, 0, 3, 0x3E));
+        let metadata = file.extract_each(ExecutableParser.name(), |_| {});
+        assert_eq!(metadata[ARCHITECTURE_BITS], ["64"]);
+        assert_eq!(metadata[ENDIAN], [LITTLE]);
+    }
+
+    /// A universal binary too large to read whole hands each architecture on in place.
+    #[test]
+    fn reads_universal_binaries_too_large_to_read_whole() {
+        let head = universal(&[mach_o(0x0100_0007, 2)], false);
+        let file = LargeFile::padded("long.bundle", &head);
+        file.extract_each(UniversalExecutableParser.name(), |_| {});
+    }
+
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_executables_as_tikas_path_does() {
         let scratch = Scratch::new("executable");
@@ -600,6 +630,7 @@ mod tests {
         assert_eq!(metadata[MACHINE_TYPE], ["x86-32"]);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_executables_as_tikas_path_does() {

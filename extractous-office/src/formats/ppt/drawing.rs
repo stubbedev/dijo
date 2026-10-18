@@ -15,7 +15,7 @@ pub(super) const SP_CONTAINER: u16 = 0xF004;
 #[derive(Debug)]
 pub(super) struct Node {
     pub(super) record_id: u16,
-    pub(super) content: Content,
+    pub(super) content: Content<'static>,
     pub(super) children: Vec<Node>,
     /// The slide records of a shape's client data (`HSLFEscherClientDataRecord`).
     pub(super) client: Vec<Record>,
@@ -25,7 +25,7 @@ pub(super) struct Node {
 
 impl Node {
     /// Converts an Escher record, reading the slide records its client data and text box hold.
-    fn of(escher: Escher, depth: Depth) -> Built<Node> {
+    fn of(escher: Escher<'_>, depth: Depth) -> Built<Node> {
         let inner = depth.deeper()?;
         let client = match &escher.content {
             Content::ClientData(data) => client_records(data, inner)?,
@@ -44,7 +44,7 @@ impl Node {
             .collect::<Built<Vec<_>>>()?;
         Ok(Node {
             record_id: escher.record_id,
-            content: escher.content,
+            content: escher.content.into_owned(),
             children,
             client,
             textbox,

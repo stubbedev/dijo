@@ -25,23 +25,26 @@ mod records;
 mod stream;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io::BufWriter;
 
-use factory::{Event, Records};
-use listener::{is_listened, render, Cell, Extracted, Listener, Out, Page, Settings};
+use factory::{write_drawing_group, Event, Records};
+use listener::{is_listened, write_outside, Found, Interrupted, Listener, Nowhere, Pass, Settings};
+use stream::{Mark, RecordStream};
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::lines;
 use crate::formats::compound::{reads_only_the_summary, CompoundDocumentParser};
 use crate::formats::embedded::Wrapping;
-use crate::formats::escher::{self, Content, Escher};
+use crate::formats::escher::{self, Escher};
 use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
-use crate::formats::ole2::{office_document, Handed, Summaries};
+use crate::formats::ole2::{office_document, Summaries};
 use crate::formats::poi::{Thrown, Unread};
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Decline, Failure, Parser, Prepared, Unported, PASSWORD_USED};
-use crate::ole2::{EntryKind, Unreadable};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared, Unported, PASSWORD_USED};
+use crate::input::{self, Pages, Paging, Spool};
+use crate::ole2::{Content, EntryId, EntryKind, Ole2, Unreadable};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-excel";
 /// `POIFSDocumentType.XLR`: a Works 7.0 spreadsheet, which `OfficeParser` reads as a workbook.
@@ -124,6 +127,17 @@ impl Parser for XlsParser {
         &MEDIA_TYPES
     }
 
+    /// It reads the workbook stream in place, twice: once to plan it, holding an index of the
+    /// shared strings and of the drawing groups, the hyperlinks of the sheets and what the
+    /// metadata records; once to write it, a sheet whose cells come in order as they come, and
+    /// the pictures and embedded documents one at a time, each spooled. What still grows is
+    /// Tika's own: the text outside the cells of a sheet, until the sheet ends; the cells of a
+    /// sheet that come out of order, which Tika's listener sorts; and a workbook before BIFF8,
+    /// read whole as `OldExcelExtractor` reads it.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     /// Fails encrypted workbooks the password does not open, and defers workbooks POI or Tika
     /// throws on and macros extracted when asked to. A compound document typed a workbook that
     /// POI's container detection names a kind of no content, such as an MS Graph chart, is read
@@ -134,12 +148,30 @@ impl Parser for XlsParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         if reads_only_the_summary(input) {
             return CompoundDocumentParser.prepare(input, metadata, configs);
         }
-        let workbook = Workbook::read(input, configs)?;
+        let workbook = Workbook::read(input, pages, configs)?;
         Ok(Box::new(move |xhtml| workbook.write(xhtml)))
     }
+}
+
+/// Counts what `records` have read since `read`, so that the pages of a mapped workbook are
+/// released as they are read on.
+fn count_read(paging: &Paging, records: &Records, read: &mut usize) {
+    let at = records.stream().position();
+    paging.read(at.saturating_sub(*read));
+    *read = at;
 }
 
 /// How the parser declines a workbook POI throws on for `reason`.
@@ -148,40 +180,59 @@ pub(super) fn poi_throws(reason: &str) -> Decline<'static> {
 }
 
 /// A workbook read: the summary information, the type `OfficeParser` sets, and its content.
-struct Workbook {
+struct Workbook<'a> {
     summaries: Summaries,
     media_type: &'static str,
-    content: WorkbookContent,
+    content: WorkbookContent<'a>,
 }
 
 /// What `ExcelExtractor` makes of a workbook.
-enum WorkbookContent {
+enum WorkbookContent<'a> {
     /// A BIFF8 workbook read through Tika's listener.
-    Biff8(Box<Biff8>),
+    Biff8(Box<Biff8<'a>>),
     /// The text of a workbook before BIFF8, as `OldExcelExtractor.getText` gives it.
     Old(String),
 }
 
-/// A BIFF8 workbook read through Tika's listener, with the documents its `MBD` storages embed.
-struct Biff8 {
+/// A BIFF8 workbook planned through Tika's listener, to be written through it, with the
+/// documents its `MBD` storages embed.
+struct Biff8<'a> {
+    file: Ole2<'a>,
+    /// The workbook stream.
+    stream: Content<'a>,
+    configs: &'a ParserConfigs,
+    pages: Pages<'a>,
     /// Whether a password was given, which `ExcelExtractor` asks the `PasswordProvider` for
     /// before it reads the workbook, marking the metadata.
     asks_password: bool,
-    read: Extracted,
-    pictures: Vec<Picture>,
-    storages: Vec<Handed>,
+    planned: Planned,
+    /// The storages documents are embedded in.
+    storages: Vec<EntryId>,
+}
+
+/// What planning a workbook found: the metadata of its sheets and how each is written, its
+/// drawing groups, by where the records of each start, and the sheets whose shapes show each
+/// stored picture, by its number.
+struct Planned {
+    found: Found,
+    drawing_groups: Vec<Vec<Mark>>,
+    sheets_of_pictures: HashMap<i32, BTreeSet<usize>>,
 }
 
 /// A picture of the drawing groups, as `findPictures` hands it to `handleEmbeddedResource`.
-struct Picture {
-    data: Vec<u8>,
+struct Picture<'d> {
+    data: &'d [u8],
     media_type: &'static str,
     /// The sheets whose shapes show it, numbered from one.
     sheets: BTreeSet<usize>,
 }
 
-impl Workbook {
-    fn read(input: &[u8], configs: &ParserConfigs) -> Result<Self, Decline<'static>> {
+impl<'a> Workbook<'a> {
+    fn read(
+        input: &'a [u8],
+        pages: Pages<'a>,
+        configs: &'a ParserConfigs,
+    ) -> Result<Self, Decline<'static>> {
         let (file, media_type) =
             office::open_as(input, configs, &MEDIA_TYPES, "workbook").map_err(Unread::declined)?;
         let root = file.root();
@@ -212,31 +263,29 @@ impl Workbook {
         if file.kind(entry) != EntryKind::Document {
             return Err(poi_throws("the workbook entry is a directory"));
         }
-        let stream = file.read(entry).map_err(|Unreadable(reason)| {
+        let stream = file.content(entry).map_err(|Unreadable(reason)| {
             poi_throws(&format!("cannot read the workbook stream: {reason}"))
         })?;
-        let (read, pictures) = read_records(&stream, configs)?;
+        let planned = plan(stream.clone(), pages, configs)?;
         let mut storages = Vec::new();
         for child in file.children(root) {
             if file.name(child).starts_with(EMBEDDED_STORAGE_PREFIX)
                 && file.kind(child) != EntryKind::Document
             {
-                storages.extend(office_document(
-                    &file,
-                    child,
-                    TikaMetadata::new(),
-                    None,
-                    configs,
-                )?);
+                office_document(&file, child, TikaMetadata::new(), None, configs)?;
+                storages.push(child);
             }
         }
         Ok(Workbook {
             summaries,
             media_type,
             content: WorkbookContent::Biff8(Box::new(Biff8 {
+                file,
+                stream,
+                configs,
+                pages,
                 asks_password: configs.password.is_some(),
-                read,
-                pictures,
+                planned,
                 storages,
             })),
         })
@@ -262,7 +311,14 @@ fn write_old(text: &str, xhtml: &mut Xhtml) -> Result<(), Stop> {
     Ok(())
 }
 
-impl Biff8 {
+/// A failure of the write of a workbook its plan read without one, which reads it alike.
+fn unplanned(reason: &str) -> Failure {
+    Failure::Malformed(format!(
+        "the workbook failed when written, where its plan read it: {reason}"
+    ))
+}
+
+impl Biff8<'_> {
     /// Writes the sheets as the listener does while it reads the records, then the documents of
     /// the `MBD` storages. Where the output stops taking text inside a sheet, the rest of the
     /// sheets is left out, but the pictures and the metadata of the sheets are not. Tika's
@@ -273,139 +329,191 @@ impl Biff8 {
         if self.asks_password {
             xhtml.metadata_mut().set(PASSWORD_USED, "true");
         }
+        let thrown = |Thrown(reason)| unplanned(&reason);
+        let mut records = Records::new(self.stream.clone()).map_err(thrown)?;
+        records
+            .decrypt(self.configs)
+            .map_err(|_| unplanned("its encryption no longer opens"))?;
+        let settings = settings(self.configs);
+        let planned = &self.planned;
+        let mut listener = Listener::new(settings, Pass::Write(&planned.found.plans));
         let mut stopped = None;
-        for page in &self.read.pages {
-            if let Err(stop) = write_page(page, xhtml) {
-                if stop == Stop::ReaderGone {
-                    return Err(stop.into());
+        let paging = Paging::new(self.pages);
+        let mut read = 0;
+        while let Some(event) = records.next().map_err(thrown)? {
+            count_read(&paging, &records, &mut read);
+            let processed = match event {
+                Event::Record { sid, record } if is_listened(sid, &settings) => {
+                    listener.process(sid, &record, records.stream(), xhtml)
                 }
-                stopped = Some(stop);
-                break;
+                Event::Record { .. } => Ok(()),
+                Event::DrawingGroup(index) => {
+                    listener.drawing_group(index);
+                    Ok(())
+                }
+            };
+            match processed {
+                Ok(()) => {}
+                Err(Interrupted::Stopped(Stop::ReaderGone)) => return Err(Stop::ReaderGone.into()),
+                Err(Interrupted::Stopped(stop)) => {
+                    stopped = Some(stop);
+                    break;
+                }
+                Err(Interrupted::Thrown(Thrown(reason))) => return Err(unplanned(&reason)),
             }
         }
         if stopped.is_none() {
-            write_outside(&self.read.outside, xhtml)?;
+            let (_, outside) = listener.finish().map_err(thrown)?;
+            write_outside(&outside, xhtml)?;
         }
-        for picture in &self.pictures {
-            let mut metadata = TikaMetadata::new();
-            if !picture.sheets.is_empty() {
-                write_sheet_numbers(&picture.sheets, &mut metadata);
-            }
-            metadata.set("Content-Type", picture.media_type);
-            xhtml.parse_embedded(&picture.data, &metadata, Wrapping::PackageEntry)?;
+        let mut stored = 0;
+        for &index in &planned.found.drawing_groups {
+            let group = spool_drawing_group(records.stream(), &planned.drawing_groups[index])?;
+            let escher = escher::decode(&group).map_err(thrown)?;
+            find_pictures(
+                &escher,
+                &planned.sheets_of_pictures,
+                &mut stored,
+                &mut |picture| {
+                    let mut metadata = TikaMetadata::new();
+                    if !picture.sheets.is_empty() {
+                        write_sheet_numbers(&picture.sheets, &mut metadata);
+                    }
+                    metadata.set("Content-Type", picture.media_type);
+                    xhtml.parse_embedded(picture.data, &metadata, Wrapping::PackageEntry)
+                },
+            )?;
         }
-        self.write_metadata(xhtml.metadata_mut());
+        write_metadata(&planned.found, xhtml.metadata_mut());
         if let Some(stop) = stopped {
             return Err(stop.into());
         }
         for storage in self.storages {
-            storage.write(xhtml, Wrapping::PackageEntry)?;
+            let handed =
+                office_document(&self.file, storage, TikaMetadata::new(), None, self.configs)
+                    .map_err(|Unported(reason)| unplanned(&reason))?;
+            if let Some(handed) = handed {
+                handed.write(xhtml, Wrapping::PackageEntry)?;
+            }
         }
         Ok(())
     }
+}
 
-    /// `updateMetadata`.
-    fn write_metadata(&self, metadata: &mut TikaMetadata) {
-        let read = &self.read;
-        if read.protected_sheet {
-            metadata.set(excel::PROTECTED_WORKSHEET, "true");
+/// `updateMetadata`.
+fn write_metadata(found: &Found, metadata: &mut TikaMetadata) {
+    if found.protected_sheet {
+        metadata.set(excel::PROTECTED_WORKSHEET, "true");
+    }
+    if found.hidden_column {
+        metadata.set(excel::HAS_HIDDEN_COLUMNS, "true");
+    }
+    if found.hidden_row {
+        metadata.set(excel::HAS_HIDDEN_ROWS, "true");
+    }
+    if !found.comment_authors.is_empty() {
+        for author in found.comment_authors.values() {
+            metadata.add(excel::COMMENT_PERSONS, author.clone());
         }
-        if read.hidden_column {
-            metadata.set(excel::HAS_HIDDEN_COLUMNS, "true");
+        metadata.set(excel::HAS_COMMENTS, "true");
+    }
+    if !found.hidden_sheets.is_empty() {
+        for name in &found.hidden_sheets {
+            metadata.add(excel::HIDDEN_SHEET_NAMES, name.clone());
         }
-        if read.hidden_row {
-            metadata.set(excel::HAS_HIDDEN_ROWS, "true");
+        metadata.set(excel::HAS_HIDDEN_SHEETS, "true");
+    }
+    if !found.very_hidden_sheets.is_empty() {
+        for name in &found.very_hidden_sheets {
+            metadata.add(excel::VERY_HIDDEN_SHEET_NAMES, name.clone());
         }
-        if !read.comment_authors.is_empty() {
-            for author in read.comment_authors.values() {
-                metadata.add(excel::COMMENT_PERSONS, author.clone());
-            }
-            metadata.set(excel::HAS_COMMENTS, "true");
-        }
-        if !read.hidden_sheets.is_empty() {
-            for name in &read.hidden_sheets {
-                metadata.add(excel::HIDDEN_SHEET_NAMES, name.clone());
-            }
-            metadata.set(excel::HAS_HIDDEN_SHEETS, "true");
-        }
-        if !read.very_hidden_sheets.is_empty() {
-            for name in &read.very_hidden_sheets {
-                metadata.add(excel::VERY_HIDDEN_SHEET_NAMES, name.clone());
-            }
-            metadata.set(excel::HAS_VERY_HIDDEN_SHEETS, "true");
-        }
+        metadata.set(excel::HAS_VERY_HIDDEN_SHEETS, "true");
     }
 }
 
-/// `processSheet`: the page, then the text found outside the cells, each in a div.
-fn write_page(page: &Page, xhtml: &mut Xhtml) -> Result<(), Stop> {
-    write_out(&page.table, xhtml)?;
-    write_outside(&page.outside, xhtml)?;
-    xhtml.end_element("div")
-}
-
-/// `processExtraText`.
-fn write_outside(cells: &[Cell], xhtml: &mut Xhtml) -> Result<(), Stop> {
-    let mut out = Vec::new();
-    for cell in cells {
-        out.push(Out::StartClass("div", "outside"));
-        render(cell, &mut out);
-        out.push(Out::End("div"));
-    }
-    write_out(&out, xhtml)
-}
-
-fn write_out(out: &[Out], xhtml: &mut Xhtml) -> Result<(), Stop> {
-    for event in out {
-        match event {
-            Out::Start(name) => xhtml.start_element(name)?,
-            Out::StartClass(name, class) => xhtml.start_element_with(name, &[("class", class)])?,
-            Out::StartLink(address) => xhtml.start_element_with("a", &[("href", address)])?,
-            Out::End(name) => xhtml.end_element(name)?,
-            Out::Text(text) => xhtml.characters(text)?,
-            Out::Element(name, text) => xhtml.element(name, text)?,
-        }
-    }
-    Ok(())
-}
-
-/// `TikaHSSFListener.processFile`: the records, decrypted where the workbook is encrypted,
-/// through the listener, the text left outside the sheets, and the pictures of the drawing
-/// groups.
-fn read_records(
-    stream: &[u8],
-    configs: &ParserConfigs,
-) -> Result<(Extracted, Vec<Picture>), Decline<'static>> {
+/// What of the workbook Tika's Office parser settings have the listener write.
+fn settings(configs: &ParserConfigs) -> Settings {
     let config = &configs.office;
-    let throws = |Thrown(reason)| Unported(format!("POI or Tika throws on the workbook: {reason}"));
-    let settings = Settings {
+    Settings {
         headers_and_footers: config.includes_headers_and_footers(),
         shape_based_content: config.includes_shape_based_content(),
         phonetic_runs: config.concatenates_phonetic_runs(),
         missing_rows: config.includes_missing_rows(),
-    };
+    }
+}
+
+/// `TikaHSSFListener.processFile` as far as deciding whether the workbook is read: the
+/// records, decrypted where the workbook is encrypted, through the listener, which plans how
+/// each sheet is written and finds what the workbook's metadata records, and the pictures of
+/// the drawing groups.
+fn plan(
+    stream: Content<'_>,
+    pages: Pages<'_>,
+    configs: &ParserConfigs,
+) -> Result<Planned, Decline<'static>> {
+    let throws = |Thrown(reason)| Unported(format!("POI or Tika throws on the workbook: {reason}"));
+    let settings = settings(configs);
     let mut records = Records::new(stream).map_err(throws)?;
     records.decrypt(configs)?;
-    let mut listener = Listener::new(settings);
+    let mut listener = Listener::new(settings, Pass::Plan);
+    let paging = Paging::new(pages);
+    let mut read = 0;
     while let Some(event) = records.next().map_err(throws)? {
+        count_read(&paging, &records, &mut read);
         match event {
             Event::Record { sid, record } => {
                 if is_listened(sid, &settings) {
-                    listener.process(sid, &record).map_err(throws)?;
+                    match listener.process(sid, &record, records.stream(), &mut Nowhere) {
+                        Ok(()) => {}
+                        Err(Interrupted::Thrown(thrown)) => return Err(throws(thrown).into()),
+                        Err(Interrupted::Stopped(stop)) => {
+                            unreachable!("planning writes nowhere, which stops nothing: {stop:?}")
+                        }
+                    }
                 }
             }
             Event::DrawingGroup(index) => listener.drawing_group(index),
         }
     }
-    let read = listener.finish().map_err(throws)?;
-    let sheets_of_pictures = sheets_of_pictures(&read.sheet_drawings);
-    let mut pictures = Vec::new();
-    let mut stored = 0;
-    for &index in &read.drawing_groups {
-        let records = escher::decode(&records.drawing_groups[index]).map_err(throws)?;
-        find_pictures(&records, &sheets_of_pictures, &mut stored, &mut pictures);
+    let (found, _) = listener.finish().map_err(throws)?;
+    let sheets_of_pictures = sheets_of_pictures(&found.sheet_drawings);
+    let stream = records.stream().clone();
+    let drawing_groups = records.into_drawing_groups();
+    for &index in &found.drawing_groups {
+        let group =
+            spool_drawing_group(&stream, &drawing_groups[index]).map_err(
+                |failure| match failure {
+                    Failure::Extraction(error) => Decline::Fails(error),
+                    failure => Unported(format!("{failure:?}")).into(),
+                },
+            )?;
+        escher::decode(&group).map_err(throws)?;
     }
-    Ok((read, pictures))
+    Ok(Planned {
+        found,
+        drawing_groups,
+        sheets_of_pictures,
+    })
+}
+
+/// The data of a drawing group whose records start at `starts`, read from `stream` and spooled
+/// as an embedded document is: in memory up to what is read whole, past it to a file.
+fn spool_drawing_group(
+    stream: &RecordStream<'_>,
+    starts: &[Mark],
+) -> Result<input::Input<'static>, Failure> {
+    let failed = |error: std::io::Error| {
+        Failure::Extraction(crate::Error::IoError(format!(
+            "Could not spool a drawing group of the workbook: {error}"
+        )))
+    };
+    let mut spool = BufWriter::new(Spool::new(None));
+    write_drawing_group(stream, starts, &mut spool)?;
+    spool
+        .into_inner()
+        .map_err(|error| failed(error.into_error()))?
+        .finish()
+        .map_err(failed)
 }
 
 /// `buildPicToSheetsMap`: the sheets, numbered from one, whose shapes show each stored picture,
@@ -413,7 +521,7 @@ fn read_records(
 fn sheets_of_pictures(drawings: &BTreeMap<i32, Vec<u8>>) -> HashMap<i32, BTreeSet<usize>> {
     /// `buildPicToSheetsMap`'s reading of a sheet's drawing data: the records up to the first
     /// POI fails on, or whose length is not positive.
-    fn sheet_records(data: &[u8]) -> Vec<Escher> {
+    fn sheet_records(data: &[u8]) -> Vec<Escher<'_>> {
         let mut records = Vec::new();
         let mut position = 0usize;
         while (position as i64) < data.len() as i64 - 8 {
@@ -430,7 +538,7 @@ fn sheets_of_pictures(drawings: &BTreeMap<i32, Vec<u8>>) -> HashMap<i32, BTreeSe
     }
 
     fn collect(record: &Escher, sheet: usize, map: &mut HashMap<i32, BTreeSet<usize>>) {
-        if let Content::Options(options) = &record.content {
+        if let escher::Content::Options(options) = &record.content {
             for picture in options.pictures() {
                 if picture > 0 {
                     map.entry(picture).or_default().insert(sheet);
@@ -451,26 +559,28 @@ fn sheets_of_pictures(drawings: &BTreeMap<i32, Vec<u8>>) -> HashMap<i32, BTreeSe
     map
 }
 
-/// `findPictures`: each BSE record counted, and the picture of each that holds one.
-fn find_pictures(
-    records: &[Escher],
+/// `findPictures`: each BSE record counted, and the picture of each that holds one handed to
+/// `each`.
+fn find_pictures<'d, E>(
+    records: &'d [Escher<'_>],
     sheets: &HashMap<i32, BTreeSet<usize>>,
     stored: &mut i32,
-    pictures: &mut Vec<Picture>,
-) {
+    each: &mut impl FnMut(Picture<'d>) -> Result<(), E>,
+) -> Result<(), E> {
     for record in records {
-        if let Content::Stored(bse) = &record.content {
+        if let escher::Content::Stored(bse) = &record.content {
             *stored += 1;
             if let Some(blip) = &bse.blip {
-                pictures.push(Picture {
-                    data: escher::picture_data(&blip.data).to_vec(),
+                each(Picture {
+                    data: escher::picture_data(&blip.data),
                     media_type: escher::media_type(blip.record_id),
                     sheets: sheets.get(stored).cloned().unwrap_or_default(),
-                });
+                })?;
             }
         }
-        find_pictures(&record.children, sheets, stored, pictures);
+        find_pictures(&record.children, sheets, stored, each)?;
     }
+    Ok(())
 }
 
 #[cfg(test)]

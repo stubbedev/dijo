@@ -8,7 +8,8 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::java;
 use crate::java::time::{civil, format_instant};
 use crate::text::charset::{self, Charset};
@@ -126,16 +127,21 @@ struct Header {
     columns: Vec<Column>,
 }
 
-/// The table as Tika reads it: the header, then each record's cells, up to the exception that
-/// ends it where one does.
+/// A record of the table: whether its mark deletes it, and its cells.
 #[derive(Debug)]
-struct Table<'a> {
-    header: Header,
-    rows: Vec<Vec<&'a [u8]>>,
-    /// Whether each record, by its mark, is deleted; a mark may follow the last row.
-    deleted: Vec<bool>,
-    /// The exception reading the records ends with, and how many of them were read before it.
-    thrown: Option<(usize, String)>,
+struct Record<'a> {
+    deleted: bool,
+    cells: Vec<&'a [u8]>,
+}
+
+/// What reading the next record finds.
+#[derive(Debug)]
+enum Next<'a> {
+    Record(Record<'a>),
+    /// No more records.
+    End,
+    /// The exception that ends the records.
+    Thrown(String),
 }
 
 /// Tika's `DBFParser`.
@@ -153,27 +159,51 @@ impl Parser for DbfParser {
         &["application/x-dbf"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Reads the header, failing where Tika's reader throws on it; the records are read as
+    /// they are written.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let table = table(input).map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
-        Ok(Box::new(move |xhtml| write(&table, xhtml)))
+        let mut stream = Stream {
+            bytes: input,
+            at: 0,
+            paging: Paging::new(pages),
+        };
+        let header =
+            header(&mut stream).map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
+        Ok(Box::new(move |xhtml| write(&header, stream, xhtml)))
     }
 }
 
-/// The input as Tika's stream reads it.
+/// The input as Tika's stream reads it, whose pages it releases as it reads on.
 struct Stream<'a> {
     bytes: &'a [u8],
     at: usize,
+    paging: Paging<'a>,
 }
 
 impl<'a> Stream<'a> {
     fn read(&mut self) -> Option<u8> {
         let byte = self.bytes.get(self.at).copied()?;
         self.at += 1;
+        self.paging.read(1);
         Some(byte)
     }
 
@@ -184,6 +214,7 @@ impl<'a> Stream<'a> {
             .get(self.at..self.at.saturating_add(count))
             .ok_or_else(|| "EOFException: the table ends early".to_owned())?;
         self.at += count;
+        self.paging.read(count);
         Ok(taken)
     }
 
@@ -192,6 +223,7 @@ impl<'a> Stream<'a> {
         let end = self.bytes.len().min(self.at + count);
         let read = &self.bytes[self.at..end];
         self.at = end;
+        self.paging.read(read.len());
         read
     }
 
@@ -286,54 +318,37 @@ fn header(stream: &mut Stream<'_>) -> Result<Header, String> {
     })
 }
 
-/// `DBFReader.open` and `next` until there are no more records.
-fn table(input: &[u8]) -> Result<Table<'_>, String> {
-    let mut stream = Stream {
-        bytes: input,
-        at: 0,
-    };
-    let header = header(&mut stream)?;
-    let mut rows = Vec::new();
-    let mut deleted = Vec::new();
-    let thrown = loop {
-        match stream.read() {
-            Some(mark @ (b' ' | DELETED)) => deleted.push(mark == DELETED),
-            None | Some(26) => break None,
-            Some(other) => {
-                break Some((
-                    rows.len(),
-                    format!("Expecting space or asterisk at beginning of record, not:{other}"),
-                ));
-            }
+/// `DBFReader.nextRecord`: the next record, read from `stream` past the header.
+fn next_record<'a>(stream: &mut Stream<'a>, columns: &[Column]) -> Next<'a> {
+    let deleted = match stream.read() {
+        Some(mark @ (b' ' | DELETED)) => mark == DELETED,
+        None | Some(26) => return Next::End,
+        Some(other) => {
+            return Next::Thrown(format!(
+                "Expecting space or asterisk at beginning of record, not:{other}"
+            ));
         }
-        let cells: Vec<&[u8]> = header
-            .columns
-            .iter()
-            .map(|column| stream.some(column.length))
-            .collect();
-        if cells.iter().all(|cell| cell.is_empty()) {
-            break None;
-        }
-        rows.push(cells);
     };
-    Ok(Table {
-        header,
-        rows,
-        deleted,
-        thrown,
-    })
+    let cells: Vec<&[u8]> = columns
+        .iter()
+        .map(|column| stream.some(column.length))
+        .collect();
+    if cells.iter().all(|cell| cell.is_empty()) {
+        return Next::End;
+    }
+    Next::Record(Record { deleted, cells })
 }
 
 /// The code page the header names, or, as `getCharset` gives it, the charset detected from the
-/// character data of the first rows, ISO-8859-1 where there is too little of it; and the charset
-/// it is decoded as.
-fn charsets(table: &Table<'_>) -> (Charset, Charset) {
-    if let Some(code_page) = table.header.code_page {
+/// character data of the `first` records, ISO-8859-1 where there is too little of it; and the
+/// charset it is decoded as.
+fn charsets(header: &Header, first: &[Record<'_>]) -> (Charset, Charset) {
+    if let Some(code_page) = header.code_page {
         return (code_page, code_page);
     }
     let mut data = Vec::new();
-    for row in table.rows.iter().take(ROWS_FOR_DETECTION) {
-        for (cell, column) in row.iter().zip(&table.header.columns) {
+    for record in first.iter().take(ROWS_FOR_DETECTION) {
+        for (cell, column) in record.cells.iter().zip(&header.columns) {
             if column.kind == Kind::Character {
                 data.extend_from_slice(cell);
                 if data.len() > MAX_BYTES_FOR_DETECTION {
@@ -399,56 +414,79 @@ fn decode(charset: Charset, bytes: &[u8]) -> Result<String, Failure> {
     })
 }
 
-fn write(table: &Table<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
+/// Writes the table: its first records, read ahead to detect the charset from, which Tika's
+/// reader fails on without writing the table where it throws among them, then each record as
+/// it is read.
+fn write(header: &Header, mut stream: Stream<'_>, xhtml: &mut Xhtml) -> Result<(), Failure> {
     let metadata = xhtml.metadata_mut();
-    metadata.set("Content-Type", table.header.content_type.as_str());
-    if let Some(modified) = table.header.modified {
+    metadata.set("Content-Type", header.content_type.as_str());
+    if let Some(modified) = header.modified {
         metadata.set("dcterms:modified", format_instant(modified));
     }
-    if let Some((read, thrown)) = &table.thrown {
-        if *read <= ROWS_FOR_DETECTION {
-            return Err(Failure::Malformed(thrown.clone()));
+    let mut first = Vec::with_capacity(ROWS_FOR_DETECTION + 1);
+    let mut ended = false;
+    while first.len() <= ROWS_FOR_DETECTION {
+        match next_record(&mut stream, &header.columns) {
+            Next::Record(record) => first.push(record),
+            Next::End => {
+                ended = true;
+                break;
+            }
+            Next::Thrown(thrown) => return Err(Failure::Malformed(thrown)),
         }
     }
-    let (detected, decode_as) = charsets(table);
+    let (detected, decode_as) = charsets(header, &first);
     xhtml
         .metadata_mut()
         .set("Content-Encoding", detected.name());
     xhtml.start_element("table")?;
     xhtml.start_element("thead")?;
-    for column in &table.header.columns {
+    for column in &header.columns {
         xhtml.start_element("th")?;
         xhtml.characters(java::trim(&decode(decode_as, &column.name)?))?;
         xhtml.end_element("th")?;
     }
     xhtml.end_element("thead")?;
     xhtml.start_element("tbody")?;
-    // Tika writes deleted records as rows too (#118).
-    for (row, _) in table
-        .rows
-        .iter()
-        .zip(&table.deleted)
-        .filter(|(_, &deleted)| !deleted)
-    {
-        xhtml.start_element("tr")?;
-        for (cell, column) in row.iter().zip(&table.header.columns) {
-            let text = match column.kind {
-                Kind::Character => java::trim(&decode(decode_as, cell)?).to_owned(),
-                Kind::Date => date(cell),
-                Kind::Other => java::trim(&java::ascii(cell)).to_owned(),
-                Kind::DateTime => date_time(cell),
-            };
-            xhtml.start_element("td")?;
-            xhtml.characters(&text)?;
-            xhtml.end_element("td")?;
-        }
-        xhtml.end_element("tr")?;
+    for record in &first {
+        write_record(record, &header.columns, decode_as, xhtml)?;
     }
-    if let Some((_, thrown)) = &table.thrown {
-        return Err(Failure::Malformed(thrown.clone()));
+    drop(first);
+    while !ended {
+        match next_record(&mut stream, &header.columns) {
+            Next::Record(record) => write_record(&record, &header.columns, decode_as, xhtml)?,
+            Next::End => ended = true,
+            Next::Thrown(thrown) => return Err(Failure::Malformed(thrown)),
+        }
     }
     xhtml.end_element("tbody")?;
     xhtml.end_element("table")?;
+    Ok(())
+}
+
+/// Writes `record` as a row, unless it is deleted, which Tika writes as a row too (#118).
+fn write_record(
+    record: &Record<'_>,
+    columns: &[Column],
+    decode_as: Charset,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
+    if record.deleted {
+        return Ok(());
+    }
+    xhtml.start_element("tr")?;
+    for (cell, column) in record.cells.iter().zip(columns) {
+        let text = match column.kind {
+            Kind::Character => java::trim(&decode(decode_as, cell)?).to_owned(),
+            Kind::Date => date(cell),
+            Kind::Other => java::trim(&java::ascii(cell)).to_owned(),
+            Kind::DateTime => date_time(cell),
+        };
+        xhtml.start_element("td")?;
+        xhtml.characters(&text)?;
+        xhtml.end_element("td")?;
+    }
+    xhtml.end_element("tr")?;
     Ok(())
 }
 
@@ -615,6 +653,47 @@ mod tests {
         assert_eq!(date_time(&date_time_cell(2_460_380, 86_400_000)), "");
         assert_eq!(date_time(b"        "), "");
         assert_eq!(date_time(&[1, 2, 3]), "");
+    }
+
+    /// The records the body at `index` of [`a_table_too_large_to_read_whole`] holds.
+    const RECORDS_PER_BODY: u64 = 1000;
+
+    /// The text of the row of record `number`.
+    fn large_row(number: u64) -> String {
+        format!("Række {number}\t{}\t03/09/2024\tT", number % 1000)
+    }
+
+    /// A table too large to read whole is read a record at a time, each row written as it is
+    /// read.
+    #[test]
+    fn a_table_too_large_to_read_whole() {
+        let mut head = table(0x03, &COLUMNS, &[]);
+        head[29] = 0x03;
+        let record_length = 42;
+        let body = |index: u64| {
+            let first = index * RECORDS_PER_BODY;
+            let mut records = Vec::with_capacity(record_length * RECORDS_PER_BODY as usize);
+            for number in first..first + RECORDS_PER_BODY {
+                records.push(b' ');
+                records.extend_from_slice(b"R\xe6kke ");
+                records.extend_from_slice(format!("{number:<18}").as_bytes());
+                records.extend_from_slice(format!("{:<8}", number % 1000).as_bytes());
+                records.extend_from_slice(b"20240309T");
+            }
+            records
+        };
+        let count =
+            extractous_core::large::bodies_past_limit(record_length * RECORDS_PER_BODY as usize);
+        let file = extractous_core::large::LargeFile::new("long.dbf", &head, count, body, b"");
+        let mut rows = 0;
+        let metadata = file.extract_lines(DbfParser.name(), |line| {
+            if line.starts_with("Række") {
+                assert_eq!(line, large_row(rows));
+                rows += 1;
+            }
+        });
+        assert_eq!(rows, count * RECORDS_PER_BODY);
+        assert_eq!(metadata["Content-Encoding"], ["windows-1252"]);
     }
 
     #[test]

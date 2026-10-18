@@ -6,10 +6,11 @@
 //! `Content-Type` as detected.
 
 use crate::config::ParserConfigs;
-use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
+use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
-use crate::formats::{unless_different, Decline, Failure, Parser, Prepared};
+use crate::formats::xhtml::{Stop, Xhtml};
+use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java::is_blank;
 use crate::java::strip;
 use crate::mime::MediaType;
@@ -31,21 +32,36 @@ impl Parser for SubtitleParser {
         &["application/x-subrip", "text/vtt", "text/x-ssa"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         unless_different(
-            Box::new(move |xhtml| write(input, xhtml)),
+            Box::new(move |xhtml| write(input, pages, xhtml)),
             AutoDetectReader::difference(input, metadata.get("Content-Type")),
         )
     }
 }
 
-/// Writes the cues of `input`, decoded as Tika's `AutoDetectReader` decodes it.
-fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+/// Writes the cues of `input`, decoded as Tika's `AutoDetectReader` decodes it, each as its
+/// lines are read, the `pages` of `input` released as they are.
+fn write<'a>(input: &'a [u8], pages: Pages<'a>, xhtml: &mut Xhtml) -> Result<(), Failure> {
     let content_type = xhtml
         .metadata_mut()
         .get("Content-Type")
@@ -53,34 +69,36 @@ fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
         .to_owned();
     let substation = MediaType::parse(&content_type)
         .is_some_and(|media_type| media_type.base_type() == MediaType::named("text/x-ssa"));
-    let reader = AutoDetectReader::read(input, Some(&content_type));
+    let (detection, text) = AutoDetectReader::stream(input, Some(&content_type), pages);
     let metadata = xhtml.metadata_mut();
-    auto_detect_reader::set_metadata(&reader.detection, metadata);
-    metadata.set("Content-Encoding", reader.detection.decode_as.name());
-    let cues = if substation {
-        substation_cues(&reader.text)
+    auto_detect_reader::set_metadata(&detection, metadata);
+    metadata.set("Content-Encoding", detection.decode_as.name());
+    let mut paragraph = |cue: &str| xhtml.element("p", cue);
+    if substation {
+        substation_cues(text.lines(), &mut paragraph)?;
     } else {
-        timed_cues(&reader.text)
-    };
-    for cue in cues {
-        xhtml.element("p", &cue)?;
+        timed_cues(text.lines(), &mut paragraph)?;
     }
     Ok(())
 }
 
 /// The text of SubRip and WebVTT cues: the lines after each timing line, up to a blank line.
-/// WebVTT headers, notes and style blocks have no timing line, so they are left out.
-fn timed_cues(text: &str) -> Vec<String> {
-    let mut cues = Vec::new();
+/// WebVTT headers, notes and style blocks have no timing line, so they are left out. Each cue
+/// goes to `each` as it ends.
+fn timed_cues(
+    lines: impl IntoIterator<Item = impl AsRef<str>>,
+    each: &mut impl FnMut(&str) -> Result<(), Stop>,
+) -> Result<(), Stop> {
     let mut cue = String::new();
     let mut in_cue = false;
-    for line in lines(text) {
+    for line in lines {
+        let line = line.as_ref();
         if is_timing(line) {
             in_cue = true;
             continue;
         }
         if is_blank(line) {
-            add_cue(&mut cues, &mut cue);
+            end_cue(&mut cue, each)?;
             in_cue = false;
             continue;
         }
@@ -92,16 +110,17 @@ fn timed_cues(text: &str) -> Vec<String> {
         }
         cue.push_str(&clean(line));
     }
-    add_cue(&mut cues, &mut cue);
-    cues
+    end_cue(&mut cue, each)
 }
 
 /// The text field of each Dialogue line of a SubStation Alpha script, `\N` and `\n` as line
-/// breaks.
-fn substation_cues(text: &str) -> Vec<String> {
-    let mut cues = Vec::new();
-    for line in lines(text) {
-        let Some(fields) = line.strip_prefix(SUBSTATION_DIALOGUE) else {
+/// breaks. Each cue goes to `each` as it is read.
+fn substation_cues(
+    lines: impl IntoIterator<Item = impl AsRef<str>>,
+    each: &mut impl FnMut(&str) -> Result<(), Stop>,
+) -> Result<(), Stop> {
+    for line in lines {
+        let Some(fields) = line.as_ref().strip_prefix(SUBSTATION_DIALOGUE) else {
             continue;
         };
         let Some(field) = fields
@@ -111,17 +130,19 @@ fn substation_cues(text: &str) -> Vec<String> {
             continue;
         };
         let mut cue = clean(&escaped_line_breaks(field));
-        add_cue(&mut cues, &mut cue);
+        end_cue(&mut cue, each)?;
     }
-    cues
+    Ok(())
 }
 
-fn add_cue(cues: &mut Vec<String>, cue: &mut String) {
+/// Hands `cue`, stripped, to `each` unless it is empty, and clears it.
+fn end_cue(cue: &mut String, each: &mut impl FnMut(&str) -> Result<(), Stop>) -> Result<(), Stop> {
     let text = strip(cue);
     if !text.is_empty() {
-        cues.push(text.to_owned());
+        each(text)?;
     }
     cue.clear();
+    Ok(())
 }
 
 /// A line without its markup, `<…>` tags and `{\…}` override blocks, and stripped.
@@ -275,6 +296,54 @@ mod tests {
         ] {
             assert!(!is_timing(line), "{line:?}");
         }
+    }
+
+    /// The cues `read` hands on of the lines of `text`.
+    fn cues(
+        text: &str,
+        read: impl FnOnce(
+            auto_detect_reader::Lines<'_>,
+            &mut dyn FnMut(&str) -> Result<(), Stop>,
+        ) -> Result<(), Stop>,
+    ) -> Vec<String> {
+        let mut cues = Vec::new();
+        let (_, streamed) =
+            AutoDetectReader::stream(text.as_bytes(), Some("text/plain"), Pages::IN_MEMORY);
+        read(streamed.lines(), &mut |cue| {
+            cues.push(cue.to_owned());
+            Ok(())
+        })
+        .unwrap();
+        cues
+    }
+
+    fn timed_cues(text: &str) -> Vec<String> {
+        cues(text, |lines, mut each| super::timed_cues(lines, &mut each))
+    }
+
+    fn substation_cues(text: &str) -> Vec<String> {
+        cues(text, |lines, mut each| {
+            super::substation_cues(lines, &mut each)
+        })
+    }
+
+    /// A subtitle file too large to read whole is read a line at a time, each cue written as it
+    /// ends.
+    #[test]
+    fn reads_subtitles_too_large_to_read_whole() {
+        let cue = |index: u64| {
+            format!("{index}\n00:00:01,000 --> 00:00:02,000\nReplik {index}\n\n").into_bytes()
+        };
+        let count = extractous_core::large::bodies_past_limit(cue(1_000_000).len());
+        let file = extractous_core::large::LargeFile::new("long.srt", b"", count, cue, b"");
+        let mut cues = 0;
+        file.extract_lines(SubtitleParser.name(), |line| {
+            if !line.is_empty() {
+                assert_eq!(line, format!("Replik {cues}"));
+                cues += 1;
+            }
+        });
+        assert_eq!(cues, count);
     }
 
     #[test]

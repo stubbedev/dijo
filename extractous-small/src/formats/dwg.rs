@@ -8,7 +8,8 @@
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::java;
 use crate::text::charset::Charset;
 
@@ -113,31 +114,53 @@ impl Parser for DwgParser {
         &[DWG_TYPE]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        Ok(Box::new(move |xhtml| parse(&mut Stream::new(input), xhtml)))
+        Ok(Box::new(move |xhtml| {
+            parse(&mut Stream::new(input, pages), xhtml)
+        }))
     }
 }
 
-/// The drawing as `DWGParser` reads its stream.
+/// The drawing as `DWGParser` reads its stream, whose pages it releases as it reads on.
 struct Stream<'a> {
     data: &'a [u8],
     at: usize,
+    paging: Paging<'a>,
 }
 
 impl<'a> Stream<'a> {
-    fn new(data: &'a [u8]) -> Self {
-        Self { data, at: 0 }
+    fn new(data: &'a [u8], pages: Pages<'a>) -> Self {
+        Self {
+            data,
+            at: 0,
+            paging: Paging::new(pages),
+        }
     }
 
     /// `InputStream.read()`: a byte, or `None` at the end, where Java reads -1.
     fn read(&mut self) -> Option<u8> {
         let byte = self.data.get(self.at).copied()?;
         self.at += 1;
+        self.paging.read(1);
         Some(byte)
     }
 
@@ -153,6 +176,7 @@ impl<'a> Stream<'a> {
                 ))
             })?;
         self.at += length;
+        self.paging.read(length);
         Ok(read)
     }
 
@@ -223,7 +247,7 @@ fn skip_to_property_section(stream: &mut Stream, header: &[u8]) -> Result<bool, 
 /// to its end. Tika does not try the byte that breaks off a match as the start of another.
 fn skip_to_2000_properties(stream: &mut Stream) -> bool {
     let rest = &stream.data[stream.at..];
-    match memchr::memmem::find(rest, MARKER_2000) {
+    match stream.paging.find(rest, MARKER_2000) {
         Some(found) => {
             stream.at += found + MARKER_2000.len();
             true
@@ -329,15 +353,20 @@ fn custom_properties(stream: &mut Stream) -> Result<u16, Failure> {
     Ok(if count > 0 && count < 0x7f { count } else { 0 })
 }
 
-#[cfg(all(test, feature = "tika"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
+    use extractous_core::large::LargeFile;
+
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
 
+    #[cfg(feature = "tika")]
     fn paths(files: &[PathBuf]) -> Vec<&Path> {
         files.iter().map(PathBuf::as_path).collect()
     }
@@ -359,6 +388,7 @@ mod tests {
         bytes
     }
 
+    #[cfg(feature = "tika")]
     fn narrow(text: &[u8]) -> Vec<u8> {
         let mut bytes = (text.len() as u16 + 1).to_le_bytes().to_vec();
         bytes.extend_from_slice(text);
@@ -380,6 +410,7 @@ mod tests {
         bytes
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_drawings_as_tikas_path_does() {
         let scratch = Scratch::new("dwg");
@@ -493,6 +524,31 @@ mod tests {
         assert!(!metadata.contains_key("dc:description"));
     }
 
+    /// A 2000 drawing too large to read whole is searched for its properties a window at a
+    /// time.
+    #[test]
+    fn reads_drawings_too_large_to_read_whole() {
+        let window = vec![0; 1 << 20];
+        let tail = [
+            MARKER_2000,
+            &property_2000(2, 0x1e, b"Plan"),
+            &property_2000(90, 0, b""),
+        ]
+        .concat();
+        let file = LargeFile::new(
+            "long.dwg",
+            &drawing_2000(b""),
+            extractous_core::large::bodies_past_limit(window.len()),
+            |_| window.clone(),
+            &tail,
+        );
+        let mut text = String::new();
+        let metadata = file.extract_each(DwgParser.name(), |written| text.push_str(written));
+        assert_eq!(text.trim(), "Plan");
+        assert_eq!(metadata["dc:title"], ["Plan"]);
+    }
+
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_drawings_as_tikas_path_does() {

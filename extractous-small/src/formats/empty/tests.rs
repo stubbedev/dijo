@@ -1,8 +1,23 @@
+#[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
 
+use extractous_core::large::LargeFile;
+
 use super::*;
+#[cfg(feature = "tika")]
 use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
+/// A file of no type any parser takes, too large to read whole, is read no further than its
+/// detection reads it.
+#[test]
+fn writes_nothing_of_files_too_large_to_read_whole() {
+    let file = LargeFile::padded("long.bin", &[0x00, 0x9F, 0x3B, 0xFE, 0x10, 0x00, 0x7F]);
+    let mut text = String::new();
+    file.extract_each(EmptyParser.name(), |written| text.push_str(written));
+    assert_eq!(text.trim(), "");
+}
+
+#[cfg(feature = "tika")]
 #[test]
 fn extracts_what_tika_parses_with_empty_parser_as_tikas_path_does() {
     let scratch = Scratch::new("empty");
@@ -25,6 +40,7 @@ fn extracts_what_tika_parses_with_empty_parser_as_tikas_path_does() {
     );
 }
 
+#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn extracts_tikas_test_documents_as_tikas_path_does() {

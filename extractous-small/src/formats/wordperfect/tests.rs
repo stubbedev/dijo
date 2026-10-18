@@ -123,6 +123,26 @@ fn quattro_records() -> Vec<u8> {
     .concat()
 }
 
+/// A WordPerfect document too large to read whole is read a character at a time, its text
+/// written a chunk at a time.
+#[test]
+fn reads_documents_too_large_to_read_whole() {
+    let words = b"ord ".repeat(256);
+    let count = extractous_core::large::bodies_past_limit(words.len());
+    let file = extractous_core::large::LargeFile::new(
+        "long.wpd",
+        &prefix(WP5_MAJOR_VERSION, 1, false),
+        count,
+        |_| words.clone(),
+        b"",
+    );
+    let mut letters = 0u64;
+    file.extract_each(WordPerfectParser.name(), |text| {
+        letters += text.matches('o').count() as u64;
+    });
+    assert_eq!(letters, count * 256);
+}
+
 #[test]
 fn reads_prefix_areas_as_tika_does() {
     let prefix = PrefixArea::read(&wp6()).unwrap();

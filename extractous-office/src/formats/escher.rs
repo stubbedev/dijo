@@ -4,7 +4,9 @@
 //! anchors, text boxes and client data, and every other record read past as POI reads it,
 //! failing where POI throws.
 
-use crate::formats::poi::{i16_at, i32_at, safely_clone, thrown, Read, Thrown};
+use std::borrow::Cow;
+
+use crate::formats::poi::{i16_at, i32_at, safely_borrow, safely_clone, thrown, Read, Thrown};
 
 /// Escher record types, as POI's `EscherRecordTypes` names them.
 pub(crate) mod kind {
@@ -58,18 +60,19 @@ pub(crate) enum Factory {
     Slides,
 }
 
-/// A picture: the type of its blip record and its data, as `getPicturedata` gives it.
+/// A picture: the type of its blip record and its data, as `getPicturedata` gives it, in place
+/// where it is stored as it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Blip {
+pub(crate) struct Blip<'a> {
     pub(crate) record_id: u16,
-    pub(crate) data: Vec<u8>,
+    pub(crate) data: Cow<'a, [u8]>,
 }
 
 /// A BSE record: the picture it stores.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Stored {
+pub(crate) struct Stored<'a> {
     /// Its blip, if it holds one.
-    pub(crate) blip: Option<Blip>,
+    pub(crate) blip: Option<Blip<'a>>,
     /// `getBlipTypeWin32`.
     pub(crate) blip_type: u8,
     /// `getUid`: the checksum of its picture.
@@ -119,11 +122,11 @@ pub(crate) struct Shape {
 
 /// What of a record its readers look at.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Content {
+pub(crate) enum Content<'a> {
     /// An `EscherContainerRecord`.
     Container,
-    Stored(Stored),
-    Picture(Blip),
+    Stored(Stored<'a>),
+    Picture(Blip<'a>),
     Shape(Shape),
     Options(Options),
     TertiaryOptions(Options),
@@ -142,10 +145,10 @@ pub(crate) enum Content {
 
 /// An Escher record and the records it contains.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Escher {
+pub(crate) struct Escher<'a> {
     pub(crate) record_id: u16,
-    pub(crate) content: Content,
-    pub(crate) children: Vec<Escher>,
+    pub(crate) content: Content<'a>,
+    pub(crate) children: Vec<Escher<'a>>,
 }
 
 /// The class `DefaultEscherRecordFactory.createRecord` makes of a record.
@@ -182,6 +185,11 @@ enum Leaf {
 /// `IOUtils.safelyClone` from an offset into the data.
 fn clone(data: &[u8], offset: usize, length: i64, max: i64) -> Read<Vec<u8>> {
     safely_clone(data, offset as i64, length, max)
+}
+
+/// The bytes [`clone`] copies, where they are.
+fn borrow(data: &[u8], offset: usize, length: i64, max: i64) -> Read<&[u8]> {
+    safely_borrow(data, offset as i64, length, max)
 }
 
 /// `getConstructor` of the factory.
@@ -240,18 +248,18 @@ fn create(data: &[u8], offset: usize, factory: Factory) -> Read<Class> {
 }
 
 /// `createRecord` and `fillFields` at `offset`: the record, and the length POI says it read.
-pub(crate) fn record_at(data: &[u8], offset: usize) -> Read<(Escher, isize)> {
+pub(crate) fn record_at(data: &[u8], offset: usize) -> Read<(Escher<'_>, isize)> {
     made_at(data, offset, Factory::Default)
 }
 
 /// `createRecord` and `fillFields` at `offset`, by `factory`.
-pub(crate) fn made_at(data: &[u8], offset: usize, factory: Factory) -> Read<(Escher, isize)> {
+pub(crate) fn made_at(data: &[u8], offset: usize, factory: Factory) -> Read<(Escher<'_>, isize)> {
     fill(data, offset, create(data, offset, factory)?, factory)
 }
 
 /// `new EscherContainerRecord().fillFields` at `offset`: the record read as a container
 /// whatever its type, and the length POI says it read.
-pub(crate) fn container_at(data: &[u8], offset: usize) -> Read<(Escher, isize)> {
+pub(crate) fn container_at(data: &[u8], offset: usize) -> Read<(Escher<'_>, isize)> {
     container_made_at(data, offset, Factory::Default)
 }
 
@@ -260,12 +268,12 @@ pub(crate) fn container_made_at(
     data: &[u8],
     offset: usize,
     factory: Factory,
-) -> Read<(Escher, isize)> {
+) -> Read<(Escher<'_>, isize)> {
     fill(data, offset, Class::Container, factory)
 }
 
 /// `AbstractEscherHolderRecord.decode`: the records of a drawing group's data.
-pub(crate) fn decode(data: &[u8]) -> Read<Vec<Escher>> {
+pub(crate) fn decode(data: &[u8]) -> Read<Vec<Escher<'_>>> {
     let mut records = Vec::new();
     let mut position = 0;
     while position < data.len() {
@@ -278,8 +286,8 @@ pub(crate) fn decode(data: &[u8]) -> Read<Vec<Escher>> {
     Ok(records)
 }
 
-impl Escher {
-    fn other(record_id: u16) -> Escher {
+impl<'a> Escher<'a> {
+    fn other(record_id: u16) -> Escher<'a> {
         Escher {
             record_id,
             content: Content::Other,
@@ -288,10 +296,51 @@ impl Escher {
     }
 
     /// `getChildById`: the first child of the type.
-    pub(crate) fn child(&self, record_id: u16) -> Option<&Escher> {
+    pub(crate) fn child(&self, record_id: u16) -> Option<&Escher<'a>> {
         self.children
             .iter()
             .find(|child| child.record_id == record_id)
+    }
+
+    /// The record with its pictures copied out of the data they were read from.
+    pub(crate) fn into_owned(self) -> Escher<'static> {
+        Escher {
+            record_id: self.record_id,
+            content: self.content.into_owned(),
+            children: self.children.into_iter().map(Escher::into_owned).collect(),
+        }
+    }
+}
+
+impl Content<'_> {
+    pub(crate) fn into_owned(self) -> Content<'static> {
+        match self {
+            Content::Container => Content::Container,
+            Content::Stored(stored) => Content::Stored(Stored {
+                blip: stored.blip.map(Blip::into_owned),
+                blip_type: stored.blip_type,
+                uid: stored.uid,
+                offset: stored.offset,
+            }),
+            Content::Picture(blip) => Content::Picture(blip.into_owned()),
+            Content::Shape(shape) => Content::Shape(shape),
+            Content::Options(options) => Content::Options(options),
+            Content::TertiaryOptions(options) => Content::TertiaryOptions(options),
+            Content::ClientAnchor(anchor) => Content::ClientAnchor(anchor),
+            Content::ChildAnchor(anchor) => Content::ChildAnchor(anchor),
+            Content::Textbox(text) => Content::Textbox(text),
+            Content::ClientData(data) => Content::ClientData(data),
+            Content::Other => Content::Other,
+        }
+    }
+}
+
+impl Blip<'_> {
+    pub(crate) fn into_owned(self) -> Blip<'static> {
+        Blip {
+            record_id: self.record_id,
+            data: Cow::Owned(self.data.into_owned()),
+        }
     }
 }
 
@@ -307,12 +356,12 @@ fn header(data: &[u8], offset: usize) -> Read<(u16, u16, i64)> {
 ///
 /// POI recurses into the records a record holds, as deep as 1000 levels; this reads them
 /// with a stack of the records still being filled instead, so that any nesting POI reads fits.
-fn fill(data: &[u8], offset: usize, class: Class, factory: Factory) -> Read<(Escher, isize)> {
+fn fill(data: &[u8], offset: usize, class: Class, factory: Factory) -> Read<(Escher<'_>, isize)> {
     let mut innermost = match open(data, offset, class, 0, factory)? {
         Opened::Filled(record, consumed) => return Ok((record, consumed)),
         Opened::Filling(holder) => holder,
     };
-    let mut outer: Vec<Filling> = Vec::new();
+    let mut outer: Vec<Filling<'_>> = Vec::new();
     loop {
         match innermost.next_child(data.len())? {
             Some(at) => {
@@ -348,16 +397,16 @@ enum Holding {
 }
 
 /// A record whose children are being read: what `fillFields` has read of it so far.
-struct Filling {
+struct Filling<'a> {
     holding: Holding,
     record_id: u16,
     remaining: i64,
     written: i64,
     position: i64,
-    children: Vec<Escher>,
+    children: Vec<Escher<'a>>,
 }
 
-impl Filling {
+impl<'a> Filling<'a> {
     /// Where its next child starts, or `None` once it has read them all.
     fn next_child(&self, available: usize) -> Read<Option<usize>> {
         if self.remaining <= 0 {
@@ -374,7 +423,7 @@ impl Filling {
     }
 
     /// Adds a child POI says it read `consumed` bytes of.
-    fn add(&mut self, child: Escher, consumed: isize) -> Read<()> {
+    fn add(&mut self, child: Escher<'a>, consumed: isize) -> Read<()> {
         let consumed = consumed as i64;
         self.written += consumed;
         self.position += consumed;
@@ -392,7 +441,7 @@ impl Filling {
     }
 
     /// The record with its children, and the length POI says it read.
-    fn finish(self) -> (Escher, isize) {
+    fn finish(self) -> (Escher<'a>, isize) {
         let content = match self.holding {
             Holding::Container => Content::Container,
             Holding::Unknown => Content::Other,
@@ -407,10 +456,10 @@ impl Filling {
 }
 
 /// A record `fillFields` has begun to read.
-enum Opened {
-    Filled(Escher, isize),
+enum Opened<'a> {
+    Filled(Escher<'a>, isize),
     /// A record whose children are still to be read.
-    Filling(Filling),
+    Filling(Filling<'a>),
 }
 
 /// Begins `fillFields` of a record of `class` at `offset`, `nesting` levels deep.
@@ -420,7 +469,7 @@ fn open(
     class: Class,
     nesting: usize,
     factory: Factory,
-) -> Read<Opened> {
+) -> Read<Opened<'_>> {
     let holding = match class {
         Class::Leaf(leaf) => {
             let (record, consumed) = fill_leaf(data, offset, leaf, factory)?;
@@ -460,7 +509,12 @@ fn open(
 }
 
 /// `fillFields` of a record of `class` at `offset` that holds no records.
-fn fill_leaf(data: &[u8], offset: usize, class: Leaf, factory: Factory) -> Read<(Escher, isize)> {
+fn fill_leaf(
+    data: &[u8],
+    offset: usize,
+    class: Leaf,
+    factory: Factory,
+) -> Read<(Escher<'_>, isize)> {
     let (options, record_id, length) = header(data, offset)?;
     let body = offset + 8;
     let read = |consumed: i64| consumed as isize;
@@ -630,7 +684,7 @@ fn fill_leaf(data: &[u8], offset: usize, class: Leaf, factory: Factory) -> Read<
 }
 
 /// A blip record's `fillFields`: the blip, the length POI says it read, and its record size.
-fn fill_blip(data: &[u8], offset: usize, class: Leaf) -> Read<(Blip, i64, i64)> {
+fn fill_blip(data: &[u8], offset: usize, class: Leaf) -> Read<(Blip<'_>, i64, i64)> {
     let options = i16_at(data, offset)? as u16;
     let record_id = i16_at(data, offset + 2)? as u16;
     let length = i64::from(i32_at(data, offset + 4)?);
@@ -645,12 +699,12 @@ fn fill_blip(data: &[u8], offset: usize, class: Leaf) -> Read<(Blip, i64, i64)> 
             if size < 0 || (data.len() as i64) < start as i64 + size {
                 return thrown("picture data can't be null");
             }
-            let picture = clone(data, start, size, MAX_BLIP)?;
+            let picture = borrow(data, start, size, MAX_BLIP)?;
             let record_size = 8 + 16 + 1 + picture.len() as i64;
             return Ok((
                 Blip {
                     record_id,
-                    data: picture,
+                    data: Cow::Borrowed(picture),
                 },
                 length + 8,
                 record_size,
@@ -674,11 +728,11 @@ fn fill_blip(data: &[u8], offset: usize, class: Leaf) -> Read<(Blip, i64, i64)> 
             data.get(position + 33)
                 .ok_or_else(|| Thrown::new("metafile blip ends before its fields"))?;
             position += 34;
-            let raw = clone(data, position, saved, MAX_LARGE_RECORD)?;
+            let raw = borrow(data, position, saved, MAX_LARGE_RECORD)?;
             let picture = if compression == 0 {
-                inflate(&raw)
+                Cow::Owned(inflate(raw))
             } else {
-                raw.clone()
+                Cow::Borrowed(raw)
             };
             let end = position as i64 + saved;
             let remaining = length - end + offset as i64 + 8;
@@ -697,13 +751,13 @@ fn fill_blip(data: &[u8], offset: usize, class: Leaf) -> Read<(Blip, i64, i64)> 
                 record_size,
             ));
         }
-        _ => clone(data, body, length, MAX_BLIP)?,
+        _ => borrow(data, body, length, MAX_BLIP)?,
     };
     let record_size = 8 + picture.len() as i64;
     Ok((
         Blip {
             record_id,
-            data: picture,
+            data: Cow::Borrowed(picture),
         },
         length + 8,
         record_size,
@@ -896,7 +950,7 @@ pub(crate) mod tests {
             Content::Stored(Stored {
                 blip: Some(Blip {
                     record_id: kind::BLIP_JPEG,
-                    data: data.to_vec(),
+                    data: Cow::Owned(data.to_vec()),
                 }),
                 blip_type: 5,
                 uid: [0; 16],
@@ -915,7 +969,8 @@ pub(crate) mod tests {
         let mut options = 0x0104u16.to_le_bytes().to_vec();
         options.extend(3i32.to_le_bytes());
         let shape = record(0x000F, 0xF004, &record(0x0013, kind::OPT, &options));
-        let (records, length) = record_at(&record(0x000F, 0xF002, &shape), 0).unwrap();
+        let shape_record = record(0x000F, 0xF002, &shape);
+        let (records, length) = record_at(&shape_record, 0).unwrap();
         assert_eq!(length, 30);
         assert_eq!(
             records.children[0].children[0].content,
@@ -930,7 +985,8 @@ pub(crate) mod tests {
     #[test]
     fn reads_a_record_as_a_container_when_asked_to() {
         let blip = record(0, kind::BLIP_PNG, &[0; 20]);
-        let (container, _) = container_at(&record(0, 0xF00B, &blip), 0).unwrap();
+        let options = record(0, 0xF00B, &blip);
+        let (container, _) = container_at(&options, 0).unwrap();
         assert_eq!(container.record_id, 0xF00B);
         assert!(matches!(
             container.children[0].content,
@@ -959,7 +1015,8 @@ pub(crate) mod tests {
 
     #[test]
     fn reads_as_many_levels_of_nesting_as_poi_does() {
-        let (outer, _) = record_at(&nested(MAX_NESTED_CHILD_NODES + 1), 0).unwrap();
+        let data = nested(MAX_NESTED_CHILD_NODES + 1);
+        let (outer, _) = record_at(&data, 0).unwrap();
         let innermost = (0..=MAX_NESTED_CHILD_NODES).fold(&outer, |record, _| &record.children[0]);
         assert_eq!(innermost.record_id, kind::SP);
         assert_eq!(

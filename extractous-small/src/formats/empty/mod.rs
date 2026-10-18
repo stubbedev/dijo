@@ -6,7 +6,7 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::{Decline, Footprint, Parser, Prepared};
 
 /// Tika's `EmptyParser`.
 pub struct EmptyParser;
@@ -23,6 +23,10 @@ impl Parser for EmptyParser {
         &[]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         _input: &'a [u8],
@@ -33,5 +37,5 @@ impl Parser for EmptyParser {
     }
 }
 
-#[cfg(all(test, feature = "tika"))]
+#[cfg(test)]
 mod tests;
