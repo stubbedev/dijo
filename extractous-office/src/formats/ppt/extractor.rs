@@ -52,6 +52,8 @@ pub(super) enum Out {
     Add(&'static str, String),
     /// A value set in the presentation's metadata.
     Set(&'static str, String),
+    /// An exception Tika records as a warning before it goes on, as Java prints its first line.
+    Warning(String),
 }
 
 fn recorded(reason: &str) -> Unported {
@@ -475,6 +477,10 @@ impl<'s, 'a> Extractor<'s, 'a> {
     fn readable(&mut self, data: Result<Vec<u8>, Unread>) -> Result<Option<Vec<u8>>, Unported> {
         match data {
             Ok(data) => Ok(Some(data)),
+            Err(Unread::Thrown(exception)) => {
+                self.out.push(Out::Warning(exception));
+                Ok(None)
+            }
             Err(recorded @ Unread::Recorded(_)) => {
                 let Unported(reason) = recorded.into();
                 self.difference.get_or_insert(Difference(reason));
@@ -637,6 +643,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
                 continue;
             }
             let Some(data) = self.readable(self.objects[at].data())? else {
+                index += 1;
                 continue;
             };
             let media_type = detect(&data)?;

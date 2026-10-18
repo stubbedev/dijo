@@ -6,10 +6,10 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::{i16_at, i32_at, safely_clone, thrown, u8_at, Lzw, Read, Thrown};
-use crate::formats::{unless_different, Decline, Difference, Parser, Prepared, Unported};
+use crate::formats::{Decline, Parser, Prepared, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2};
 
 const MEDIA_TYPE: &str = "application/vnd.visio";
@@ -69,33 +69,26 @@ impl Parser for VisioParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let (summaries, texts, difference) = read(input, configs)?;
-        unless_different(
-            Box::new(move |xhtml| {
-                summaries.write(xhtml.metadata_mut());
-                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-                for text in &texts {
-                    xhtml.element("p", text)?;
-                }
-                Ok(())
-            }),
-            difference,
-        )
+        let (summaries, texts) = read(input, configs)?;
+        Ok(Box::new(move |xhtml| {
+            summaries.write(xhtml.metadata_mut());
+            xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+            for text in &texts {
+                xhtml.element("p", text)?;
+            }
+            Ok(())
+        }))
     }
 }
 
-/// The summary information and the texts `VisioTextExtractor.getAllText` gives, and where POI
-/// reads the drawing differently from a stream, if it does.
-fn read(
-    input: &[u8],
-    configs: &ParserConfigs,
-) -> Result<(Summaries, Vec<String>, Option<Difference>), Unported> {
-    let Opened { file, difference } = office::open(input, configs, MEDIA_TYPE, "Visio drawing")?;
+/// The summary information and the texts `VisioTextExtractor.getAllText` gives.
+fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<String>), Unported> {
+    let file = office::open(input, configs, MEDIA_TYPE, "Visio drawing")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
     let texts = texts(&file, root)
         .map_err(|Thrown(reason)| Unported(format!("POI throws reading the drawing: {reason}")))?;
-    Ok((summaries, texts, difference))
+    Ok((summaries, texts))
 }
 
 /// `new HDGFDiagram(root)` and `getAllText`: the streams the trailer points to, read in order,

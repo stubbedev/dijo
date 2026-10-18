@@ -6,12 +6,10 @@ use crate::formats::parity;
 
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
-/// The protected packages of Tika's tests this port leaves to Tika, with a part of the reason.
-const DEFERRED_CONFORMANCE: [(&str, &str); 3] = [
-    ("protect.xlsx", "partial block"),
-    ("protectedFile.xlsx", "partial block"),
-    ("protected_upper_case.docx", "no stream EncryptionInfo"),
-];
+/// The protected packages of Tika's tests Office's default password opens.
+const DEFAULT_PASSWORD: [&str; 2] = ["protect.xlsx", "protectedFile.xlsx"];
+/// The protected packages of Tika's tests no password opens.
+const UNOPENED: [&str; 1] = ["protected_upper_case.docx"];
 
 /// The protected packages, by file name, with the password that opens them.
 const ENCRYPTED: [(&str, &str); 6] = [
@@ -72,6 +70,17 @@ fn assert_same_as_tika_with_single_breaks(documents: &[PathBuf]) {
     }
 }
 
+/// Tika's XHTML of a workbook whose sheets are protected, with single breaks and with its head
+/// saying so, as the native parser writes it, where Tika's says `false` before it reads the
+/// sheets (#95). The metadata, which the comparison also holds alike, keeps Tika's final value.
+fn with_protected_sheets_in_head(xhtml: &str) -> String {
+    const META: &str = "<meta name=\"msoffice:excel:protected-worksheet\" content=";
+    parity::without_doubled_breaks(xhtml).replace(
+        &format!("{META}\"false\" />"),
+        &format!("{META}\"true\" />"),
+    )
+}
+
 fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
     let (mut documents, deferred) = parity::documents(&ProtectedParser, roots);
     documents.extend(deferred);
@@ -95,33 +104,42 @@ fn opens_the_repositorys_protected_package_as_tikas_path_does() {
     );
 }
 
-/// The packages whose compound document POI reads short from a stream are read natively, whole,
-/// as a build without Tika takes them (#144).
-#[test]
-#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
-fn reads_natively_the_packages_poi_reads_short_from_a_stream() {
-    let documents = corpus(&[&parity::conformance_corpus()]);
-    for name in ["protect.xlsx", "protectedFile.xlsx"] {
-        let path = documents
-            .iter()
-            .find(|path| path.ends_with(name))
-            .unwrap_or_else(|| panic!("Tika's test document {name}"));
-        let (Difference(reason), text) = parity::differing_reading(&ProtectedParser, path);
-        assert!(reason.contains("partial block"), "{name}: {reason}");
-        assert!(
-            text.contains("При запуске пробной версии Office 2007"),
-            "{name}: {text}"
-        );
-    }
-}
-
+/// Tika's test documents, with the packages Office's default password opens, whose compound
+/// documents end inside a block POI reads short from a stream, and the one whose streams are
+/// named in upper case, which POI finds ignoring case and no password opens.
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-    let ported = ported(
-        &corpus(&[&parity::conformance_corpus()]),
-        &DEFERRED_CONFORMANCE,
+    let ported = ported(&corpus(&[&parity::conformance_corpus()]), &[]);
+    assert_eq!(ported.len(), 8);
+    let named = |names: &[&str]| -> Vec<PathBuf> {
+        ported
+            .iter()
+            .filter(|path| names.contains(&file_name(path).as_str()))
+            .cloned()
+            .collect()
+    };
+    let default_password = named(&DEFAULT_PASSWORD);
+    assert_eq!(default_password.len(), DEFAULT_PASSWORD.len());
+    for document in &default_password {
+        parity::assert_same_xhtml_as_tika_with(
+            &[document.as_path()],
+            TIKA_PARSER,
+            &ParserConfigs::default(),
+            with_protected_sheets_in_head,
+        );
+    }
+    let unopened = named(&UNOPENED);
+    assert_eq!(unopened.len(), UNOPENED.len());
+    for document in &unopened {
+        let (native, tika) = parity::errors(document, &ParserConfigs::default());
+        assert_eq!(native, tika, "{}", document.display());
+        assert!(native.contains("EncryptedDocumentException"), "{native}");
+    }
+    let encrypted = named(&ENCRYPTED.map(|(name, _)| name));
+    assert_eq!(
+        encrypted.len() + default_password.len() + unopened.len(),
+        ported.len()
     );
-    assert_eq!(ported.len(), 5);
-    assert_same_as_tika_with_single_breaks(&ported);
+    assert_same_as_tika_with_single_breaks(&encrypted);
 }

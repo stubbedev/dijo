@@ -66,38 +66,40 @@ pub(crate) fn safely_clone(data: &[u8], offset: i64, length: i64, max: i64) -> R
 }
 
 /// `InflaterInputStream` read to its end, or to `limit` bytes where a `BoundedInputStream` stops
-/// it there: the inflated data, `None` where Java's stream throws first, the zlib stream broken
-/// or ending early.
-pub(crate) fn inflate(data: &[u8], limit: Option<usize>) -> Option<Vec<u8>> {
+/// it there: the inflated data, or the exception Java's stream throws first, the zlib stream
+/// broken or ending early, as the first line of its stack trace.
+pub(crate) fn inflate(data: &[u8], limit: Option<usize>) -> Read<Vec<u8>> {
     let mut inflater = flate2::Decompress::new(true);
-    let mut out = Vec::with_capacity(data.len().saturating_mul(4).max(64));
+    let mut out = Vec::new();
     loop {
-        if let Some(limit) = limit {
-            if out.len() >= limit {
-                out.truncate(limit);
-                return Some(out);
-            }
+        let written = out.len();
+        if limit.is_some_and(|limit| written >= limit) {
+            return Ok(out);
         }
-        if out.capacity() == out.len() {
-            out.reserve(out.len().max(64));
-        }
+        let room = written.max(data.len().saturating_mul(4)).max(64);
+        let end = limit.map_or(written + room, |limit| limit.min(written + room));
+        out.resize(end, 0);
         let consumed = inflater.total_in() as usize;
-        let written = inflater.total_out();
-        match inflater.decompress_vec(&data[consumed..], &mut out, flate2::FlushDecompress::None) {
-            Ok(flate2::Status::StreamEnd) => {
-                if let Some(limit) = limit {
-                    out.truncate(limit);
-                }
-                return Some(out);
-            }
-            Ok(_)
-                if inflater.total_in() as usize == data.len()
-                    && inflater.total_out() == written =>
-            {
-                return None
+        let before = inflater.total_out();
+        let status = inflater.decompress(
+            &data[consumed..],
+            &mut out[written..],
+            flate2::FlushDecompress::None,
+        );
+        let produced = (inflater.total_out() - before) as usize;
+        out.truncate(written + produced);
+        match status {
+            Ok(flate2::Status::StreamEnd) => return Ok(out),
+            Ok(_) if inflater.total_in() as usize == data.len() && produced == 0 => {
+                return thrown("java.io.EOFException: Unexpected end of ZLIB input stream");
             }
             Ok(_) => {}
-            Err(_) => return None,
+            Err(error) => {
+                return thrown(format!(
+                    "java.util.zip.ZipException: {}",
+                    error.message().unwrap_or("Invalid ZLIB data format")
+                ))
+            }
         }
     }
 }
@@ -172,16 +174,22 @@ mod tests {
             flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(b"metafile").unwrap();
         let compressed = encoder.finish().unwrap();
+        assert_eq!(inflate(&compressed, None), Ok(b"metafile".to_vec()));
         assert_eq!(
-            inflate(&compressed, None).as_deref(),
-            Some(&b"metafile"[..])
+            inflate(&compressed[..compressed.len() - 5], None),
+            thrown("java.io.EOFException: Unexpected end of ZLIB input stream")
         );
-        assert_eq!(inflate(&compressed[..compressed.len() - 5], None), None);
-        assert_eq!(inflate(b"not zlib", None), None);
-        assert_eq!(inflate(&compressed, Some(4)).as_deref(), Some(&b"meta"[..]));
         assert_eq!(
-            inflate(&compressed, Some(20)).as_deref(),
-            Some(&b"metafile"[..])
+            inflate(b"not zlib", None),
+            thrown("java.util.zip.ZipException: incorrect header check")
         );
+        let mut bad_check = compressed.clone();
+        *bad_check.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            inflate(&bad_check, None),
+            thrown("java.util.zip.ZipException: incorrect data check")
+        );
+        assert_eq!(inflate(&bad_check, Some(4)), Ok(b"meta".to_vec()));
+        assert_eq!(inflate(&compressed, Some(20)), Ok(b"metafile".to_vec()));
     }
 }

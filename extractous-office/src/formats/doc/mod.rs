@@ -36,10 +36,10 @@ use crate::formats::metadata::office::{
     COMMENT_PERSONS, HAS_COMMENTS, HAS_HIDDEN_TEXT, HAS_TRACK_CHANGES, ORIGINAL_RESOURCE_NAME,
 };
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 
 const MEDIA_TYPE: &str = "application/msword";
 
@@ -58,38 +58,31 @@ impl Parser for DocParser {
     }
 
     /// Fails encrypted documents the password does not open, and defers documents POI or Tika
-    /// throws on and macros extracted when asked to. A document POI reads differently from a
-    /// stream differs from Tika's path.
+    /// throws on and macros extracted when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let (summaries, extracted, difference) = read(input, configs)?;
-        unless_different(
-            Box::new(move |xhtml| {
-                summaries.write(xhtml.metadata_mut());
-                write(extracted, xhtml)
-            }),
-            difference,
-        )
+        let (summaries, extracted) = read(input, configs)?;
+        Ok(Box::new(move |xhtml| {
+            summaries.write(xhtml.metadata_mut());
+            write(extracted, xhtml)
+        }))
     }
 }
 
 /// The summary information and what Tika's extractor makes of the Word document in a compound
-/// document, and where POI reads it differently from a stream, if it does.
-fn read(
-    input: &[u8],
-    configs: &ParserConfigs,
-) -> Result<(Summaries, Extracted, Option<Difference>), Decline<'static>> {
-    let Opened { file, difference } = office::open(input, configs, MEDIA_TYPE, "Word document")?;
+/// document.
+fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Extracted), Decline<'static>> {
+    let file = office::open(input, configs, MEDIA_TYPE, "Word document")?;
     let root = file.root();
     let extracted = match Document::read(&file, root, configs)? {
         Word::Modern(document) => extract(&document, &file, root, configs)?,
         Word::Old(document) => Extracted::paragraphs(document.paragraph_text()),
     };
-    Ok((Summaries::read(&file, root)?, extracted, difference))
+    Ok((Summaries::read(&file, root)?, extracted))
 }
 
 /// Writes the document as Tika's extractor does while it reads it. Where the output stops

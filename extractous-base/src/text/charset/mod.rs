@@ -106,6 +106,10 @@ pub struct Detection {
     pub decode_as: Charset,
     /// The detector whose report won.
     pub detector: Detector,
+    /// The confidence of the first result Tika's detection returns: the JunkFilter's winner
+    /// with the highest confidence any detector reported it with
+    /// (`EncodingDetectorContext.getTopConfidenceFor`), else the first report's best.
+    pub confidence: f32,
     /// How the detection went, as Tika traces it.
     pub trace: Trace,
 }
@@ -208,20 +212,31 @@ fn detect_declared(input: &[u8], content_type: Option<&str>, hint: Option<&str>)
         });
     }
     let arbitration = junk_filter::arbitrate(&reports, probe);
-    let (charset, detector) = match arbitration.winner() {
+    let (charset, detector, confidence) = match arbitration.winner() {
         Some(winner) => (
             winner,
             reports
                 .iter()
                 .find(|report| report.candidates[0].charset == winner)
                 .map_or(Detector::JunkFilter, |report| report.detector),
+            reports
+                .iter()
+                .flat_map(|report| &report.candidates)
+                .filter(|candidate| candidate.charset == winner)
+                .map(|candidate| candidate.confidence)
+                .fold(0.0, f32::max),
         ),
-        None => (reports[0].candidates[0].charset, reports[0].detector),
+        None => (
+            reports[0].candidates[0].charset,
+            reports[0].detector,
+            reports[0].candidates[0].confidence,
+        ),
     };
     Detection {
         charset,
         decode_as: mojibuster::superset(charset),
         detector,
+        confidence,
         trace: Trace {
             reports: reports
                 .iter()

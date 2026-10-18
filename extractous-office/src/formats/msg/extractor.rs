@@ -10,7 +10,7 @@ use regex::Regex;
 use super::chunks::{Chunk, Message, Submission};
 use super::named;
 use super::properties::{Value, PROPERTIES};
-use super::types::{property, Type};
+use super::types::property;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{ResourceType, Wrapping, RESOURCE_NAME};
 use crate::formats::handlers::parse_inline;
@@ -106,6 +106,8 @@ const TIMES: [(i32, &str); 15] = [
 ];
 /// `PidTagAttachFlags`, its flag of an attachment rendered in the body, and
 /// `PidTagAttachmentHidden`.
+/// The confidence `guess7BitEncoding` needs to take the charset it detects in the body.
+const MIN_GUESS_CONFIDENCE: f32 = 0.35;
 const ATTACH_FLAGS: u16 = 0x3714;
 const RENDERED_IN_BODY: i64 = 0x4;
 const ATTACHMENT_HIDDEN: u16 = 0x7FFE;
@@ -141,18 +143,15 @@ pub(super) struct Extracted {
 }
 
 /// `OutlookExtractor` of the message in `file`'s root, its strings decoded as Tika guesses, and
-/// where the native reading differs from Tika's, if it does: the first of the 7-bit strings
-/// Tika may decode otherwise and an HTML body read differently.
+/// where the native reading differs from Tika's, if it does: an HTML body read differently.
 pub(super) fn extract(
     file: &Ole2<'_>,
     mut message: Message,
     configs: &ParserConfigs,
 ) -> Result<(Extracted, Option<Difference>), Unported> {
-    let guessed = if message.has_7_bit_strings() {
-        guess_7_bit_encoding(&mut message).map_err(unported)?
-    } else {
-        None
-    };
+    if message.has_7_bit_strings() {
+        guess_7_bit_encoding(&mut message).map_err(unported)?;
+    }
     let mut scratch = TikaMetadata::new();
     write_metadata(&message, &mut scratch).map_err(unported)?;
     let (body, content_ids, read_otherwise) = body(&message)?;
@@ -163,7 +162,7 @@ pub(super) fn extract(
             body,
             attachments,
         },
-        guessed.or(read_otherwise),
+        read_otherwise,
     ))
 }
 
@@ -539,10 +538,9 @@ fn header_line(row: &str) -> Option<(&str, &str)> {
 }
 
 /// `guess7BitEncoding`: Tika decodes the 7-bit strings with the charset it detects in the body,
-/// where it is sure enough of it, else with the one the message declares. Where the strings
-/// read the same in every charset it may pick, this port reads them in any; where they do not,
-/// it reads them as the message gives them, which differs from Tika's reading.
-fn guess_7_bit_encoding(message: &mut Message) -> Read<Option<Difference>> {
+/// the declared one as a hint, where it is more than 35% sure of it, else with the one the
+/// message declares.
+fn guess_7_bit_encoding(message: &mut Message) -> Read<()> {
     let declared = declared_charset(message)?;
     let body = message
         .main
@@ -556,7 +554,6 @@ fn guess_7_bit_encoding(message: &mut Message) -> Read<Option<Difference>> {
                 .string(property::BODY)
                 .map(|text| text.raw.clone())
         });
-    let mut candidates: Vec<String> = Vec::new();
     if let Some(body) = body.filter(|body| !body.is_empty()) {
         let detection = match &declared {
             Some(declared) => {
@@ -564,34 +561,26 @@ fn guess_7_bit_encoding(message: &mut Message) -> Read<Option<Difference>> {
             }
             None => charset::detect(&body, None),
         };
-        candidates.push(detection.decode_as.name().to_owned());
-    }
-    candidates.extend(declared);
-    let candidates: Vec<String> = candidates
-        .into_iter()
-        .filter(|name| !equals_ignore_case(name, "utf-8") && Charset::for_name(name).is_some())
-        .collect();
-    let read = |message: &Message| -> Vec<String> {
-        let groups = std::iter::once(&message.main)
-            .chain(message.name_ids.iter())
-            .chain(message.recipients.iter().map(|recipient| &recipient.group));
-        groups
-            .flat_map(|group| &group.chunks)
-            .filter(|chunk| chunk.kind == Type::ASCII_STRING)
-            .filter_map(|chunk| chunk.text().map(|text| text.value.clone()))
-            .collect()
-    };
-    let default = read(message);
-    for candidate in candidates {
-        let mut decoded = message.clone();
-        decoded.set_7_bit_encoding(&candidate)?;
-        if read(&decoded) != default {
-            return Ok(Some(Difference(format!(
-                "7-bit strings that read otherwise in {candidate}, which Tika may guess"
-            ))));
+        if detection.confidence > MIN_GUESS_CONFIDENCE
+            && try_to_set_7_bit_encoding(message, detection.decode_as.name())?
+        {
+            return Ok(());
         }
     }
-    Ok(None)
+    if let Some(declared) = declared {
+        try_to_set_7_bit_encoding(message, &declared)?;
+    }
+    Ok(())
+}
+
+/// `tryToSet7BitEncoding`: the 7-bit strings decoded with `charset`, unless it is UTF-8 or no
+/// charset Java supports; whether they were.
+fn try_to_set_7_bit_encoding(message: &mut Message, charset: &str) -> Read<bool> {
+    if equals_ignore_case(charset, "utf-8") || Charset::for_name(charset).is_none() {
+        return Ok(false);
+    }
+    message.set_7_bit_encoding(charset)?;
+    Ok(true)
 }
 
 /// `declaredCharset`: the charset of the message's code page or internet code page, else of

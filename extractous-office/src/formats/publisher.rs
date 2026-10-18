@@ -11,10 +11,10 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::{i32_at, safely_clone, thrown, u16_at, u8_at, Read, Thrown};
-use crate::formats::{unless_different, Decline, Difference, Parser, Prepared, Unported};
+use crate::formats::{Decline, Parser, Prepared, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2};
 
 const MEDIA_TYPE: &str = "application/x-mspublisher";
@@ -54,36 +54,28 @@ impl Parser for PublisherParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let (summaries, text, difference) = read(input, configs)?;
-        unless_different(
-            Box::new(move |xhtml| {
-                summaries.write(xhtml.metadata_mut());
-                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-                if !text.is_empty() {
-                    xhtml.start_element("p")?;
-                    xhtml.characters_utf16(&text)?;
-                    xhtml.end_element("p")?;
-                }
-                Ok(())
-            }),
-            difference,
-        )
+        let (summaries, text) = read(input, configs)?;
+        Ok(Box::new(move |xhtml| {
+            summaries.write(xhtml.metadata_mut());
+            xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+            if !text.is_empty() {
+                xhtml.start_element("p")?;
+                xhtml.characters_utf16(&text)?;
+                xhtml.end_element("p")?;
+            }
+            Ok(())
+        }))
     }
 }
 
-/// The summary information and the text `PublisherTextExtractor` gives of the document, and
-/// where POI reads it differently from a stream, if it does.
-fn read(
-    input: &[u8],
-    configs: &ParserConfigs,
-) -> Result<(Summaries, Vec<u16>, Option<Difference>), Unported> {
-    let Opened { file, difference } =
-        office::open(input, configs, MEDIA_TYPE, "Publisher document")?;
+/// The summary information and the text `PublisherTextExtractor` gives of the document.
+fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<u16>), Unported> {
+    let file = office::open(input, configs, MEDIA_TYPE, "Publisher document")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
     let text = text(&file, root)
         .map_err(|Thrown(reason)| Unported(format!("POI throws reading the document: {reason}")))?;
-    Ok((summaries, text, difference))
+    Ok((summaries, text))
 }
 
 /// `new HPBFDocument(root)` and `PublisherTextExtractor.getText`: the text of the Quill

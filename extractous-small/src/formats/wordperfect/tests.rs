@@ -203,8 +203,7 @@ fn extracts_tikas_test_wordperfect_and_quattro_pro_as_tikas_path_does() {
     assert_same_as_tika(&paths, QuattroProParser.tika_name());
 
     let (read, deferred) = documents(&OldQuattroProParser, &[&corpus]);
-    assert_eq!(deferred.len(), 1, "{deferred:?}");
-    assert!(deferred[0].ends_with("testQUATTRO.wb3"), "{deferred:?}");
+    assert!(deferred.is_empty(), "{deferred:?}");
     assert_eq!(read.len(), TIKAS_QUATTRO_CELLS.len(), "{read:?}");
     for path in &read {
         let name = path.file_name().unwrap().to_str().unwrap();

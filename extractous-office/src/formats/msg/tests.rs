@@ -10,7 +10,7 @@ const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
 /// The messages this port leaves to Tika, by file name, with a part of the reason.
 #[cfg(feature = "tika")]
-const DEFERRED: [(&str, &str); 1] = [("testMSG_chinese.msg", "partial block")];
+const DEFERRED: [(&str, &str); 0] = [];
 
 #[cfg(feature = "tika")]
 fn file_name(path: &Path) -> String {
@@ -171,7 +171,7 @@ fn spools_a_stored_message_as_a_message_of_its_own() {
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_messages() {
     let ported = ported(&corpus(&[&parity::conformance_corpus()]));
-    assert_eq!(ported.len(), 11);
+    assert_eq!(ported.len(), 12);
     let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
     let departures = [RECIPIENT_NAMES, crate::formats::html::DEPARTURES].concat();
     parity::assert_same_as_tika_departing(&documents, TIKA_PARSER, &departures);
@@ -190,22 +190,4 @@ fn names_recipients_by_their_display_names() {
     let get = |name: &str| metadata.get(name).cloned().unwrap_or_default();
     assert_eq!(get("message:to-name"), ["tika-dev@lucene.apache.org"]);
     assert_eq!(get("message:to-display-name"), [""]);
-}
-
-/// A message whose compound document POI reads short from a stream, and whose 7-bit strings
-/// Tika may decode otherwise, is read natively, whole and in the charset the message gives, as
-/// a build without Tika takes it (#144).
-#[test]
-#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
-fn reads_natively_a_message_poi_reads_short_from_a_stream() {
-    let path = corpus(&[&parity::conformance_corpus()])
-        .into_iter()
-        .find(|path| path.ends_with("testMSG_chinese.msg"))
-        .expect("Tika's test message");
-    let (crate::formats::Difference(reason), text) = parity::differing_reading(&MsgParser, &path);
-    assert!(reason.contains("partial block"), "{reason}");
-    assert!(
-        text.contains("Alfresco MSG format testing ( MSG 格式測試 ) 中文測試"),
-        "{text}"
-    );
 }
