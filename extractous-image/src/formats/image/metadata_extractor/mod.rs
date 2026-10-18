@@ -17,6 +17,7 @@ mod names;
 pub(crate) mod photoshop;
 pub(crate) mod reader;
 pub(crate) mod webp;
+mod xmp;
 
 use crate::java::decimal::Rounding;
 use crate::java::decimal_format::DecimalFormat;
@@ -336,6 +337,7 @@ pub(crate) enum Kind {
     AppleMakernote,
     AppleRunTime,
     Heif,
+    Xmp,
     Error,
 }
 
@@ -365,6 +367,7 @@ impl Kind {
             Kind::AppleMakernote => "Apple Makernote",
             Kind::AppleRunTime => "Apple Run Time",
             Kind::Heif => "HEIF",
+            Kind::Xmp => "XMP",
             Kind::Error => "Error",
         }
     }
@@ -403,6 +406,7 @@ impl Kind {
             Kind::AppleMakernote => names::APPLE_MAKERNOTE,
             Kind::AppleRunTime => names::APPLE_RUN_TIME,
             Kind::Heif => names::HEIF,
+            Kind::Xmp => names::XMP,
             Kind::Error => &[],
         }
     }

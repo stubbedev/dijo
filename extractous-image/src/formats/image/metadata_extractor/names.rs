@@ -852,6 +852,7 @@ pub(super) const APPLE_RUN_TIME: &[(i32, &str)] = &[
     (0x0003, "Scale"),
     (0x0004, "Value"),
 ];
+pub(super) const XMP: &[(i32, &str)] = &[(super::xmp::TAG_XMP_VALUE_COUNT, "XMP Value Count")];
 pub(super) const HEIF: &[(i32, &str)] = &[
     (0x0001, "Major Brand"),
     (0x0002, "Minor Version"),

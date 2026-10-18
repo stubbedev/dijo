@@ -118,6 +118,19 @@ xmp-date-reference:
     fixtures=extractous-base/tests/fixtures/xmp
     java -cp "$jars/pdf/*" "$fixtures/NamedZoneDates.java" "$fixtures/named-zone-dates.tsv.gz"
 
+# Regenerate what metadata-extractor's XmpReader, with XMPCore, counts in the handwritten XMP packets and those of
+# the corpora, which the Rust port of the XMP a TIFF tag holds is tested against.
+[unix]
+xmp-count-reference:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jars=target/reference-jars
+    ci/fetch-reference-jars.sh "$jars"
+    eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
+    fixtures=extractous-image/tests/fixtures/xmp
+    java -cp "$jars/image/*" "$fixtures/XmpValueCounts.java" "$fixtures/xmp-value-counts.tsv.gz" \
+        "$fixtures/cases.xmp" test_files/documents quality/corpus "$CONFORMANCE_CORPUS"
+
 # Regenerate what Apache Tika's TextAndCSVParser makes of the plain text, CSV and TSV inputs of the corpora,
 # which the Rust port of its decisions is tested against.
 [unix]
