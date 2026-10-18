@@ -83,7 +83,7 @@ impl Input<'_> {
 /// them: the pages of a file mapped too large to read whole stay the process' memory once read,
 /// until they are released; bytes held in memory have nothing to release.
 #[derive(Debug, Clone, Copy)]
-pub struct Pages<'a>(Option<&'a Mmap>);
+pub struct Pages<'a>(#[cfg_attr(not(unix), expect(dead_code))] Option<&'a Mmap>);
 
 impl Pages<'_> {
     /// The pages of bytes held in memory.
