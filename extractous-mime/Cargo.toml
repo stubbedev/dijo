@@ -9,7 +9,6 @@ repository = "https://github.com/stubbedev/extractous"
 authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
 
 [features]
-default = ["tika"]
 # The tests compare the detection with Tika's.
 tika = ["extractous-base/tika", "extractous-tika/tika"]
 # What the tests of the crates built on this one share with its own.

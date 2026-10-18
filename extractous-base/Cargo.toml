@@ -9,7 +9,6 @@ repository = "https://github.com/stubbedev/extractous"
 authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
 
 [features]
-default = ["tika"]
 # Tika's path, which the native parsers hand the documents embedded in theirs that no native parser
 # reads.
 tika = ["dep:jni"]
