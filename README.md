@@ -1,19 +1,19 @@
 # Extractous
 
-Extract text and metadata from documents on the command line, without a JVM.
+Extract text and metadata from documents on the command line, without Java.
 
-This is a fork of [yobix-ai/extractous](https://github.com/yobix-ai/extractous). Every format is parsed by
-[Apache Tika](https://tika.apache.org/), compiled ahead of time with [GraalVM](https://www.graalvm.org/) native-image
-into a shared library that the `extractous` binary calls through JNI. No Java runtime is installed or started; Tika
-runs as native code inside the process.
+This is a fork of [yobix-ai/extractous](https://github.com/yobix-ai/extractous), which ran
+[Apache Tika](https://tika.apache.org/) compiled to native code with GraalVM. Documents are now read by native Rust
+parsers, ports of Tika's that aim at its output. Neither building nor running extractous needs Java, GraalVM or JNI.
+Tika remains only as the reference the parity tests and conformance compare the native parsers with (see
+[Development](#development)).
 
 ## Install
 
 Each [release](https://github.com/stubbedev/extractous/releases) has archives for Linux (x86_64, aarch64, and static
-builds for both, `x86_64-linux-static` and `aarch64-linux-static`, and the static builds without Tika,
-`x86_64-linux-static-native` and `aarch64-linux-static-native`), macOS (aarch64) and Windows (x86_64) with the binary, its licence and the third-party notices, plus `SHA256SUMS`, CycloneDX
-SBOMs of the Rust crates and Java libraries, and build provenance you can check with
-`gh attestation verify <archive> --repo stubbedev/extractous`.
+builds for both, `x86_64-linux-static` and `aarch64-linux-static`), macOS (aarch64) and Windows (x86_64) with the
+binary, its licence and the third-party notices, plus `SHA256SUMS`, a CycloneDX SBOM of the Rust crates, and build
+provenance you can check with `gh attestation verify <archive> --repo stubbedev/extractous`.
 
 To build from source instead:
 
@@ -21,48 +21,20 @@ To build from source instead:
 cargo install --locked --git https://github.com/stubbedev/extractous extractous
 ```
 
-Building compiles Tika, so the build machine needs the GraalVM release pinned in `ci/graalvm.env`, pointed to by
-`GRAALVM_HOME`; `ci/install-graalvm.sh <platform> <dir>` downloads it, checks its SHA-256 and prints its home. Older
-GraalVM releases do not emit the AWT libraries on macOS. The first build takes a few minutes; later
-builds reuse the compiled library until the Tika sources or the GraalVM release change.
+A document no native parser reads yet fails with an `unsupported` error naming why (no native parser for its type, or
+what of it the native parser does not read yet); an embedded document of that kind is reported unread in its
+container, which is extracted.
 
-Tika is the `tika` feature, on by default. Built without it (`cargo install --locked --no-default-features
---git https://github.com/stubbedev/extractous extractous`), extractous needs no GraalVM, JNI or Java at all: the
-native parsers read everything they read in the default build, and a document that would reach Tika's path fails
-with an `unsupported` error naming why (no native parser for its type, or what of it the native parser does not read
-yet); an embedded document of that kind is reported unread in its container, which is extracted. Unpacking embedded
-documents whole (`extract_embedded_*`) is Tika's alone. `just static-native` builds the statically linked musl
-executable without Tika, with tesseract and libheif linked in, into `target/static/extractous`: the flake's `static`
-output, built with Crane, whose `container` output is the image around it and `static-dependencies` the third-party
-crates alone, which a binary cache serves to CI and fresh machines. The tests that compare
-with Tika's path, or that exercise it, are compiled only with the feature; `cargo nextest run --no-default-features`
-runs the rest.
-
-The compiled library and the JDK libraries GraalVM emits beside it (`libawt.so`, `libfontmanager.so`, ...) are
-embedded in the binary, compressed (about 36 MB). On first use they are unpacked into
-`$XDG_CACHE_HOME/extractous/<fingerprint>/` (`~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
-Windows) and loaded from there, so the binary runs wherever it is copied.
-
-These binaries link the system's C library (glibc 2.35 or later for the Linux release binaries), so a container needs
-a base image with it, such as `debian:bookworm-slim`. Nothing else needs installing.
+The release binaries other than the static ones link the system's C library (glibc 2.35 or later for the Linux
+release binaries), so a container needs a base image with it, such as `debian:bookworm-slim`. Nothing else needs
+installing.
 
 The `x86_64-linux-static` and `aarch64-linux-static` release binaries need nothing at all, not even a C library: they
-run in a `FROM scratch` container. GraalVM builds static images only as executables, so this build turns the program around: the Rust code is
-compiled for musl as a static library and linked into Tika's native image, whose `main` hands over to it, and the
-JDK's AWT libraries, FreeType, SQLite's JDBC driver and tesseract are linked in instead of unpacked, and libheif (with
-its HEVC and AV1 decoders) instead of run as `heif-dec`. Nothing is unpacked but the OCR
-language data. Its output is the same as the other Linux build's. Tika runs equally fast; on many
-small files, where the Rust side dominates, it is about 5% slower (it allocates with mimalloc rather than glibc's
-allocator); OCR is 30 to 40% faster, since each model is loaded once per process instead of once per image (more for
-documents with many small images), script detection skips a page segmentation it would discard, tesseract allocates
-with mimalloc too, and the x86_64 build copies memory with its own SSE2 `memcpy` (`memcpy.c`) rather than musl's,
-which starts a `rep movsq` for every copy and took a tenth of tesseract's time, and a reading runs tesseract's
-recognizer on up to four threads, the processors shared among the readings running at once (one thread each once
-every processor has a reading), at the cost of keeping the loaded models in memory: about 280 MB for `script/Latin` per
-extraction running at once. GraalVM ships the JDK's static libraries for aarch64 only built against glibc; the
-aarch64 build links those against musl, with the few glibc-only functions they call (the `*64` large-file names,
-`__xstat64` and the like) forwarded to musl's (`glibc_compat.c`). `just static` builds it on Linux into
-`target/static-image/extractous`, with nix providing the musl toolchain.
+run in a `FROM scratch` container. They are the program built for musl, with tesseract, Leptonica and libheif (with
+its HEVC and AV1 decoders) linked in and the OCR language data embedded. `just static-native` builds one on Linux into
+`target/static/extractous`: the flake's `static` output, built with Crane, whose `container` output is the image
+around it and `static-dependencies` the third-party crates alone, which a binary cache serves to CI and fresh
+machines.
 
 OCR runs tesseract in the process: linked into the static build, and loaded by every other release binary from a
 library it carries, built from tesseract's pinned source with vcpkg's libraries at a pinned commit and linked
@@ -127,8 +99,8 @@ extractous detect mystery.bin                 # application/pdf
 | `--cache-dir <DIR>`, `--cache-max-size <BYTES>` | Reuse the output of complete extractions while the input, the options and the extractous build are unchanged; evict least recently used entries beyond the size (also for `serve`) |
 | `--cache-partial` | Also cache partial results (never those cut short by a timeout) |
 | `--cache-trust-mtime` | Skip rehashing inputs whose path, size and modification time match the last run |
-| `--max-heap-bytes <BYTES>` | Cap the memory of an extraction: Tika's Java heap, and what a native parser allocates; an extraction that needs more fails with `limit-exceeded` and the next one runs normally. GraalVM raises a heap cap below its least heap, a few tens of MiB |
-| `--spool-dir <DIR>` | Where temporary files go: spooled input and output, embedded documents, Tika's PDF scratch files |
+| `--max-heap-bytes <BYTES>` | Cap the memory an extraction may allocate; an extraction that needs more fails with `limit-exceeded` and the next one runs normally |
+| `--spool-dir <DIR>` | Where temporary files go: spooled input and output, embedded documents, decoded images |
 | `--strict` | Fail an input when any part of it could not be extracted, not only when nothing could |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
@@ -138,7 +110,7 @@ extractous detect mystery.bin                 # application/pdf
 | `--ocr-lang <LANGS>` | Tesseract languages, such as `deu` or `eng+ara`; detected per image from its script by default |
 
 Every option has an environment variable equivalent (`EXTRACTOUS_FORMAT`, `EXTRACTOUS_JOBS`, ...); `extractous --help`
-lists them. Errors go to standard error with the input path and the full Java cause chain, and one failed input does
+lists them. Errors go to standard error with the input path and the full cause chain, and one failed input does
 not stop the others. Damage inside an input (an unreadable attachment, a broken page) does not discard the rest of it:
 everything that extracted is written and the failures are reported. The exit status is 0 when text was extracted from
 every input, 1 when nothing could be extracted from at least one (with `--strict`, when any part of one failed) and 2
@@ -163,14 +135,14 @@ back at most a few characters, or a word after a hyphen that ends a line. XHTML 
 
 With `--cache-dir`, a run over files that have not changed only hashes them and copies their stored output. An entry is
 keyed by the BLAKE3 hash of the input's content and its name, the options that shape the output, the extractous
-executable itself (so a new build, Tika version or embedded library invalidates everything) and the tesseract version.
+executable itself (so a new build or embedded library invalidates everything) and the tesseract version.
 Only complete extractions are stored, each written to a temporary file and renamed into place, so concurrent runs and
 crashes never leave a broken entry; once the cache grows past `--cache-max-size`, the least recently used entries are
 evicted. With `--embedded separate`, every embedded document without embedded documents of its own is an entry of its
 own, keyed by its own content and file name and replayed with the provenance of wherever it turns up, so the same
 attachment in many emails is extracted once; the emails and archives around it are read again, which is cheap. The
 cache is not available with passwords, so decrypted text never lands on disk. `extractous serve` takes the same
-options: a repeated upload is answered from the cache without starting Tika, requests with passwords bypass it, and
+options: a repeated upload is answered from the cache without extracting it again, requests with passwords bypass it, and
 `/metrics` counts hits and misses.
 
 ## Server
@@ -194,7 +166,7 @@ share one isolate, and more of them slow each other down). Uploads are spooled t
 it is extracted.
 When every worker and queue slot (`--queue`) is busy, requests get 503 with `Retry-After`. A document that cannot be
 extracted at all gets a JSON error document with 415 (unsupported), 422 (corrupt or encrypted) or 500; partial results
-come back as 200 with their status in the JSON. `--max-heap-bytes` caps the Java heap all workers share and each native extraction's memory (an extraction beyond it gets 413), `--max-input-bytes` caps uploads (413) and `--timeout` bounds a whole
+come back as 200 with their status in the JSON. `--max-heap-bytes` caps each extraction's memory (an extraction beyond it gets 413), `--max-input-bytes` caps uploads (413) and `--timeout` bounds a whole
 request (408 while uploading, 504 before extraction starts, a cut connection after). `--max-output-chars` cuts a
 document's text short (json, pages and elements report it as partial with a `limit-exceeded` error; XHTML stays
 well-formed), and `--max-depth`, `--max-embedded` and `--max-expanded-bytes` bound `embedded=separate` as on the
@@ -205,7 +177,7 @@ command line. SIGTERM stops accepting and waits
 or runs away with memory takes down one request and not the server. The server restarts the worker for the next
 request. A crashed worker fails its request with 500. A worker still running five seconds past `--timeout` is killed
 (504). On Linux, `--worker-max-rss-bytes` kills a worker whose resident memory grows past the limit (413). Each
-worker process holds its own Java heap and isolate, so `--workers` defaults to one per core here, and memory use
+worker process holds its own memory, so `--workers` defaults to one per core here, and memory use
 grows with it. With 4 workers on a mixed office and PDF
 corpus, process isolation took 565 MiB at peak against 163 MiB for threads. It served 243 requests/s against 202 at
 4 concurrent requests, and 37 against 52 one at a time.
@@ -217,7 +189,7 @@ Documents and requests are untrusted input. What the server defends against, and
 - **XML attacks.** No parser resolves external entities or loads external DTDs (XXE), and entity expansion is
   capped, so a billion-laughs document fails as `limit-exceeded`. Tests cover XML, SVG and DOCX.
 - **Resource exhaustion.** `--max-input-bytes` caps uploads, `--timeout` caps a request's time, `--max-heap-bytes`
-  caps the Java heap and each native extraction's memory, `--worker-max-rss-bytes` caps a worker process's memory,
+  caps each extraction's memory, `--worker-max-rss-bytes` caps a worker process's memory,
   and `--max-output-chars` caps a document's text. Embedded documents have depth, count and expanded-size limits
   with `embedded=separate`; inline, Tika's zip-bomb guard applies.
 - **Slow and idle clients.** `--client-timeout` closes a connection whose headers arrive too slowly, and answers an
@@ -243,8 +215,7 @@ What it leaves to the deployment:
 - **Abuse limits.** There are no per-client rate limits, and no cap on idle connections beyond `--client-timeout`.
 - **In-process parsing.** With the default `--isolation thread`, a crash in native code inside a parser ends the
   whole server.
-- **Error detail.** Error responses carry the cause chain of the failure, Java exception messages included, but no
-  stack traces.
+- **Error detail.** Error responses carry the cause chain of the failure, but no stack traces.
 
 ### Container
 
@@ -257,7 +228,7 @@ docker run --rm -p 9998:9998 ghcr.io/stubbedev/extractous:latest
 docker run --rm -v "$PWD:/data:ro" ghcr.io/stubbedev/extractous:latest /data/report.pdf
 ```
 
-`just static` and then `just container` build the same image locally as `extractous:local`. `--ocr-lang` can name
+`just static-native` and then `just container` build the same image locally as `extractous:local`. `--ocr-lang` can name
 only the bundled models.
 
 ## JSON output
@@ -410,15 +381,26 @@ Every development dependency (Rust toolchain, cargo-nextest, GraalVM CE, tessera
 the OCR bundle carries, and just) comes from [devenv](https://devenv.sh). Enter it with `devenv shell`, or run
 `direnv allow` once to load it on entry.
 
+Apache Tika is the `tika` cargo feature, off by default and never released: Tika compiled ahead of time with GraalVM
+native-image into a shared library that extractous calls through JNI, for what no native parser reads. It is the
+reference `just parity` compares the native parsers with, and the build `just conformance` scores, both passing
+`--features tika`. Building it needs the GraalVM release pinned in `ci/graalvm.env` (devenv provides it), pointed to
+by `GRAALVM_HOME`; the first build takes a few minutes, and later builds reuse the compiled library until the Tika
+sources or the GraalVM release change. The tests that compare with Tika's path, or that exercise it, and unpacking
+embedded documents whole (`extract_embedded_*`) are compiled only with the feature.
+
 All commands are recipes in the `justfile`; run `just` to list them.
 
 | Recipe | What it does |
 | --- | --- |
 | `just check` | Every gate in order: format check, lint, tests |
-| `just build` | Build the workspace, compiling Tika on first run |
-| `just ocr-bundle [dir]` | Assemble the tesseract library a build loads, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` (built with vcpkg, which on NixOS needs a container such as `ubuntu:22.04`) |
-| `just static` | Build the statically linked Linux executable with tesseract and libheif linked in, into `target/static-image/extractous` (uses nix) |
-| `just static-native` | Build the statically linked Linux executable without Tika, into `target/static/extractous` (uses nix, no GraalVM) |
+| `just build` | Build the workspace, without Tika |
+| `just ocr-bundle [dir]` | Assemble the tesseract library a build loads, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` (built with vcpkg, which on NixOS needs a container such as `ubuntu:22.04`, and a JDK's JNI headers in `JAVA_HOME`) |
+| `just static-native` | Build the statically linked Linux executable as released, with tesseract and libheif linked in, into `target/static/extractous` (uses nix) |
+| `just static-tika` | Build the statically linked Linux executable linked into Tika's native image, which is never released, into `target/static-image/extractous` (uses nix and GraalVM) |
+| `just container` | Build the container image around `target/static/extractous` and load it into Docker as `extractous:local` |
+| `just parity [filter]` | Compare the native parsers with Tika's path on Tika's own test documents, built with `--features tika` |
+| `just conformance` | Compare extraction of Tika's own test documents with Tika on the JVM and write conformance/MATRIX.md |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |
 | `just language-groups` | Retrain the models that tell closely related languages apart, from pinned Wikipedia shards (about 7 GB) |
@@ -426,18 +408,18 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just quality` | Score extraction against the quality corpus and write quality/SCOREBOARD.md |
 | `just quality-bless` | Accept the current quality scores as the new baseline |
 | `just quality-corpus` | Regenerate the quality corpus from its ground truth (uses LibreOffice via nix) |
-| `just lint` | Clippy over every target, warnings fail |
+| `just lint` | Clippy over every target, without and with `--features tika`, warnings fail |
 | `just fmt` | Format every Rust source |
 | `just bench` | Run the criterion benchmarks |
 | `just gradle-verification` | Record the SHA-256 of every Gradle dependency after changing build.gradle |
 | `just tika-agent [paths]` | Parse every file under the paths (default `test_files`) on the JVM under GraalVM's tracing agent and merge what it records into each OS's native-image metadata |
-| `just licenses` | Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and Java libraries |
-| `just sbom` | Write CycloneDX SBOMs of the Rust crates and Java libraries to target/sbom |
-| `just deps` | cargo-deny's advisory, licence and ban checks, the Java licence allow-list, and a check that THIRD-PARTY-LICENSES.md is current |
+| `just licenses` | Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and models |
+| `just sbom` | Write the CycloneDX SBOM of the Rust crates to target/sbom |
+| `just deps` | cargo-deny's advisory, licence and ban checks, and a check that THIRD-PARTY-LICENSES.md is current |
 
 ## License
 
 Apache License 2.0, see [LICENSE](LICENSE). Originally developed by [Yobix AI](https://yobix.ai).
 
-The binary contains third-party Rust crates and Java libraries; their licences and notices are in
+The binary contains third-party Rust crates, C libraries and models; their licences and notices are in
 [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) and printed by `extractous --licenses`.
