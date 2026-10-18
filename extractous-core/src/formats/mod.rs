@@ -6,6 +6,8 @@
 pub(crate) mod audit;
 mod composite;
 #[cfg(any(test, feature = "parity"))]
+pub mod large;
+#[cfg(any(test, feature = "parity"))]
 pub mod parity;
 #[cfg(all(test, feature = "tika"))]
 mod url_tests;

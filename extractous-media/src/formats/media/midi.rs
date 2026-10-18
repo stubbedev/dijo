@@ -498,11 +498,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::media::large::{bodies_past_limit, LargeFile};
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
+    use extractous_core::large::{bodies_past_limit, LargeFile};
 
     fn midi(timing: [u8; 2], tracks: &[&[u8]]) -> Vec<u8> {
         let mut file = b"MThd\x00\x00\x00\x06\x00\x01".to_vec();
