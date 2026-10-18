@@ -14,6 +14,8 @@ use crate::Error;
 
 /// `POIFSContainerDetector.MS_GRAPH_CHART`.
 const MS_GRAPH_CHART: &str = "application/vnd.ms-graph";
+/// What POI's container detection names a compound document of no kind it knows.
+const UNKNOWN_KIND: &str = "application/x-tika-msoffice";
 
 /// The types `POIFSDocumentType` knows among those this parser reads, which `OfficeParser`
 /// sets as the content type.
@@ -89,14 +91,20 @@ impl Parser for CompoundDocumentParser {
     }
 }
 
-/// Whether POI's container detection names the compound document `input` an MS Graph chart by
-/// its `CompObj` stream. Tika hands such a chart stored in another document on as an open
-/// storage, which its detection names a workbook by its entry names alone, and `OfficeParser`,
-/// detecting it again from the storage itself, reads only its summary information, as this
-/// parser does.
-pub(crate) fn is_ms_graph_chart(input: &[u8]) -> bool {
+/// Whether POI's container detection names the compound document `input` a kind `OfficeParser`
+/// reads only the summary information of, as this parser does: an MS Graph chart by its
+/// `CompObj` stream, another kind `POIFSDocumentType` knows of no content, or no known kind.
+/// Tika's path hands such a document to `OfficeParser` as a workbook where the type it is
+/// given says so: a chart stored in another document, as an open storage its detection names a
+/// workbook by its entry names alone, or an `Excel.Chart.8` object of a presentation, typed so
+/// by its program id; `OfficeParser` detects it again from the document itself.
+pub(crate) fn reads_only_the_summary(input: &[u8]) -> bool {
     Ole2::open(input).is_ok_and(|file| {
-        ole_directory_type(&file, file.root()) == MediaType::named(MS_GRAPH_CHART)
+        let detected = ole_directory_type(&file, file.root());
+        detected == MediaType::named(UNKNOWN_KIND)
+            || DOCUMENT_TYPES
+                .iter()
+                .any(|&known| detected == MediaType::named(known))
     })
 }
 
