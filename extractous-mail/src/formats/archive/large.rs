@@ -3,7 +3,8 @@
 
 use std::io::{self, Read, Write};
 
-use extractous_core::large::{LargeFile, BUDGET};
+use extractous_core::large::LargeFile;
+pub(crate) use extractous_core::large::SPOOLING_BUDGET;
 
 use crate::compress::MAX_DECODED;
 use crate::input::MAX_READ_WHOLE;
@@ -13,10 +14,6 @@ pub(crate) const END: &str = "the end of the archive";
 
 /// The size of the large entry: well past what a stream may decode into memory.
 pub(crate) const LARGE: u64 = MAX_DECODED as u64 + (64 << 20);
-
-/// The budget of an extraction that decodes a stream of unknown length, which holds as much of
-/// what it decodes in memory as a file read whole before it spools the rest to a file.
-pub(crate) const SPOOLING_BUDGET: u64 = MAX_READ_WHOLE + BUDGET;
 
 /// A large entry's data: binary, so that no parser writes it out, and compressing well, lines
 /// of 64 bytes that each hold their number among bytes that repeat.

@@ -808,27 +808,110 @@ impl Standard {
 
     /// `StandardDecryptor.verifyPassword`: the AES key, where the password opens it.
     fn verify(&self, password: &str) -> Result<Option<AesKey>, Unopened> {
-        let hashed = hash_password(
-            password,
-            Hash::Sha1,
-            &self.verifier.salt,
-            STANDARD_SPIN_COUNT,
-        );
-        let final_hash = generate_key(&hashed, Hash::Sha1, &0u32.to_le_bytes(), Hash::Sha1.size());
-        let fill_and_xor = |fill: u8| {
-            let mut buffer = [fill; 64];
-            for (byte, hashed) in buffer.iter_mut().zip(&final_hash) {
-                *byte ^= hashed;
-            }
-            Hash::Sha1.digest(&[&buffer])
-        };
-        let mut derived = fill_and_xor(0x36);
-        derived.extend(fill_and_xor(0x5C));
-        let key = AesKey::new(&block_of(&derived, self.key_bits as usize / 8))?;
+        let key = standard_key(password, &self.verifier.salt, self.key_bits)?;
         let verifier = key.decrypt_ecb_whole(&self.verifier.verifier)?;
         let verifier_hash = key.decrypt_ecb_whole(&self.verifier.verifier_hash)?;
         let opened = Hash::Sha1.digest(&[&verifier]) == verifier_hash[..Hash::Sha1.size()];
         Ok(opened.then_some(key))
+    }
+}
+
+/// `StandardDecryptor.generateSecretKey`: the AES key of `key_bits` bits of `password` with
+/// `salt`.
+fn standard_key(password: &str, salt: &[u8], key_bits: i32) -> Result<AesKey, Unopened> {
+    let hashed = hash_password(password, Hash::Sha1, salt, STANDARD_SPIN_COUNT);
+    let final_hash = generate_key(&hashed, Hash::Sha1, &0u32.to_le_bytes(), Hash::Sha1.size());
+    let fill_and_xor = |fill: u8| {
+        let mut buffer = [fill; 64];
+        for (byte, hashed) in buffer.iter_mut().zip(&final_hash) {
+            *byte ^= hashed;
+        }
+        Hash::Sha1.digest(&[&buffer])
+    };
+    let mut derived = fill_and_xor(0x36);
+    derived.extend(fill_and_xor(0x5C));
+    AesKey::new(&block_of(&derived, key_bits as usize / 8))
+}
+
+/// Standard encryption of an OOXML package as Office writes it, for the tests of what reads it.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use super::*;
+
+    /// The `EncryptionInfo` and `EncryptedPackage` streams of `package` encrypted with
+    /// `password`: version 3.2, AES-128, the key derived with SHA-1.
+    pub fn encrypted_package(password: &str, package: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        const AES_128: i32 = 0x660E;
+        const SHA_1: i32 = 0x8004;
+        const AES_PROVIDER: i32 = 0x18;
+        const FLAGS: i32 = 0x24;
+        let salt = [9u8; 16];
+        let key = standard_key(password, &salt, 128).expect("a 128-bit key");
+        let verifier = [4u8; 16];
+        let mut verifier_hash = Hash::Sha1.digest(&[&verifier]);
+        verifier_hash.resize(32, 0);
+        let mut info = vec![3, 0, 2, 0];
+        for field in [
+            FLAGS,
+            32,
+            FLAGS,
+            0,
+            AES_128,
+            SHA_1,
+            128,
+            AES_PROVIDER,
+            0,
+            0,
+            16,
+        ] {
+            info.extend(field.to_le_bytes());
+        }
+        info.extend(salt);
+        info.extend(key.encrypt_ecb(&verifier));
+        info.extend(20i32.to_le_bytes());
+        info.extend(key.encrypt_ecb(&verifier_hash));
+        let mut padded = package.to_vec();
+        padded.resize(package.len().next_multiple_of(16), 0);
+        let mut stream = (package.len() as u64).to_le_bytes().to_vec();
+        stream.extend(key.encrypt_ecb(&padded));
+        (info, stream)
+    }
+
+    impl AesKey {
+        /// AES/ECB/NoPadding encryption of `data`'s whole blocks.
+        fn encrypt_ecb(&self, data: &[u8]) -> Vec<u8> {
+            use aes::cipher::BlockCipherEncrypt;
+            let mut out = data.to_vec();
+            for chunk in out.as_chunks_mut::<16>().0 {
+                let block: &mut aes::Block = chunk.into();
+                match self {
+                    AesKey::Aes128(cipher) => cipher.encrypt_block(block),
+                    AesKey::Aes192(cipher) => cipher.encrypt_block(block),
+                    AesKey::Aes256(cipher) => cipher.encrypt_block(block),
+                }
+            }
+            out
+        }
+    }
+
+    #[test]
+    fn decrypts_what_standard_encryption_encrypts_a_chunk_at_a_time() {
+        let package: Vec<u8> = (0..10_000u32).map(|at| at as u8).collect();
+        let (info, stream) = encrypted_package("pw", &package);
+        let encryption = PackageEncryption::read(&info).unwrap();
+        assert!(encryption.verify("other").unwrap().is_none());
+        let key = encryption.verify("pw").unwrap().unwrap();
+        let mut decrypted = Vec::new();
+        let mut chunks = 0;
+        key.decrypt::<Unopened>(&Content::from(stream.as_slice()), |chunk| {
+            assert!(chunk.len() <= SEGMENT);
+            decrypted.extend_from_slice(chunk);
+            chunks += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(decrypted, package);
+        assert_eq!(chunks, 3);
     }
 }
 

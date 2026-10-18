@@ -19,6 +19,10 @@ use crate::{memory, Extractor, Metadata};
 
 /// The memory an extraction of a large file may take by default: a fraction of the file.
 pub const BUDGET: u64 = 16 << 20;
+/// The budget of an extraction that decodes a stream of unknown length, which holds as much of
+/// what it decodes in memory as a file read whole before it spools the rest to a file, or that
+/// reads whole a file that decodes into more than that.
+pub const SPOOLING_BUDGET: u64 = MAX_READ_WHOLE + BUDGET;
 /// What [`LargeFile::padded`] pads a header with, a body at a time.
 const PADDING: &[u8] = &[0; 1 << 20];
 
