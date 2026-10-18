@@ -5,7 +5,7 @@
 //! type, but for GNU TAR (#101).
 
 use super::nesting::Scan;
-use super::write_files;
+use super::{undecoded, write_files};
 use crate::compress::archiver::Archiver;
 use crate::compress::{ar, cpio, tar, ArchiveFile};
 use crate::config::ParserConfigs;
@@ -27,7 +27,7 @@ fn named(content_type: &str) -> Option<Archiver> {
 
 /// The format `content_type` names, else the one `ArchiveStreamFactory` recognizes in `input`,
 /// and the files its reader gives, or why the native readers do not read them.
-fn read(input: &[u8], content_type: Option<&str>) -> Result<Vec<ArchiveFile>, String> {
+fn read(input: &[u8], content_type: Option<&str>) -> Result<Vec<ArchiveFile>, Declined> {
     let archiver = content_type
         .and_then(named)
         .or_else(|| Archiver::detect(input))
@@ -37,12 +37,12 @@ fn read(input: &[u8], content_type: Option<&str>) -> Result<Vec<ArchiveFile>, St
         Archiver::Ar => ar::files(input),
         Archiver::Cpio => cpio::files(input),
         other => {
-            return Err(format!(
+            return Err(Declined::Deferred(format!(
                 "commons-compress reads it as {other:?}, which PackageParser's port does not"
-            ))
+            )))
         }
     };
-    files.map_err(|undecoded| format!("the {archiver:?} archive: {undecoded}"))
+    files.map_err(|reason| undecoded(&format!("the {archiver:?} archive"), reason))
 }
 
 /// Tika's `PackageParser`.

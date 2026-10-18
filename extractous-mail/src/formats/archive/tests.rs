@@ -26,7 +26,6 @@ use crate::compress::tar_header::tests::pax;
 use crate::compress::tar_header::tests::tar;
 #[cfg(feature = "tika")]
 use crate::compress::xz::tests::{lzma, xz};
-#[cfg(feature = "tika")]
 use crate::compress::zip::file::tests::zip;
 #[cfg(feature = "tika")]
 use crate::compress::zlib::tests::zlib;
@@ -472,4 +471,94 @@ fn extracts_tikas_test_7z_archives_as_tikas_path_does() {
         &[("test7Z_protected_passTika.7z", "Tika")],
         crate::formats::parity::WrongPassword::Defers,
     );
+}
+
+/// What extracting `archive` streams, and how the extraction ends: the error it fails with, or
+/// the failures its metadata records.
+fn extract(archive: &[u8]) -> (String, Result<Vec<String>, crate::Error>) {
+    let (mut reader, _) = crate::Extractor::new()
+        .extract_bytes(archive)
+        .expect("the extraction starts");
+    let mut text = Vec::new();
+    let read = std::io::Read::read_to_end(&mut reader, &mut text);
+    let text = String::from_utf8(text).expect("the text is UTF-8");
+    let ended = match read {
+        Ok(_) => {
+            let metadata = reader
+                .metadata()
+                .expect("the metadata of a finished extraction");
+            Ok(metadata
+                .into_iter()
+                .filter(|(key, _)| key.starts_with("tk:exception:"))
+                .flat_map(|(_, values)| values)
+                .collect())
+        }
+        Err(error) => Err(*error
+            .into_inner()
+            .expect("the stream fails with the extraction's error")
+            .downcast::<crate::Error>()
+            .expect("the stream fails with an extraction error")),
+    };
+    (text, ended)
+}
+
+/// Asserts that the extraction `ended` at the zip bomb limit of Tika's `SecureContentHandler`
+/// for `cause`. The native path fails with [`Error::LimitExceeded`]. Tika's path, which takes a
+/// zip bomb in a build that has it, fails with its exception where the limit is reached in an
+/// entry of the archive, and records it where it is reached deeper.
+fn assert_zip_bomb(ended: Result<Vec<String>, crate::Error>, cause: &str) {
+    let message = match ended {
+        Err(Error::LimitExceeded(message)) => message,
+        Err(error) if cfg!(feature = "tika") => error.to_string(),
+        Ok(recorded) if cfg!(feature = "tika") => recorded.concat(),
+        other => panic!("not stopped as a zip bomb: {other:?}"),
+    };
+    assert!(message.contains("Suspected zip bomb"), "{message}");
+    assert!(message.contains(cause), "{message}");
+}
+
+#[test]
+fn leaves_a_stream_decoding_past_the_most_the_native_path_decodes_to_a_limit() {
+    let declined = undecoded("the Gzip stream", Undecoded::TooLarge);
+    if cfg!(feature = "tika") {
+        assert!(
+            matches!(&declined, Declined::Deferred(reason) if reason.contains("Tika's path streams")),
+            "{declined:?}"
+        );
+    } else {
+        assert!(
+            matches!(&declined, Declined::Fails(Error::LimitExceeded(reason))
+                if reason.starts_with("the Gzip stream: it decodes into more than")),
+            "{declined:?}"
+        );
+    }
+}
+
+#[test]
+fn stops_archives_nested_ten_package_entries_deep_with_what_they_wrote() {
+    let mut archive = zip(&[("level1.txt", b"Text at nesting level 1.")]);
+    for level in 2..=300 {
+        let text = format!("Text at nesting level {level}.");
+        archive = zip(&[
+            (&format!("level{level}.txt"), text.as_bytes()),
+            ("inner.zip", &archive),
+        ]);
+    }
+    let (text, ended) = extract(&archive);
+    assert!(text.contains("Text at nesting level 300."), "{text}");
+    assert!(text.contains("Text at nesting level 292."), "{text}");
+    assert!(!text.contains("Text at nesting level 291."), "{text}");
+    assert_zip_bomb(ended, "10 levels of package entry nesting");
+}
+
+#[test]
+fn stops_an_entry_that_inflates_a_hundredfold_past_a_million_characters() {
+    let line = "All work and no play makes Jack a dull boy.\n";
+    let bomb = zip(&[("bomb.txt", line.repeat(700_000).as_bytes())]);
+    assert!(bomb.len() * 100 < line.len() * 700_000, "{}", bomb.len());
+    let (text, ended) = extract(&bomb);
+    assert!(text.contains(line), "{}", &text[..100.min(text.len())]);
+    assert!(text.len() > 1_000_000, "{}", text.len());
+    assert!(text.len() < line.len() * 700_000);
+    assert_zip_bomb(ended, "output characters");
 }

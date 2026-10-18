@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 
 use super::nesting::Scan;
-use super::{record_unreadable, write_entry_div};
+use super::{record_unreadable, too_large, write_entry_div};
 use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::salvage::salvage;
@@ -233,9 +233,8 @@ fn check_entries(zip: &ZipFile, length: usize, paging: &Paging) -> Result<(), De
                 )))
             }
             Some(Content::Oversized(_)) => {
-                return Err(Declined::Deferred(format!(
-                    "the entry {} inflates into more than {MAX_DECODED} bytes, which Tika's \
-                     path streams",
+                return Err(too_large(format!(
+                    "the entry {} inflates into more than {MAX_DECODED} bytes",
                     entry.name
                 )))
             }
@@ -400,9 +399,8 @@ impl Streamed {
                     }
                 }
                 Ok(Content::Oversized(_)) => {
-                    return Err(Declined::Deferred(format!(
-                        "the entry {} inflates into more than {MAX_DECODED} bytes, which Tika's \
-                         path streams",
+                    return Err(too_large(format!(
+                        "the entry {} inflates into more than {MAX_DECODED} bytes",
                         entry.name
                     )))
                 }
@@ -668,6 +666,7 @@ mod tests {
         assert!(reason.contains("method 6"), "{reason}");
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn defers_archives_nested_ten_deep() {
         let mut nested = zip(&[("level.txt", b"text")]);

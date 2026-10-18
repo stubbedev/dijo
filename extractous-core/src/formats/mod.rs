@@ -99,6 +99,7 @@ use crate::{CharSet, Metadata};
 use embedded::ParseContext;
 use handlers::Write;
 use metadata::TikaMetadata;
+use secure::Secure;
 use xhtml::{ContentHandler, Stop, Xhtml};
 
 /// The bytes a streamed extraction hands its reader at a time.
@@ -387,14 +388,18 @@ pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
     }
 }
 
+/// Writes the document of `bytes` bytes that `parser` prepared to `handler`, through the
+/// `SecureContentHandler` Tika's `AutoDetectParser` puts in front of it.
 fn run<'h>(
     parser: &dyn Parser,
     prepared: Prepared<'_>,
     metadata: TikaMetadata,
+    bytes: usize,
     context: &'h ParseContext<'h>,
     handler: &'h mut dyn ContentHandler,
 ) -> (TikaMetadata, Result<(), Failure>) {
-    let (mut metadata, record, result) = Xhtml::write(handler, metadata, context, prepared);
+    let mut secure = Secure::new(handler, bytes);
+    let (mut metadata, record, result) = Xhtml::write(&mut secure, metadata, context, prepared);
     record.finish(&mut metadata, parser.name());
     let result = result.and_then(|()| xhtml::within_budget().map_err(Failure::from));
     if result.is_ok() {
@@ -433,6 +438,7 @@ fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {
             parser.name()
         )),
         Failure::Stopped(Stop::MemoryLimit(limit)) => Error::MemoryLimit(limit),
+        Failure::Stopped(Stop::ZipBomb(bomb)) => Error::LimitExceeded(bomb.to_string()),
         Failure::Stopped(stop) => Error::ParseError(format!(
             "{} stopped writing the document: {stop:?}",
             parser.name()
@@ -489,7 +495,7 @@ pub(crate) fn parse_to_string_through(
             .paging(input.pages())
             .with_write_limit(max_length);
         let (metadata, result) = chain.write_to(&mut out, |handler| {
-            run(parser, prepared, metadata, &context, handler)
+            run(parser, prepared, metadata, input.len(), &context, handler)
         });
         match result {
             Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => {
@@ -657,7 +663,7 @@ pub(crate) fn parse_to_stream(
                 .reading(detected.file.clone())
                 .paging(input.pages());
                 let (metadata, result) = chain.write_to(&mut out, |handler| {
-                    run(parser, prepared, metadata, &context, handler)
+                    run(parser, prepared, metadata, input.len(), &context, handler)
                 });
                 let outcome = match result {
                     Ok(()) => Ok(metadata.to_map()),
