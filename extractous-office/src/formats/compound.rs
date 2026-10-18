@@ -6,10 +6,16 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::crypt;
+use crate::formats::doc::DocParser;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::msg::MsgParser;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::Unread;
+use crate::formats::ppt::PptParser;
+use crate::formats::publisher::PublisherParser;
+use crate::formats::visio::VisioParser;
+use crate::formats::xls::XlsParser;
 use crate::formats::{Decline, Footprint, Parser, Prepared};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::Ole2;
@@ -110,21 +116,46 @@ impl Parser for CompoundDocumentParser {
     }
 }
 
-/// Whether POI's container detection names the compound document `input` a kind `OfficeParser`
-/// reads only the summary information of, as this parser does: an MS Graph chart by its
-/// `CompObj` stream, another kind `POIFSDocumentType` knows of no content, or no known kind.
-/// Tika's path hands such a document to `OfficeParser` as a workbook where the type it is
-/// given says so: a chart stored in another document, as an open storage its detection names a
-/// workbook by its entry names alone, or an `Excel.Chart.8` object of a presentation, typed so
-/// by its program id; `OfficeParser` detects it again from the document itself.
-pub(crate) fn reads_only_the_summary(input: &[u8]) -> bool {
-    Ole2::open(input).is_ok_and(|file| {
-        let detected = ole_directory_type(&file, file.root());
-        detected == MediaType::named(UNKNOWN_COMPOUND)
-            || DOCUMENT_TYPES
-                .iter()
-                .any(|&known| detected == MediaType::named(known))
-    })
+/// The native parsers of the kinds `POIFSDocumentType` detects whose content `OfficeParser`
+/// reads, by those kinds.
+const READERS: [(&[&str], &dyn Parser); 6] = [
+    (&["application/msword"], &DocParser),
+    (
+        &[
+            "application/vnd.ms-excel",
+            "application/x-tika-msworks-spreadsheet",
+        ],
+        &XlsParser,
+    ),
+    (&["application/vnd.ms-powerpoint"], &PptParser),
+    (&["application/vnd.ms-outlook"], &MsgParser),
+    (&["application/vnd.visio"], &VisioParser),
+    (&["application/x-mspublisher"], &PublisherParser),
+];
+
+/// The native parser `OfficeParser` reads the compound document `input` as, once
+/// `POIFSDocumentType` has detected its kind, where that is not one of `own`, the kinds of the
+/// parser it was given to: `OfficeParser` reads whatever kind it detects, whichever type Tika's
+/// path gave it the document as. A kind it reads only the summary information of, as
+/// [`CompoundDocumentParser`] does, is an MS Graph chart by its `CompObj` stream, another kind
+/// `POIFSDocumentType` knows of no content, or no known kind: Tika's path hands a chart to
+/// `OfficeParser` as a workbook, stored in another document as an open storage its detection
+/// names a workbook by its entry names alone, or as an `Excel.Chart.8` object of a
+/// presentation, typed so by its program id.
+pub(crate) fn detected_otherwise(input: &[u8], own: &[&str]) -> Option<&'static dyn Parser> {
+    let file = Ole2::open(input).ok()?;
+    let detected = ole_directory_type(&file, file.root());
+    let is = |name: &str| detected == MediaType::named(name);
+    if own.iter().any(|&name| is(name)) {
+        return None;
+    }
+    if is(UNKNOWN_COMPOUND) || DOCUMENT_TYPES.iter().any(|&known| is(known)) {
+        return Some(&CompoundDocumentParser);
+    }
+    READERS
+        .iter()
+        .find(|(kinds, _)| kinds.iter().any(|&kind| is(kind)))
+        .map(|&(_, parser)| parser)
 }
 
 /// The summary information of a compound document, the content type `OfficeParser` sets for
@@ -153,6 +184,31 @@ fn read(
         )));
     }
     Ok((summaries, document_type))
+}
+
+#[cfg(test)]
+mod detection {
+    use super::*;
+    use crate::ole2::tests::compound;
+
+    /// A compound document goes to the parser of the kind POI detects in it, as `OfficeParser`
+    /// reads whatever kind it detects, where that is not the kind it was given as.
+    #[test]
+    fn reads_a_compound_document_as_the_kind_poi_detects() {
+        let kinds = |parser: Option<&dyn Parser>| parser.map(Parser::media_types);
+        let workbook = compound(&["Workbook"], b"cells");
+        assert_eq!(
+            kinds(detected_otherwise(&workbook, &["application/msword"])),
+            Some(XlsParser.media_types())
+        );
+        assert!(detected_otherwise(&workbook, &["application/vnd.ms-excel"]).is_none());
+        let unknown = compound(&["Mystery"], b"data");
+        assert_eq!(
+            kinds(detected_otherwise(&unknown, &["application/msword"])),
+            Some(CompoundDocumentParser.media_types())
+        );
+        assert!(detected_otherwise(b"no compound document", &["application/msword"]).is_none());
+    }
 }
 
 #[cfg(all(test, feature = "tika"))]

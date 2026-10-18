@@ -38,6 +38,7 @@ use document::Word;
 use extractor::{extract, paragraphs, Out, Sink};
 
 use crate::config::ParserConfigs;
+use crate::formats::compound::detected_otherwise;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
@@ -82,9 +83,12 @@ impl Parser for DocParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
+        if let Some(parser) = detected_otherwise(input, &[MEDIA_TYPE]) {
+            return parser.prepare(input, metadata, configs);
+        }
         let (file, summaries, difference) = plan(input, configs)?;
         unless_different(
             Box::new(move |xhtml| {

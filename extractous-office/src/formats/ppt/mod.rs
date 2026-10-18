@@ -29,6 +29,7 @@ use extractor::{extract, Flush, Out};
 use crate::config::ParserConfigs;
 use crate::formats::poi::{planned, written, Halt};
 
+use crate::formats::compound::detected_otherwise;
 use crate::formats::embedded::{record_exception, record_stream_exception, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
@@ -82,9 +83,12 @@ impl Parser for PptParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
+        if let Some(parser) = detected_otherwise(input, &[MEDIA_TYPE]) {
+            return parser.prepare(input, metadata, configs);
+        }
         let (file, summaries, difference) = plan(input, configs)?;
         unless_different(
             Box::new(move |xhtml| {

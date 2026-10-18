@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 
 use crate::config::ParserConfigs;
+use crate::formats::compound::detected_otherwise;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
@@ -77,9 +78,12 @@ impl Parser for VisioParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
+        if let Some(parser) = detected_otherwise(input, &[MEDIA_TYPE]) {
+            return parser.prepare(input, metadata, configs);
+        }
         let (summaries, texts) = read(input, configs).map_err(Unread::declined)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());

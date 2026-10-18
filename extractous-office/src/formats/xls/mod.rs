@@ -35,7 +35,7 @@ use stream::{Mark, RecordStream};
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::lines;
-use crate::formats::compound::{reads_only_the_summary, CompoundDocumentParser};
+use crate::formats::compound::detected_otherwise;
 use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Escher};
 use crate::formats::metadata::write_sheet_numbers;
@@ -212,8 +212,8 @@ impl Parser for XlsParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        if reads_only_the_summary(input) {
-            return CompoundDocumentParser.prepare(input, metadata, configs);
+        if let Some(parser) = detected_otherwise(input, &MEDIA_TYPES) {
+            return parser.prepare_paged(input, pages, metadata, configs);
         }
         let mut workbook = Workbook::read(input, pages, configs)?;
         let difference = workbook.difference.take();
