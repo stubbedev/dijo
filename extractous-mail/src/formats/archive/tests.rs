@@ -8,6 +8,8 @@ use super::*;
 #[cfg(feature = "tika")]
 use crate::compress::ar::tests::ar;
 #[cfg(feature = "tika")]
+use crate::compress::arj::tests::{arj, with_stray_bytes};
+#[cfg(feature = "tika")]
 use crate::compress::brotli::tests::brotli;
 #[cfg(feature = "tika")]
 use crate::compress::bzip2::tests::bzip2;
@@ -546,6 +548,22 @@ fn reads_a_tar_archive_whose_1_0_sparse_map_fills_its_record() {
     );
     let written = scratch.write("filled-sparse-map.tar", &archive);
     crate::formats::parity::assert_read_where_tika_fails(&[written.as_path()], "#184");
+}
+
+/// ARJ archives with a stray byte of the header magic before a local header, at which
+/// commons-compress stops its search and throws on the header size it reads after it, past the
+/// archive's end, where the native parser searches on for the whole magic (#184).
+#[cfg(feature = "tika")]
+#[test]
+fn reads_arj_archives_with_a_stray_byte_of_the_header_magic() {
+    let scratch = Scratch::new("archive-arj-stray-magic");
+    let archive = arj(&[(b"A.TXT", 0, 0, b"Stored text after a stray byte.")]);
+    let written = [
+        scratch.write("stray-first.arj", &with_stray_bytes(&archive, [0x60, 0])),
+        scratch.write("stray-second.arj", &with_stray_bytes(&archive, [0, 0xEA])),
+    ];
+    let paths: Vec<&Path> = written.iter().map(PathBuf::as_path).collect();
+    crate::formats::parity::assert_read_where_tika_fails(&paths, "#184");
 }
 
 #[cfg(feature = "tika")]
