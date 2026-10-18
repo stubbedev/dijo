@@ -857,3 +857,75 @@ fn matches_elements_by_namespace_and_power_query_by_content_type() {
     assert_eq!(metadata["msoffice:excel:has-power-query"], ["true"]);
     assert_eq!(metadata["msoffice:excel:protected-worksheet"], ["true"]);
 }
+
+/// A workbook whose first sheet's XML fails in its second row, after a hidden row, with a
+/// protection the failure keeps Tika from noting, then a sheet that reads.
+fn failing_sheet() -> Vec<u8> {
+    workbook(
+        &[
+            sheet(
+                "Broken",
+                "<sheetData><row r=\"1\" hidden=\"1\"><c r=\"A1\"><v>1</v></c></row>\
+                 <row r=\"2\"><c r=\"A2\"><v>2</v></c><c r=\"B2\"><v>3</v></row></sheetData>\
+                 <sheetProtection sheet=\"1\"/>"
+                    .to_owned(),
+            ),
+            sheet(
+                "Fine",
+                "<sheetData><row r=\"1\"><c r=\"A1\"><v>4</v></c></row></sheetData>".to_owned(),
+            ),
+        ],
+        &[],
+        "",
+        &[],
+        Vec::new(),
+    )
+}
+
+/// A sheet whose XML fails is recorded as Tika's `buildXHTML` records it: a warning, the row
+/// left open ended, and nothing noted of the sheet; the workbook goes on (#96).
+#[test]
+fn records_a_sheet_whose_xml_fails_and_goes_on() {
+    let input = failing_sheet();
+    assert_eq!(
+        XlsxParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default()),
+        None
+    );
+    let (xml, metadata) = extract(&input);
+    assert!(xml.contains("<td>1</td></tr>"), "{xml}");
+    assert!(xml.contains("<td>2</td>"), "{xml}");
+    assert!(xml.contains("<h1>Fine</h1>"), "{xml}");
+    assert!(xml.contains("<td>4</td>"), "{xml}");
+    assert_eq!(
+        xml.matches("<tr>").count(),
+        xml.matches("</tr>").count(),
+        "{xml}"
+    );
+    let warnings = &metadata["tk:exception:warn"];
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with("org.xml.sax.SAXParseException: /xl/worksheets/sheet1.xml"),
+        "{warnings:?}"
+    );
+    assert_eq!(metadata["msoffice:excel:protected-worksheet"], ["false"]);
+    assert!(!metadata.contains_key("msoffice:excel:has-hidden-rows"));
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn records_a_sheet_whose_xml_fails_as_tikas_path_does() {
+    let scratch = parity::Scratch::new("xlsx-failing-sheet");
+    let documents = [scratch.write("failing.xlsx", &failing_sheet())];
+    assert_same_as_tika_rewriting(
+        &documents,
+        &ParserConfigs::default(),
+        |text, metadata, tika| {
+            parity::with_tikas_values(
+                text,
+                metadata,
+                tika,
+                crate::formats::embedded::EXCEPTION_WARNING,
+            )
+        },
+    );
+}

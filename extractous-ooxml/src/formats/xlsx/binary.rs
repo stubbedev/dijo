@@ -101,7 +101,8 @@ impl Parser for XlsbParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let workbook = open(input, &configs.office).map_err(|Unported(reason)| reason)?;
+        let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
+        let workbook = open(package, &configs.office).map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| workbook.write(xhtml)))
     }
 }
@@ -114,8 +115,7 @@ struct Binary<'a> {
     sheets: Result<(), Failure>,
 }
 
-fn open<'a>(input: &'a [u8], config: &'a OfficeParserConfig) -> Result<Binary<'a>, Unported> {
-    let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
+fn open<'a>(package: Package<'a>, config: &'a OfficeParserConfig) -> Result<Binary<'a>, Unported> {
     let Some(core) =
         Package::relationships_of(&package.relationships, kind::OFFICE_DOCUMENT).next()
     else {

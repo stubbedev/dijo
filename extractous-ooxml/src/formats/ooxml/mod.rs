@@ -19,6 +19,20 @@ pub(crate) use properties::Properties;
 
 use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
 use crate::formats::Failure;
+use crate::Error;
+
+/// What `XMLReaderUtils.parseSAX` of a part throws as a `SAXException`, which Tika's extractors
+/// record as a warning and go on from, as its first line: the part's XML failing, or expanding
+/// more entities than Tika allows. The handler's own failures stay failures.
+pub(crate) fn sax_exception(parsed: Result<(), Failure>) -> Result<Option<String>, Failure> {
+    match parsed {
+        Ok(()) => Ok(None),
+        Err(Failure::Malformed(reason) | Failure::Extraction(Error::LimitExceeded(reason))) => {
+            Ok(Some(format!("org.xml.sax.SAXParseException: {reason}")))
+        }
+        Err(failure) => Err(failure),
+    }
+}
 
 /// Reads `part` into `handler` as Tika reads a part whose failure it passes over: `None` where
 /// the XML fails. A part declaring a document type is [`Unported`], as Java reads the

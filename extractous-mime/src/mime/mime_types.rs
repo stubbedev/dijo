@@ -404,6 +404,37 @@ mod tests {
         assert_eq!(detect(b"", Some("SCAN.PDF")), "application/pdf");
     }
 
+    /// A `Content-Type` hint is the declared type of the document, kept whole with its
+    /// parameters, such as the charset a text parser reads, where it is or specializes what the
+    /// bytes show; one the bytes contradict is passed over. Tika's `forName` also adds a type
+    /// it does not know to its registry, which changes no later detection; the port keeps no
+    /// such state (#113).
+    #[test]
+    fn applies_a_content_type_hint_whole_where_the_bytes_allow_it() {
+        let types = mime_types();
+        let hinted = |data: &[u8], hint: &str| types.detect(data, None, Some(hint)).to_string();
+        assert_eq!(
+            hinted(b"just some words", "text/html; charset=ISO-8859-1"),
+            "text/html; charset=ISO-8859-1"
+        );
+        assert_eq!(
+            hinted(
+                &[0, 1, 2, 3, 0xFF],
+                "application/x-unheard-of; name=\"a.bin\""
+            ),
+            "application/x-unheard-of; name=a.bin"
+        );
+        assert_eq!(
+            hinted(b"%PDF-1.7\n", "application/octet-stream; name=\"a.bin\""),
+            "application/pdf"
+        );
+        assert_eq!(hinted(b"%PDF-1.7\n", "text/html"), "application/pdf");
+        assert_eq!(
+            detect(&[0, 1, 2, 3, 0xFF], None),
+            "application/octet-stream"
+        );
+    }
+
     #[test]
     fn retries_the_root_on_halves_past_a_malformed_character() {
         let mut data =
