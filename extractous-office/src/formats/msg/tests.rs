@@ -173,7 +173,8 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_messages() {
     let ported = ported(&corpus(&[&parity::conformance_corpus()]));
     assert_eq!(ported.len(), 11);
     let documents: Vec<&Path> = ported.iter().map(PathBuf::as_path).collect();
-    parity::assert_same_as_tika_departing(&documents, TIKA_PARSER, RECIPIENT_NAMES);
+    let departures = [RECIPIENT_NAMES, crate::formats::html::DEPARTURES].concat();
+    parity::assert_same_as_tika_departing(&documents, TIKA_PARSER, &departures);
 }
 
 #[test]
