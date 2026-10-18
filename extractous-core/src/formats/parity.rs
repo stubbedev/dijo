@@ -320,11 +320,25 @@ const NATIVE_EMBEDDING_FRAME: &str = "\tat ai.yobix.TikaNativeMain.parseEmbedded
 /// the full set once, the failures of embedded documents without the frames that embedded them,
 /// that of an empty one without any frames, which the native path does not record (#68),
 /// and the exceptions a parser records without their frames, which a native parser does not
-/// have.
+/// have; POI's misspelt `RecordFormatException` of `IOUtils.safelyClone` spelt as the native
+/// path spells it (#185).
 #[cfg(feature = "tika")]
 pub fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
     extracted.text = without_warning_frames(extracted.text, char_set);
     extracted.text = in_defined_order(extracted.text, char_set);
+    if let Some(spelt) = decoded(&extracted.text, char_set)
+        .as_deref()
+        .and_then(with_poi_misspelling_spelt)
+    {
+        extracted.text = encoded_as(&spelt, char_set);
+    }
+    for (_, values) in &mut extracted.metadata {
+        for value in values.iter_mut() {
+            if let Some(spelt) = with_poi_misspelling_spelt(value) {
+                *value = spelt;
+            }
+        }
+    }
     for (name, values) in &mut extracted.metadata {
         if name == PARSED_BY_FULL_SET {
             let mut once: Vec<String> = Vec::with_capacity(values.len());
@@ -349,6 +363,37 @@ pub fn comparable(mut extracted: Extracted, char_set: CharSet) -> Extracted {
         }
     }
     extracted
+}
+
+/// The start of the message of the `RecordFormatException` POI's `IOUtils.safelyClone` throws,
+/// up to the offset, after which POI misspells `length` as `lenght` (#185).
+#[cfg(any(test, feature = "tika"))]
+const SAFELY_CLONE_MESSAGE: &str = "Invalid offset/length specified: offset: ";
+
+/// `text` with the misspelling of each message [`SAFELY_CLONE_MESSAGE`] starts spelt as the
+/// native path spells it, where it has any: `lenght` after the offset written `length`.
+#[cfg(any(test, feature = "tika"))]
+fn with_poi_misspelling_spelt(text: &str) -> Option<String> {
+    const MISSPELT: &str = ", lenght: ";
+    const SPELT: &str = ", length: ";
+    let mut spelt = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut changed = false;
+    while let Some(at) = rest.find(SAFELY_CLONE_MESSAGE) {
+        let offset = at + SAFELY_CLONE_MESSAGE.len();
+        let digits = rest[offset..]
+            .find(|c: char| c != '-' && !c.is_ascii_digit())
+            .map_or(rest.len(), |end| offset + end);
+        spelt.push_str(&rest[..digits]);
+        rest = &rest[digits..];
+        if let Some(after) = rest.strip_prefix(MISSPELT) {
+            spelt.push_str(SPELT);
+            rest = after;
+            changed = true;
+        }
+    }
+    spelt.push_str(rest);
+    changed.then_some(spelt)
 }
 
 /// The OCR enricher our Java path hands Tika's image parsers.
@@ -3426,6 +3471,23 @@ fn spools_as_tika_under(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// POI's misspelling is spelt right in its `safelyClone` message only (#185).
+    #[test]
+    fn spells_pois_safely_clone_message_as_the_native_path_does() {
+        let poi = "org.apache.poi.util.RecordFormatException: Invalid offset/length specified: \
+                   offset: -1, lenght: 12, maxLength: 512";
+        assert_eq!(
+            with_poi_misspelling_spelt(&format!("{poi}\n{poi}")).as_deref(),
+            Some(
+                "org.apache.poi.util.RecordFormatException: Invalid offset/length specified: \
+                 offset: -1, length: 12, maxLength: 512\norg.apache.poi.util.\
+                 RecordFormatException: Invalid offset/length specified: offset: -1, length: 12, \
+                 maxLength: 512"
+            )
+        );
+        assert_eq!(with_poi_misspelling_spelt("offset: 3, lenght: 4"), None);
+    }
 
     /// POI's placeable header of a picture 100 units wide and 50 high, at 72 units per inch.
     #[cfg(feature = "tika")]
