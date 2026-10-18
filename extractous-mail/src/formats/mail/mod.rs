@@ -19,6 +19,11 @@
 //! HTML parser reads otherwise than Tika's is read so: the message's reading then differs from
 //! Tika's. A message defers to Tika when it holds a text or HTML part the native parsers of
 //! those defer.
+//!
+//! A build with Tika reads a message whole before it writes anything of it, to decide first
+//! whether Tika's path should read it. A build without Tika has nothing to decide: it writes
+//! each part as it reads it, its body spooled, HTML written as its DOM is built, and records a
+//! difference from Tika's reading once it meets it.
 
 mod address;
 mod codec;
@@ -32,22 +37,39 @@ mod mbox;
 mod reference;
 mod stream;
 mod structured;
-#[cfg(test)]
+#[cfg(all(test, feature = "tika"))]
 mod synthetic;
 
 pub use codec::decode_encoded_words;
 pub use date::{parse_date, MailDate};
+#[cfg(feature = "tika")]
+use handler::Collected;
+#[cfg(not(feature = "tika"))]
+use handler::Sink;
 use handler::{read, Inline, Item};
 pub use mbox::MboxParser;
+use stream::MimeError;
 
 use crate::config::ParserConfigs;
+#[cfg(not(feature = "tika"))]
+use crate::formats::embedded::record_exception;
 use crate::formats::embedded::Wrapping;
 use crate::formats::handlers::parse_inline;
+#[cfg(feature = "tika")]
 use crate::formats::html;
+#[cfg(not(feature = "tika"))]
+use crate::formats::html::JSoupParser;
 use crate::formats::metadata::TikaMetadata;
+#[cfg(not(feature = "tika"))]
+use crate::formats::noted;
 use crate::formats::text;
-use crate::formats::{Decline, Difference, Failure, Parser, Prepared};
+#[cfg(feature = "tika")]
+use crate::formats::unless_different;
+use crate::formats::xhtml::{Stop, Xhtml};
+use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
+#[cfg(feature = "tika")]
 use crate::input::Input;
+use crate::input::{Pages, Paging};
 use crate::java::parse_long;
 
 /// What the port leaves to Tika.
@@ -94,13 +116,27 @@ impl Parser for Rfc822Parser {
         &["message/rfc822"]
     }
 
+    fn footprint(&self) -> Footprint {
+        FOOTPRINT
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
-        _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare_message(Ok(input), metadata)
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        prepare_message(self.name(), Ok(input), pages, metadata, configs)
     }
 }
 
@@ -116,15 +152,36 @@ impl Parser for EmlxParser {
         &["message/x-emlx"]
     }
 
+    fn footprint(&self) -> Footprint {
+        FOOTPRINT
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
-        _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare_message(emlx_message(input), metadata)
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        prepare_message(self.name(), emlx_message(input), pages, metadata, configs)
     }
 }
+
+/// How the memory of a message's reading grows with it: a build with Tika reads it whole to
+/// decide first whether Tika's path should read it; one without writes each part as it is read.
+#[cfg(feature = "tika")]
+const FOOTPRINT: Footprint = Footprint::Proportional;
+#[cfg(not(feature = "tika"))]
+const FOOTPRINT: Footprint = Footprint::Bounded;
 
 /// The digits of an `.emlx` length line that `EmlxParser` reads at most, past which it gives up.
 const MAX_LENGTH_DIGITS: usize = 19;
@@ -208,7 +265,56 @@ fn strip_emlx_framing(input: &[u8]) -> &[u8] {
     }
 }
 
+impl From<MimeError> for Failure {
+    fn from(error: MimeError) -> Self {
+        Failure::Malformed(format!("Failed to parse an email message: {}", error.0))
+    }
+}
+
+/// How the reading of a message the port reads part of otherwise than Tika, as `unported` says,
+/// differs from Tika's.
+fn unported_difference(unported: Unported) -> Difference {
+    Difference::new(format!(
+        "{}, so the native reading leaves out the header it is in",
+        unported.reason()
+    ))
+}
+
+/// `RFC822Parser.parse` of `message`, whose pages are `pages`, prepared from `metadata` for the
+/// parser named `parser`: a message that is not there fails; any other is read as
+/// [`read_message`] reads it.
+fn prepare_message<'a>(
+    parser: &'static str,
+    message: Result<&'a [u8], Failure>,
+    pages: Pages<'a>,
+    metadata: &TikaMetadata,
+    configs: &'a ParserConfigs,
+) -> Result<Prepared<'a>, Decline<'a>> {
+    let message = match message {
+        Ok(message) => message,
+        Err(failure) => return Ok(failed(failure)),
+    };
+    if message.is_empty() {
+        return Ok(failed(Failure::Malformed(
+            "rfc822 parser found zero bytes".into(),
+        )));
+    }
+    read_message(
+        parser,
+        strip_emlx_framing(message),
+        pages,
+        metadata.clone(),
+        configs,
+    )
+}
+
+/// A reading that fails at once, writing nothing.
+fn failed<'a>(failure: Failure) -> Prepared<'a> {
+    Box::new(move |_| Err(failure))
+}
+
 /// A part of the message as writing it takes it.
+#[cfg(feature = "tika")]
 enum Part {
     /// `<div class="email-entry"><p>`, which starts a part of a multipart.
     StartEntry,
@@ -220,47 +326,36 @@ enum Part {
     Embedded(Input<'static>, TikaMetadata),
 }
 
-/// `RFC822Parser.parse` of `message` prepared: the message read, with the metadata it adds to
-/// `metadata`, and its text and HTML parts prepared by their parsers; as a reading that differs
-/// from Tika's where the port does not read something of it as Tika does; or why Tika's path
-/// should read it, a part whose parser defers it.
-fn prepare_message(
-    message: Result<&[u8], Failure>,
-    metadata: &TikaMetadata,
-) -> Result<Prepared<'static>, Decline<'static>> {
-    let failed = |failure: Failure| -> Prepared<'static> { Box::new(move |_| Err(failure)) };
-    let message = match message {
-        Ok(message) => message,
-        Err(failure) => return Ok(failed(failure)),
+/// The message read whole before anything of it is written, with the metadata it adds to
+/// `metadata`, and its text and HTML parts prepared by their parsers, so that a build with Tika
+/// decides first whether the port reads it as Tika does: a reading that differs from Tika's
+/// where the port does not read something of it as Tika does; or why Tika's path should read
+/// it, a part whose parser defers it.
+#[cfg(feature = "tika")]
+fn read_message<'a>(
+    _parser: &'static str,
+    message: &'a [u8],
+    pages: Pages<'a>,
+    mut metadata: TikaMetadata,
+    _configs: &'a ParserConfigs,
+) -> Result<Prepared<'a>, Decline<'a>> {
+    let mut collected = Collected {
+        metadata: &mut metadata,
+        items: Vec::new(),
     };
-    if message.is_empty() {
-        return Ok(failed(Failure::Malformed(
-            "rfc822 parser found zero bytes".into(),
-        )));
-    }
-    let mut metadata = metadata.clone();
-    let read = match read(strip_emlx_framing(message), &mut metadata) {
-        Ok(read) => read,
-        Err(error) => {
-            return Ok(failed(Failure::Malformed(format!(
-                "Failed to parse an email message: {}",
-                error.0
-            ))))
-        }
+    let unported = match read(message, &Paging::new(pages), &mut collected) {
+        Ok(unported) => unported,
+        Err(error) => return Ok(failed(Failure::from(error))),
     };
-    let mut difference = read.unported.map(|unported| {
-        Difference::new(format!(
-            "{}, so the native reading leaves out the header it is in",
-            unported.reason()
-        ))
-    });
-    let mut parts = Vec::with_capacity(read.items.len());
-    for item in read.items {
+    let items = collected.items;
+    let mut difference = unported.map(unported_difference);
+    let mut parts = Vec::with_capacity(items.len());
+    for item in items {
         parts.push(match item {
             Item::StartEntry => Part::StartEntry,
             Item::EndEntry => Part::EndEntry,
             Item::Inline(Inline::Text(content)) => Part::Inline(
-                text::prepare_plain(content.to_vec())
+                text::prepare_plain(content)
                     .map_err(|reason| Decline::Deferred(format!("a text part defers: {reason}")))?,
             ),
             Item::Inline(Inline::Html(content)) => {
@@ -289,14 +384,8 @@ fn prepare_message(
         *xhtml.metadata_mut() = metadata;
         for part in parts {
             match part {
-                Part::StartEntry => {
-                    xhtml.start_element_with("div", &[("class", "email-entry")])?;
-                    xhtml.start_element("p")?;
-                }
-                Part::EndEntry => {
-                    xhtml.end_element("p")?;
-                    xhtml.end_element("div")?;
-                }
+                Part::StartEntry => start_entry(xhtml)?,
+                Part::EndEntry => end_entry(xhtml)?,
                 Part::Inline(prepared) => parse_inline(prepared, xhtml)?,
                 Part::Embedded(content, metadata) => {
                     xhtml.parse_embedded_input(&content, &metadata, Wrapping::Bare)?;
@@ -305,13 +394,108 @@ fn prepare_message(
         }
         Ok(())
     });
-    match difference {
-        None => Ok(reading),
-        Some(difference) => Err(Decline::Differs {
-            reading,
-            difference,
-        }),
+    unless_different(reading, difference)
+}
+
+/// The message written as it is read, a part at a time, each part's body spooled and let go of
+/// once written, HTML built only as far as it may still change. A detail the port reads
+/// otherwise than Tika is met only once it is read, and recorded as the difference of a message
+/// a build without Tika reads natively.
+#[cfg(not(feature = "tika"))]
+fn read_message<'a>(
+    parser: &'static str,
+    message: &'a [u8],
+    pages: Pages<'a>,
+    metadata: TikaMetadata,
+    configs: &'a ParserConfigs,
+) -> Result<Prepared<'a>, Decline<'a>> {
+    Ok(Box::new(move |xhtml| {
+        *xhtml.metadata_mut() = metadata;
+        let mut written = Written {
+            xhtml,
+            configs,
+            difference: None,
+        };
+        let unported = read(message, &Paging::new(pages), &mut written)?;
+        if let Some(difference) = unported.map(unported_difference).or(written.difference) {
+            record_exception(written.xhtml.metadata_mut(), &difference.warning(parser));
+        }
+        Ok(())
+    }))
+}
+
+/// Writes the items of a message's body as they are read, noting the first part whose parser
+/// reads it otherwise than Tika's.
+#[cfg(not(feature = "tika"))]
+struct Written<'w, 'x, 'c> {
+    xhtml: &'w mut Xhtml<'x>,
+    configs: &'c ParserConfigs,
+    difference: Option<Difference>,
+}
+
+#[cfg(not(feature = "tika"))]
+impl Written<'_, '_, '_> {
+    /// Parses inline the `kind` of part its parser `prepared`.
+    fn inline(
+        &mut self,
+        kind: &str,
+        prepared: Result<Prepared<'_>, Decline<'_>>,
+    ) -> Result<(), Failure> {
+        let (reading, difference) = noted(prepared).map_err(|declined| {
+            Failure::Malformed(format!(
+                "the native parser of {kind} part declines it: {declined}"
+            ))
+        })?;
+        if let Some(Difference(reason)) = difference {
+            self.difference
+                .get_or_insert_with(|| Difference::new(format!("{kind} part differs: {reason}")));
+        }
+        parse_inline(reading, self.xhtml)
     }
+}
+
+#[cfg(not(feature = "tika"))]
+impl Sink for Written<'_, '_, '_> {
+    type Error = Failure;
+
+    fn metadata(&mut self) -> &mut TikaMetadata {
+        self.xhtml.metadata_mut()
+    }
+
+    fn item(&mut self, item: Item) -> Result<(), Failure> {
+        match item {
+            Item::StartEntry => Ok(start_entry(self.xhtml)?),
+            Item::EndEntry => Ok(end_entry(self.xhtml)?),
+            Item::Inline(Inline::Text(content)) => {
+                self.inline("a text", text::prepare_plain(content))
+            }
+            Item::Inline(Inline::Html(content)) => {
+                let prepared = JSoupParser.prepare_paged(
+                    &content,
+                    content.pages(),
+                    &TikaMetadata::new(),
+                    self.configs,
+                );
+                self.inline("an HTML", prepared)
+            }
+            Item::Embedded(content, metadata) => {
+                self.xhtml
+                    .parse_embedded_input(&content, &metadata, Wrapping::Bare)
+            }
+        }
+    }
+}
+
+/// `<div class="email-entry"><p>`, which starts a part of a multipart.
+fn start_entry(xhtml: &mut Xhtml) -> Result<(), Stop> {
+    xhtml.start_element_with("div", &[("class", "email-entry")])?;
+    xhtml.start_element("p")
+}
+
+/// `</p></div>`, which ends a part of a multipart.
+fn end_entry(xhtml: &mut Xhtml) -> Result<(), Stop> {
+    xhtml.end_element("p")?;
+    xhtml.end_element("div")
 }
 
 /// What the port does otherwise than Tika on purpose: Tika names a message after its
@@ -415,26 +599,35 @@ pub(crate) mod tests {
         );
     }
 
+    const ZONED: &[u8] =
+        b"From: a@example.org\r\nSubject: Zoned\r\nDate: 5 Mar 2024 14:30 EST\r\n\r\nBody.\r\n";
+
+    #[cfg(feature = "tika")]
     #[test]
-    fn leaves_out_a_date_that_names_a_zone_as_differing() {
-        let message =
-            b"From: a@example.org\r\nSubject: Zoned\r\nDate: 5 Mar 2024 14:30 EST\r\n\r\nBody.\r\n";
+    fn decides_first_that_a_date_naming_a_zone_differs() {
         let configs = ParserConfigs::default();
         let Err(Decline::Differs { difference, .. }) =
-            Rfc822Parser.prepare(message, &TikaMetadata::new(), &configs)
+            Rfc822Parser.prepare(ZONED, &TikaMetadata::new(), &configs)
         else {
             panic!("a date naming a zone is not read as differing");
         };
         assert!(difference.0.contains("time zone"), "{difference:?}");
-        if cfg!(feature = "tika") {
-            return;
-        }
+    }
+
+    #[cfg(not(feature = "tika"))]
+    #[test]
+    fn leaves_out_a_date_that_names_a_zone_recording_the_difference() {
         let (text, metadata) = crate::Extractor::new()
-            .extract_bytes_to_string(message)
+            .extract_bytes_to_string(ZONED)
             .unwrap();
         assert!(text.contains("Body."), "{text}");
         assert_eq!(metadata.get("dc:title"), Some(&vec!["Zoned".to_owned()]));
         assert_eq!(metadata.get("dcterms:created"), None);
+        let warnings = &metadata[crate::formats::embedded::EXCEPTION_WARNING];
+        assert!(
+            warnings.iter().any(|warning| warning.contains("time zone")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

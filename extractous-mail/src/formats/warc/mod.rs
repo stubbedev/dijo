@@ -7,8 +7,11 @@
 //! chunked payload cut short, a record cut short of its length or with a negative one, the
 //! native path records without jwarc's message, and a record ID it does not check as
 //! `URI.create` does it takes as it stands: such an archive's reading differs from Tika's.
-//! Gemini responses, which the port does not read, stay with Tika's path.
+//! A Gemini response's payload is read by jwarc's Gemini parser ([`gemini`]), after which
+//! `WARCParser` asks for the record's HTTP response all the same, which jwarc refuses once the
+//! payload has been read into, failing the parse, or fails to parse, which Tika records.
 
+mod gemini;
 mod headers;
 mod http;
 #[cfg(all(test, not(feature = "tika")))]
@@ -34,7 +37,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use std::convert::Infallible;
 
-use crate::formats::{Decline, Deferral, Difference, Failure, Footprint, Opened, Parser, Prepared};
+use crate::formats::{Decline, Difference, Failure, Footprint, Opened, Parser, Prepared};
 use crate::input::{Input, Pages, Paging};
 use crate::java;
 
@@ -90,7 +93,7 @@ impl Parser for WarcParser {
         let data = reader::decompress(input, pages)
             .map_err(|thrown| Decline::Fails(Error::ParseError(thrown)))?;
         let mut difference = None;
-        let checked = visit(&data, &mut difference, |_| Ok::<(), Infallible>(()))?;
+        let checked = visit(&data, &mut difference, |_| Ok::<(), Infallible>(()));
         if let Err(never) = checked {
             match never {}
         }
@@ -149,8 +152,7 @@ fn write(data: &Input<'_>, xhtml: &mut Xhtml<'_>) -> Result<(), Failure> {
         }
         paging.release();
         Ok::<(), Failure>(())
-    })
-    .expect("an archive whose reading was not deferred when prepared is not when written");
+    });
     match visited? {
         Some(thrown) => Err(Failure::Malformed(thrown)),
         None => Ok(()),
@@ -175,12 +177,12 @@ fn differs(difference: &mut Option<Difference>, what: &str) {
 /// Hands `each` the items of the records of `data` in turn, read as `WARCParser.parse` reads
 /// them, with the first detail in which the native reading differs from it noted in
 /// `difference`: what jwarc or `WARCParser` throws after them, failing the parse, if anything;
-/// the failure of `each`, which ends them; or why Tika's path should read the archive.
+/// or the failure of `each`, which ends them.
 fn visit<'a, E>(
     data: &'a [u8],
     difference: &mut Option<Difference>,
     mut each: impl FnMut(Item<'a>) -> Result<(), E>,
-) -> Result<Result<Option<String>, E>, Deferral> {
+) -> Result<Option<String>, E> {
     let mut at = 0;
     let stop = loop {
         let record = match reader::next(data, &mut at) {
@@ -188,15 +190,13 @@ fn visit<'a, E>(
             Ok(None) => break None,
             Err(stop) => break Some(stop),
         };
-        let item = match process(&record, difference)? {
+        let item = match process(&record, difference) {
             Processed::Payload(payload) => Item::Payload(payload),
             Processed::Recorded(exception) => Item::Recorded(exception),
             Processed::Nothing => continue,
-            Processed::Thrown(thrown) => return Ok(Ok(Some(thrown))),
+            Processed::Thrown(thrown) => return Ok(Some(thrown)),
         };
-        if let Err(failure) = each(item) {
-            return Ok(Err(failure));
-        }
+        each(item)?;
     };
     let (thrown, recorded) = match stop {
         None => (None, None),
@@ -225,68 +225,46 @@ fn visit<'a, E>(
         }
     };
     if let Some(recorded) = recorded {
-        if let Err(failure) = each(Item::Recorded(recorded.to_owned())) {
-            return Ok(Err(failure));
-        }
+        each(Item::Recorded(recorded.to_owned()))?;
     }
-    Ok(Ok(thrown))
+    Ok(thrown)
 }
 
 /// `processRecord` and `processResponse` of `record`, noting in `difference` how the native
 /// reading differs from Tika's.
-fn process<'a>(
-    record: &Record<'a>,
-    difference: &mut Option<Difference>,
-) -> Result<Processed<'a>, Deferral> {
+fn process<'a>(record: &Record<'a>, difference: &mut Option<Difference>) -> Processed<'a> {
     let headers = &record.headers;
     let kind = match headers.sole("WARC-Type") {
         Ok(Some(kind)) => kind,
         Ok(None) => {
-            return Ok(Processed::Thrown(
+            return Processed::Thrown(
                 "NoSuchElementException: a record without WARC-Type".to_owned(),
-            ))
+            )
         }
-        Err(not_sole) => return Ok(Processed::Thrown(not_sole.0)),
+        Err(not_sole) => return Processed::Thrown(not_sole.0),
     };
     if kind != "response" {
-        return Ok(Processed::Nothing);
+        return Processed::Nothing;
     }
     let content_type = match content_type_of(headers) {
         Ok(content_type) => content_type,
-        Err(thrown) => return Ok(Processed::Thrown(thrown)),
+        Err(thrown) => return Processed::Thrown(thrown),
     };
-    if content_type.has_base("application", "gemini") {
-        return Err("a Gemini response, which the port does not read".to_owned());
-    }
-    if !content_type.has_base("application", "http") {
-        return Ok(Processed::Nothing);
-    }
-    let response = match http::parse(record.block) {
+    let read = if content_type.has_base("application", "gemini") {
+        gemini_response(record.block, difference)
+    } else if content_type.has_base("application", "http") {
+        http_response(record.block, difference)
+    } else {
+        return Processed::Nothing;
+    };
+    let Response {
+        http: response,
+        payload_type,
+        body,
+        size,
+    } = match read {
         Ok(response) => response,
-        Err(http::Unread::Header) => {
-            differs(
-                difference,
-                "a response whose HTTP header jwarc fails on, which Tika records with jwarc's \
-                 message",
-            );
-            return Ok(Processed::Recorded(
-                "ParsingException: invalid HTTP message".to_owned(),
-            ));
-        }
-        Err(http::Unread::CutChunks) => {
-            differs(
-                difference,
-                "a chunked payload cut short, which Tika records as its parser reads it, after \
-                 what that parser writes of it",
-            );
-            return Ok(Processed::Recorded(
-                "EOFException: a chunked payload cut short".to_owned(),
-            ));
-        }
-    };
-    let payload_type = match content_type_of(&response.headers) {
-        Ok(payload_type) => payload_type,
-        Err(thrown) => return Ok(Processed::Thrown(thrown)),
+        Err(processed) => return processed,
     };
     let mut metadata = TikaMetadata::new();
     metadata.set(RECORD_CONTENT_TYPE, content_type.to_string());
@@ -312,14 +290,127 @@ fn process<'a>(
     match resource_name(headers, difference) {
         Ok(Some(name)) => metadata.set(RESOURCE_NAME, name),
         Ok(None) => {}
-        Err(thrown) => return Ok(Processed::Thrown(thrown)),
+        Err(thrown) => return Processed::Thrown(thrown),
     }
     metadata.set(RECORD_CONTENT_TYPE, payload_type.to_string());
-    metadata.set("Content-Length", response.size.to_string());
-    Ok(Processed::Payload(Payload {
+    metadata.set("Content-Length", size.to_string());
+    Processed::Payload(Payload { body, metadata })
+}
+
+/// What `processResponse` reads of a response record: the HTTP response whose status and
+/// headers it records, and the payload, its type, the pieces of the block it is made of and
+/// what `body().size()` gives.
+struct Response<'a> {
+    http: http::Head,
+    payload_type: MediaType,
+    body: Vec<&'a [u8]>,
+    size: i64,
+}
+
+/// The response of an HTTP response record, whose block is `block`, as jwarc parses it, or what
+/// `processResponse` makes of a record it fails on, noting in `difference` how the native
+/// reading differs from Tika's.
+fn http_response<'a>(
+    block: &'a [u8],
+    difference: &mut Option<Difference>,
+) -> Result<Response<'a>, Processed<'a>> {
+    let response = match http::parse(block) {
+        Ok(response) => response,
+        Err(http::Unread::Header) => return Err(unparsed_http(difference)),
+        Err(http::Unread::CutChunks) => {
+            differs(
+                difference,
+                "a chunked payload cut short, which Tika records as its parser reads it, after \
+                 what that parser writes of it",
+            );
+            return Err(Processed::Recorded(
+                "EOFException: a chunked payload cut short".to_owned(),
+            ));
+        }
+    };
+    let payload_type = content_type_of(&response.headers).map_err(Processed::Thrown)?;
+    Ok(Response {
+        http: http::Head {
+            status: response.status,
+            reason: response.reason,
+            headers: response.headers,
+        },
+        payload_type,
         body: response.body,
-        metadata,
-    }))
+        size: response.size,
+    })
+}
+
+/// A response whose HTTP header jwarc fails on, which `WARCParser` records.
+fn unparsed_http<'a>(difference: &mut Option<Difference>) -> Processed<'a> {
+    differs(
+        difference,
+        "a response whose HTTP header jwarc fails on, which Tika records with jwarc's message",
+    );
+    Processed::Recorded("ParsingException: invalid HTTP message".to_owned())
+}
+
+/// The response of a Gemini response record, whose block is `block`, as `processResponse`
+/// reads it: the payload by jwarc's Gemini parser, its type the header's, and then the HTTP
+/// response all the same. jwarc writes the header it parsed back in front of what its buffer
+/// read on past it, and throws on parsing the HTTP response once the body has been read past
+/// that, as it has where a payload follows the header: the parse fails. Otherwise the HTTP
+/// parse of that header fails, which `WARCParser` records.
+fn gemini_response<'a>(
+    block: &'a [u8],
+    difference: &mut Option<Difference>,
+) -> Result<Response<'a>, Processed<'a>> {
+    let header = gemini::header(block);
+    let (status, meta, length) = match &header {
+        gemini::Header::Invalid => {
+            differs(
+                difference,
+                "a Gemini response whose header jwarc fails on, which Tika records with \
+                 jwarc's message",
+            );
+            return Err(Processed::Recorded(
+                "ParsingException: invalid gemini message".to_owned(),
+            ));
+        }
+        gemini::Header::Whole {
+            status,
+            meta,
+            length,
+        } => (*status, Some(meta.as_str()), *length),
+        gemini::Header::Cut { status, meta } => (*status, meta.as_deref(), block.len()),
+    };
+    let serialized = gemini::serialized(status, meta);
+    let position = gemini::read(block.len(), &header)
+        .checked_sub(serialized.len())
+        .ok_or_else(|| {
+            Processed::Thrown(
+                "IllegalArgumentException: pushback would result in negative position".to_owned(),
+            )
+        })?;
+    let payload_type = match gemini::content_type(status, meta) {
+        Ok(Some(text)) => MediaType::parse_leniently(text).map_err(|unparsable| {
+            Processed::Thrown(format!("IllegalArgumentException: {}", unparsable.0))
+        })?,
+        Ok(None) => media_type::octet_stream(),
+        Err(()) => {
+            return Err(Processed::Thrown(
+                "NullPointerException: the meta of a Gemini response cut short".to_owned(),
+            ))
+        }
+    };
+    if position != 0 {
+        return Err(Processed::Thrown(
+            "IllegalStateException: http() cannot be called after reading from body".to_owned(),
+        ));
+    }
+    let (http, _) = http::head(serialized.as_bytes()).map_err(|_| unparsed_http(difference))?;
+    let body = &block[length..];
+    Ok(Response {
+        http,
+        payload_type,
+        body: vec![body],
+        size: body.len() as i64,
+    })
 }
 
 /// `Message.contentType()` of a message with `headers`: its `Content-Type` read leniently, else
@@ -531,7 +622,7 @@ mod tests {
                 }
                 Ok::<(), Infallible>(())
             });
-            assert!(matches!(visited, Ok(Ok(None))));
+            assert!(matches!(visited, Ok(None)));
             (recorded, difference.expect("the reading differs").0)
         };
         let cut = [
@@ -556,5 +647,65 @@ mod tests {
             ["EOFException: a record cut short of its Content-Length"]
         );
         assert!(difference.contains("cut short"), "{difference}");
+    }
+
+    /// A Gemini response record of `block`.
+    fn gemini(block: &[u8]) -> Vec<u8> {
+        record(
+            &[
+                ("WARC-Type", "response"),
+                ("WARC-Record-ID", "<urn:uuid:gemini>"),
+                ("WARC-Target-URI", "gemini://example.dk/"),
+                ("Content-Type", "application/gemini; msgtype=response"),
+            ],
+            block,
+        )
+    }
+
+    /// The exceptions recorded and the one thrown when the records of `data` are visited.
+    fn visited(data: &[u8]) -> (Vec<String>, Option<String>) {
+        let mut difference = None;
+        let mut recorded = Vec::new();
+        let thrown = visit(data, &mut difference, |item| {
+            if let Item::Recorded(exception) = item {
+                recorded.push(exception);
+            }
+            Ok::<(), Infallible>(())
+        })
+        .unwrap_or_else(|never| match never {});
+        (recorded, thrown)
+    }
+
+    #[test]
+    fn reads_gemini_responses_as_jwarc_and_warc_parser_do() {
+        let after = response("<urn:uuid:after>", b"HTTP/1.1 200 OK\r\n\r\nafter");
+        let empty = [gemini(b"20 text/gemini\r\n"), after.clone()].concat();
+        assert_eq!(
+            visited(&empty),
+            (
+                vec!["ParsingException: invalid HTTP message".to_owned()],
+                None
+            )
+        );
+        let invalid = [gemini(b"2x text/gemini\r\n# Hej"), after.clone()].concat();
+        assert_eq!(
+            visited(&invalid),
+            (
+                vec!["ParsingException: invalid gemini message".to_owned()],
+                None
+            )
+        );
+        let with_payload = [gemini(b"20 text/gemini\r\n# Hej verden\n"), after.clone()].concat();
+        let (recorded, thrown) = visited(&with_payload);
+        assert!(recorded.is_empty(), "{recorded:?}");
+        assert!(
+            thrown.is_some_and(|thrown| thrown.starts_with("IllegalStateException")),
+            "a payload read into fails the parse"
+        );
+        let (_, thrown) = visited(&gemini(b"2"));
+        assert!(
+            thrown.is_some_and(|thrown| thrown.starts_with("IllegalArgumentException")),
+            "a header cut short is pushed back past the body's start"
+        );
     }
 }

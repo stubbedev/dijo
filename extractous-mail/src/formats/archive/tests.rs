@@ -445,6 +445,27 @@ fn extracts_tar_ar_and_cpio_archives_as_tikas_path_does() {
                 ]),
             ),
             (
+                "global-and-sparse.tar",
+                tar(&[
+                    (
+                        b"pax_global_header",
+                        b'g',
+                        &pax(&[("mtime", "1700000123.25"), ("comment", "a commit")]),
+                    ),
+                    (b"a.txt", b'0', text),
+                    (
+                        b"././@PaxHeader",
+                        b'x',
+                        &pax(&[
+                            ("GNU.sparse.size", "10"),
+                            ("GNU.sparse.map", "0,2,6,2,10,0"),
+                            ("GNU.sparse.name", "sparse.txt"),
+                        ]),
+                    ),
+                    (b"./GNUSparseFile.1/sparse.txt", b'0', b"abcd"),
+                ]),
+            ),
+            (
                 "files.a",
                 ar(&[("a.txt", text), ("a-rather-long-file-name.html", html)]),
             ),

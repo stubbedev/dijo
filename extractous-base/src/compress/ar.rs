@@ -29,7 +29,7 @@ pub fn files<'a>(data: &'a [u8], pages: Pages<'a>) -> Result<Vec<ArchiveFile<'a>
         let header = entry.header();
         let name = std::str::from_utf8(header.identifier())
             .map_or_else(|_| ascii(header.identifier()), str::to_owned);
-        let size = header.size();
+        let size = header.size() as i64;
         let modified = i64::try_from(header.mtime()).unwrap_or(i64::MAX);
         let start =
             usize::try_from(position.get()).map_or(data.len(), |start| start.min(data.len()));

@@ -351,3 +351,128 @@ fn spools_an_entry_too_large_to_read_whole_one_entry_at_a_time() {
     let (text, _) = file.extract_with(&extractor, BUDGET, "extractous::RarParser");
     assert!(text.contains(END), "{text}");
 }
+
+/// RAR 1.4's 16-bit sum, `RarCRC.checkOldCrc` from zero.
+fn old_sum(data: &[u8]) -> u16 {
+    data.iter().fold(0u16, |sum, &byte| {
+        sum.wrapping_add(u16::from(byte)).rotate_left(1)
+    })
+}
+
+/// A stored entry of a hand-made RAR 1.4 archive: its OEM name, DOS attributes, data and the
+/// checksum its header gives.
+struct Stored14<'a> {
+    name: &'a [u8],
+    attributes: u8,
+    data: &'a [u8],
+    sum: u16,
+}
+
+fn stored14<'a>(name: &'a [u8], attributes: u8, data: &'a [u8]) -> Stored14<'a> {
+    Stored14 {
+        name,
+        attributes,
+        data,
+        sum: old_sum(data),
+    }
+}
+
+/// A RAR 1.4 archive of stored entries: the marker, a main header of `main_flags`, and each
+/// entry's 21-byte header, name and data.
+fn rar14(main_flags: u8, entries: &[Stored14]) -> Vec<u8> {
+    let mut archive = b"RE~^".to_vec();
+    archive.extend_from_slice(&7u16.to_le_bytes());
+    archive.push(main_flags);
+    for entry in entries {
+        archive.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
+        archive.extend_from_slice(&(entry.data.len() as u32).to_le_bytes());
+        archive.extend_from_slice(&entry.sum.to_le_bytes());
+        archive.extend_from_slice(&(21 + entry.name.len() as u16).to_le_bytes());
+        archive.extend_from_slice(&DOS_TIME.to_le_bytes());
+        archive.push(entry.attributes);
+        archive.push(0);
+        archive.push(2);
+        archive.push(entry.name.len() as u8);
+        archive.push(0);
+        archive.extend_from_slice(entry.name);
+        archive.extend_from_slice(entry.data);
+    }
+    archive
+}
+
+/// The name, data and modification time of each file `archive_files` gives of `archive`.
+fn read_files(archive: &[u8]) -> Vec<(String, Vec<u8>, Option<i64>)> {
+    archive_files(archive)
+        .expect("the port reads the archive")
+        .into_iter()
+        .map(|file| (file.name, file.content.to_vec(), file.modified_millis))
+        .collect()
+}
+
+/// 2021-03-04 05:06:08 UTC, [`DOS_TIME`], in milliseconds since the epoch.
+const DOS_TIME_MILLIS: Option<i64> = Some(1_614_834_368_000);
+
+#[test]
+fn reads_rar_1_4_archives_as_junrar_does() {
+    let mut corrupt = stored14(b"corrupt.txt", 0x20, b"data whose sum is wrong");
+    corrupt.sum ^= 1;
+    let archive = rar14(
+        0,
+        &[
+            stored14(b"DIR", 0x10, b""),
+            stored14(b"DIR\\K\x84SE.TXT", 0x20, b"ost og br\xf8d"),
+            corrupt,
+            stored14(b"EMPTY.TXT", 0x20, b""),
+        ],
+    );
+    let headers = headers::read(&archive).unwrap();
+    assert_eq!(headers.files.len(), 4);
+    assert!(headers.files[0].is_directory());
+    assert_eq!(
+        read_files(&archive),
+        [
+            (
+                "DIR/K\u{e4}SE.TXT".to_owned(),
+                b"ost og br\xf8d".to_vec(),
+                DOS_TIME_MILLIS
+            ),
+            ("corrupt.txt".to_owned(), Vec::new(), DOS_TIME_MILLIS),
+            ("EMPTY.TXT".to_owned(), Vec::new(), DOS_TIME_MILLIS),
+        ]
+    );
+}
+
+#[test]
+fn fails_a_rar_1_4_archive_whose_header_is_cut_short() {
+    let mut archive = rar14(0, &[stored14(b"A.TXT", 0x20, b"a")]);
+    archive.extend_from_slice(&[1, 2, 3]);
+    let unopened = headers::read(&archive).unwrap_err();
+    assert!(
+        unopened.reason.contains("Truncated RAR 1.4 file header"),
+        "{unopened:?}"
+    );
+}
+
+#[test]
+fn finds_the_marker_of_a_self_extracting_archive_past_its_code() {
+    let mut sfx = b"MZ".to_vec();
+    sfx.resize(4096, 0x90);
+    sfx.extend_from_slice(&rar(0, &[stored(b"inside.txt", 0, b"self-extracted")]));
+    assert_eq!(
+        read_files(&sfx),
+        [(
+            "inside.txt".to_owned(),
+            b"self-extracted".to_vec(),
+            DOS_TIME_MILLIS
+        )]
+    );
+    let mut old = b"MZ".to_vec();
+    old.resize(28, 0x90);
+    old.extend_from_slice(b"RSFX");
+    old.resize(512, 0x90);
+    old.extend_from_slice(&rar14(0, &[stored14(b"OLD.TXT", 0x20, b"from 1.4")]));
+    assert_eq!(read_files(&old)[0].1, b"from 1.4");
+    let mut uncorroborated = old.clone();
+    uncorroborated[28..32].copy_from_slice(b"XXXX");
+    assert!(headers::read(&uncorroborated).is_err());
+}
