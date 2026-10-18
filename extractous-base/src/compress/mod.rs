@@ -7,6 +7,7 @@
 
 pub mod ar;
 pub mod archiver;
+pub mod brotli;
 pub mod bzip2;
 pub mod compressor;
 pub mod cpio;

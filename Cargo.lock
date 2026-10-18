@@ -767,6 +767,8 @@ version = "0.2.1"
 dependencies = [
  "aes",
  "ar",
+ "brotli",
+ "brotli-decompressor",
  "bzip2",
  "cpio",
  "encoding_rs",

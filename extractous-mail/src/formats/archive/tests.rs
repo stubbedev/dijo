@@ -8,6 +8,8 @@ use super::*;
 #[cfg(feature = "tika")]
 use crate::compress::ar::tests::ar;
 #[cfg(feature = "tika")]
+use crate::compress::brotli::tests::brotli;
+#[cfg(feature = "tika")]
 use crate::compress::bzip2::tests::bzip2;
 #[cfg(feature = "tika")]
 use crate::compress::cpio::tests::cpio;
@@ -321,6 +323,7 @@ fn extracts_compressed_files_as_tikas_path_does() {
             ("notes.lz4", lz4(text)),
             ("notes.txt.xz", xz(text)),
             ("notes.lzma", lzma(text)),
+            ("notes.txt.br", brotli(text)),
         ],
     );
 }

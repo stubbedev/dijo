@@ -1,9 +1,10 @@
-//! The compression formats commons-compress's `CompressorStreamFactory.detect` recognizes by
-//! their first bytes, and their decoding.
+//! The compression formats commons-compress's `CompressorStreamFactory` decodes: those its
+//! `detect` recognizes by their first bytes, and Brotli, which has no signature and is decoded
+//! only as named.
 
-use super::{bzip2, gzip, lz4, lzw, snappy, xz, zlib, zstd, Undecoded};
+use super::{brotli, bzip2, gzip, lz4, lzw, snappy, xz, zlib, zstd, Undecoded};
 
-/// A compression format `CompressorStreamFactory.detect` recognizes.
+/// A compression format `CompressorStreamFactory` decodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compressor {
     Bzip2,
@@ -16,6 +17,7 @@ pub enum Compressor {
     Lzma,
     Lz4Framed,
     Zstd,
+    Brotli,
 }
 
 /// What a compressed stream decodes into.
@@ -26,7 +28,7 @@ pub struct Decoded {
     pub content: Vec<u8>,
 }
 
-const ALL: [Compressor; 10] = [
+const ALL: [Compressor; 11] = [
     Compressor::Bzip2,
     Compressor::Gzip,
     Compressor::Pack200,
@@ -37,6 +39,7 @@ const ALL: [Compressor; 10] = [
     Compressor::Lzma,
     Compressor::Lz4Framed,
     Compressor::Zstd,
+    Compressor::Brotli,
 ];
 
 impl Compressor {
@@ -88,6 +91,7 @@ impl Compressor {
             Compressor::Lzma => "application/x-lzma",
             Compressor::Lz4Framed => "application/x-lz4",
             Compressor::Zstd => "application/zstd",
+            Compressor::Brotli => "application/x-brotli",
         }
     }
 
@@ -117,6 +121,7 @@ impl Compressor {
             Compressor::Xz => xz::decode_xz(data).map(content),
             Compressor::Lzma => xz::decode_lzma(data).map(content),
             Compressor::Zstd => zstd::decode(data).map(content),
+            Compressor::Brotli => brotli::decode(data).map(content),
             Compressor::Pack200 => Err(Undecoded::Unported("Pack200")),
         }
     }

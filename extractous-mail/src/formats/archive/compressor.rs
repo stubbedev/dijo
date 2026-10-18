@@ -13,7 +13,7 @@ use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::is_blank;
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
-const NATIVE: [Compressor; 9] = [
+const NATIVE: [Compressor; 10] = [
     Compressor::Gzip,
     Compressor::Bzip2,
     Compressor::Zlib,
@@ -23,6 +23,7 @@ const NATIVE: [Compressor; 9] = [
     Compressor::Xz,
     Compressor::Lzma,
     Compressor::Zstd,
+    Compressor::Brotli,
 ];
 
 const MEDIA_TYPES: [&str; NATIVE.len()] = [
@@ -35,6 +36,7 @@ const MEDIA_TYPES: [&str; NATIVE.len()] = [
     NATIVE[6].media_type(),
     NATIVE[7].media_type(),
     NATIVE[8].media_type(),
+    NATIVE[9].media_type(),
 ];
 
 /// Tika's `CompressorParser`.
