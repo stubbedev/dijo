@@ -9,22 +9,34 @@ use crate::formats::ole2::Summaries;
 use crate::formats::{Declined, Parser, Prepared, Unported};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::{Ole2, Unreadable};
+use crate::Error;
 
 /// `POIFSContainerDetector.MS_GRAPH_CHART`.
 const MS_GRAPH_CHART: &str = "application/vnd.ms-graph";
 
 /// The types `POIFSDocumentType` knows among those this parser reads, which `OfficeParser`
 /// sets as the content type.
-const DOCUMENT_TYPES: [&str; 4] = [
+const DOCUMENT_TYPES: [&str; 5] = [
     "application/vnd.ms-works",
     "application/vnd.ms-project",
     "application/sldworks",
     MS_GRAPH_CHART,
+    DRM_ENCRYPTED,
 ];
 
 /// The entry of an encrypted package, on which `OfficeParser` throws for a document of a kind it
 /// reads nothing of but its summary.
 const ENCRYPTED_PACKAGE: &str = "EncryptedPackage";
+
+/// `POIFSDocumentType.DRMENCRYPTED`, which `OfficeParser` throws on once it has read the summary
+/// information.
+const DRM_ENCRYPTED: &str = "application/x-tika-ole-drm-encrypted";
+
+/// What Tika's path fails a DRM encrypted document with, as our Java reports the
+/// `EncryptedDocumentException` `OfficeParser` throws.
+const DRM_UNSUPPORTED: &str = "Parse error occurred : \
+    org.apache.tika.exception.EncryptedDocumentException: DRM encrypted document is not yet \
+    supported by Apache POI";
 
 /// Tika's `OfficeParser` of the compound documents it reads the summary information of only.
 pub struct CompoundDocumentParser;
@@ -48,11 +60,13 @@ impl Parser for CompoundDocumentParser {
             "application/vnd.stardivision.writer",
             "application/x-corelpresentations",
             "application/x-tika-msoffice",
+            DRM_ENCRYPTED,
         ]
     }
 
     /// Defers documents POI does not open as this port does, macros extracted when asked to and
-    /// an encrypted package Tika throws on.
+    /// an encrypted package Tika throws on, and fails a DRM encrypted document as `OfficeParser`
+    /// does.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -60,6 +74,11 @@ impl Parser for CompoundDocumentParser {
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         let (summaries, document_type) = read(input, configs)?;
+        if document_type == Some(DRM_ENCRYPTED) {
+            return Err(Declined::Fails(Error::Encrypted(
+                DRM_UNSUPPORTED.to_owned(),
+            )));
+        }
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             summaries.write(metadata);
@@ -108,7 +127,7 @@ fn read(
         .find(|&known| detected == MediaType::named(known));
     let silent_kind = matches!(
         document_type,
-        Some("application/vnd.ms-project" | "application/sldworks")
+        Some("application/vnd.ms-project" | "application/sldworks" | DRM_ENCRYPTED)
     );
     if !silent_kind && file.child(root, ENCRYPTED_PACKAGE).is_some() {
         return Err(Unported(
@@ -123,7 +142,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
+    use crate::formats::parity::{
+        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+    };
     use crate::ole2::tests::compound;
 
     fn paths(files: &[PathBuf]) -> Vec<&Path> {
@@ -158,7 +179,32 @@ mod tests {
     fn extracts_tikas_test_compound_documents_as_tikas_path_does() {
         let (parsed, deferred) = documents(&CompoundDocumentParser, &[&conformance_corpus()]);
         assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 21, "{parsed:?}");
-        assert_same_as_tika(&paths(&parsed), CompoundDocumentParser.tika_name());
+        let (failing, read): (Vec<PathBuf>, Vec<PathBuf>) = parsed
+            .into_iter()
+            .partition(|path| path.ends_with("testWORD_protected_drm.doc"));
+        assert_eq!(read.len(), 21, "{read:?}");
+        assert_eq!(failing.len(), 1);
+        assert_same_as_tika(&paths(&read), CompoundDocumentParser.tika_name());
+        assert_fails_as_tika(&paths(&failing));
+    }
+
+    /// A DRM encrypted document fails as `OfficeParser` fails it, natively, where it went to
+    /// Tika's path (#119).
+    #[test]
+    fn fails_a_drm_encrypted_document_as_tikas_path_does() {
+        let scratch = Scratch::new("compound-drm");
+        let drm = scratch.write(
+            "drm.doc",
+            &compound(
+                &["\u{6}DataSpaces/", "\tDRMDataSpace", "WordDocument"],
+                b"x",
+            ),
+        );
+        let input = std::fs::read(&drm).unwrap();
+        assert!(matches!(
+            CompoundDocumentParser.prepare(&input, &TikaMetadata::new(), &ParserConfigs::default()),
+            Err(Declined::Fails(Error::Encrypted(reason))) if reason == DRM_UNSUPPORTED
+        ));
+        assert_fails_as_tika(&[&drm]);
     }
 }
