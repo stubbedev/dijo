@@ -250,14 +250,31 @@ impl Held for Spool {
     }
 }
 
-/// Nothing, for a stream decoded only to tell whether it decodes.
-impl Held for io::Sink {
-    type Bytes<'a> = ();
+/// How many bytes a stream decodes into, keeping none of them, for a stream decoded only to tell
+/// whether it decodes and how long it is.
+#[derive(Debug, Default)]
+pub struct Counted(u64);
 
-    fn stored<'a>(_: &'a [u8], _: Pages<'a>) -> Self::Bytes<'a> {}
+impl Write for Counted {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Held for Counted {
+    type Bytes<'a> = u64;
+
+    fn stored<'a>(bytes: &'a [u8], _: Pages<'a>) -> u64 {
+        bytes.len() as u64
+    }
 
     fn held<'a>(self) -> Result<Self::Bytes<'a>, Undecoded> {
-        Ok(())
+        Ok(self.0)
     }
 }
 
@@ -277,11 +294,11 @@ impl Decoding<Spool> {
     }
 }
 
-impl Decoding<io::Sink> {
-    /// The decoding of a stream of `compressed` bytes that keeps nothing, up to the limit of
-    /// [`Decoding::spooled`].
+impl Decoding<Counted> {
+    /// The decoding of a stream of `compressed` bytes that keeps nothing but its length, up to
+    /// the limit of [`Decoding::spooled`].
     pub fn discarded(compressed: usize) -> Self {
-        Self::new(io::sink(), decode_limit(compressed))
+        Self::new(Counted::default(), decode_limit(compressed))
     }
 }
 

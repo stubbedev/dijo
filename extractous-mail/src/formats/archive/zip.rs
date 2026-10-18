@@ -267,14 +267,14 @@ fn check_entries(
             zip.verify(entry)
         };
         match verified {
-            Some(Decoded::Complete(())) => {
+            Some(Decoded::Complete(_)) => {
                 paging.read(usize::try_from(entry.compressed_size).unwrap_or(usize::MAX));
             }
-            Some(Decoded::Oversized(())) if DEFERS => {
+            Some(Decoded::Oversized(_)) if DEFERS => {
                 return Err(too_large(&the_entry(&entry.name)))
             }
-            Some(Decoded::Oversized(())) => break,
-            Some(Decoded::Truncated(())) | None => {
+            Some(Decoded::Oversized(_)) => break,
+            Some(Decoded::Truncated(_)) | None => {
                 difference = difference.or_else(|| Some(cut_short(&entry.name)));
             }
         }
@@ -288,13 +288,13 @@ fn check_entries(
 
 /// How an entry's `content` reads, where it is complete once `scan` has found nothing in it to
 /// leave the archive to Tika's path for.
-fn scanned(scan: &mut Scan, content: Content) -> Result<Decoded<()>, Decline<'static>> {
+fn scanned(scan: &mut Scan, content: Content) -> Result<Decoded<u64>, Decline<'static>> {
     if let Content::Complete(content) = &content {
         if let Some(reason) = scan.entry(content) {
             return Err(Decline::Deferred(reason));
         }
     }
-    Ok(content.map(|_| ()))
+    Ok(content.map(|bytes| bytes.len() as u64))
 }
 
 /// How the native reading of an entry of `name` whose data is cut short or corrupt differs
@@ -495,11 +495,11 @@ impl Streamed {
                 stream.verify()
             };
             match verified {
-                Ok(Decoded::Complete(())) => {}
-                Ok(Decoded::Oversized(())) if DEFERS => {
+                Ok(Decoded::Complete(_)) => {}
+                Ok(Decoded::Oversized(_)) if DEFERS => {
                     return Err(too_large(&the_entry(&entry.name)))
                 }
-                Ok(Decoded::Oversized(())) => break,
+                Ok(Decoded::Oversized(_)) => break,
                 Err(stream::Failure::Method(method)) => {
                     difference = difference.or_else(|| {
                         Some(Difference::new(format!(
@@ -511,7 +511,7 @@ impl Streamed {
                     });
                     break;
                 }
-                Ok(Decoded::Truncated(())) => break,
+                Ok(Decoded::Truncated(_)) => break,
                 Err(_) => continue,
             }
             if !seen.insert(entry.name.clone()) && duplicates.len() < MAX_INTEGRITY_CHECK_ENTRIES {

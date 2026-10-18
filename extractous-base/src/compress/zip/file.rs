@@ -394,8 +394,9 @@ impl<'a> ZipFile<'a> {
         self.read_into(entry, pages, Decoding::spooled)
     }
 
-    /// [`ZipFile::spool`] keeping nothing, to tell whether the entry reads whole.
-    pub fn verify(&self, entry: &ZipEntry) -> Option<Decoded<()>> {
+    /// [`ZipFile::spool`] keeping nothing but the length decoded, to tell whether the entry
+    /// reads whole.
+    pub fn verify(&self, entry: &ZipEntry) -> Option<Decoded<u64>> {
         self.read_into(entry, Pages::IN_MEMORY, Decoding::discarded)
             .map(|read| read.expect("nothing fails to take what is decoded"))
     }
