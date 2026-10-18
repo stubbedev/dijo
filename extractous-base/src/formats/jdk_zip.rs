@@ -131,11 +131,16 @@ pub struct Checked {
 impl<'a> Archive<'a> {
     /// `new ZipFile(file)` of `input`, whose pages are `pages`.
     pub fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Refusal> {
-        Ok(Self {
-            zip: open(input)?,
+        Ok(Self::new(open(input)?, pages))
+    }
+
+    /// The archive `zip`, opened otherwise, of bytes whose pages are `pages`.
+    pub fn new(zip: ZipFile<'a>, pages: Pages<'a>) -> Self {
+        Self {
+            zip,
             pages,
             paging: Paging::new(pages),
-        })
+        }
     }
 
     pub fn zip(&self) -> &ZipFile<'a> {
