@@ -35,67 +35,83 @@ pub use render::{PdfPages, Resolution};
 pub use report::KEY as REPORT;
 pub use tesseract::{OcrError, Tesseract};
 
-/// What OCR read in an image file, and the script the extraction learns from it, if any.
-#[derive(Debug)]
-pub(crate) struct ImageRead {
-    pub(crate) pages: ReadPages,
-    pub(crate) learned: Option<String>,
+/// What OCR read of an image file, handed on to be written as it is read.
+pub(crate) enum ImageRead<'r> {
+    /// The reading of a file of one image.
+    One(&'r Attempt),
+    /// The reading of a page of a TIFF, numbered from 1, each a page of the output: none for a
+    /// page too large or damaged to read.
+    Page {
+        number: u32,
+        attempt: Option<&'r Attempt>,
+    },
 }
 
-/// The readings of an image file's pages.
-#[derive(Debug)]
-pub(crate) enum ReadPages {
-    /// The reading of a file of one image.
-    One(Attempt),
-    /// The readings of the pages of a TIFF, each a page of the output: none for a page too large
-    /// or damaged to read.
-    Many(Vec<Option<Attempt>>),
+/// Why reading an image file stopped: tesseract failed, or writing what it read did.
+pub(crate) enum Stopped<W> {
+    Ocr(OcrError),
+    Writing(W),
 }
 
 /// Our Java `PreparingOcrParser.parse` of a decoded image file: one image read as any image is,
 /// or the pages of a TIFF read side by side, the first in the script the extraction assumes
-/// and the rest in the one it settles. With the automatic language, the extraction learns the
-/// script of the image, or of its first page.
-pub(crate) fn read_image(
+/// and the rest in the one it settles, each decoded when it is read and freed once it is, and
+/// handed to `write` in page order. With the automatic language, the extraction learns the
+/// script of the image, or of its first page, which this returns.
+pub(crate) fn read_image<W>(
     tesseract: &Tesseract,
     settings: &OcrSettings,
     decoded: Decoded<'_>,
     file_size: u64,
     orientation: Option<Orientation>,
     assumed: Option<&str>,
-) -> Result<ImageRead, OcrError> {
+    mut write: impl FnMut(ImageRead<'_>) -> Result<(), W>,
+) -> Result<Option<String>, Stopped<W>> {
     let recognizer = Recognizer::new(tesseract, settings);
-    match decoded {
+    let learned = match decoded {
         Decoded::Single { bitmap, file } => {
             let image = Image::of(&bitmap, file, file_size, orientation);
-            let Recognized { read, learned } = recognizer.recognize(&image, assumed)?;
-            Ok(ImageRead {
-                pages: ReadPages::One(read),
-                learned: learned.filter(|_| settings.auto()),
-            })
+            let Recognized { read, learned } = recognizer
+                .recognize(&image, assumed)
+                .map_err(Stopped::Ocr)?;
+            drop(bitmap);
+            write(ImageRead::One(&read)).map_err(Stopped::Writing)?;
+            learned
         }
         Decoded::Pages(pages) => {
             let first_page = FirstPage::new(assumed.map(str::to_owned));
-            let read = read_pages(
+            read_pages(
                 pages.count(),
                 &first_page,
-                || (),
-                |(), index, script| {
-                    let Ok(bitmap) = pages.page(index) else {
+                || pages.reader(),
+                |reader, index, script| {
+                    let page = match reader {
+                        Ok(reader) => reader.page(index),
+                        Err(unreadable) => Err(unreadable.clone()),
+                    };
+                    let Ok(bitmap) = page else {
                         return Ok((None, None));
                     };
                     let image = Image::of(&bitmap, None, file_size, orientation);
                     let Recognized { read, learned } = recognizer.recognize(&image, script)?;
                     Ok((Some(read), learned))
                 },
-                |outputs| std::iter::from_fn(|| outputs.next()).collect::<Result<_, _>>(),
+                |outputs| {
+                    for (index, output) in std::iter::from_fn(|| outputs.next()).enumerate() {
+                        let attempt = output.map_err(Stopped::Ocr)?;
+                        write(ImageRead::Page {
+                            number: index as u32 + 1,
+                            attempt: attempt.as_ref(),
+                        })
+                        .map_err(Stopped::Writing)?;
+                    }
+                    Ok(())
+                },
             )?;
-            Ok(ImageRead {
-                pages: ReadPages::Many(read),
-                learned: first_page.learned().filter(|_| settings.auto()),
-            })
+            first_page.learned()
         }
-    }
+    };
+    Ok(learned.filter(|_| settings.auto()))
 }
 
 /// The version of the tesseract OCR runs, since OCR output depends on it: the one the build

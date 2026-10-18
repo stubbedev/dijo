@@ -46,12 +46,14 @@ pub fn media_type_extension(media_type: &str) -> Option<&'static str> {
 
 mod fetch;
 mod formats;
+/// Files too large to read whole, and the peak memory their extraction takes, for the tests of the
+/// crates of the formats.
+#[cfg(any(test, feature = "parity"))]
+pub use formats::large;
 /// The parity harness, which compares the native parsers with Tika's path, for the tests of the
 /// crates of the formats.
 #[cfg(any(test, feature = "parity"))]
 pub use formats::parity;
-#[cfg(any(test, feature = "parity"))]
-pub mod large;
 /// The tests count allocations as the command line does, so that budgets are enforced in them.
 #[cfg(test)]
 #[global_allocator]

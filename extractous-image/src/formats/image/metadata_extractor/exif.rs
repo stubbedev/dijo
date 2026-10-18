@@ -578,7 +578,9 @@ fn process_tiff(reader: &mut Reader, handler: &mut Handler, header: i64) -> Resu
 
 /// `TiffReader.processIfd`: the IFD at `offset`, then the sub-IFDs its tags point at and the
 /// IFD that follows it; each IFD ends, whatever happens, with `endingIFD` and the byte order it
-/// started with.
+/// started with. Java follows the chain of IFDs, a page of a TIFF each, by recursion; it is
+/// followed here in a loop, the IFDs ending together at its end, so that a TIFF of any number of
+/// pages is read in a bounded stack.
 fn process_ifd(
     handler: &mut Handler,
     reader: &mut Reader,
@@ -586,15 +588,31 @@ fn process_ifd(
     offset: i64,
     header: i64,
 ) -> Result<(), TiffError> {
-    let mut reset = None;
-    let result = process_ifd_body(handler, reader, processed, offset, header, &mut reset);
-    handler.ending_ifd();
-    if let Some(order) = reset {
+    let mut offset = offset;
+    let mut chained = 0usize;
+    let mut first_order = None;
+    let result = loop {
+        let mut reset = None;
+        let followed = process_ifd_body(handler, reader, processed, offset, header, &mut reset);
+        chained += 1;
+        first_order = first_order.or(reset);
+        match followed {
+            Ok(Some(follower)) => offset = follower,
+            Ok(None) => break Ok(()),
+            Err(error) => break Err(error),
+        }
+    };
+    for _ in 0..chained {
+        handler.ending_ifd();
+    }
+    if let Some(order) = first_order {
         reader.motorola = order;
     }
     result
 }
 
+/// The IFD at `offset` and the sub-IFDs its tags point at: the offset of the IFD that follows
+/// it, if the handler follows it.
 fn process_ifd_body(
     handler: &mut Handler,
     reader: &mut Reader,
@@ -602,14 +620,14 @@ fn process_ifd_body(
     offset: i64,
     header: i64,
     reset: &mut Option<bool>,
-) -> Result<(), TiffError> {
+) -> Result<Option<i64>, TiffError> {
     let offset_key = i64::from(offset as i32);
     if !processed.insert(offset_key) {
-        return Ok(());
+        return Ok(None);
     }
     if offset >= reader.len() || offset < 0 {
         handler.error("Ignored IFD marked to start outside data segment");
-        return Ok(());
+        return Ok(None);
     }
     let mut count = i64::from(reader.u16(offset)?);
     if count > 0xFF && count & 0xFF == 0 {
@@ -620,7 +638,7 @@ fn process_ifd_body(
     let length = 2 + 12 * count + 4;
     if length + offset > reader.len() {
         handler.error("Illegally sized IFD");
-        return Ok(());
+        return Ok(None);
     }
     let mut invalid_formats = 0;
     for number in 0..count {
@@ -640,7 +658,7 @@ fn process_ifd_body(
                     invalid_formats += 1;
                     if invalid_formats > 5 {
                         handler.error("Stopping processing as too many errors seen in TIFF IFD");
-                        return Ok(());
+                        return Ok(None);
                     }
                     continue;
                 }
@@ -693,13 +711,13 @@ fn process_ifd_body(
     if next != 0 {
         let next = i64::from(next) + header;
         if next >= reader.len() || next < offset {
-            return Ok(());
+            return Ok(None);
         }
         if handler.has_follower_ifd() {
-            process_ifd(handler, reader, processed, next, header)?;
+            return Ok(Some(next));
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// `TiffReader.processTag`: the tag's value, kept as the Java type metadata-extractor keeps it.

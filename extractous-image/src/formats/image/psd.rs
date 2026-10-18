@@ -6,6 +6,7 @@ use super::image_xmp;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xmp::{self, text, Property};
 use crate::formats::Unported;
+use crate::input::{Pages, Paging};
 use crate::text::charset::Charset;
 
 const COLOR_MODE: Property = text("photoshop:ColorMode");
@@ -137,7 +138,7 @@ pub(crate) fn read(input: &[u8], metadata: &mut TikaMetadata) -> Result<(), PsdE
                     .expect("the JDK port decodes US-ASCII");
                 xmp::add(metadata, &DESCRIPTION, &caption)?;
             }
-            XMP => image_xmp::scan_and_extract(data, metadata)?,
+            XMP => image_xmp::scan_and_extract(data, &Paging::new(Pages::IN_MEMORY), metadata)?,
             _ => {}
         }
         blocks += 1;

@@ -24,6 +24,7 @@ use super::bitmap::{cmyk_rgb, Bitmap};
 use super::prepare::Orientation;
 use super::recognize::MAX_PIXELS;
 use super::{avif, heif, jbig2, raster};
+use crate::input::Pages;
 
 /// The formats this module decodes, by the media types Tika's detection gives them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,24 +95,43 @@ pub(crate) const MAX_DECODED_PIXELS: u64 = ((1 << 31) - 1) / 4;
 /// A decoded image or page, or why it could not be decoded.
 pub(crate) type Page = Result<Bitmap, String>;
 
-/// The pages of a TIFF of more than one page.
+/// The pages of a TIFF of more than one page, and the pages of memory its file is mapped to.
 pub(crate) struct TiffPages<'a> {
     input: &'a [u8],
     count: usize,
+    memory: Pages<'a>,
 }
 
-impl TiffPages<'_> {
+impl<'a> TiffPages<'a> {
     pub(crate) fn count(&self) -> usize {
         self.count
     }
 
-    /// A page, decoded unless it has more than [`MAX_PIXELS`] pixels or is damaged.
-    pub(crate) fn page(&self, index: usize) -> Page {
-        let mut decoder = tiff_decoder(self.input)?;
-        decoder
+    /// A reader of the pages, which reads each in turn from where it read the last.
+    pub(crate) fn reader(&self) -> Result<TiffPageReader<'a>, String> {
+        Ok(TiffPageReader {
+            decoder: tiff_decoder(self.input)?,
+            memory: self.memory,
+        })
+    }
+}
+
+/// A reader of the pages of a TIFF, one at a time.
+pub(crate) struct TiffPageReader<'a> {
+    decoder: Decoder<Cursor<&'a [u8]>>,
+    memory: Pages<'a>,
+}
+
+impl TiffPageReader<'_> {
+    /// A page, decoded unless it has more than [`MAX_PIXELS`] pixels or is damaged. The pages
+    /// of a mapped file read to decode it are released.
+    pub(crate) fn page(&mut self, index: usize) -> Page {
+        self.decoder
             .seek_to_image(index)
             .map_err(|e| format!("cannot find page {}: {e}", index + 1))?;
-        tiff_page(&mut decoder, MAX_PIXELS)
+        let page = tiff_page(&mut self.decoder, MAX_PIXELS);
+        self.memory.release();
+        page
     }
 }
 
@@ -152,12 +172,14 @@ impl From<String> for Undecoded {
 }
 
 /// Decodes an image file of a format, any program decoding it given `timeout`, or tells why it
-/// cannot.
-pub(crate) fn decode(
-    input: &[u8],
+/// cannot. The pages of a TIFF of several, mapped to the pages of `memory`, are decoded one at a
+/// time as they are read.
+pub(crate) fn decode<'a>(
+    input: &'a [u8],
+    memory: Pages<'a>,
     format: Format,
     timeout: Option<std::time::Duration>,
-) -> Result<Decoded<'_>, Undecoded> {
+) -> Result<Decoded<'a>, Undecoded> {
     let single = |bitmap| Decoded::Single {
         bitmap,
         file: format.read_by_tesseract().then_some(input),
@@ -182,7 +204,11 @@ pub(crate) fn decode(
                 .seek_to_image(0)
                 .map_err(|e| format!("cannot read the TIFF's first page: {e}"))?;
             if count > 1 {
-                return Ok(Decoded::Pages(TiffPages { input, count }));
+                return Ok(Decoded::Pages(TiffPages {
+                    input,
+                    count,
+                    memory,
+                }));
             }
             Ok(single(tiff_page(&mut decoder, MAX_DECODED_PIXELS)?))
         }
@@ -499,7 +525,12 @@ mod tests {
             "bmp" => "image/bmp",
             other => panic!("{path}: no image of extension {other} is referenced"),
         };
-        match decode(bytes, Format::of(media_type).unwrap(), None) {
+        match decode(
+            bytes,
+            Pages::IN_MEMORY,
+            Format::of(media_type).unwrap(),
+            None,
+        ) {
             Ok(Decoded::Single { bitmap, .. }) => {
                 let gray = bitmap.gray();
                 let digest: String = Sha256::digest(gray.as_raw())
@@ -562,8 +593,8 @@ mod tests {
             ("prose-scan.heic", Format::Heif, 2),
         ] {
             let input = std::fs::read(format!("../quality/corpus/{file}")).unwrap();
-            let Decoded::Single { bitmap, .. } =
-                decode(&input, format, None).unwrap_or_else(|e| panic!("{file}: {e:?}"))
+            let Decoded::Single { bitmap, .. } = decode(&input, Pages::IN_MEMORY, format, None)
+                .unwrap_or_else(|e| panic!("{file}: {e:?}"))
             else {
                 panic!("{file} is one image");
             };
@@ -582,7 +613,7 @@ mod tests {
     }
 
     fn single(input: &[u8], format: Format) -> Bitmap {
-        match decode(input, format, None) {
+        match decode(input, Pages::IN_MEMORY, format, None) {
             Ok(Decoded::Single { bitmap, .. }) => bitmap,
             Ok(Decoded::Pages(_)) => panic!("{format:?} decodes as pages"),
             Err(e) => panic!("{format:?}: {e:?}"),
@@ -630,7 +661,7 @@ mod tests {
             ("prose-scan.heic", Format::Heif),
         ] {
             let input = std::fs::read(format!("../quality/corpus/{file}")).unwrap();
-            match decode(&input[..input.len() / 2], format, None) {
+            match decode(&input[..input.len() / 2], Pages::IN_MEMORY, format, None) {
                 Err(Undecoded::Rejected(message)) => assert!(!message.is_empty(), "{file}"),
                 Ok(_) => panic!("{file}: a truncated file decodes"),
                 Err(other) => panic!("{file}: {other:?}"),

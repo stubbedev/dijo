@@ -967,7 +967,7 @@ fn iphone_heic() -> Vec<u8> {
 
 /// A HEIF image as [`iphone_heic`], or with `exif_first` the Exif item in a free box before
 /// the meta box.
-fn heic(exif_first: bool) -> Vec<u8> {
+pub(super) fn heic(exif_first: bool) -> Vec<u8> {
     let file_type = bmff(b"ftyp", &[&b"heic"[..], &[0; 4], b"mif1heic"].concat());
     let exif = [&6u32.to_be_bytes()[..], b"Exif\0\0", &iphone_exif()].concat();
     let image = b"not an image".to_vec();
