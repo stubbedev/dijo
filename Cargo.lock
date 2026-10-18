@@ -946,6 +946,7 @@ dependencies = [
  "extractous-core",
  "extractous-image",
  "flate2",
+ "hayro-ccitt",
  "image",
  "lopdf",
  "lzma-rust2",
@@ -1443,6 +1444,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

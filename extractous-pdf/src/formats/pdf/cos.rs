@@ -82,13 +82,14 @@ pub(super) struct Pdf<'d> {
 
 impl<'d> Pdf<'d> {
     /// The document `data`, whose cross-reference PDFBox reads as `resolution`, its pages
-    /// released as it is read.
+    /// released as it is read. The objects PDFBox read while it read the cross-reference stay
+    /// as it read them, but dictionaries, which may be streams, are read as other objects are.
     pub(super) fn new(
         data: &'d [u8],
         paging: Paging<'d>,
         resolution: &Resolution,
     ) -> Result<Self, Unported> {
-        let objects = resolution
+        let mut objects: HashMap<ObjectId, Slot> = resolution
             .placements()?
             .into_iter()
             .map(|(id, placement)| {
@@ -99,6 +100,18 @@ impl<'d> Pdf<'d> {
                 (id, slot)
             })
             .collect();
+        for (id, placement, object) in resolution.pooled()? {
+            if matches!(object, Object::Dictionary(_)) {
+                continue;
+            }
+            let slot = objects.entry(id).or_insert_with(|| Slot {
+                placement,
+                object: OnceCell::new(),
+            });
+            slot.object
+                .set(Some(object.clone()))
+                .expect("each object is pooled once");
+        }
         let spells_filespec = paging.find(data, b"Filespec").is_some();
         let pdf = Self {
             data,
@@ -502,22 +515,44 @@ impl<'d> Pdf<'d> {
             .crypt
             .as_ref()
             .expect("an encrypted stream is read from a document that decrypts");
-        let mut encrypted = Object::Stream(Stream {
-            dict: stream.dict.clone(),
-            content: data.to_vec(),
-            allows_compression: false,
-            start_position: None,
-        });
-        decrypt_object(state, found.id, &mut encrypted).map_err(|error| {
+        let decrypted = decrypt_data(state, found.id, &stream.dict, data).map_err(|error| {
             Unported(format!(
                 "the data of stream {} {}, which does not decrypt: {error}",
                 found.id.0, found.id.1
             ))
         })?;
-        let Object::Stream(decrypted) = encrypted else {
-            unreachable!("decrypting a stream keeps it one")
-        };
-        Ok(Cow::Owned(decrypted.content))
+        Ok(Cow::Owned(decrypted))
+    }
+
+    /// `SecurityHandler.decryptStream` of the data `data` of the stream `id` of `dict`, as
+    /// `bfSearchForObjStreams` decrypts an object stream it finds: data that does not decrypt
+    /// is a corrupt stream.
+    pub(super) fn decrypted(&self, id: ObjectId, dict: &Dictionary, data: &[u8]) -> Read<Vec<u8>> {
+        match &self.crypt {
+            Some(state) if self.decrypts_stream(id, dict, data) => {
+                decrypt_data(state, id, dict, data).map_err(|_| Thrown::Io)
+            }
+            _ => Ok(data.to_vec()),
+        }
+    }
+
+    /// Reads each object of `placements` from where it says from now on, as `getObjectOffset`
+    /// finds the objects `bfSearchForObjStreams` adds; an object already read keeps what it read.
+    pub(super) fn place(&mut self, placements: HashMap<ObjectId, Placement>) {
+        for (id, placement) in placements {
+            match self.objects.get_mut(&id) {
+                Some(slot) => slot.placement = placement,
+                None => {
+                    self.objects.insert(
+                        id,
+                        Slot {
+                            placement,
+                            object: OnceCell::new(),
+                        },
+                    );
+                }
+            }
+        }
     }
 
     /// The decoded data of `stream`, its filters applied in order as PDFBox applies them, each
@@ -586,6 +621,26 @@ impl<'d> Pdf<'d> {
         }
         found
     }
+}
+
+/// The data `data` of the stream `id` of `dict`, decrypted with `state`.
+fn decrypt_data(
+    state: &EncryptionState,
+    id: ObjectId,
+    dict: &Dictionary,
+    data: &[u8],
+) -> Result<Vec<u8>, lopdf::Error> {
+    let mut encrypted = Object::Stream(Stream {
+        dict: dict.clone(),
+        content: data.to_vec(),
+        allows_compression: false,
+        start_position: None,
+    });
+    decrypt_object(state, id, &mut encrypted)?;
+    let Object::Stream(decrypted) = encrypted else {
+        unreachable!("decrypting a stream keeps it one")
+    };
+    Ok(decrypted.content)
 }
 
 /// `PDFObjectStreamParser.parseAllObjects`: the objects of an object stream of `count` objects,

@@ -3,7 +3,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "tika")]
-use super::super::tests::{as_paths, tika_name, CORPORA};
+use super::super::tests::{as_paths, tika_name, CORPORA, XFA_FAILURE};
 use super::super::tests::{document, page_objects};
 use super::super::PdfParser;
 #[cfg(feature = "tika")]
@@ -14,7 +14,7 @@ use crate::config::{ParserConfigs, PdfOcrStrategy, PdfParserConfig};
 use crate::formats::metadata::TikaMetadata;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_fails_as_tika_with, assert_same_as_tika_delegating_with, conformance_corpus,
+    assert_fails_as_tika_with, assert_same_as_tika_delegating_departing_with, conformance_corpus,
     documents_with, spools_as_tika_departing_with, Departure, Departures, Scratch,
 };
 use crate::formats::Parser;
@@ -57,9 +57,22 @@ const PNG_WRITER: Departures = &[Departure::PngImages("#131")];
 /// documents embed, but for [`PNG_WRITER`].
 #[cfg(feature = "tika")]
 fn assert_same(paths: &[PathBuf], configs: &ParserConfigs) {
-    assert_same_as_tika_delegating_with(&as_paths(paths), tika_name(), &DELEGATES, configs);
+    assert_same_departing(paths, configs, &[]);
+}
+
+/// [`assert_same`], but for `departures` too.
+#[cfg(feature = "tika")]
+fn assert_same_departing(paths: &[PathBuf], configs: &ParserConfigs, departures: Departures) {
+    let departures: Vec<Departure> = PNG_WRITER.iter().chain(departures).copied().collect();
+    assert_same_as_tika_delegating_departing_with(
+        &as_paths(paths),
+        tika_name(),
+        &DELEGATES,
+        &departures,
+        configs,
+    );
     for path in paths {
-        let spooled = spools_as_tika_departing_with(path, u64::MAX, PNG_WRITER, configs);
+        let spooled = spools_as_tika_departing_with(path, u64::MAX, &departures, configs);
         assert!(spooled.is_ok(), "{}", spooled.unwrap_err());
     }
 }
@@ -158,6 +171,7 @@ fn icc(srgb: bool) -> String {
 }
 
 /// Images in each colour space and sample depth the port reads, and with each kind of mask.
+#[cfg(feature = "tika")]
 fn sampled_images() -> Vec<u8> {
     let lookup = hex(&[255, 0, 0, 0, 128, 255, 20, 200, 30, 250, 250, 250]);
     let rgb = |seed, extra: &str| {
@@ -272,6 +286,411 @@ fn extracts_images_of_every_colour_space_and_mask_as_tikas_path_does() {
         let input = std::fs::read(&path).unwrap();
         assert_eq!(deferral(&input, &configs), None, "{configs:?}");
         assert_same(std::slice::from_ref(&path), &configs);
+    }
+}
+
+/// PDFBox's CMYK profile, which an ICC colour space of the fixtures embeds too.
+const CMYK_PROFILE: &[u8] = include_bytes!("../../../../models/pdf/CGATS001Compat-v2-micro.icc");
+
+/// The images of [`colour_space_images`] in the CIE-based colour spaces, Lab, CalRGB and
+/// CalGray, and a separation over Lab.
+const CIE_IMAGES: [usize; 5] = [7, 10, 11, 12, 13];
+
+/// [`colour_space_images`] drawing the images `drawn` of them, each once.
+fn colour_space_images_drawing(drawn: impl Iterator<Item = usize>) -> Vec<u8> {
+    let content: String = drawn
+        .map(|index| format!("q 20 0 0 20 {} 600 cm /Im{index} Do Q ", 22 * index))
+        .collect();
+    colour_space_images(&content)
+}
+
+/// Images in the colour spaces PDFBox converts with profiles, CIE XYZ and tint transforms:
+/// DeviceCMYK, ICC CMYK and RGB profiles, palettes over them, separations and DeviceN over
+/// each kind of function, Lab, CalRGB and CalGray, each of several rows and columns and of one,
+/// which Java2D draws, drawn by `content`.
+fn colour_space_images(content: &str) -> Vec<u8> {
+    let image8 = |space: &str, width: usize, height: usize, components: usize, seed: u8| {
+        image(
+            &format!("/Width {width} /Height {height} /ColorSpace {space} /BitsPerComponent 8"),
+            "",
+            &samples(width * height * components, seed),
+        )
+    };
+    let cmyk_profile = 23;
+    let rgb_profile = 24;
+    let exponential = 25;
+    let calculator = 26;
+    let sampled = 27;
+    let two_inks = 28;
+    let lab = "[/Lab << /WhitePoint [0.9505 1 1.089] /Range [-100 100 -100 100] >>]";
+    let images =
+        vec![
+        image8("/DeviceCMYK", 3, 2, 4, 1),
+        image8("/DeviceCMYK", 5, 1, 4, 2),
+        image8(&format!("[/ICCBased {cmyk_profile} 0 R]"), 3, 2, 4, 3),
+        image(
+            &format!(
+                "/Width 3 /Height 2 /ColorSpace [/Indexed /DeviceCMYK 2 <{}>] \
+                 /BitsPerComponent 8",
+                hex(&samples(12, 4))
+            ),
+            "",
+            &[0, 1, 2, 2, 1, 0],
+        ),
+        image(
+            &format!(
+                "/Width 3 /Height 2 /ColorSpace [/Indexed [/ICCBased {rgb_profile} 0 R] 2 <{}>] \
+                 /BitsPerComponent 8",
+                hex(&samples(9, 5))
+            ),
+            "",
+            &[2, 1, 0, 0, 1, 2],
+        ),
+        image8(&format!("[/Separation /Spot /DeviceRGB {exponential} 0 R]"), 3, 2, 1, 6),
+        image(
+            &format!(
+                "/Width 4 /Height 2 /ColorSpace [/Separation /Spot2 /DeviceCMYK {calculator} 0 R] \
+                 /BitsPerComponent 4"
+            ),
+            "",
+            &[0x0f, 0x7a, 0x31, 0xc8],
+        ),
+        image8(&format!("[/Separation /Spot3 {lab} {sampled} 0 R]"), 3, 2, 1, 7),
+        image8(&format!("[/DeviceN [/A /B] /DeviceCMYK {two_inks} 0 R]"), 3, 2, 2, 8),
+        image8(
+            &format!(
+                "[/DeviceN [/Cyan /Spot] /DeviceCMYK {two_inks} 0 R << /Subtype /DeviceN \
+                 /Process << /ColorSpace /DeviceCMYK /Components [/Cyan /Magenta /Yellow /Black] \
+                 >> /Colorants << /Spot [/Separation /Spot /DeviceRGB {exponential} 0 R] >> >>]"
+            ),
+            3,
+            2,
+            2,
+            9,
+        ),
+        image8(lab, 3, 2, 3, 10),
+        image8(
+            "[/CalRGB << /WhitePoint [1 1 1] /Gamma [2.2 2.2 2.2] /Matrix [0.4124 0.2126 0.0193 \
+             0.3576 0.7152 0.1192 0.1805 0.0722 0.9505] >>]",
+            3,
+            2,
+            3,
+            11,
+        ),
+        image8("[/CalRGB << /WhitePoint [0.9505 1 1.089] >>]", 3, 2, 3, 12),
+        image8("[/CalGray << /WhitePoint [1 1 1] /Gamma 2.2 >>]", 3, 2, 1, 13),
+        image(
+            "/Width 2 /Height 2 /ColorSpace /DeviceCMYK /BitsPerComponent 16",
+            "/FlateDecode",
+            &zlib(&samples(32, 14)),
+        ),
+        image(
+            "/Width 3 /Height 2 /ColorSpace /DeviceCMYK /BitsPerComponent 8 /SMask 29 0 R",
+            "",
+            &samples(24, 15),
+        ),
+        image8(&format!("[/ICCBased {cmyk_profile} 0 R]"), 1, 3, 4, 16),
+    ];
+    let mut objects = images;
+    objects.extend([
+        stream("/N 4", "", CMYK_PROFILE),
+        icc(false),
+        "<< /FunctionType 2 /Domain [0 1] /C0 [1 1 1] /C1 [0.2 0.4 0.9] /N 1.5 >>".to_owned(),
+        stream(
+            "/FunctionType 4 /Domain [0 1] /Range [0 1 0 1 0 1 0 1]",
+            "",
+            b"{ dup 0.5 mul exch dup 0.25 mul exch 0 exch }",
+        ),
+        stream(
+            "/FunctionType 0 /Domain [0 1] /Range [0 100 -128 127 -128 127] /Size [2] \
+             /BitsPerSample 8",
+            "",
+            &[255, 128, 128, 64, 200, 60],
+        ),
+        stream(
+            "/FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1 0 1]",
+            "",
+            b"{ 0 0 }",
+        ),
+        image(
+            "/Width 3 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 \
+             /Matte [0.1 0.2 0.3 0.4]",
+            "",
+            &samples(6, 17),
+        ),
+    ]);
+    drawing(content, &xobjects(17), &objects)
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn converts_the_colour_spaces_as_tikas_path_does() {
+    let scratch = Scratch::new("pdf-colour-spaces");
+    let drawn = (0..17).filter(|index| !CIE_IMAGES.contains(index));
+    let path = scratch.write("colours.pdf", &colour_space_images_drawing(drawn));
+    let configs = without_page_ocr(false);
+    let input = std::fs::read(&path).unwrap();
+    assert_eq!(deferral(&input, &configs), None);
+    assert_same(std::slice::from_ref(&path), &configs);
+}
+
+/// Tika's native image lacks the JDK's CIE XYZ profile, so that PDFBox's conversion of a CIE
+/// colour throws a `CMMException` Tika does not catch and the whole document fails; the
+/// native parser converts the colours as PDFBox does on the JVM (#125), which the colour
+/// space's own test checks.
+#[test]
+fn converts_cie_based_images_where_tikas_native_image_fails() {
+    let input = colour_space_images_drawing(CIE_IMAGES.into_iter());
+    let configs = without_page_ocr(false);
+    assert_eq!(deferral(&input, &configs), None);
+    let (xml, _) = extracting(&input, &configs);
+    let names: Vec<String> = CIE_IMAGES
+        .iter()
+        .enumerate()
+        .map(|(number, _)| format!("image-{number}.png"))
+        .collect();
+    assert_eq!(image_names(&xml), names, "{xml}");
+}
+
+/// A JPEG ImageMagick 7 wrote in CMYK, as YCCK under an Adobe marker, and a grey one, each of
+/// 23 by 17 pixels.
+const CMYK_JPEG: &[u8] = include_bytes!("../../../../tests/fixtures/pdf/cmyk.jpg");
+const GRAY_JPEG: &[u8] = include_bytes!("../../../../tests/fixtures/pdf/gray.jpg");
+
+/// JPEG images Java decodes, drawn by `content`: masked ones in RGB, CMYK and grey (`Im0` to
+/// `Im2`), which Tika writes as PNG, an unmasked CMYK one and a grey one through a separation
+/// (`Im3`, `Im4`), which Java encodes as JPEG anew, and inline ones in grey, copied, and in
+/// CMYK, encoded anew.
+fn jpeg_images(content: &str) -> Vec<u8> {
+    let jpeg_image = |dict: &str, data: &[u8]| image(dict, "/DCTDecode", data);
+    let small = "/Width 23 /Height 17 /BitsPerComponent 8";
+    let objects = vec![
+        jpeg_image(
+            "/Width 46 /Height 56 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 11 0 R",
+            &jpeg(),
+        ),
+        jpeg_image(
+            &format!("{small} /ColorSpace /DeviceCMYK /SMask 12 0 R"),
+            CMYK_JPEG,
+        ),
+        jpeg_image(
+            &format!("{small} /ColorSpace /DeviceGray /Mask 13 0 R"),
+            GRAY_JPEG,
+        ),
+        jpeg_image(&format!("{small} /ColorSpace /DeviceCMYK"), CMYK_JPEG),
+        jpeg_image(
+            &format!("{small} /ColorSpace [/Separation /Ink /DeviceRGB 14 0 R]"),
+            GRAY_JPEG,
+        ),
+        image(
+            "/Width 46 /Height 56 /ColorSpace /DeviceGray /BitsPerComponent 8",
+            "",
+            &samples(46 * 56, 1),
+        ),
+        image(
+            "/Width 23 /Height 17 /ColorSpace /DeviceGray /BitsPerComponent 8",
+            "",
+            &samples(23 * 17, 2),
+        ),
+        image(
+            "/Width 23 /Height 17 /ImageMask true",
+            "",
+            &samples(3 * 17, 3),
+        ),
+        "<< /FunctionType 2 /Domain [0 1] /C0 [1 1 1] /C1 [0.1 0.5 0.2] /N 1 >>".to_owned(),
+    ];
+    drawing(content, &xobjects(5), &objects)
+}
+
+/// An inline JPEG of the colour space `space`, its data in hexadecimal.
+fn inline_jpeg(space: &str, data: &[u8]) -> String {
+    format!(
+        "q 23 0 0 17 0 300 cm BI /W 23 /H 17 /CS /{space} /BPC 8 /F [/AHx /DCT] ID {}> EI Q ",
+        hex(data)
+    )
+}
+
+/// The images of Java's JPEG writer in [`jpeg_images`], unmasked CMYK, grey through a
+/// separation and inline CMYK.
+fn jpegs_written_anew() -> Vec<u8> {
+    jpeg_images(&format!(
+        "q 23 0 0 17 0 600 cm /Im3 Do Q q 23 0 0 17 30 600 cm /Im4 Do Q {}",
+        inline_jpeg("CMYK", CMYK_JPEG)
+    ))
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn decodes_masked_jpegs_as_tikas_path_does() {
+    let scratch = Scratch::new("pdf-masked-jpegs");
+    let content = format!(
+        "q 46 0 0 56 0 600 cm /Im0 Do Q q 23 0 0 17 50 600 cm /Im1 Do Q \
+         q 23 0 0 17 80 600 cm /Im2 Do Q {}",
+        inline_jpeg("G", GRAY_JPEG)
+    );
+    let path = scratch.write("masked.pdf", &jpeg_images(&content));
+    let configs = without_page_ocr(false);
+    assert_eq!(deferral(&std::fs::read(&path).unwrap(), &configs), None);
+    assert_same(&[path], &configs);
+}
+
+/// The files the native parser spools of the images of `input`, by name.
+fn spooled_images(input: &[u8], configs: &ParserConfigs) -> Vec<(String, Vec<u8>)> {
+    let scratch = crate::formats::parity::Scratch::new("pdf-spooled-images");
+    let path = scratch.write("input.pdf", input);
+    let spool = crate::embedded::EmbeddedSpool {
+        dir: scratch.directory().to_path_buf(),
+        byte_budget: u64::MAX,
+    };
+    let (mut stream, _) = crate::Extractor::new()
+        .set_pdf_config(configs.pdf.clone())
+        .set_ocr_config(configs.ocr.clone())
+        .extract_file_spooling_embedded(path.to_str().unwrap(), &spool)
+        .unwrap();
+    std::io::copy(&mut stream, &mut std::io::sink()).unwrap();
+    stream
+        .embedded()
+        .unwrap()
+        .into_iter()
+        .map(|file| (file.name, std::fs::read(file.path).unwrap()))
+        .collect()
+}
+
+/// Java encodes a JPEG of another colour space than grey or RGB anew with its own writer,
+/// whose bytes the native parser's encoder does not match (#125): the files are JPEGs of the
+/// image's size and colours.
+#[test]
+fn encodes_jpegs_of_other_colour_spaces_anew() {
+    let configs = without_page_ocr(false);
+    let input = jpegs_written_anew();
+    assert_eq!(deferral(&input, &configs), None);
+    let spooled = spooled_images(&input, &configs);
+    let names: Vec<&str> = spooled.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["image-0.jpg", "image-1.jpg", "image-2.jpg"]);
+    for (name, data) in &spooled {
+        let decoded = image::load_from_memory_with_format(data, image::ImageFormat::Jpeg)
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+            .to_rgb8();
+        assert_eq!(decoded.dimensions(), (23, 17), "{name}");
+    }
+    let ink = image::load_from_memory(&spooled[1].1).unwrap().to_rgb8();
+    let [red, green, blue] = ink.get_pixel(0, 0).0;
+    assert!(
+        red < green && blue < green,
+        "a greenish separation: {red} {green} {blue}"
+    );
+}
+
+/// CCITT data ImageMagick 7 wrote of a 40 by 20 drawing of a black rectangle and circle: Group
+/// 4, and Group 3 with end-of-line codes ending on byte boundaries.
+const GROUP4: &[u8] = include_bytes!("../../../../tests/fixtures/pdf/group4.ccitt");
+const GROUP3: &[u8] = include_bytes!("../../../../tests/fixtures/pdf/group3.ccitt");
+
+/// CCITT images drawn by `content`: masked ones of Group 4, of Group 3 sniffed and of Group 3
+/// aligned to bytes (`Im0` to `Im2`), which Tika writes as PNG, and an unmasked one and a stencil
+/// mask (`Im3`, `Im4`), which Java writes as TIFF.
+fn ccitt_images(content: &str) -> Vec<u8> {
+    let ccitt = |dict: &str, params: &str, data: &[u8]| {
+        image(
+            &format!("/Width 40 /Height 20 {dict} /DecodeParms [null << /Columns 40 {params} >>]"),
+            "/CCITTFaxDecode",
+            data,
+        )
+    };
+    let gray = "/ColorSpace /DeviceGray /BitsPerComponent 1";
+    let objects = vec![
+        ccitt(&format!("{gray} /SMask 11 0 R"), "/K -1", GROUP4),
+        ccitt(&format!("{gray} /SMask 11 0 R"), "/K 0", GROUP3),
+        ccitt(
+            &format!("{gray} /SMask 11 0 R"),
+            "/K 0 /EndOfLine true /EncodedByteAlign true",
+            GROUP3,
+        ),
+        ccitt(gray, "/K -1 /Rows 20", GROUP4),
+        ccitt("/ImageMask true", "/K -1 /BlackIs1 true", GROUP4),
+        image(
+            "/Width 40 /Height 20 /ColorSpace /DeviceGray /BitsPerComponent 8",
+            "",
+            &samples(800, 4),
+        ),
+    ];
+    drawing(content, &xobjects(5), &objects)
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn decodes_masked_ccitt_images_as_tikas_path_does() {
+    let scratch = Scratch::new("pdf-ccitt");
+    let content = "q 40 0 0 20 0 600 cm /Im0 Do Q q 40 0 0 20 50 600 cm /Im1 Do Q";
+    let path = scratch.write("masked.pdf", &ccitt_images(content));
+    let configs = without_page_ocr(false);
+    assert_eq!(deferral(&std::fs::read(&path).unwrap(), &configs), None);
+    assert_same(&[path], &configs);
+}
+
+/// Group 3 data with end-of-line codes, said to be aligned to bytes, decodes as the same data
+/// does without the flag. PDFBox's decoder searches for each end-of-line code from the byte
+/// after the row, restarting its search at each mismatch rather than sliding, so that it skips
+/// codes behind fill bits and decodes the rows out of place (#125).
+#[test]
+fn decodes_byte_aligned_group_3_rows_as_unaligned_ones() {
+    let configs = without_page_ocr(false);
+    let input = ccitt_images("q 40 0 0 20 0 600 cm /Im1 Do Q q 40 0 0 20 50 600 cm /Im2 Do Q");
+    assert_eq!(deferral(&input, &configs), None);
+    let spooled = spooled_images(&input, &configs);
+    let [(_, sniffed), (_, aligned)] = &spooled[..] else {
+        panic!(
+            "{:?}",
+            spooled.iter().map(|(name, _)| name).collect::<Vec<_>>()
+        );
+    };
+    let decode = |data: &[u8]| image::load_from_memory(data).unwrap().to_rgba8();
+    assert_eq!(decode(sniffed), decode(aligned));
+}
+
+/// The CCITT images Java writes as TIFF with its CCITT T.6 writer: the native parser's TIFF
+/// files hold the same black and white image in 8-bit grey (#125), and the rest of the
+/// extraction is Tika's.
+fn ccitt_written_as_tiff() -> Vec<u8> {
+    ccitt_images("q 40 0 0 20 0 600 cm /Im3 Do Q q 40 0 0 20 50 600 cm /Im4 Do Q")
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn writes_ccitt_images_as_tiff_where_tikas_path_does() {
+    let scratch = Scratch::new("pdf-ccitt-tiff");
+    let path = scratch.write("tiff.pdf", &ccitt_written_as_tiff());
+    assert_same_as_tika_delegating_departing_with(
+        &as_paths(&[path]),
+        tika_name(),
+        &DELEGATES,
+        PNG_WRITER,
+        &without_page_ocr(false),
+    );
+}
+
+#[test]
+fn writes_ccitt_images_as_black_and_white_tiffs() {
+    let configs = without_page_ocr(false);
+    let input = ccitt_written_as_tiff();
+    assert_eq!(deferral(&input, &configs), None);
+    let spooled = spooled_images(&input, &configs);
+    let names: Vec<&str> = spooled.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["image-0.tif", "image-1.tif"]);
+    for (name, data) in &spooled {
+        let decoded = image::load_from_memory_with_format(data, image::ImageFormat::Tiff)
+            .unwrap_or_else(|e| panic!("{name}: {e}"))
+            .to_luma8();
+        assert_eq!(decoded.dimensions(), (40, 20), "{name}");
+        assert!(
+            decoded.pixels().all(|pixel| matches!(pixel[0], 0 | 255)),
+            "{name}"
+        );
+        if name == "image-0.tif" {
+            let level = |x, y| decoded.get_pixel(x, y)[0];
+            let (rectangle, circle) = (level(10, 8), level(30, 10));
+            assert!(rectangle == circle && rectangle != level(1, 1), "{name}");
+        }
     }
 }
 
@@ -491,69 +910,15 @@ fn records_failures_to_read_images_as_tikas_path_does() {
     assert_same(&[path], &configs);
 }
 
-#[test]
-fn defers_images_the_port_does_not_write() {
-    let jpeg = jpeg();
-    let cases = [
-        (
-            image(
-                "/Width 2 /Height 2 /ColorSpace /DeviceCMYK /BitsPerComponent 8",
-                "",
-                &samples(16, 1),
-            ),
-            "an image in the colour space DeviceCMYK",
-        ),
-        (
-            image(
-                "/Width 46 /Height 56 /ColorSpace /DeviceCMYK /BitsPerComponent 8",
-                "/DCTDecode",
-                &jpeg,
-            ),
-            "an image in the colour space DeviceCMYK",
-        ),
-        (
-            image(
-                "/Width 8 /Height 1 /ImageMask true",
-                "/CCITTFaxDecode",
-                &[0],
-            ),
-            "a CCITT image, which Java writes",
-        ),
-        (
-            image(
-                "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /SMask 7 0 R",
-                "",
-                &[1, 2, 3, 4],
-            ),
-            "a mask of other dimensions",
-        ),
-        (
-            image(
-                "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /SMask 7 0 R",
-                "/DCTDecode",
-                &jpeg,
-            ),
-            "an image of the filter DCTDecode",
-        ),
-    ];
+/// A document of Helvetica text painted with a tiling pattern that draws an image.
+fn text_painted_with_images() -> Vec<u8> {
     let mask = image(
         "/Width 3 /Height 3 /ColorSpace /DeviceGray /BitsPerComponent 8",
         "",
         &samples(9, 1),
     );
-    for (image, reason) in cases {
-        let input = drawing(&draw_each(1), &xobjects(1), &[image, mask.clone()]);
-        let deferred = deferral(&input, &without_page_ocr(false)).unwrap_or_default();
-        assert!(deferred.starts_with(reason), "{deferred}");
-    }
-    let inline = drawing("BI /W 1 /H 1 /CS /G /BPC 8 /F /DCT ID \u{ff}\nEI", "", &[]);
-    let deferred = deferral(&inline, &without_page_ocr(false)).unwrap_or_default();
-    assert!(
-        deferred.starts_with("an inline image of the filter DCTDecode"),
-        "{deferred}"
-    );
-    let text = drawing(
-        "/Pattern cs /P0 scn BT /F1 12 Tf (Tekst) Tj ET",
+    drawing(
+        "/Pattern cs /P0 scn BT /F1 12 Tf (Tekst) Tj [(T) 120 (o)] TJ ET",
         "/Pattern << /P0 6 0 R >> /XObject << /Im0 7 0 R >>",
         &[
             stream(
@@ -564,28 +929,95 @@ fn defers_images_the_port_does_not_write() {
             ),
             mask,
         ],
-    );
-    let deferred = deferral(&text, &without_page_ocr(false)).unwrap_or_default();
-    assert!(
-        deferred.starts_with("text painted with a tiling pattern"),
-        "{deferred}"
-    );
+    )
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn draws_the_images_of_a_pattern_once_a_glyph_as_tikas_path_does() {
+    let scratch = Scratch::new("pdf-pattern-text");
+    let path = scratch.write("text.pdf", &text_painted_with_images());
+    for unique_only in [false, true] {
+        let configs = without_page_ocr(unique_only);
+        assert_eq!(deferral(&std::fs::read(&path).unwrap(), &configs), None);
+        assert_same(std::slice::from_ref(&path), &configs);
+    }
 }
 
 #[test]
-fn defers_images_whose_ocr_text_our_page_check_weighs() {
-    if !crate::ocr::tesseract_runs() {
-        return;
-    }
-    let configs = ParserConfigs {
+fn draws_the_images_of_a_pattern_once_a_glyph() {
+    let (xml, _) = extracting(&text_painted_with_images(), &without_page_ocr(false));
+    assert_eq!(image_names(&xml), ["image-0.png"; 7], "{xml}");
+}
+
+/// Java2D scales the smaller of an image and its mask to the larger, which the native parser
+/// does with the `image` crate (#125): the image takes the size of the larger, and its alpha
+/// the mask's.
+#[test]
+fn scales_the_smaller_of_an_image_and_its_mask() {
+    let images = [
+        image(
+            "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /SMask 8 0 R",
+            "",
+            &[0, 80, 160, 240],
+        ),
+        image(
+            "/Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Mask 9 0 R",
+            "",
+            &samples(48, 2),
+        ),
+        image(
+            "/Width 3 /Height 3 /ColorSpace /DeviceGray /BitsPerComponent 8",
+            "",
+            &[255; 9],
+        ),
+        image(
+            "/Width 2 /Height 2 /ImageMask true",
+            "",
+            &[0b0100_0000, 0b1000_0000],
+        ),
+    ];
+    let input = drawing(&draw_each(2), &xobjects(2), &images);
+    let configs = without_page_ocr(false);
+    assert_eq!(deferral(&input, &configs), None);
+    let spooled = spooled_images(&input, &configs);
+    let decoded: Vec<image::RgbaImage> = spooled
+        .iter()
+        .map(|(_, data)| image::load_from_memory(data).unwrap().to_rgba8())
+        .collect();
+    assert_eq!(decoded[0].dimensions(), (3, 3));
+    assert!(decoded[0].pixels().all(|pixel| pixel[3] == 255));
+    assert_eq!(decoded[1].dimensions(), (4, 4));
+    let alpha = |x, y| decoded[1].get_pixel(x, y)[3];
+    assert_eq!(
+        [alpha(0, 0), alpha(3, 0), alpha(0, 3), alpha(3, 3)],
+        [255, 0, 0, 255]
+    );
+}
+
+/// Images extracted while our `TextLayerCheckingPdfParser` weighs each page's text, the text OCR
+/// reads in its images with it.
+#[cfg(feature = "tika")]
+fn weighing_pages() -> ParserConfigs {
+    ParserConfigs {
         pdf: PdfParserConfig::new().set_extract_inline_images(true),
         ..ParserConfigs::default()
-    };
-    let deferred = deferral(&sampled_images(), &configs).unwrap_or_default();
-    assert!(
-        deferred.starts_with("an image our TextLayerCheckingPdfParser"),
-        "{deferred}"
-    );
+    }
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn weighs_the_ocr_text_of_images_with_their_page_as_tikas_path_does() {
+    assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
+    let configs = weighing_pages();
+    let scratch = Scratch::new("pdf-images-weighed");
+    let sampled = scratch.write("sampled.pdf", &sampled_images());
+    let scanned = PathBuf::from("../test_files/documents/deu-ocr.pdf");
+    for path in [&sampled, &scanned] {
+        let input = std::fs::read(path).unwrap();
+        assert_eq!(deferral(&input, &configs), None, "{}", path.display());
+    }
+    assert_same(&[sampled, scanned], &configs);
 }
 
 #[cfg(feature = "tika")]
@@ -614,19 +1046,18 @@ const TIKA_PATH_FAILS: [(&str, &str); 1] = [(
      java.awt.color.CMMException that PDFBox catches for it is missing from the native image",
 )];
 
-/// The documents of Tika's tests that the port leaves to Tika with images extracted, by the
-/// start of the reason, the OCR of pages skipped.
+/// The documents of Tika's tests whose image files the native parser writes otherwise than
+/// Java (#125), and why: their extraction is compared, their files are not.
 #[cfg(feature = "tika")]
-const DEFERRED: [(&str, &str); 4] = [
-    ("testPDFVarious.pdf", "a mask of other dimensions"),
-    ("testPDF_childAttachments.pdf", "a CCITT image"),
+const WRITTEN_OTHERWISE: [(&str, &str); 3] = [
+    ("testPDFVarious.pdf", "a mask Java2D scales to its image"),
     (
-        "testPDF_incrementalUpdates.pdf",
-        "a JPEG image in the colour space ICCBased",
+        "testPDF_childAttachments.pdf",
+        "a CCITT image Java writes as a TIFF with its CCITT T.6 writer",
     ),
     (
-        "testPDF_malformedXFA.pdf",
-        "an XFA form whose XML does not parse",
+        "testPDF_incrementalUpdates.pdf",
+        "a JPEG in an ICC colour space, which Java's JPEG writer encodes anew",
     ),
 ];
 
@@ -636,22 +1067,22 @@ const DEFERRED: [(&str, &str); 4] = [
 fn extracts_the_images_of_the_conformance_documents_as_tikas_path_does() {
     for configs in [without_page_ocr(false), without_page_ocr(true)] {
         let (parsed, deferred) = documents_with(&PdfParser, &[&conformance_corpus()], &configs);
-        let mut found: Vec<(String, String)> = deferred
-            .iter()
-            .map(|path| {
-                let input = std::fs::read(path).unwrap();
-                let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                (name, deferral(&input, &configs).unwrap())
-            })
-            .collect();
-        found.sort();
-        assert_eq!(found.len(), DEFERRED.len(), "{found:?}");
-        for ((name, reason), (expected, start)) in found.iter().zip(DEFERRED) {
-            assert!(
-                name == expected && reason.starts_with(start),
-                "{name}: {reason}"
-            );
-        }
+        assert_eq!(deferred, Vec::<PathBuf>::new());
+        let (written_otherwise, parsed): (Vec<PathBuf>, Vec<PathBuf>) =
+            parsed.into_iter().partition(|path| {
+                let name = path.file_name().unwrap().to_string_lossy();
+                WRITTEN_OTHERWISE
+                    .iter()
+                    .any(|(written, _)| *written == name)
+            });
+        assert_eq!(written_otherwise.len(), WRITTEN_OTHERWISE.len());
+        assert_same_as_tika_delegating_departing_with(
+            &as_paths(&written_otherwise),
+            tika_name(),
+            &DELEGATES,
+            PNG_WRITER,
+            &configs,
+        );
         let (failing, parsed): (Vec<PathBuf>, Vec<PathBuf>) =
             parsed.into_iter().partition(|path| {
                 let name = path.file_name().unwrap().to_string_lossy();
@@ -667,6 +1098,11 @@ fn extracts_the_images_of_the_conformance_documents_as_tikas_path_does() {
             .partition(|path| path.to_string_lossy().ends_with("_owner_user.pdf"));
         assert_eq!(locked.len(), 2, "{locked:?}");
         assert_fails_as_tika_with(&as_paths(&locked), &configs);
+        let (malformed, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
+            .into_iter()
+            .partition(|path| path.ends_with("testPDF_malformedXFA.pdf"));
+        assert_eq!(malformed.len(), 1, "{malformed:?}");
+        assert_same_departing(&malformed, &configs, XFA_FAILURE);
         // Tika extracts the Mac, DOS and Unix copies of one file as files of their own (#109).
         let compared: Vec<PathBuf> = parsed
             .into_iter()
