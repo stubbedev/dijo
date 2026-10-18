@@ -54,6 +54,7 @@ pub(crate) use extractous_ooxml::formats::xlsx;
 pub(crate) use extractous_ooxml::formats::xps;
 pub(crate) use extractous_pdf::formats::font;
 pub(crate) use extractous_pdf::formats::pdf;
+pub(crate) use extractous_science::formats::grib;
 pub(crate) use extractous_science::formats::hdf;
 pub(crate) use extractous_science::formats::netcdf;
 pub(crate) use extractous_small::formats::apple_single;
@@ -136,6 +137,7 @@ static PARSERS: &[&dyn Parser] = &[
     &font::TrueTypeParser,
     &fiction_book::FictionBookParser,
     &geogebra::GeoGebraParser,
+    &grib::GribParser,
     &html::JSoupParser,
     &image::BpgParser,
     &image::HeifParser,
@@ -224,7 +226,8 @@ static PARSERS: &[&dyn Parser] = &[
 /// The parsers of the scientific formats, which Tika's path parses with `EmptyParser`, as its
 /// native image lacks their module (#172).
 #[cfg(all(test, feature = "tika"))]
-pub(crate) static SCIENTIFIC: &[&dyn Parser] = &[&hdf::HdfParser, &netcdf::NetCdfParser];
+pub(crate) static SCIENTIFIC: &[&dyn Parser] =
+    &[&grib::GribParser, &hdf::HdfParser, &netcdf::NetCdfParser];
 
 /// The native parser for a document of `media_type`, picked as `CompositeParser.getParser` picks
 /// Tika's: the parser of the first type of its [`mime::lineage`] a parser reads, else Tika's

@@ -22,6 +22,7 @@ pub mod formats {
 
     mod bytes;
     mod cdm;
+    pub mod grib;
     pub mod hdf;
     pub mod netcdf;
 }
