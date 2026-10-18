@@ -24,6 +24,7 @@ use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
 use crate::compress::{ar, cpio, seven_z, tar, ArchiveFile, Limited};
 use crate::formats::secure::{MAXIMUM_PACKAGE_ENTRY_DEPTH, MAXIMUM_RATIO, OUTPUT_THRESHOLD};
+use crate::input::Pages;
 
 /// The nesting below an entry at which Tika's count reaches its limit of package entries.
 const TOO_DEEP: usize = MAXIMUM_PACKAGE_ENTRY_DEPTH - 1;
@@ -63,10 +64,10 @@ impl Scan {
 
     /// Why the native path's output for the document of `length` bytes, whose archive holds
     /// `files`, cannot match Tika's, if it cannot.
-    pub(super) fn files<'f>(
+    pub(super) fn files<'f, 'a: 'f>(
         mut self,
         length: usize,
-        files: impl IntoIterator<Item = &'f ArchiveFile>,
+        files: impl IntoIterator<Item = &'f ArchiveFile<'a>>,
     ) -> Option<String> {
         files
             .into_iter()
@@ -120,9 +121,11 @@ impl Scan {
         }
         let files = match Archiver::detect(data) {
             Some(Archiver::Zip) => return (1 + self.zip_depth(data, limit - 1)).min(limit),
-            Some(Archiver::Tar) => tar::files(data).and_then(Limited::whole).ok(),
-            Some(Archiver::Ar) => ar::files(data).and_then(Limited::whole).ok(),
-            Some(Archiver::Cpio) => cpio::files(data).and_then(Limited::whole).ok(),
+            Some(Archiver::Tar) => tar::files(data, Pages::IN_MEMORY)
+                .and_then(Limited::whole)
+                .ok(),
+            Some(Archiver::Ar) => ar::files(data, Pages::IN_MEMORY).ok(),
+            Some(Archiver::Cpio) => cpio::files(data, Pages::IN_MEMORY).ok(),
             Some(Archiver::SevenZ) => seven_z::files(data, None).and_then(Limited::whole).ok(),
             Some(Archiver::Arj | Archiver::Dump) | None if rar::is_rar(data) => {
                 rar::archive_files(data)

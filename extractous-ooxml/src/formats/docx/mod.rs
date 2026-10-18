@@ -236,7 +236,7 @@ impl<'a> Document<'a> {
     /// macros to extract, parts read whole whose XML Tika fails on, document types, properties
     /// it does not read), and reads what Tika reads whole before it writes anything of a main
     /// document: the properties, each story's numbering, styles, notes and comments, and the
-    /// first story's settings. The parts written as they are read are read into memory here and
+    /// first story's settings. The parts written as they are read are only checked here, and
     /// parsed once, as they are written.
     fn prepare(self) -> Result<Read<'a>, Unported> {
         for &source in &self.main_parts() {
@@ -339,7 +339,7 @@ impl<'a> Document<'a> {
         let streamed = self
             .streamed_parts(story)
             .into_iter()
-            .map(|part| Ok((part, self.read_streamed(part)?)))
+            .map(|part| self.check_streamed(part))
             .collect::<Result<_, Unported>>()?;
         let numbering = match Package::first_related(relationships, kind::NUMBERING) {
             Some(part) => ooxml::read_quietly(&self.package, part, Numbering::default())?,
@@ -363,9 +363,9 @@ impl<'a> Document<'a> {
         })
     }
 
-    /// The bytes of `part`, which is parsed as it is written. One declaring a document type,
-    /// whose declarations Java reads and this port skips, is [`Unported`].
-    fn read_streamed(&self, part: usize) -> Result<Input<'a>, Unported> {
+    /// Checks `part`, which is parsed as it is written. One declaring a document type, whose
+    /// declarations Java reads and this port skips, is [`Unported`].
+    fn check_streamed(&self, part: usize) -> Result<Streamed<'a>, Unported> {
         let name = self.package.name(part);
         let bytes = self
             .read(part)
@@ -373,7 +373,10 @@ impl<'a> Document<'a> {
         if xml::has_document_type(&bytes) {
             return Err(Unported(format!("{name} declares a document type")));
         }
-        Ok(bytes)
+        Ok(Streamed {
+            part,
+            spooled: bytes.is_mapped().then_some(bytes),
+        })
     }
 
     /// Reads `part` into `handler`, as a part whose failure Tika records, which this port leaves
@@ -414,7 +417,11 @@ impl<'a> Document<'a> {
         let no_notes = InlineParts::default();
         let mut emitted = HashSet::new();
         let mut features = None;
-        for (part, bytes) in streamed {
+        for Streamed { part, spooled } in streamed {
+            let bytes = match spooled {
+                Some(bytes) => bytes,
+                None => self.read(part)?,
+            };
             let is_story = part == story;
             let written = self.write_part(
                 part,
@@ -585,14 +592,22 @@ impl<'a> Document<'a> {
 
 /// What writing a story takes: what Tika reads whole before it writes the story (its numbering,
 /// styles, notes and comments, and for the first story its settings), and the parts it writes,
-/// in order, with their bytes.
+/// in order.
 struct StoryParts<'a> {
     story: usize,
     numbering: Option<Numbering>,
     styles: Option<Styles>,
     inline: InlineParts,
-    streamed: Vec<(usize, Input<'a>)>,
+    streamed: Vec<Streamed<'a>>,
     settings: Option<StorySettings>,
+}
+
+/// A part written as it is read, checked before anything is written: its bytes kept where they
+/// were spooled to a file, which holds no memory, and decoded again as the part is written where
+/// they were held in memory, so that what is kept stays bounded however many parts there are.
+struct Streamed<'a> {
+    part: usize,
+    spooled: Option<Input<'a>>,
 }
 
 /// The settings `detectSecurityFeatures` reads of the first story.

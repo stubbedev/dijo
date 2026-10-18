@@ -15,6 +15,7 @@ use crate::formats::element_metadata::{ElementHandlers, Values};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Decline, Failure, Prepared};
+use crate::input::Pages;
 
 /// `MS_OFFICE_PROPERTIES_URN`, the namespace of the document properties.
 const OFFICE_URN: &str = "urn:schemas-microsoft-com:office:office";
@@ -87,10 +88,12 @@ impl<B: Body> SaxHandler for Tee<'_, '_, B> {
     }
 }
 
-/// `AbstractXML2003Parser.parse`: the content type set, then the document read into `body`.
-/// A document Xerces fails on fails the parse, after what was written before.
+/// `AbstractXML2003Parser.parse`: the content type set, then the document read into `body`, its
+/// `pages` released as they are read. A document Xerces fails on fails the parse, after what
+/// was written before.
 fn prepare<'a, B: Body + 'a>(
     input: &'a [u8],
+    pages: Pages<'a>,
     media_type: &'static str,
     body: B,
 ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -108,7 +111,7 @@ fn prepare<'a, B: Body + 'a>(
             properties: ElementHandlers::new(OFFICE_URN, &PROPERTIES),
             body,
         };
-        let parsed = xml::parse_sax(input, "the Office 2003 XML document", &mut tee);
+        let parsed = xml::parse_paged(input, pages, "the Office 2003 XML document", &mut tee);
         xhtml.end_document()?;
         parsed.map_err(|failure| match failure {
             Failure::Malformed(reason) => Failure::Malformed(format!("XML parse error: {reason}")),

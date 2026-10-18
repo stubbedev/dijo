@@ -103,7 +103,7 @@ impl<'a> AuxBox<'a> {
         Compressor::Brotli
             .decode(&payload)
             .and_then(Limited::whole)
-            .map(|decoded| Cow::Owned(decoded.content))
+            .map(|decoded| Cow::Owned(decoded.content.to_vec()))
             .map_err(|undecoded| format!("its Brotli compression cannot be undone: {undecoded}"))
     }
 }

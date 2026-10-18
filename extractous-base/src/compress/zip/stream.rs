@@ -7,15 +7,16 @@
 //! come from the Unicode path extra field where its CRC matches, as `useUnicodeExtraFields`
 //! asks.
 
-use std::borrow::Cow;
 use std::ops::Range;
 
 use super::extra::{self, ExtraFields, Times};
 use super::file::{entry_name, unicode_text, NameSource, ZipEntry};
 use super::{
-    decode, decode_name, decompresses, inflate, u16_at, u32_at, Content, CFH_SIG, DEFLATE64,
-    DEFLATED, LFH_SIG, STORED, XZ, ZSTD,
+    decode_into, decode_name, decompresses, inflate_into, u16_at, u32_at, Content, Decoded,
+    Spooled, CFH_SIG, DEFLATE64, DEFLATED, LFH_SIG, STORED, XZ, ZSTD,
 };
+use crate::compress::{Decoding, Held, Undecoded};
+use crate::input::Pages;
 
 const SPLIT_MARKER: [u8; 4] = *b"PK00";
 const DD_SIG: [u8; 4] = *b"PK\x07\x08";
@@ -42,6 +43,7 @@ pub enum Failure {
 }
 
 /// The local header of the entry the stream is in.
+#[derive(Debug, Clone)]
 struct Current {
     flags: u16,
     method: u16,
@@ -57,7 +59,9 @@ impl Current {
     }
 }
 
-/// A `ZipArchiveInputStream` over the whole input.
+/// A `ZipArchiveInputStream` over the whole input. A clone stays at the entry the stream is in,
+/// to read its data again once the stream has gone on.
+#[derive(Debug, Clone)]
 pub struct ZipStream<'a> {
     data: &'a [u8],
     position: usize,
@@ -254,28 +258,53 @@ impl<'a> ZipStream<'a> {
         Ok(())
     }
 
-    /// The data of the entry the stream is in, read to its end.
+    /// The data of the entry the stream is in, read to its end into memory.
     pub fn content(&self) -> Result<Content<'a>, Failure> {
+        self.content_into(Pages::IN_MEMORY, |_| Decoding::in_memory())
+            .map(|read| read.expect("memory takes what is decoded"))
+    }
+
+    /// [`ZipStream::content`] as a document embedded in the archive, whose pages are `pages`:
+    /// stored data in place, decoded data spooled, or why it cannot be spooled.
+    pub fn spool(&self, pages: Pages<'a>) -> Result<Result<Spooled<'a>, Undecoded>, Failure> {
+        self.content_into(pages, Decoding::spooled)
+    }
+
+    /// [`ZipStream::spool`] keeping nothing but the length decoded, to tell whether the entry
+    /// reads whole.
+    pub fn verify(&self) -> Result<Decoded<u64>, Failure> {
+        self.content_into(Pages::IN_MEMORY, Decoding::discarded)
+            .map(|read| read.expect("nothing fails to take what is decoded"))
+    }
+
+    /// The data of the entry the stream is in, read to its end into what `decoding` makes of
+    /// the length of the data it reads, where the archive's data has the pages `pages`.
+    fn content_into<W: Held>(
+        &self,
+        pages: Pages<'a>,
+        decoding: impl FnOnce(usize) -> Decoding<W>,
+    ) -> Result<Result<Decoded<W::Bytes<'a>>, Undecoded>, Failure> {
         let current = self.current.as_ref().ok_or(Failure::Io)?;
         self.check(current)?;
         match current.method {
             STORED if current.has_data_descriptor() => {
                 let (data, _) = self.read_stored_with_descriptor(current)?;
-                Ok(Content::Complete(Cow::Borrowed(&self.data[data])))
+                Ok(Ok(Decoded::Complete(W::stored(&self.data[data], pages))))
             }
             STORED => {
                 let size = usize::try_from(current.size).map_err(|_| Failure::Io)?;
-                Ok(match self.bytes(current.data_start, size) {
-                    Ok(bytes) => Content::Complete(Cow::Borrowed(bytes)),
-                    Err(_) => Content::Truncated(Cow::Borrowed(
+                Ok(Ok(match self.bytes(current.data_start, size) {
+                    Ok(bytes) => Decoded::Complete(W::stored(bytes, pages)),
+                    Err(_) => Decoded::Truncated(W::stored(
                         self.data.get(current.data_start..).unwrap_or_default(),
+                        pages,
                     )),
-                })
+                }))
             }
             DEFLATED => {
                 let raw = self.data.get(current.data_start..).unwrap_or_default();
-                let content = inflate(raw);
-                if current.has_data_descriptor() && matches!(content, Content::Complete(_)) {
+                let content = inflate_into(raw, decoding(raw.len()));
+                if current.has_data_descriptor() && matches!(content, Ok(Decoded::Complete(_))) {
                     self.end(current)?;
                 }
                 Ok(content)
@@ -284,7 +313,8 @@ impl<'a> ZipStream<'a> {
                 let raw = self.data.get(current.data_start..).unwrap_or_default();
                 let length = usize::try_from(current.compressed_size).map_err(|_| Failure::Io)?;
                 let size = u64::try_from(current.size).map_err(|_| Failure::Io)?;
-                decode(method, current.flags, &raw[..length.min(raw.len())], size)
+                let raw = &raw[..length.min(raw.len())];
+                decode_into(method, current.flags, raw, size, decoding(raw.len()))
                     .ok_or_else(|| unread(method))
             }
             method => Err(unread(method)),

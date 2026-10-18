@@ -52,7 +52,37 @@ impl Deref for Input<'_> {
     }
 }
 
-impl Input<'_> {
+impl AsRef<[u8]> for Input<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+/// Bytes are equal by what they hold, wherever they are held.
+impl<T: AsRef<[u8]> + ?Sized> PartialEq<T> for Input<'_> {
+    fn eq(&self, other: &T) -> bool {
+        **self == *other.as_ref()
+    }
+}
+
+impl Eq for Input<'_> {}
+
+impl From<Vec<u8>> for Input<'_> {
+    fn from(bytes: Vec<u8>) -> Self {
+        Input::Read(Arc::new(bytes))
+    }
+}
+
+impl<'a> From<std::borrow::Cow<'a, [u8]>> for Input<'a> {
+    fn from(bytes: std::borrow::Cow<'a, [u8]>) -> Self {
+        match bytes {
+            std::borrow::Cow::Borrowed(bytes) => Input::Borrowed(bytes),
+            std::borrow::Cow::Owned(bytes) => bytes.into(),
+        }
+    }
+}
+
+impl<'a> Input<'a> {
     /// The same bytes, owned: the caller's copied, the others shared.
     pub fn to_static(&self) -> Input<'static> {
         match self {
@@ -61,6 +91,23 @@ impl Input<'_> {
             }
             Input::Read(bytes) => Input::Read(Arc::clone(bytes)),
             Input::Mapped(map) => Input::Mapped(Arc::clone(map)),
+        }
+    }
+
+    /// The bytes of `pieces` of other bytes, whose pages are `pages`, joined: one piece in
+    /// place, several spooled.
+    pub fn joined(pieces: &[&'a [u8]], pages: Pages<'a>) -> io::Result<Input<'a>> {
+        match pieces {
+            [] => Ok(Input::Borrowed(&[])),
+            [piece] => Ok(Input::Within(piece, pages)),
+            pieces => {
+                let length = pieces.iter().map(|piece| piece.len() as u64).sum();
+                let mut spool = Spool::new(Some(length));
+                for piece in pieces {
+                    spool.write_all(piece)?;
+                }
+                spool.finish()
+            }
         }
     }
 
@@ -211,17 +258,20 @@ impl Drop for Paging<'_> {
 pub struct Spool {
     memory: Vec<u8>,
     file: Option<File>,
+    /// Whether the stream says it holds more than [`MAX_READ_WHOLE`] bytes, which go to the file
+    /// from the first.
+    large: bool,
 }
 
 impl Spool {
     /// A spool for a stream of `expected` bytes, if the stream says how many.
     pub fn new(expected: Option<u64>) -> Self {
-        let capacity = expected
-            .filter(|&length| length <= MAX_READ_WHOLE)
-            .unwrap_or(0);
+        let large = expected.is_some_and(|length| length > MAX_READ_WHOLE);
+        let capacity = expected.filter(|_| !large).unwrap_or(0);
         Self {
             memory: Vec::with_capacity(usize::try_from(capacity).expect("at most MAX_READ_WHOLE")),
             file: None,
+            large,
         }
     }
 
@@ -252,7 +302,10 @@ impl Spool {
 
 impl Write for Spool {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.file.is_none() && self.memory.len() as u64 + bytes.len() as u64 <= MAX_READ_WHOLE {
+        if self.file.is_none()
+            && !self.large
+            && self.memory.len() as u64 + bytes.len() as u64 <= MAX_READ_WHOLE
+        {
             self.memory.extend_from_slice(bytes);
             return Ok(bytes.len());
         }

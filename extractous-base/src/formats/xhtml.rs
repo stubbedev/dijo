@@ -12,6 +12,7 @@ use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::secure::{Secure, ZipBomb, ZIP_BOMB_DETECTED};
 use crate::formats::{self, Bridged, EmbeddedRoute, Failure, Opened, Unrouted};
+use crate::input::{Input, Pages};
 use crate::memory;
 #[cfg(feature = "tika")]
 use crate::tika::{self, EmbeddedOutcome, Event};
@@ -826,6 +827,29 @@ impl<'h> Xhtml<'h> {
         self.parse_embedded_opened(data, metadata, wrapping, Opened::WithMetadata)
     }
 
+    /// [`Xhtml::parse_embedded`] of a document whose bytes are `input`: a file spooled or
+    /// mapped, whose pages its parser releases as it reads them, or bytes in memory.
+    pub fn parse_embedded_input(
+        &mut self,
+        input: &Input<'_>,
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+    ) -> Result<(), Failure> {
+        self.parse_embedded_input_opened(input, metadata, wrapping, Opened::WithMetadata)
+    }
+
+    /// [`Xhtml::parse_embedded_input`] of a document whose `TikaInputStream` the parser
+    /// `opened` as given.
+    pub fn parse_embedded_input_opened(
+        &mut self,
+        input: &Input<'_>,
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+        opened: Opened,
+    ) -> Result<(), Failure> {
+        self.parse_embedded_paged(input, input.pages(), metadata, wrapping, opened)
+    }
+
     /// Parses a storage of a compound document embedded in this one with a native parser, as
     /// [`Xhtml::parse_embedded`] parses a document: `write`, which `parser` runs, writes the
     /// document from `metadata`, and its body goes into this one; an extraction that spools its
@@ -880,11 +904,24 @@ impl<'h> Xhtml<'h> {
         wrapping: Wrapping,
         opened: Opened,
     ) -> Result<(), Failure> {
+        self.parse_embedded_paged(data, Pages::IN_MEMORY, metadata, wrapping, opened)
+    }
+
+    /// [`Xhtml::parse_embedded_opened`] of a document whose bytes `data` have the pages `pages`.
+    fn parse_embedded_paged(
+        &mut self,
+        data: &[u8],
+        pages: Pages<'_>,
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+        opened: Opened,
+    ) -> Result<(), Failure> {
         if !self.enter_embedded(data, metadata, wrapping)? {
             return Ok(());
         }
         let mut open = Vec::new();
-        let ended = self.parse_routed(data, metadata, opened, &mut open, Target::of(wrapping));
+        let target = Target::of(wrapping);
+        let ended = self.parse_routed(data, pages, metadata, opened, &mut open, target);
         self.leave_embedded(ended, open, wrapping)
     }
 
@@ -918,13 +955,14 @@ impl<'h> Xhtml<'h> {
     fn parse_routed(
         &mut self,
         data: &[u8],
+        pages: Pages<'_>,
         metadata: &TikaMetadata,
         opened: Opened,
         open: &mut Vec<ExpandedName>,
         target: Target,
     ) -> Ended {
         let configs = self.embedding.context().configs();
-        match formats::route_embedded(data, metadata, opened, configs) {
+        match formats::route_embedded(data, pages, metadata, opened, configs) {
             Ok(route) => self.parse_natively(data.len(), route, metadata, open, target),
             Err(Bridged::Unrouted(Unrouted::Empty)) => {
                 self.embedding.record_zero_bytes();

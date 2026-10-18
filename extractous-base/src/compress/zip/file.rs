@@ -3,14 +3,13 @@
 //! what `ZipArchiveEntry` reports of them: names and comments with their Unicode extra fields,
 //! sizes, CRC, attributes and times.
 
-use std::borrow::Cow;
-
 use super::extra::{self, ExtraFields, Field, Instant, Times};
 use super::{
-    decode, decode_name, decompresses, inflate, method_name, u16_at, u32_at, u64_at, Content,
-    Corrupt, CFH_SIG, DEFLATED, LFH_SIG, STORED,
+    decode_into, decode_name, decompresses, inflate_into, method_name, u16_at, u32_at, u64_at,
+    Content, Corrupt, Decoded, Spooled, CFH_SIG, DEFLATED, LFH_SIG, STORED,
 };
-use crate::compress::crc32;
+use crate::compress::{crc32, Decoding, Held, Undecoded};
+use crate::input::Pages;
 
 const EOCD_SIG: [u8; 4] = *b"PK\x05\x06";
 const ZIP64_EOCD_LOCATOR_SIG: [u8; 4] = *b"PK\x06\x07";
@@ -40,7 +39,7 @@ pub enum NameSource {
 
 /// An entry of the central directory, or of a local header read front to back, as
 /// `ZipArchiveEntry`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZipEntry {
     pub name: String,
     pub raw_name: Vec<u8>,
@@ -378,9 +377,38 @@ impl<'a> ZipFile<'a> {
         self.entries.iter().find(|entry| entry.name == name)
     }
 
-    /// `getInputStream(entry)` read to its end, `None` for an entry encrypted or compressed a
-    /// way the port does not decompress.
+    /// `getInputStream(entry)` read to its end into memory, `None` for an entry encrypted or
+    /// compressed a way the port does not decompress.
     pub fn read(&self, entry: &ZipEntry) -> Option<Content<'a>> {
+        self.read_into(entry, Pages::IN_MEMORY, |_| Decoding::in_memory())
+            .map(|read| read.expect("memory takes what is decoded"))
+    }
+
+    /// [`ZipFile::read`] as a document embedded in the archive, whose pages are `pages`: stored
+    /// data in place, decoded data spooled, or why it cannot be spooled.
+    pub fn spool(
+        &self,
+        entry: &ZipEntry,
+        pages: Pages<'a>,
+    ) -> Option<std::result::Result<Spooled<'a>, Undecoded>> {
+        self.read_into(entry, pages, Decoding::spooled)
+    }
+
+    /// [`ZipFile::spool`] keeping nothing but the length decoded, to tell whether the entry
+    /// reads whole.
+    pub fn verify(&self, entry: &ZipEntry) -> Option<Decoded<u64>> {
+        self.read_into(entry, Pages::IN_MEMORY, Decoding::discarded)
+            .map(|read| read.expect("nothing fails to take what is decoded"))
+    }
+
+    /// `getInputStream(entry)` read to its end into what `decoding` makes of the length of its
+    /// data, where the data of the archive has the pages `pages`.
+    fn read_into<W: Held>(
+        &self,
+        entry: &ZipEntry,
+        pages: Pages<'a>,
+        decoding: impl FnOnce(usize) -> Decoding<W>,
+    ) -> Option<std::result::Result<Decoded<W::Bytes<'a>>, Undecoded>> {
         if entry.uses_encryption() {
             return None;
         }
@@ -389,13 +417,19 @@ impl<'a> ZipFile<'a> {
         let end = start.saturating_add(length).min(self.data.len());
         let raw = self.data.get(start.min(end)..end)?;
         match entry.method {
-            STORED => Some(if raw.len() == length {
-                Content::Complete(Cow::Borrowed(raw))
+            STORED => Some(Ok(if raw.len() == length {
+                Decoded::Complete(W::stored(raw, pages))
             } else {
-                Content::Truncated(Cow::Borrowed(raw))
-            }),
-            DEFLATED => Some(inflate(raw)),
-            method => decode(method, entry.flags, raw, u64::try_from(entry.size).ok()?),
+                Decoded::Truncated(W::stored(raw, pages))
+            })),
+            DEFLATED => Some(inflate_into(raw, decoding(raw.len()))),
+            method => decode_into(
+                method,
+                entry.flags,
+                raw,
+                u64::try_from(entry.size).ok()?,
+                decoding(raw.len()),
+            ),
         }
     }
 }
@@ -479,7 +513,7 @@ pub mod tests {
         let entry = file.entry("a/b.xml").unwrap();
         assert_eq!(
             file.read(entry),
-            Some(Content::Complete(Cow::Borrowed(&b"<a/>"[..])))
+            Some(Content::Complete(std::borrow::Cow::Borrowed(&b"<a/>"[..])))
         );
         assert_eq!(entry.size, 4);
         assert_eq!(entry.method, DEFLATED);

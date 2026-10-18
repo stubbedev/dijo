@@ -8,17 +8,18 @@
 mod tests;
 
 use std::fmt::Display;
-use std::io::Read;
+use std::io::{self, Write};
 
 use rusqlite::types::{ToSqlOutput, ValueRef};
-use rusqlite::{Connection, Statement};
+use rusqlite::{ffi, Connection, Statement};
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Input, Pages, Spool};
 use crate::java;
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::mime::{self, Origin};
@@ -42,8 +43,6 @@ const PRAGMAS: [(&str, &str); 2] = [
     (USER_VERSION, "select user_version from pragma_user_version"),
 ];
 const TABLE_NAMES: &str = "SELECT name FROM sqlite_master WHERE type='table'";
-/// The length of a database file's header.
-const HEADER_LENGTH: usize = 100;
 /// The offsets of the header's file format write and read versions.
 const WRITE_VERSION: usize = 18;
 const READ_VERSION: usize = 19;
@@ -69,27 +68,45 @@ impl Parser for Sqlite3Parser {
         &["application/x-sqlite3"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Opens the database over `input` in place, which SQLite reads a page at a time.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
-        let connection = open(input).map_err(|error| fails("opening the database", error))?;
-        let tables = table_names(&connection)
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let file = file(input, pages).map_err(|error| fails("spooling the database", error))?;
+        let opened = open(file).map_err(|error| fails("opening the database", error))?;
+        let connection = &opened.connection;
+        let tables = table_names(connection)
             .map_err(|error| fails("reading the database's table names", error))?;
         let properties: Vec<(&str, String)> = PRAGMAS
             .iter()
-            .filter_map(|&(name, query)| Some((name, java_hex(pragma(&connection, query)?))))
+            .filter_map(|&(name, query)| Some((name, java_hex(pragma(connection, query)?))))
             .collect();
         Ok(Box::new(move |xhtml| {
+            let connection = &opened.connection;
             for table in &tables {
                 xhtml.metadata_mut().add(TABLE_NAME, table.clone());
             }
             for (name, value) in properties {
                 xhtml.metadata_mut().set(name, value);
             }
-            let written = Database::new(&connection).and_then(|mut database| {
+            let written = Database::new(connection).and_then(|mut database| {
                 tables
                     .iter()
                     .try_for_each(|table| database.write_table(table, xhtml))
@@ -106,19 +123,53 @@ fn fails(reading: &str, error: impl Display) -> Decline<'static> {
     )))
 }
 
-/// The database in `input`, opened read-only, as sqlite-jdbc opens the file Tika spools it to:
-/// one in write-ahead-log mode as the file alone, without a log, which an in-memory database
-/// reads once its header names the rollback journal instead.
-fn open(input: &[u8]) -> rusqlite::Result<Connection> {
-    let mut connection = Connection::open_in_memory()?;
-    let mut header = input[..input.len().min(HEADER_LENGTH)].to_vec();
-    if header.get(WRITE_VERSION..=READ_VERSION) == Some(&[WAL_VERSION, WAL_VERSION]) {
-        header[WRITE_VERSION] = LEGACY_VERSION;
-        header[READ_VERSION] = LEGACY_VERSION;
+/// The file of the database in `input`, whose pages are `pages`, as sqlite-jdbc opens the file
+/// Tika spools it to: one in write-ahead-log mode as the file alone, without a log, which an
+/// in-memory database reads once its header names the rollback journal instead, so such a
+/// database is spooled with its header changed; any other is the input's bytes in place.
+fn file<'a>(input: &'a [u8], pages: Pages<'a>) -> io::Result<Input<'a>> {
+    if input.get(WRITE_VERSION..=READ_VERSION) != Some(&[WAL_VERSION, WAL_VERSION]) {
+        return Ok(Input::Within(input, pages));
     }
-    let file = header.as_slice().chain(&input[header.len()..]);
-    connection.deserialize_read_exact("main", file, input.len(), true)?;
-    Ok(connection)
+    let mut spool = Spool::new(Some(input.len() as u64));
+    spool.write_all(&input[..WRITE_VERSION])?;
+    spool.write_all(&[LEGACY_VERSION, LEGACY_VERSION])?;
+    spool.write_all(&input[READ_VERSION + 1..])?;
+    spool.finish()
+}
+
+/// A database opened read-only over the bytes of its file, which SQLite reads in place.
+struct Opened<'a> {
+    connection: Connection,
+    /// The bytes SQLite reads, dropped after the connection, which is declared before them.
+    _file: Input<'a>,
+}
+
+/// The database whose file is `file`, opened read-only over its bytes in place. SQLite reads
+/// them and never writes them, as the database is read-only, and frees nothing of them, without
+/// `SQLITE_DESERIALIZE_FREEONCLOSE`. They stay where they are while the connection is open,
+/// whatever moves the [`Opened`] that holds both and closes the connection first: an input's
+/// bytes are on the heap, in a map or the caller's.
+fn open(file: Input<'_>) -> rusqlite::Result<Opened<'_>> {
+    let connection = Connection::open_in_memory()?;
+    let length = i64::try_from(file.len()).expect("a file's length fits in i64");
+    let code = unsafe {
+        ffi::sqlite3_deserialize(
+            connection.handle(),
+            c"main".as_ptr(),
+            file.as_ptr().cast_mut(),
+            length,
+            length,
+            ffi::SQLITE_DESERIALIZE_READONLY,
+        )
+    };
+    if code != ffi::SQLITE_OK {
+        return Err(rusqlite::Error::SqliteFailure(ffi::Error::new(code), None));
+    }
+    Ok(Opened {
+        connection,
+        _file: file,
+    })
 }
 
 /// `getTableNames`.

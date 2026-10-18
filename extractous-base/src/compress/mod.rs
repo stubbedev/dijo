@@ -1,9 +1,12 @@
 //! Ports of the parts of Apache commons-compress 1.28 that Tika reads archives and compressed
 //! files with, failing and recovering where commons-compress does.
 //!
-//! A compressed stream is decoded whole, as the native parsers hand its content on, so each
-//! decoder answers with all of it, or the first [`MAX_DECODED`] bytes of it ([`Limited`]), or
-//! with why commons-compress would not give all of it: [`Undecoded`].
+//! A compressed stream is decoded whole before the native parsers hand its content on, to a
+//! [`Spool`]: in memory as far as a file is read whole, beyond that to a temporary file that is
+//! mapped, so that what a decoder holds stays bounded whatever the stream decodes into. Each
+//! decoder answers with all of it, or the first [`decode_limit`] bytes of it, past which the
+//! stream is taken for a bomb ([`Limited`]), or with why commons-compress would not give all of
+//! it: [`Undecoded`]. An archive that stores its files whole gives them in place.
 
 pub mod ar;
 pub mod archiver;
@@ -23,24 +26,39 @@ pub mod zip;
 pub mod zlib;
 pub mod zstd;
 
+use std::borrow::Cow;
 use std::fmt;
-use std::io::Read;
+use std::io::{self, Read, Write};
 
+use crate::formats::secure::MAXIMUM_RATIO;
+use crate::input::{Input, Pages, Spool};
 use crate::java::time::civil;
 
 /// `CompressorParser`'s `memoryLimitInKb`, which the decoders that size their memory by the
 /// stream keep within.
 pub(crate) const MEMORY_LIMIT_KIB: u32 = 100_000;
 
-/// The most bytes a stream is decoded into: Tika's path, which streams them, reads more.
+/// The most bytes a stream is decoded into memory, and the fewest a stream decoded to a spool
+/// may decode into whatever its ratio ([`decode_limit`]).
 pub const MAX_DECODED: usize = 256 * 1024 * 1024;
+
+/// The most bytes a stream of `compressed` bytes is decoded into a spool: [`MAX_DECODED`], or a
+/// hundred bytes per compressed byte where that is more, the ratio of output to input past
+/// which Tika's `SecureContentHandler` takes a document for a zip bomb. Tika's path streams what
+/// it decodes into the parser, whose output that guard stops; the native path decodes a stream
+/// to a spool before its parser reads it, so it stops a bomb as it decodes, before the bomb
+/// fills the disk.
+pub fn decode_limit(compressed: usize) -> u64 {
+    (MAX_DECODED as u64).max((compressed as u64).saturating_mul(MAXIMUM_RATIO))
+}
 
 /// Why a compressed stream or an archive is not read natively.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Undecoded {
     /// Reading it fails, for this reason, as reading it fails on Tika's path.
     Fails(String),
-    /// It decodes into more than [`MAX_DECODED`] bytes.
+    /// It decodes into more than [`decode_limit`] bytes, or, decoded into memory, than
+    /// [`MAX_DECODED`] bytes.
     TooLarge,
     /// It holds what the native readers do not read the way Tika's path does.
     Unported(&'static str),
@@ -52,13 +70,19 @@ pub enum Undecoded {
     /// Decoding it needs more memory than [`MEMORY_LIMIT_KIB`], as this says, for which Tika's
     /// `CompressorParser` fails it with a `TikaMemoryLimitException`.
     MemoryLimit(String),
+    /// Spooling what it decodes to a temporary file fails, for this reason.
+    Unspooled(String),
 }
 
 impl fmt::Display for Undecoded {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Undecoded::Fails(reason) => write!(f, "reading it fails: {reason}"),
-            Undecoded::TooLarge => write!(f, "it decodes into more than {MAX_DECODED} bytes"),
+            Undecoded::TooLarge => write!(
+                f,
+                "it decodes into more than {MAX_DECODED} bytes and {MAXIMUM_RATIO} bytes per \
+                 compressed byte"
+            ),
             Undecoded::Unported(what) => write!(f, "the native readers do not read {what}"),
             Undecoded::Encrypted => write!(f, "it is encrypted, and no password was given"),
             Undecoded::BadPassword => {
@@ -70,6 +94,9 @@ impl fmt::Display for Undecoded {
             Undecoded::MemoryLimit(reason) => {
                 write!(f, "decoding it needs more memory than allowed: {reason}")
             }
+            Undecoded::Unspooled(reason) => {
+                write!(f, "spooling what it decodes fails: {reason}")
+            }
         }
     }
 }
@@ -80,7 +107,7 @@ fn throws(reason: impl Into<String>) -> Undecoded {
 
 /// A file of an archive, as the archive readers give it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ArchiveFile {
+pub struct ArchiveFile<'a> {
     pub name: String,
     pub size: u64,
     /// The modification time in milliseconds since the epoch, if the archive records one.
@@ -88,8 +115,9 @@ pub struct ArchiveFile {
     /// The creation time in milliseconds since the epoch, if the archive records one.
     pub created_millis: Option<i64>,
     pub directory: bool,
-    /// The data, none for a directory.
-    pub content: Vec<u8>,
+    /// The data, none for a directory: the archive's own bytes where it stores them whole, else
+    /// decoded to a spool.
+    pub content: Input<'a>,
 }
 
 /// Bytes decoded as US-ASCII, as `ArchiveUtils.toAsciiString` decodes them: each byte beyond
@@ -164,10 +192,10 @@ impl<T> Limited<T> {
     }
 }
 
-impl Limited<ArchiveFile> {
+impl<'a> Limited<ArchiveFile<'a>> {
     /// Adds the file to the `files` of an archive read before it: all of them, cut, where it is
     /// cut, which ends the reading of the archive.
-    fn add_to(self, files: &mut Vec<ArchiveFile>) -> Option<Limited<Vec<ArchiveFile>>> {
+    fn add_to(self, files: &mut Vec<ArchiveFile<'a>>) -> Option<Limited<Vec<ArchiveFile<'a>>>> {
         match self {
             Limited::Whole(file) => {
                 files.push(file);
@@ -181,31 +209,176 @@ impl Limited<ArchiveFile> {
     }
 }
 
-/// `decoded`, cut at [`MAX_DECODED`] bytes where it holds more.
-fn limit(mut decoded: Vec<u8>) -> Limited<Vec<u8>> {
-    if decoded.len() > MAX_DECODED {
-        decoded.truncate(MAX_DECODED);
-        Limited::Cut(decoded)
-    } else {
-        Limited::Whole(decoded)
+/// The bytes a decoder hands on at a time.
+const CHUNK: usize = 64 * 1024;
+
+/// Where a stream is decoded to, and what it then holds.
+pub trait Held: Write + Sized {
+    /// What it holds once the stream is decoded, or the bytes of data stored whole in place.
+    type Bytes<'a>;
+
+    /// Data stored whole, `bytes`, whose pages are `pages`, as what it holds.
+    fn stored<'a>(bytes: &'a [u8], pages: Pages<'a>) -> Self::Bytes<'a>;
+
+    /// What it holds once the stream is decoded.
+    fn held<'a>(self) -> Result<Self::Bytes<'a>, Undecoded>;
+}
+
+/// Memory, for a reader that needs a stream whole there.
+impl Held for Vec<u8> {
+    type Bytes<'a> = Cow<'a, [u8]>;
+
+    fn stored<'a>(bytes: &'a [u8], _: Pages<'a>) -> Cow<'a, [u8]> {
+        Cow::Borrowed(bytes)
+    }
+
+    fn held<'a>(self) -> Result<Cow<'a, [u8]>, Undecoded> {
+        Ok(Cow::Owned(self))
     }
 }
 
-/// What `reader`, a crate's decoder, gives up to its end or [`MAX_DECODED`] bytes, failing
-/// where it fails.
-fn read_limited(reader: impl Read) -> Result<Limited<Vec<u8>>, Undecoded> {
-    let mut out = Vec::new();
-    reader
-        .take(MAX_DECODED as u64 + 1)
-        .read_to_end(&mut out)
-        .map_err(decoder_failure)?;
-    Ok(limit(out))
+/// A spool, for a stream handed on as a document.
+impl Held for Spool {
+    type Bytes<'a> = Input<'a>;
+
+    fn stored<'a>(bytes: &'a [u8], pages: Pages<'a>) -> Input<'a> {
+        Input::Within(bytes, pages)
+    }
+
+    fn held<'a>(self) -> Result<Input<'a>, Undecoded> {
+        self.finish().map_err(unspooled)
+    }
 }
 
-/// What `reader`, a crate's decoder, gives up to its end, failing where it fails or past
-/// [`MAX_DECODED`] bytes.
-fn read_whole(reader: impl Read) -> Result<Vec<u8>, Undecoded> {
-    read_limited(reader)?.whole()
+/// How many bytes a stream decodes into, keeping none of them, for a stream decoded only to tell
+/// whether it decodes and how long it is.
+#[derive(Debug, Default)]
+pub struct Counted(u64);
+
+impl Write for Counted {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0 += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Held for Counted {
+    type Bytes<'a> = u64;
+
+    fn stored<'a>(bytes: &'a [u8], _: Pages<'a>) -> u64 {
+        bytes.len() as u64
+    }
+
+    fn held<'a>(self) -> Result<Self::Bytes<'a>, Undecoded> {
+        Ok(self.0)
+    }
+}
+
+/// What a stream decodes into, as it is decoded, up to a limit: into `W`, a [`Spool`], or, for a
+/// reader that needs it whole in memory, a `Vec`.
+pub struct Decoding<W> {
+    out: W,
+    limit: u64,
+    written: u64,
+    cut: bool,
+}
+
+impl Decoding<Spool> {
+    /// The decoding of a stream of `compressed` bytes to a spool, up to [`decode_limit`] bytes.
+    pub fn spooled(compressed: usize) -> Self {
+        Self::new(Spool::new(None), decode_limit(compressed))
+    }
+}
+
+impl Decoding<Counted> {
+    /// The decoding of a stream of `compressed` bytes that keeps nothing but its length, up to
+    /// the limit of [`Decoding::spooled`].
+    pub fn discarded(compressed: usize) -> Self {
+        Self::new(Counted::default(), decode_limit(compressed))
+    }
+}
+
+impl Decoding<Vec<u8>> {
+    /// The decoding of a stream into memory, up to [`MAX_DECODED`] bytes.
+    pub fn in_memory() -> Self {
+        Self::new(Vec::new(), MAX_DECODED as u64)
+    }
+}
+
+impl<W: Held> Decoding<W> {
+    fn new(out: W, limit: u64) -> Self {
+        Self {
+            out,
+            limit,
+            written: 0,
+            cut: false,
+        }
+    }
+
+    /// Adds `decoded`, up to the limit, past which the stream is cut.
+    pub fn write(&mut self, decoded: &[u8]) -> Result<(), Undecoded> {
+        let room = self.limit - self.written;
+        let kept = usize::try_from(room).map_or(decoded.len(), |room| room.min(decoded.len()));
+        self.out.write_all(&decoded[..kept]).map_err(unspooled)?;
+        self.written += kept as u64;
+        self.cut |= kept < decoded.len();
+        Ok(())
+    }
+
+    /// Whether the stream decoded past the limit, which ends its decoding.
+    pub fn is_cut(&self) -> bool {
+        self.cut
+    }
+
+    /// How many bytes it holds.
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+
+    /// What the stream decoded into: all of it, or cut at the limit.
+    pub fn finish<'a>(self) -> Result<Limited<W::Bytes<'a>>, Undecoded> {
+        let cut = self.cut;
+        let held = self.out.held()?;
+        Ok(if cut {
+            Limited::Cut(held)
+        } else {
+            Limited::Whole(held)
+        })
+    }
+
+    /// Adds what `reader`, a crate's decoder, gives up to its end or the limit, failing where it
+    /// fails.
+    pub fn read_from(&mut self, mut reader: impl Read) -> Result<(), Undecoded> {
+        let mut chunk = vec![0; CHUNK];
+        while !self.cut {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => self.write(&chunk[..read])?,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(decoder_failure(error)),
+            }
+        }
+        Ok(())
+    }
+}
+
+fn unspooled(error: io::Error) -> Undecoded {
+    Undecoded::Unspooled(error.to_string())
+}
+
+/// What `reader`, a crate's decoder of a stream of `compressed` bytes, gives up to its end or
+/// [`decode_limit`] bytes, spooled, failing where it fails.
+fn spool_limited(
+    reader: impl Read,
+    compressed: usize,
+) -> Result<Limited<Input<'static>>, Undecoded> {
+    let mut decoding = Decoding::spooled(compressed);
+    decoding.read_from(reader)?;
+    decoding.finish()
 }
 
 /// Why a crate's decoder failed: its memory limit, which the decoders given one report as
@@ -287,42 +460,64 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn stops_decoding_past_the_limit() {
+    fn decodes_up_to_a_hundred_bytes_per_compressed_byte_beyond_the_floor() {
+        assert_eq!(decode_limit(0), MAX_DECODED as u64);
+        assert_eq!(decode_limit(MAX_DECODED / 100), MAX_DECODED as u64);
+        assert_eq!(decode_limit(10 << 20), 1000 << 20);
+    }
+
+    #[test]
+    fn stops_decoding_past_the_limit_into_a_mapped_spool() {
         let small = deflated_zeros(3);
-        let inflate = |data| read_limited(flate2::bufread::DeflateDecoder::new(data));
-        assert_eq!(inflate(&small[..]), Ok(Limited::Whole(vec![0; 775])));
-        let bomb = deflated_zeros(MAX_DECODED / 258 + 1);
-        assert_eq!(inflate(&bomb[..]), Ok(Limited::Cut(vec![0; MAX_DECODED])));
+        let inflate =
+            |data: &[u8]| spool_limited(flate2::bufread::DeflateDecoder::new(data), data.len());
         assert_eq!(
-            read_whole(flate2::bufread::DeflateDecoder::new(&bomb[..])),
-            Err(Undecoded::TooLarge)
+            inflate(&small),
+            Ok(Limited::Whole(Input::Borrowed(&[0; 775])))
         );
+        let bomb = deflated_zeros(MAX_DECODED / 258 + 1);
+        let Ok(Limited::Cut(cut)) = inflate(&bomb) else {
+            panic!("a bomb is decoded whole");
+        };
+        assert!(cut.is_mapped());
+        assert_eq!(cut.len(), MAX_DECODED);
+        assert!(cut.iter().all(|&byte| byte == 0));
         assert_eq!(
-            zip::inflate(&bomb),
-            zip::Content::Oversized(vec![0; MAX_DECODED].into())
+            zip::inflate_into(&bomb, Decoding::in_memory()),
+            Ok(zip::Content::Oversized(vec![0; MAX_DECODED].into()))
         );
     }
 
     #[test]
-    fn reads_archives_up_to_the_file_cut_at_the_limit() {
-        let large = vec![b'x'; MAX_DECODED + 1];
-        let entries: [(&str, &[u8]); 3] = [("a.txt", b"first"), ("large", &large), ("c.txt", b"")];
+    fn reads_the_files_of_archives_that_store_them_in_place() {
+        let entries: [(&str, &[u8]); 2] = [("a.txt", b"first"), ("b.txt", b"second")];
         let tar_entries = entries.map(|(name, content)| (name.as_bytes(), b'0', content));
-        for (format, files) in [
-            ("tar", tar::files(&tar_header::tests::tar(&tar_entries))),
-            ("ar", ar::files(&ar::tests::ar(&entries))),
-            ("cpio", cpio::files(&cpio::tests::cpio(&entries))),
+        let tar = tar_header::tests::tar(&tar_entries);
+        let ar = ar::tests::ar(&entries);
+        let cpio = cpio::tests::cpio(&entries);
+        let pages = Pages::IN_MEMORY;
+        for (format, archive, files) in [
+            (
+                "tar",
+                &tar,
+                tar::files(&tar, pages).and_then(Limited::whole),
+            ),
+            ("ar", &ar, ar::files(&ar, pages)),
+            ("cpio", &cpio, cpio::files(&cpio, pages)),
         ] {
-            let files = match files {
-                Ok(Limited::Cut(files)) => files,
-                Ok(Limited::Whole(_)) => panic!("{format} is read whole"),
-                Err(undecoded) => panic!("{format} is not read: {undecoded}"),
-            };
-            let read: Vec<(&str, usize)> = files
-                .iter()
-                .map(|file| (file.name.as_str(), file.content.len()))
-                .collect();
-            assert_eq!(read, [("a.txt", 5), ("large", MAX_DECODED)], "{format}");
+            let files = files.unwrap_or_else(|undecoded| panic!("{format}: {undecoded}"));
+            assert_eq!(files.len(), 2, "{format}");
+            for (file, (name, content)) in files.iter().zip(entries) {
+                assert_eq!(file.name, name, "{format}");
+                let Input::Within(stored, _) = file.content else {
+                    panic!("{format} copies {name}");
+                };
+                assert_eq!(stored, content, "{format}");
+                assert!(
+                    archive.as_ptr_range().contains(&stored.as_ptr()),
+                    "{format}"
+                );
+            }
         }
     }
 }

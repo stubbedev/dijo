@@ -11,6 +11,7 @@ use crate::errors::Error;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Decline, Difference, Failure, Opened, Parser, Prepared};
+use crate::input::Input;
 
 /// The folder of a collection's archives.
 const ARCHIVE: &str = "archive/";
@@ -20,11 +21,11 @@ const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 /// An archive of the collection, as the embedded document extractor is handed it: as much of
 /// it as is read, and, where it is not read whole, the failure of the collection after it.
 #[derive(Debug)]
-struct Archive {
+struct Archive<'a> {
     path: String,
     name: String,
     size: i64,
-    data: Vec<u8>,
+    data: Input<'a>,
     unread: Option<Unread>,
 }
 
@@ -123,23 +124,23 @@ impl Parser for WaczParser {
 /// as commons-compress's `IOUtils.readFully` reads them, zero past a shorter entry's end, up to
 /// the first that is not read whole, as much of it as is read, which fails the collection while
 /// the archive's parser reads.
-fn archives(zip: &ZipFile<'_>) -> Vec<Archive> {
+fn archives<'a>(zip: &ZipFile<'a>) -> Vec<Archive<'a>> {
     let mut archives = Vec::new();
     for entry in zip.entries().iter().filter(|entry| !entry.is_directory()) {
         let Some(name) = entry.name.strip_prefix(ARCHIVE) else {
             continue;
         };
         let (data, unread) = match zip.read(entry) {
-            Some(Content::Complete(data)) => (data.into_owned(), None),
-            Some(Content::Truncated(data)) => (data.into_owned(), Some(Unread::Cut)),
-            Some(Content::Oversized(data)) => (data.into_owned(), Some(Unread::TooLarge)),
-            None => (Vec::new(), Some(Unread::Cut)),
+            Some(Content::Complete(data)) => (Input::from(data), None),
+            Some(Content::Truncated(data)) => (data.into(), Some(Unread::Cut)),
+            Some(Content::Oversized(data)) => (data.into(), Some(Unread::TooLarge)),
+            None => (Input::Borrowed(&[]), Some(Unread::Cut)),
         };
         let (data, unread) = match unread {
             None if data.starts_with(&GZIP_MAGIC) => match gzip::decode(&data) {
                 Ok(Limited::Whole(member)) => (member.content, None),
                 Ok(Limited::Cut(member)) => (member.content, Some(Unread::TooLarge)),
-                Err(_) => (Vec::new(), Some(Unread::Gzip)),
+                Err(_) => (Input::Borrowed(&[]), Some(Unread::Gzip)),
             },
             unread => (data, unread),
         };

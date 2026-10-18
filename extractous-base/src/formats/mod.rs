@@ -414,19 +414,20 @@ fn routes() -> &'static dyn Routes {
         .expect("extractous-core installs the routes of embedded documents before it routes one")
 }
 
-/// Routes a document embedded in one a native parser reads to its [`embedded_parser`], and
-/// returns what that parser prepared, if it takes the document, or why Tika's path parses it.
-/// A build without Tika takes the reading of a parser that reads the document differently from
-/// Tika's.
+/// Routes a document embedded in one a native parser reads, whose bytes `data` have the pages
+/// `pages`, to its [`embedded_parser`], and returns what that parser prepared, if it takes the
+/// document, or why Tika's path parses it. A build without Tika takes the reading of a parser
+/// that reads the document differently from Tika's.
 pub fn route_embedded<'a>(
     data: &'a [u8],
+    pages: Pages<'a>,
     metadata: &TikaMetadata,
     opened: Opened,
     configs: &'a ParserConfigs,
 ) -> Result<EmbeddedRoute<'a>, Bridged> {
     let (parser, start) = embedded_parser(data, metadata, opened).map_err(Bridged::Unrouted)?;
     let name = parser.name();
-    let (prepared, difference) = match parser.prepare(data, &start, configs) {
+    let (prepared, difference) = match parser.prepare_paged(data, pages, &start, configs) {
         Ok(prepared) => (prepared, None),
         Err(Decline::Differs {
             reading,

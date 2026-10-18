@@ -7,7 +7,7 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::fs::File;
-use std::io::{BufWriter, Write as _};
+use std::io::BufWriter;
 use std::path::PathBuf;
 
 use crate::config::ParserConfigs;
@@ -19,6 +19,12 @@ use crate::{memory, Extractor, Metadata};
 
 /// The memory an extraction of a large file may take by default: a fraction of the file.
 pub const BUDGET: u64 = 16 << 20;
+/// The budget of an extraction that decodes a stream of unknown length, which holds as much of
+/// what it decodes in memory as a file read whole before it spools the rest to a file.
+pub const SPOOLING_BUDGET: u64 = MAX_READ_WHOLE + BUDGET;
+/// The base64 alphabet, which [`write_base64`] encodes with.
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 /// What [`LargeFile::padded`] pads a header with, a body at a time.
 const PADDING: &[u8] = &[0; 1 << 20];
 
@@ -91,6 +97,79 @@ pub fn peak_of<R>(work: impl FnOnce() -> R) -> (R, u64) {
     )
 }
 
+/// Binary data of a length, as large as a test needs, which no parser writes out and which
+/// compresses well: lines of 64 bytes that each hold their number among bytes that repeat.
+pub struct Binary {
+    at: u64,
+    length: u64,
+}
+
+impl Binary {
+    pub fn new(length: u64) -> Self {
+        Self { at: 0, length }
+    }
+}
+
+impl std::io::Read for Binary {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let mut written = 0;
+        while written < buffer.len() && self.at < self.length {
+            let mut line = [0xABu8; 64];
+            line[0] = 0;
+            line[1..9].copy_from_slice(&(self.at / 64).to_le_bytes());
+            let offset = (self.at % 64) as usize;
+            let left = usize::try_from(self.length - self.at).unwrap_or(usize::MAX);
+            let length = (64 - offset).min(buffer.len() - written).min(left);
+            buffer[written..written + length].copy_from_slice(&line[offset..offset + length]);
+            written += length;
+            self.at += length as u64;
+        }
+        Ok(written)
+    }
+}
+
+/// Writes to `out` what `data` reads, in base64, in lines of 76 characters, each ended by
+/// `line_end`.
+pub fn write_base64(
+    out: &mut dyn std::io::Write,
+    mut data: impl std::io::Read,
+    line_end: &[u8],
+) -> std::io::Result<()> {
+    let mut line = [0u8; 57];
+    let mut encoded = Vec::with_capacity(76 + line_end.len());
+    loop {
+        let mut read = 0;
+        while read < line.len() {
+            let count = data.read(&mut line[read..])?;
+            if count == 0 {
+                break;
+            }
+            read += count;
+        }
+        if read == 0 {
+            return Ok(());
+        }
+        encoded.clear();
+        for group in line[..read].chunks(3) {
+            let bytes = [
+                group[0],
+                *group.get(1).unwrap_or(&0),
+                *group.get(2).unwrap_or(&0),
+            ];
+            let bits = u32::from(bytes[0]) << 16 | u32::from(bytes[1]) << 8 | u32::from(bytes[2]);
+            for (index, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+                encoded.push(if index <= group.len() {
+                    BASE64_ALPHABET[(bits >> shift & 63) as usize]
+                } else {
+                    b'='
+                });
+            }
+        }
+        encoded.extend_from_slice(line_end);
+        out.write_all(&encoded)?;
+    }
+}
+
 /// How many bodies of `length` bytes make a file too large to read whole.
 pub fn bodies_past_limit(length: usize) -> u64 {
     MAX_READ_WHOLE / length as u64 + 1
@@ -112,19 +191,30 @@ impl LargeFile {
         mut body: impl FnMut(u64) -> Vec<u8>,
         tail: &[u8],
     ) -> Self {
+        let file = Self::written(name, |out| {
+            out.write_all(head)?;
+            for index in 0..count {
+                out.write_all(&body(index))?;
+            }
+            out.write_all(tail)
+        });
+        assert!(std::fs::metadata(&file.path).unwrap().len() > MAX_READ_WHOLE);
+        file
+    }
+
+    /// What `write` writes: a file larger than [`MAX_READ_WHOLE`], or one that decodes into
+    /// more.
+    pub fn written(
+        name: &str,
+        write: impl FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
+    ) -> Self {
         let dir = crate::isolate::temp_dir()
             .join(format!("extractous-large-{name}-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join(name);
         let mut out = BufWriter::new(File::create(&path).unwrap());
-        out.write_all(head).unwrap();
-        for index in 0..count {
-            out.write_all(&body(index)).unwrap();
-        }
-        out.write_all(tail).unwrap();
-        let file = out.into_inner().unwrap();
-        file.sync_all().unwrap();
-        assert!(file.metadata().unwrap().len() > MAX_READ_WHOLE);
+        write(&mut out).unwrap();
+        out.into_inner().unwrap().sync_all().unwrap();
         Self { dir, path }
     }
 
@@ -156,7 +246,8 @@ impl LargeFile {
     }
 
     /// The file's text and metadata, extracted by `extractor` under `budget` and never holding
-    /// more, on its own thread or on any working for it, which `parser` must have read.
+    /// more, on its own thread or on any working for it, which `parser` must have read, itself
+    /// or a document embedded in it.
     pub fn extract_with(
         &self,
         extractor: &Extractor,
@@ -180,7 +271,11 @@ impl LargeFile {
             budget_peak <= budget,
             "{path} held {budget_peak} bytes in large allocations and reservations at their peak"
         );
-        assert_eq!(metadata["tk:parsed-by"].last().unwrap(), parser);
+        let parsers = &metadata["tk:parsed-by"];
+        assert!(
+            parsers.iter().any(|by| by == parser),
+            "{path} is parsed by {parsers:?}"
+        );
         (text, metadata)
     }
 }

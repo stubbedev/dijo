@@ -21,7 +21,7 @@ const CRYPTO_KEY_BLOCK: [u8; 8] = 0x146e_0be7_abac_d0d6u64.to_be_bytes();
 const INTEGRITY_KEY_BLOCK: [u8; 8] = 0x5fb2_ad01_0cb9_e1f6u64.to_be_bytes();
 const INTEGRITY_VALUE_BLOCK: [u8; 8] = 0xa067_7f02_b22c_8433u64.to_be_bytes();
 /// The chunks `AgileCipherInputStream` decrypts the package in, each with the IV of its number.
-const SEGMENT: usize = 4096;
+pub(super) const SEGMENT: usize = 4096;
 /// The most hashing rounds this port spends on a password; a descriptor asking for more keeps
 /// Tika's parse hashing, which is left to it.
 const MAX_SPIN_COUNT: i32 = 10_000_000;
@@ -324,39 +324,32 @@ pub struct AgileKey {
 }
 
 impl AgileKey {
-    /// `AgileCipherInputStream` read to `length` bytes: each 4096-byte chunk of `data`
-    /// decrypted with the IV of its number, failing where POI's stream runs out or leaves part
-    /// of a chunk it hands on undecrypted.
-    pub(super) fn decrypt(&self, data: &[u8], length: usize) -> Result<Vec<u8>, Unopened> {
-        let mut out = Vec::with_capacity(length);
-        for (number, chunk) in data.chunks(SEGMENT).enumerate() {
-            if out.len() >= length {
-                break;
-            }
-            let wanted = (length - out.len()).min(SEGMENT);
-            let whole = chunk.len() - chunk.len() % 16;
-            if whole < wanted {
-                return Err(Unopened::Unported(
-                    "an encrypted package that ends before its length or within a cipher \
-                     block, which POI reads short"
-                        .to_owned(),
-                ));
-            }
-            let iv = iv(
-                self.hash,
-                &self.key_salt,
-                Some(&(number as u32).to_le_bytes()),
-                self.block_size,
-            )?;
-            out.extend_from_slice(&self.key.decrypt_cbc(&iv, &chunk[..whole])[..wanted]);
-        }
-        if out.len() < length {
+    /// `AgileCipherInputStream`'s chunk `number`, `chunk`, of which the package takes `wanted`
+    /// bytes: decrypted with the IV of its number, failing where POI's stream would leave part of
+    /// what it hands on undecrypted.
+    pub(super) fn decrypt_segment(
+        &self,
+        number: u32,
+        chunk: &[u8],
+        wanted: usize,
+    ) -> Result<Vec<u8>, Unopened> {
+        let whole = chunk.len() - chunk.len() % 16;
+        if whole < wanted {
             return Err(Unopened::Unported(
-                "an encrypted package that ends before its length, which POI reads short"
+                "an encrypted package that ends before its length or within a cipher block, \
+                 which POI reads short"
                     .to_owned(),
             ));
         }
-        Ok(out)
+        let iv = iv(
+            self.hash,
+            &self.key_salt,
+            Some(&number.to_le_bytes()),
+            self.block_size,
+        )?;
+        let mut plain = self.key.decrypt_cbc(&iv, &chunk[..whole]);
+        plain.truncate(wanted);
+        Ok(plain)
     }
 }
 

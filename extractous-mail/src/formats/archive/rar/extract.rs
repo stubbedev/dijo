@@ -11,6 +11,7 @@
 
 use super::headers::{FileHeader, Headers};
 use super::unpack::{Method, Thrown, Unpack};
+use crate::input::Input;
 
 /// `Method` of a stored entry's header.
 const STORED: u8 = 0x30;
@@ -20,7 +21,7 @@ const STORED: u8 = 0x30;
 pub(super) enum Extracted {
     /// The entry's data, empty where junrar refuses it before it writes anything, as it
     /// refuses a broken header or an encrypted entry, which it has no password for.
-    Data(Vec<u8>),
+    Data(Input<'static>),
     /// Why the entry's data cannot be given.
     Unread(String),
 }
@@ -31,26 +32,30 @@ impl From<Thrown> for Extracted {
     }
 }
 
-/// What extracting each file of the archive gives, in order, but of its directories, which
-/// Tika's parser does not open.
-pub(super) fn entries(data: &[u8], headers: &Headers) -> Vec<(usize, Extracted)> {
+/// Hands `each` what extracting each file of the archive gives, its data spooled, with the
+/// file's index, in order, but of its directories, which Tika's parser does not open: one
+/// file's data at a time, up to the first failure of `each`.
+pub(super) fn each<E>(
+    data: &[u8],
+    headers: &Headers,
+    mut each: impl FnMut(usize, Extracted) -> Result<(), E>,
+) -> Result<(), E> {
     let mut unpack = Unpack::new(data);
-    headers
-        .files
-        .iter()
-        .enumerate()
-        .filter(|(_, header)| !header.is_directory())
-        .map(|(index, header)| (index, extract_file(&mut unpack, header)))
-        .collect()
+    for (index, header) in headers.files.iter().enumerate() {
+        if !header.is_directory() {
+            each(index, extract_file(&mut unpack, header))?;
+        }
+    }
+    Ok(())
 }
 
 /// `doExtractFile`: the file's data unpacked and checked against its CRC.
 fn extract_file(unpack: &mut Unpack, header: &FileHeader) -> Extracted {
     if header.full_unpack_size <= 0 || header.broken || header.is_encrypted() {
-        return Extracted::Data(Vec::new());
+        return Extracted::Data(Input::Borrowed(&[]));
     }
     let Ok(start) = u64::try_from(header.data_start()) else {
-        return Extracted::Data(Vec::new());
+        return Extracted::Data(Input::Borrowed(&[]));
     };
     if header.is_split() {
         return Extracted::Unread(
@@ -81,5 +86,8 @@ fn extract_file(unpack: &mut Unpack, header: &FileHeader) -> Extracted {
     if unpack.crc() != header.file_crc {
         return Extracted::Unread("its unpacked data does not match its CRC".to_owned());
     }
-    Extracted::Data(unpack.take_data())
+    match unpack.take_data() {
+        Ok(data) => Extracted::Data(data),
+        Err(thrown) => thrown.into(),
+    }
 }
