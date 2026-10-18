@@ -83,7 +83,8 @@ impl Parser for SourceCodeParser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let difference = AutoDetectReader::difference(input, metadata.get("Content-Type"));
-        let (detection, _) = AutoDetectReader::stream(input, metadata.get("Content-Type"), pages);
+        let given = metadata.get("Content-Type").map(str::to_owned);
+        let (detection, _) = AutoDetectReader::stream(input, given.as_deref(), pages);
         let name = metadata.get(RESOURCE_NAME).unwrap_or_default().to_owned();
         let unicode = detection.decode_as.name().starts_with("UTF-");
         if !unicode && name.chars().any(|c| !c.is_ascii() && !is_entity(c)) {
@@ -103,8 +104,7 @@ impl Parser for SourceCodeParser {
                         "TikaException: media type must be set in metadata before parse".to_owned(),
                     )
                 })?;
-            let (detection, text) =
-                AutoDetectReader::stream(input, Some(content_type.as_str()), pages);
+            let (detection, text) = AutoDetectReader::stream(input, given.as_deref(), pages);
             let metadata = xhtml.metadata_mut();
             auto_detect_reader::set_metadata(&detection, metadata);
             let media_type = MediaType::parse(&content_type).ok_or_else(|| {
@@ -125,7 +125,7 @@ impl Parser for SourceCodeParser {
                     "TikaException: unparseable content type {media_type}"
                 ))
             })?;
-            let (_, text) = AutoDetectReader::stream(input, Some(content_type.as_str()), pages);
+            let (_, text) = AutoDetectReader::stream(input, given.as_deref(), pages);
             let mut code = text.lines().map(|line| {
                 if unicode {
                     line
