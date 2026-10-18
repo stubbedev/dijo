@@ -112,12 +112,58 @@ fn oversized(mut decoded: Vec<u8>) -> Content<'static> {
     Content::Oversized(Cow::Owned(decoded))
 }
 
-/// Data shrunk ([`UNSHRINKING`]) or imploded ([`IMPLODING`]) with the general purpose `flags`,
-/// `size` bytes once decoded, as `UnshrinkingInputStream` and `ExplodingInputStream` decode it,
-/// without checking its CRC: all of it, what was decoded before the data failed, or past
-/// [`MAX_DECODED`] bytes. The `zip` crate decodes it, read from a local header written for it,
-/// the only way the crate takes data of these methods.
-pub(crate) fn decode_legacy(method: u16, flags: u16, raw: &[u8], size: u64) -> Content<'static> {
+/// Whether commons-compress decompresses data compressed with `method`, neither stored nor
+/// deflated: `ZipUtil.supportsMethodOf`'s other methods.
+pub(crate) fn decompresses(method: u16) -> bool {
+    [UNSHRINKING, IMPLODING, DEFLATE64, BZIP2, XZ].contains(&method) || ZSTD.contains(&method)
+}
+
+/// The name of the `ZipMethod` of `code`, as `ZipMethod.getMethodByCode` finds it.
+pub(crate) fn method_name(code: u16) -> Option<&'static str> {
+    Some(match code {
+        STORED => "STORED",
+        UNSHRINKING => "UNSHRINKING",
+        2 => "EXPANDING_LEVEL_1",
+        3 => "EXPANDING_LEVEL_2",
+        4 => "EXPANDING_LEVEL_3",
+        5 => "EXPANDING_LEVEL_4",
+        IMPLODING => "IMPLODING",
+        7 => "TOKENIZATION",
+        DEFLATED => "DEFLATED",
+        DEFLATE64 => "ENHANCED_DEFLATED",
+        10 => "PKWARE_IMPLODING",
+        BZIP2 => "BZIP2",
+        14 => "LZMA",
+        20 => "ZSTD_DEPRECATED",
+        93 => "ZSTD",
+        XZ => "XZ",
+        96 => "JPEG",
+        97 => "WAVPACK",
+        98 => "PPMD",
+        99 => "AES_ENCRYPTED",
+        _ => return None,
+    })
+}
+
+/// The data `raw` of an entry compressed with `method` and the general purpose `flags`, `size`
+/// bytes once decoded, as commons-compress's `ZipFile.getInputStream` decodes it, without
+/// checking its CRC: all of it, what was decoded before the data failed, or past
+/// [`MAX_DECODED`] bytes. `None` for a method commons-compress does not decompress, and for
+/// stored and deflated data, which the readers take from the archive as far as it goes.
+pub(crate) fn decode(method: u16, flags: u16, raw: &[u8], size: u64) -> Option<Content<'static>> {
+    if ZSTD.contains(&method) {
+        return Some(match super::zstd::decode(raw) {
+            Ok(super::Limited::Whole(content)) => Content::Complete(Cow::Owned(content)),
+            Ok(super::Limited::Cut(content)) => Content::Oversized(Cow::Owned(content)),
+            Err(_) => Content::Truncated(Cow::Owned(Vec::new())),
+        });
+    }
+    decompresses(method).then(|| decode_with_zip_crate(method, flags, raw, size))
+}
+
+/// Data of a method other than Zstandard, as the `zip` crate decodes it, read from a local
+/// header written for it, the only way the crate takes data of the legacy methods.
+fn decode_with_zip_crate(method: u16, flags: u16, raw: &[u8], size: u64) -> Content<'static> {
     const DATA_DESCRIPTOR: u16 = 0x0008;
     const IMPLODE_OPTIONS: u16 = 0x0006;
     const DOS_EPOCH_DATE: u16 = 0x0021;
@@ -206,7 +252,7 @@ mod tests {
         let start = usize::try_from(entry.data_offset).unwrap();
         let raw = &LEGACY[start..start + 300];
         let size = u64::try_from(entry.size).unwrap();
-        let Content::Truncated(bytes) = decode_legacy(IMPLODING, entry.flags, raw, size) else {
+        let Some(Content::Truncated(bytes)) = decode(IMPLODING, entry.flags, raw, size) else {
             panic!("data cut short is decoded whole");
         };
         assert!(bytes.len() < 1078);

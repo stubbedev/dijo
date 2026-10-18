@@ -71,6 +71,10 @@ pub type Deferral = String;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Difference(pub String);
 
+/// What every recorded [`Difference`] says between the parser and the reason, by which a
+/// recorded failure is told to be a difference from Tika rather than a failure.
+pub const DIFFERS_FROM_TIKA: &str = "differently from Tika: ";
+
 impl Difference {
     pub fn new(reason: impl Into<String>) -> Self {
         Self(reason.into())
@@ -79,10 +83,7 @@ impl Difference {
     /// The warning a build without Tika records on a document the parser `parser` read with
     /// this difference.
     pub fn warning(&self, parser: &str) -> String {
-        format!(
-            "{parser} read the document differently from Tika: {}",
-            self.0
-        )
+        format!("{parser} read the document {DIFFERS_FROM_TIKA}{}", self.0)
     }
 }
 
@@ -202,8 +203,9 @@ pub fn unless_different(
 /// How the memory a native parser takes grows with its input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Footprint {
-    /// With the input: it reads all of it into structures of its own. A file larger than
-    /// [`input::MAX_READ_WHOLE`] is left to Tika, which streams it.
+    /// With the input: it reads all of it into structures of its own. In a build with Tika, a
+    /// file larger than [`input::MAX_READ_WHOLE`] is left to Tika, which streams it; a build
+    /// without Tika reads it mapped, under the extraction's memory budget.
     Proportional,
     /// Bounded whatever the input's size: it reads only bounded parts of its input, such as
     /// headers and indexes, in place, and skips the rest. It reads a file of any size, mapped.

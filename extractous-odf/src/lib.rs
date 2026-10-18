@@ -19,4 +19,5 @@ pub mod formats {
 
     pub mod epub;
     pub mod odf;
+    mod zip_package;
 }

@@ -6,6 +6,8 @@ mod zone;
 
 pub use zone::TimeZone;
 
+use super::simple_date_format::SimpleDateFormat;
+
 const MILLIS_PER_DAY: i64 = 86_400_000;
 /// The fixed date (days from January 1, 1 Gregorian) of January 1, 1970.
 const EPOCH_FIXED_DATE: i64 = 719_163;
@@ -271,6 +273,35 @@ pub fn format_instant(epoch_millis: i64) -> String {
     instant_string(epoch_millis.div_euclid(1000), 0)
 }
 
+/// `Date.toString` in a zone of a custom offset, as the native image writes it: `EEE MMM dd
+/// HH:mm:ss`, the zone named by its offset (`+02:00`), and the year of the era.
+pub fn date_to_string(epoch_millis: i64, zone: &TimeZone) -> String {
+    let local = local_fields(epoch_millis, zone);
+    let minutes = local.offset / 60_000;
+    let sign = if minutes < 0 { '-' } else { '+' };
+    let minutes = minutes.abs();
+    let name = format!("{sign}{:02}:{:02}", minutes / 60, minutes % 60);
+    date_text(epoch_millis, zone, &local, &name)
+}
+
+/// `Date.toString` where Java's default time zone is UTC: `EEE MMM dd HH:mm:ss UTC` and the year
+/// of the era.
+pub fn utc_date_to_string(epoch_millis: i64) -> String {
+    let utc = TimeZone::fixed(0);
+    let local = local_fields(epoch_millis, &utc);
+    date_text(epoch_millis, &utc, &local, "UTC")
+}
+
+/// `Date.toString` of the instant `epoch_millis` in `zone`, whose fields are `local`, the zone
+/// named `name`.
+fn date_text(epoch_millis: i64, zone: &TimeZone, local: &LocalFields, name: &str) -> String {
+    let head = SimpleDateFormat::new("EEE MMM dd HH:mm:ss")
+        .expect("the Date.toString pattern compiles")
+        .format(epoch_millis, zone)
+        .expect("the Date.toString pattern names no zone");
+    format!("{head} {name} {}", local.year)
+}
+
 /// `Instant.toString`: the UTC date and time, with a fraction of three, six or nine digits when
 /// the nanoseconds need them.
 pub fn instant_string(seconds: i64, nanos: u32) -> String {
@@ -392,6 +423,26 @@ pub(crate) mod tests {
         TimeZone::by_id(id, &[directory])
             .unwrap()
             .unwrap_or_else(|| panic!("the fixtures have no zone {id}"))
+    }
+
+    #[test]
+    fn writes_dates_as_the_native_images_date_to_string_does() {
+        assert_eq!(
+            date_to_string(1_791_836_869_000, &TimeZone::fixed(7200)),
+            "Mon Oct 12 22:27:49 +02:00 2026"
+        );
+        assert_eq!(
+            date_to_string(1_791_836_869_000, &TimeZone::fixed(-34_200)),
+            "Mon Oct 12 10:57:49 -09:30 2026"
+        );
+        assert_eq!(
+            utc_date_to_string(i64::MAX),
+            "Sun Aug 17 07:12:55 UTC 292278994"
+        );
+        assert_eq!(
+            utc_date_to_string(-1_000_000_000_000_000),
+            "Tue Nov 16 22:13:20 UTC 29720"
+        );
     }
 
     #[test]

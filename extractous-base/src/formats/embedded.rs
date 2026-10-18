@@ -16,7 +16,7 @@ use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 #[cfg(not(feature = "tika"))]
-use crate::formats::Difference;
+use crate::formats::{Difference, DIFFERS_FROM_TIKA};
 use crate::formats::{Failure, InputFile};
 use crate::input::Pages;
 
@@ -397,7 +397,7 @@ pub(crate) fn describe_difference(
     difference: &Difference,
 ) -> String {
     format!(
-        "{parser} read {} differently from Tika: {}",
+        "{parser} read {} {DIFFERS_FROM_TIKA}{}",
         embedded_document(metadata),
         one_line(&difference.0)
     )

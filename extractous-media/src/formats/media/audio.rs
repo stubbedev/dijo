@@ -3,12 +3,15 @@
 //! loader lists them, each from the start, the first that takes the file giving its type and
 //! audio format, written as metadata. A file no reader takes gets Tika's warning instead.
 
+use super::midi::{self, Skipping, Unread};
 use crate::config::ParserConfigs;
-use crate::errors::Error;
 use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::{Decline, Footprint, Parser, Prepared};
 use crate::java::JavaHashMap;
+
+const TIKA_NAME: &str = "org.apache.tika.parser.audio.AudioParser";
 
 /// The warning Tika records for a file no reader takes.
 const UNSUPPORTED: &str = "An UnsupportedAudioFileException was thrown.  This could mean that \
@@ -24,15 +27,18 @@ enum Type {
     Au,
     Aiff,
     Aifc,
+    /// `SoftMidiAudioFileReader`'s.
+    Midi,
 }
 
 impl Type {
-    /// The `Content-Type` `AudioParser` sets for the type.
-    fn content_type(self) -> &'static str {
+    /// The `Content-Type` `AudioParser` sets for the type, if it sets one.
+    fn content_type(self) -> Option<&'static str> {
         match self {
-            Type::Aifc | Type::Aiff => "audio/x-aiff",
-            Type::Au => "audio/basic",
-            Type::Wave => "audio/vnd.wave",
+            Type::Aifc | Type::Aiff => Some("audio/x-aiff"),
+            Type::Au => Some("audio/basic"),
+            Type::Wave => Some("audio/vnd.wave"),
+            Type::Midi => None,
         }
     }
 }
@@ -78,7 +84,7 @@ enum Rejected {
     /// the next reader is tried.
     Unsupported,
     /// A runtime exception, which fails the parse.
-    Thrown(String),
+    Thrown(Thrown),
 }
 
 type Read<T> = Result<T, Rejected>;
@@ -237,10 +243,9 @@ struct Riff<'a> {
     root: u64,
 }
 
-/// A child chunk of the root: its four-character code, size and what it has left.
+/// A child chunk of the root: its four-character code and what it has left.
 struct Chunk {
     code: [u8; 4],
-    size: u64,
     left: u64,
 }
 
@@ -333,15 +338,10 @@ impl<'a> Riff<'a> {
         let Some((code, size)) = header else {
             return Ok(Some(Chunk {
                 code: [0; 4],
-                size: 0,
                 left: 0,
             }));
         };
-        let mut chunk = Chunk {
-            code,
-            size,
-            left: size,
-        };
+        let mut chunk = Chunk { code, left: size };
         if &code == b"RIFF" || &code == b"LIST" {
             for _ in 0..4 {
                 self.chunk_read(&mut chunk).ok_or(Rejected::Unsupported)?;
@@ -418,11 +418,11 @@ impl<'a> Riff<'a> {
 }
 
 /// The RIFF `WAVE` readers' walk to the `fmt ` and `data` chunks: `read_format` reads the format
-/// chunk, the data chunk's size ends the walk.
+/// chunk, the data chunk ends the walk.
 fn riff_wave<T>(
     bytes: &[u8],
     mut read_format: impl FnMut(&mut Riff, &mut Chunk) -> Read<T>,
-) -> Read<(T, u64)> {
+) -> Read<T> {
     let (mut riff, code, kind) = Riff::open(bytes)?;
     if &code != b"RIFF" || kind.as_ref() != Some(b"WAVE") {
         return Err(Rejected::Unsupported);
@@ -433,8 +433,7 @@ fn riff_wave<T>(
             format = Some(read_format(&mut riff, &mut chunk)?);
         }
         if &chunk.code == b"data" {
-            let format = format.ok_or(Rejected::Unsupported)?;
-            return Ok((format, chunk.size));
+            return format.ok_or(Rejected::Unsupported);
         }
         riff.finish(&mut chunk)?;
     }
@@ -443,7 +442,7 @@ fn riff_wave<T>(
 
 /// `WaveFloatFileReader`: IEEE float WAVE files.
 fn wave_float(bytes: &[u8]) -> Read<FileFormat> {
-    let ((channels, sample_rate, bits), _) = riff_wave(bytes, |riff, chunk| {
+    let (channels, sample_rate, bits) = riff_wave(bytes, |riff, chunk| {
         if riff.chunk_unsigned_short(chunk)? != 3 {
             return Err(Rejected::Unsupported);
         }
@@ -485,7 +484,7 @@ fn channel_order(mask: u64) -> Option<String> {
 /// `WaveExtensibleFileReader`: WAVE files with an extensible format of PCM or float samples.
 fn wave_extensible(bytes: &[u8]) -> Read<FileFormat> {
     const PCM_TAIL: [u8; 12] = [0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71];
-    let (format, data_size) = riff_wave(bytes, |riff, chunk| {
+    let format = riff_wave(bytes, |riff, chunk| {
         if riff.chunk_unsigned_short(chunk)? != 0xFFFE {
             return Err(Rejected::Unsupported);
         }
@@ -540,9 +539,10 @@ fn wave_extensible(bytes: &[u8]) -> Read<FileFormat> {
         _ => return Err(Rejected::Unsupported),
     };
     if frame_size == 0 {
-        return Err(Rejected::Thrown(format!(
-            "ArithmeticException: / by zero, the frame length of {data_size} bytes"
-        )));
+        return Err(Rejected::Thrown(Thrown::Runtime(Exception::new(
+            "java.lang.ArithmeticException",
+            "/ by zero",
+        ))));
     }
     let properties = properties
         .copied()
@@ -706,22 +706,36 @@ fn power_of_two(exponent: i32) -> f64 {
     }
 }
 
-/// `AudioSystem.getAudioFileFormat`: the readers in the order the JDK's service loader lists
-/// them, reversed: the extensible, float and plain WAVE readers, the MIDI reader, which takes
-/// no file this parser is given but one that starts as MIDI, then AU and AIFF. `None` where
-/// none takes the file.
-fn file_format(bytes: &[u8]) -> Result<Option<FileFormat>, Decline<'static>> {
-    if bytes.starts_with(b"MThd") {
-        return Err(Decline::Deferred(
-            "a file that starts as MIDI, which the JDK's MIDI audio reader may take".to_owned(),
-        ));
+/// `SoftMidiAudioFileReader.getAudioFileFormat`: a file of which `StandardMidiFileReader` reads
+/// a sequence, through Tika's `SkipFullyInputStream`, as the 44.1 kHz 16-bit stereo PCM it
+/// would synthesise it to.
+fn midi(bytes: &[u8]) -> Read<FileFormat> {
+    match midi::sequence(bytes, Skipping::Fully) {
+        Ok(_) => Ok(FileFormat {
+            kind: Type::Midi,
+            encoding: Encoding::PcmSigned,
+            sample_rate: 44100.0,
+            sample_size_in_bits: 16,
+            channels: 2,
+            properties: Vec::new(),
+        }),
+        Err(Unread::Invalid | Unread::EndOfFile(_)) => Err(Rejected::Unsupported),
+        Err(Unread::NegativeSkip(count)) => Err(Rejected::Thrown(midi::negative_skip(count))),
     }
-    let readers: [Reader; 5] = [wave_extensible, wave_float, wave, au, aiff];
+}
+
+/// `AudioSystem.getAudioFileFormat`: the readers in the order the JDK's service loader lists
+/// them, reversed: the extensible, float and plain WAVE readers, the MIDI reader, then AU and
+/// AIFF. `None` where none takes the file.
+fn file_format(bytes: &[u8]) -> Result<Option<FileFormat>, Decline<'static>> {
+    let readers: [Reader; 6] = [wave_extensible, wave_float, wave, midi, au, aiff];
     for reader in readers {
         match reader(bytes) {
             Ok(format) => return Ok(Some(format)),
             Err(Rejected::Unsupported) => {}
-            Err(Rejected::Thrown(thrown)) => return Err(Decline::Fails(Error::ParseError(thrown))),
+            Err(Rejected::Thrown(thrown)) => {
+                return Err(Decline::Fails(thrown.into_error(TIKA_NAME)))
+            }
         }
     }
     Ok(None)
@@ -734,7 +748,7 @@ impl Parser for AudioParser {
         "extractous::AudioParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.audio.AudioParser"
+        TIKA_NAME
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -763,7 +777,9 @@ impl Parser for AudioParser {
                 metadata.add(EXCEPTION_WARNING, UNSUPPORTED);
                 return Ok(());
             };
-            metadata.set("Content-Type", format.kind.content_type());
+            if let Some(content_type) = format.kind.content_type() {
+                metadata.set("Content-Type", content_type);
+            }
             if format.channels != NOT_SPECIFIED {
                 metadata.set("audio:channels", format.channels.to_string());
             }
@@ -795,14 +811,84 @@ impl Parser for AudioParser {
     }
 }
 
+/// Files that start as MIDI, which Tika's detection hands `MidiParser`, as `AudioParser` reads
+/// them where it is given one: what Tika 4.1.0's `AudioParser` gives on the JDK 25 JVM.
+#[cfg(test)]
+mod midi_files {
+    use super::*;
+
+    fn midi(
+        header_length: i32,
+        kind: i16,
+        timing: i16,
+        chunks: &[(&[u8; 4], &[u8], i32)],
+    ) -> Vec<u8> {
+        let mut file = b"MThd".to_vec();
+        file.extend(header_length.to_be_bytes());
+        file.extend(kind.to_be_bytes());
+        file.extend(i16::try_from(chunks.len()).unwrap().to_be_bytes());
+        file.extend(timing.to_be_bytes());
+        for (code, data, length) in chunks {
+            file.extend(*code);
+            file.extend(length.to_be_bytes());
+            file.extend(*data);
+        }
+        file
+    }
+
+    const TRACK: &[u8] = b"\x00\xFF\x03\x05Titel\x10\x90\x3C\x40\x00\xFF\x2F\x00";
+    const TRACK_LENGTH: i32 = TRACK.len() as i32;
+
+    #[test]
+    fn reads_midi_files_as_the_jdks_midi_audio_reader_does() {
+        let synthesised = FileFormat {
+            kind: Type::Midi,
+            encoding: Encoding::PcmSigned,
+            sample_rate: 44100.0,
+            sample_size_in_bits: 16,
+            channels: 2,
+            properties: Vec::new(),
+        };
+        let smpte_25 = -(25 << 8) | 40;
+        for read in [
+            midi(6, 1, 480, &[(b"MTrk", TRACK, TRACK_LENGTH)]),
+            midi(6, 0, smpte_25, &[(b"MTrk", TRACK, TRACK_LENGTH)]),
+            midi(6, 1, 480, &[(b"MTrk", TRACK, 400)]),
+        ] {
+            assert_eq!(file_format(&read).unwrap(), Some(synthesised.clone()));
+        }
+        let smpte_23 = -(23 << 8) | 40;
+        let mut no_tracks = midi(6, 1, 480, &[]);
+        no_tracks[11] = 3;
+        for unsupported in [
+            midi(6, 1, smpte_23, &[(b"MTrk", TRACK, TRACK_LENGTH)]),
+            midi(400, 1, 480, &[(b"MTrk", TRACK, TRACK_LENGTH)]),
+            midi(6, 2, 480, &[(b"MTrk", TRACK, TRACK_LENGTH)]),
+            midi(6, 1, 480, &[(b"XXXX", b"ab", 400)]),
+            midi(6, 1, 480, &[(b"MTrk", b"\x00\x90\x3C", 3)]),
+            no_tracks,
+        ] {
+            assert_eq!(file_format(&unsupported).unwrap(), None);
+        }
+        let Err(Decline::Fails(error)) = file_format(&midi(2, 1, 480, &[(b"MTrk", TRACK, 9)]))
+        else {
+            panic!("a header of two bytes reads");
+        };
+        assert_eq!(
+            error.to_string(),
+            "Parse error occurred : org.apache.tika.exception.TikaException: Unexpected \
+             RuntimeException from org.apache.tika.parser.audio.AudioParser <- caused by \
+             java.lang.IllegalArgumentException: Skip count must be non-negative, actual: -4"
+        );
+    }
+}
+
 #[cfg(all(test, feature = "tika"))]
 mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
-
-    const TIKA_NAME: &str = "org.apache.tika.parser.audio.AudioParser";
 
     fn wav(format: &[u8], extra: &[u8]) -> Vec<u8> {
         let mut body = b"WAVE".to_vec();

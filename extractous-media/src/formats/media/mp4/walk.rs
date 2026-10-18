@@ -4,10 +4,10 @@
 //! recorded, and the walk goes on after the box that held them, from wherever it stopped.
 
 use super::directory::{Directory, MetaTrack, Movie, Rational, Sound, Track, Video};
-use super::reader::{Bytes, Read, Stream, Thrown};
+use super::reader::{Bytes, Read, Stream};
 use super::user_data::{self, Covers};
 use super::{quick_time, sample_entries, Event};
-use crate::formats::Deferral;
+use crate::formats::Difference;
 use crate::java;
 
 /// `MAX_BOX_DEPTH`.
@@ -23,43 +23,10 @@ const MOVIE_HEADER_TAIL: u64 = 80;
 const STILL_IMAGE_TIME_KEY: &str = "com.apple.quicktime.still-image-time";
 /// `QuickTime.STILL_IMAGE_TIME`.
 const STILL_IMAGE_TIME: &str = "quicktime:still-image-time";
-/// The `uuid` boxes metadata-extractor hands to its Exif, IPTC and Photoshop readers.
-const READER_UUIDS: [([u8; 16], &str); 3] = [
-    (
-        [
-            0x05, 0x37, 0xcd, 0xab, 0x9d, 0x0c, 0x44, 0x31, 0xa7, 0x2a, 0xfa, 0x56, 0x1f, 0x2a,
-            0x11, 0x3e,
-        ],
-        "Exif",
-    ),
-    (
-        [
-            0x2c, 0x4c, 0x01, 0x00, 0x85, 0x04, 0x40, 0xb9, 0xa0, 0x3e, 0x56, 0x21, 0x48, 0xd6,
-            0xdf, 0xeb,
-        ],
-        "Photoshop",
-    ),
-    (
-        [
-            0x33, 0xc7, 0xa4, 0xd2, 0xb8, 0x1d, 0x47, 0x23, 0xa0, 0xba, 0xf1, 0xa3, 0xe0, 0x97,
-            0xad, 0x38,
-        ],
-        "IPTC",
-    ),
+/// The UUID of the `uuid` boxes metadata-extractor reads with its Exif reader.
+const EXIF_UUID: [u8; 16] = [
+    0x05, 0x37, 0xcd, 0xab, 0x9d, 0x0c, 0x44, 0x31, 0xa7, 0x2a, 0xfa, 0x56, 0x1f, 0x2a, 0x11, 0x3e,
 ];
-
-/// What ends the boxes being read: an `IOException`, which Tika records, or what the port
-/// leaves to Tika.
-enum Abort {
-    Thrown(Thrown),
-    Deferred(Deferral),
-}
-
-impl From<Thrown> for Abort {
-    fn from(thrown: Thrown) -> Self {
-        Self::Thrown(thrown)
-    }
-}
 
 /// The handler boxes are read by: `TikaMp4BoxHandler`, or the media handler of a track.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,16 +43,18 @@ struct Context {
 }
 
 /// A file's boxes read: the movie's directory, the tracks' in the order their handler boxes
-/// came, and what was written while reading, in order.
+/// came, what was written while reading, in order, and where the reading may differ from
+/// Tika's path, if anywhere.
 #[derive(Debug)]
 pub(super) struct Walked<'a> {
     pub(super) movie: Directory<Movie>,
     pub(super) tracks: Vec<Directory<Track>>,
     pub(super) events: Vec<Event<'a>>,
+    pub(super) difference: Option<Difference>,
 }
 
-/// `TikaMp4Reader.extract`, or why the port leaves the file to Tika.
-pub(super) fn walk(input: &[u8]) -> Result<Walked<'_>, Deferral> {
+/// `TikaMp4Reader.extract`.
+pub(super) fn walk(input: &[u8]) -> Walked<'_> {
     let mut walk = Walk {
         stream: Stream::new(input),
         input_length: input.len() as u64,
@@ -96,13 +65,15 @@ pub(super) fn walk(input: &[u8]) -> Result<Walked<'_>, Deferral> {
         quick_time_keys: Vec::new(),
         empty_edit_duration: -1,
         covers: Covers::default(),
+        difference: None,
     };
-    walk.boxes(None, Handler::Box, 0)?;
-    Ok(Walked {
+    walk.boxes(None, Handler::Box, 0);
+    Walked {
         movie: walk.movie,
         tracks: walk.tracks,
         events: walk.events,
-    })
+        difference: walk.difference,
+    }
 }
 
 /// The walk under way: the file, the directories, `Mp4Context` and what
@@ -117,6 +88,7 @@ struct Walk<'a> {
     quick_time_keys: Vec<String>,
     empty_edit_duration: i64,
     covers: Covers,
+    difference: Option<Difference>,
 }
 
 impl<'a> Walk<'a> {
@@ -129,29 +101,19 @@ impl<'a> Walk<'a> {
 
     /// `processBoxes`: the boxes up to `end`, or to the end of the file, an exception among
     /// them recorded.
-    fn boxes(&mut self, end: Option<u64>, handler: Handler, depth: u32) -> Result<(), Deferral> {
+    fn boxes(&mut self, end: Option<u64>, handler: Handler, depth: u32) {
         if depth > MAX_BOX_DEPTH {
             self.errors(handler).push(format!(
                 "MP4 box nesting exceeds the maximum depth of {MAX_BOX_DEPTH}"
             ));
-            return Ok(());
+            return;
         }
-        match self.read_boxes(end, handler, depth) {
-            Ok(()) => Ok(()),
-            Err(Abort::Thrown(thrown)) => {
-                self.events.push(Event::Recorded(thrown));
-                Ok(())
-            }
-            Err(Abort::Deferred(deferral)) => Err(deferral),
+        if let Err(thrown) = self.read_boxes(end, handler, depth) {
+            self.events.push(Event::Recorded(thrown));
         }
     }
 
-    fn read_boxes(
-        &mut self,
-        end: Option<u64>,
-        mut handler: Handler,
-        depth: u32,
-    ) -> Result<(), Abort> {
+    fn read_boxes(&mut self, end: Option<u64>, mut handler: Handler, depth: u32) -> Read<()> {
         while end.is_none_or(|end| self.stream.position() < end) {
             let size = self.stream.u32()?;
             let kind = four_cc(self.stream.take(4)?);
@@ -172,8 +134,7 @@ impl<'a> Walk<'a> {
             if self.accepts_container(handler, &kind) {
                 let container_end = self.stream.position() + payload_length;
                 let inner = self.container(handler, &kind);
-                self.boxes(Some(container_end), inner, depth + 1)
-                    .map_err(Abort::Deferred)?;
+                self.boxes(Some(container_end), inner, depth + 1);
                 // The next box starts where the container ends, even when a box in it failed:
                 // metadata-extractor reads on from wherever the failure left it (#118).
                 let position = self.stream.position();
@@ -254,7 +215,7 @@ impl<'a> Walk<'a> {
         kind: &str,
         payload: &'a [u8],
         size: i64,
-    ) -> Result<Handler, Abort> {
+    ) -> Read<Handler> {
         let Handler::Track(index) = handler else {
             return self.movie_box(kind, payload, size);
         };
@@ -282,8 +243,12 @@ impl<'a> Walk<'a> {
         Ok(handler)
     }
 
-    /// `TikaMp4BoxHandler.processBox` of a box with its payload.
-    fn movie_box(&mut self, kind: &str, payload: &'a [u8], size: i64) -> Result<Handler, Abort> {
+    /// `TikaMp4BoxHandler.processBox` of a box with its payload. A `uuid` box keeps nothing:
+    /// metadata-extractor reads those of Exif, IPTC, Photoshop and XMP data into directories of
+    /// their own, which `MP4Parser` does not read. Tika's native image fails a document on Exif
+    /// data where metadata-extractor reports an error outside its IFDs, as it cannot make the
+    /// `ErrorDirectory` that takes it, so an Exif `uuid` box makes the reading differ.
+    fn movie_box(&mut self, kind: &str, payload: &'a [u8], size: i64) -> Read<Handler> {
         match kind {
             "udta" => self.user_data(payload)?,
             "keys" => self.quick_time_keys = quick_time::keys(payload),
@@ -293,12 +258,18 @@ impl<'a> Walk<'a> {
                     self.empty_edit_duration = duration;
                 }
             }
-            "hdlr" => return Ok(self.handler_box(payload, size)?),
+            "hdlr" => return self.handler_box(payload, size),
             "mvhd" => self.movie_header(payload)?,
             "ftyp" => self.file_type(payload, size)?,
             "mdhd" => self.media_header(payload)?,
             "tkhd" => track_header(payload)?,
-            "uuid" => uuid(payload)?,
+            "uuid" if payload.starts_with(&EXIF_UUID) => {
+                self.difference = Some(Difference::new(
+                    "an Exif uuid box, on whose TIFF data Tika's native image fails the document \
+                     where metadata-extractor reports an error outside its IFDs, being unable to \
+                     make the ErrorDirectory that takes it",
+                ));
+            }
             _ => {}
         }
         Ok(Handler::Box)
@@ -441,22 +412,6 @@ fn track_header(payload: &[u8]) -> Read<()> {
     let version = reader.u8()?;
     reader.skip(3)?;
     reader.skip(if version == 1 { 92 } else { 80 })
-}
-
-/// A `uuid` box: those metadata-extractor reads with a reader of another format are left to
-/// Tika; it keeps nothing of the others `MP4Parser` writes.
-fn uuid(payload: &[u8]) -> Result<(), Abort> {
-    let Some(reader) = payload.get(..16).and_then(|uuid| {
-        READER_UUIDS
-            .iter()
-            .find(|(known, _)| known == uuid)
-            .map(|&(_, reader)| reader)
-    }) else {
-        return Ok(());
-    };
-    Err(Abort::Deferred(format!(
-        "a uuid box metadata-extractor reads with its {reader} reader"
-    )))
 }
 
 /// `TikaMp4SoundHandler` and `Mp4SoundHandler` of a box of the sound track.

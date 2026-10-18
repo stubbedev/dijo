@@ -154,7 +154,14 @@ fn outcome(
     let encrypted = errors
         .iter()
         .any(|error| error.category == ErrorCategory::Encrypted);
-    let status = match (errors.is_empty(), produced_text, encrypted) {
+    let only_differences = errors
+        .iter()
+        .all(|error| error.category == ErrorCategory::DiffersFromTika);
+    let status = match (
+        errors.is_empty(),
+        produced_text || only_differences,
+        encrypted,
+    ) {
         (true, _, _) => Status::Complete,
         (false, true, _) => Status::Partial,
         (false, false, true) => Status::Encrypted,
@@ -667,6 +674,29 @@ mod tests {
             write_json_string_content(chunk, &mut out).unwrap();
         }
         String::from_utf8(out).unwrap()
+    }
+
+    fn error(message: &str) -> ExtractionError {
+        ExtractionError::from_message(message.to_owned())
+    }
+
+    #[test]
+    fn a_document_only_read_differently_from_tika_is_partial_not_failed() {
+        let differs = error("extractous::FlvParser read the document differently from Tika: UTC");
+        assert_eq!(
+            outcome(None, Some(differs.clone()), None).status,
+            Status::Partial
+        );
+        let failure = error("java.io.IOException: broken");
+        assert_eq!(outcome(None, Some(failure), None).status, Status::Failed);
+        let copied = Copied {
+            bytes: 1,
+            error: None,
+        };
+        assert_eq!(
+            outcome(Some(&copied), Some(differs), None).status,
+            Status::Partial
+        );
     }
 
     #[test]

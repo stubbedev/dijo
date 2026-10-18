@@ -23,7 +23,7 @@ use crate::java::decimal::Rounding;
 use crate::java::decimal_format::DecimalFormat;
 use crate::java::dtoa::java_double_to_string;
 use crate::java::parse_long;
-use crate::java::time::TimeZone;
+use crate::java::time::{self, TimeZone};
 use crate::text::charset::Charset;
 
 /// metadata-extractor's `Rational`: a numerator and a denominator, neither reduced.
@@ -611,7 +611,7 @@ impl Directory {
             Value::Boolean(boolean) => boolean.to_string(),
             Value::Float(float) => float_format().format_f64(f64::from(*float)),
             Value::Double(double) => float_format().format_f64(*double),
-            Value::Date(millis, zone) => dates::date_to_string(*millis, zone),
+            Value::Date(millis, zone) => time::date_to_string(*millis, zone),
             Value::Text(text) => text.clone(),
             Value::StringValue(text) => text.to_string(),
             Value::Bytes(values) => join(values.iter().map(|byte| byte.to_string())),

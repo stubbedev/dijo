@@ -376,18 +376,25 @@ fn is_regex_whitespace(character: char) -> bool {
     matches!(character, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
 }
 
-/// Whether `encryption.xml` names an encrypted item, as Tika's `EncryptionHandler` collects them.
-pub(super) fn names_encrypted_items(encryption: &[u8]) -> Result<bool, Failure> {
-    struct CipherReferences(bool);
+/// The items `encryption.xml` names encrypted, in document order, as Tika's `EncryptionHandler`
+/// collects them: the `URI` of each `CipherReference`, `null` for one without, as Java writes it.
+pub(super) fn encrypted_items(encryption: &[u8]) -> Result<Vec<String>, Failure> {
+    struct CipherReferences(Vec<String>);
 
     impl SaxHandler for CipherReferences {
         fn start_element(
             &mut self,
             _namespace: &str,
             local_name: &str,
-            _attributes: &[Attribute],
+            attributes: &[Attribute],
         ) -> Result<(), Failure> {
-            self.0 |= local_name == "CipherReference";
+            if local_name == "CipherReference" {
+                self.0.push(
+                    attribute_value(attributes, "URI")
+                        .unwrap_or("null")
+                        .to_owned(),
+                );
+            }
             Ok(())
         }
 
@@ -400,7 +407,7 @@ pub(super) fn names_encrypted_items(encryption: &[u8]) -> Result<bool, Failure> 
         }
     }
 
-    let mut references = CipherReferences(false);
+    let mut references = CipherReferences(Vec::new());
     xml::parse_sax(encryption, "META-INF/encryption.xml", &mut references)?;
     Ok(references.0)
 }

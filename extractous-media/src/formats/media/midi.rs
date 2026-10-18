@@ -5,21 +5,65 @@
 //! of a track fails.
 
 use crate::config::ParserConfigs;
-use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::{Decline, Parser, Prepared};
 
 const MTHD: i32 = 0x4d54_6864;
 const MTRK: i32 = 0x4d54_726b;
 const END_OF_TRACK: u8 = 0x2F;
+const TIKA_NAME: &str = "org.apache.tika.parser.audio.MidiParser";
+/// The message of the `EOFException`s `SMFParser` throws.
+const INVALID_FILE: &str = "invalid MIDI file";
+
+/// How the stream the JDK reads a file from skips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Skipping {
+    /// As many bytes of a count as there are: the `TikaInputStream` `MidiParser` reads from.
+    Available,
+    /// All of a count or an `EOFException`, and a negative count, which only a skip of the
+    /// header's remainder asks for, an `IllegalArgumentException`: the `SkipFullyInputStream`
+    /// `AudioParser` reads from.
+    Fully,
+}
 
 /// Why the JDK gives no sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Unread {
-    /// `InvalidMidiDataException`, which `MidiParser` ignores.
+pub(super) enum Unread {
+    /// `InvalidMidiDataException`.
     Invalid,
-    /// An `IOException`, which fails the parse.
-    Io(String),
+    /// An `EOFException`, with its message, if it has one.
+    EndOfFile(Option<String>),
+    /// The `IllegalArgumentException` commons-io's `IOUtils.skip` throws on the negative
+    /// remainder of a header shorter than six bytes, under [`Skipping::Fully`].
+    NegativeSkip(i32),
+}
+
+impl Unread {
+    /// What the JDK throws where it gives no sequence, which fails the parse: `None` for an
+    /// invalid file.
+    pub(super) fn thrown(self) -> Option<Thrown> {
+        match self {
+            Unread::Invalid => None,
+            Unread::EndOfFile(None) => Some(Thrown::Io(Exception::bare("java.io.EOFException"))),
+            Unread::EndOfFile(Some(message)) => {
+                Some(Thrown::Io(Exception::new("java.io.EOFException", message)))
+            }
+            Unread::NegativeSkip(count) => Some(negative_skip(count)),
+        }
+    }
+}
+
+/// The `IllegalArgumentException` commons-io's `IOUtils.skip` throws on a negative `count`.
+pub(super) fn negative_skip(count: i32) -> Thrown {
+    Thrown::Runtime(Exception::new(
+        "java.lang.IllegalArgumentException",
+        format!("Skip count must be non-negative, actual: {count}"),
+    ))
+}
+
+fn invalid_file() -> Unread {
+    Unread::EndOfFile(Some(INVALID_FILE.to_owned()))
 }
 
 /// A `DataInputStream` over the file.
@@ -33,7 +77,7 @@ impl Data<'_> {
         let bytes = self
             .bytes
             .get(self.at..self.at + N)
-            .ok_or_else(|| Unread::Io("EOFException".to_owned()))?;
+            .ok_or(Unread::EndOfFile(None))?;
         self.at += N;
         Ok(bytes.try_into().expect("N bytes"))
     }
@@ -46,12 +90,24 @@ impl Data<'_> {
         Ok(i16::from_be_bytes(self.take()?))
     }
 
-    /// `skipBytes`: as many of `count` as there are.
-    fn skip_bytes(&mut self, count: i32) -> i32 {
+    /// `skipBytes` with `skipping`: nothing of a count that is not positive, else as many bytes
+    /// of `count` as there are, or all of them or an `EOFException`.
+    fn skip_bytes(&mut self, count: i32, skipping: Skipping) -> Result<i32, Unread> {
+        if count <= 0 {
+            return Ok(0);
+        }
         let available = i32::try_from(self.bytes.len() - self.at).unwrap_or(i32::MAX);
-        let skipped = count.clamp(0, available);
+        let skipped = match skipping {
+            Skipping::Available => count.min(available),
+            Skipping::Fully if count > available => {
+                return Err(Unread::EndOfFile(Some(format!(
+                    "Bytes to skip: {count} actual: {available}"
+                ))))
+            }
+            Skipping::Fully => count,
+        };
         self.at += usize::try_from(skipped).expect("not negative");
-        skipped
+        Ok(skipped)
     }
 }
 
@@ -79,13 +135,13 @@ impl Division {
 
 /// What `MidiParser` reads of a sequence: its division and the text events of each track.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Sequence {
+pub(super) struct Sequence {
     division: Division,
     tracks: Vec<Vec<String>>,
 }
 
-/// `StandardMidiFileReader.getSequence`.
-fn sequence(bytes: &[u8]) -> Result<Sequence, Unread> {
+/// `StandardMidiFileReader.getSequence` from a stream that skips with `skipping`.
+pub(super) fn sequence(bytes: &[u8], skipping: Skipping) -> Result<Sequence, Unread> {
     let mut data = Data { bytes, at: 0 };
     if data.int()? != MTHD {
         return Err(Unread::Invalid);
@@ -105,13 +161,16 @@ fn sequence(bytes: &[u8]) -> Result<Sequence, Unread> {
             _ => return Err(Unread::Invalid),
         }
     };
-    data.skip_bytes(remaining);
+    if remaining < 0 && skipping == Skipping::Fully {
+        return Err(Unread::NegativeSkip(remaining));
+    }
+    data.skip_bytes(remaining, skipping)?;
     if kind != 0 && kind != 1 {
         return Err(Unread::Invalid);
     }
     let mut read = Vec::new();
     for _ in 0..tracks.max(0) {
-        let Some(track) = next_track(&mut data)? else {
+        let Some(track) = next_track(&mut data, skipping)? else {
             break;
         };
         read.push(read_track(track)?);
@@ -122,17 +181,16 @@ fn sequence(bytes: &[u8]) -> Result<Sequence, Unread> {
     })
 }
 
-/// `SMFParser.nextTrack`: the data of the next `MTrk` chunk, other chunks skipped; `None` where
-/// a skip or the track's data falls short.
-fn next_track<'a>(data: &mut Data<'a>) -> Result<Option<&'a [u8]>, Unread> {
-    let invalid = || Unread::Io("EOFException: invalid MIDI file".to_owned());
+/// `SMFParser.nextTrack`: the data of the next `MTrk` chunk, other chunks skipped with
+/// `skipping`; `None` where a skip or the track's data falls short.
+fn next_track<'a>(data: &mut Data<'a>, skipping: Skipping) -> Result<Option<&'a [u8]>, Unread> {
     let mut length = 0;
     loop {
-        if data.skip_bytes(length) != length {
+        if data.skip_bytes(length, skipping)? != length {
             return Ok(None);
         }
-        let magic = data.int().map_err(|_| invalid())?;
-        length = data.int().map_err(|_| invalid())?;
+        let magic = data.int().map_err(|_| invalid_file())?;
+        length = data.int().map_err(|_| invalid_file())?;
         if magic == MTRK {
             break;
         }
@@ -160,10 +218,7 @@ impl<'a> TrackData<'a> {
     }
 
     fn unsigned(&mut self) -> Result<u8, Unread> {
-        let byte = *self
-            .bytes
-            .get(self.at)
-            .ok_or_else(|| Unread::Io("EOFException: invalid MIDI file".to_owned()))?;
+        let byte = *self.bytes.get(self.at).ok_or_else(invalid_file)?;
         self.at += 1;
         Ok(byte)
     }
@@ -267,7 +322,7 @@ impl Parser for MidiParser {
         "extractous::MidiParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.audio.MidiParser"
+        TIKA_NAME
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -280,10 +335,12 @@ impl Parser for MidiParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let sequence = match sequence(input) {
+        let sequence = match sequence(input, Skipping::Available) {
             Ok(sequence) => Some(sequence),
-            Err(Unread::Invalid) => None,
-            Err(Unread::Io(thrown)) => return Err(Decline::Fails(Error::ParseError(thrown))),
+            Err(unread) => match unread.thrown() {
+                None => None,
+                Some(thrown) => return Err(Decline::Fails(thrown.into_error(TIKA_NAME))),
+            },
         };
         Ok(Box::new(move |xhtml| {
             xhtml.metadata_mut().set("Content-Type", "audio/midi");
@@ -314,8 +371,6 @@ mod tests {
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
     };
-
-    const TIKA_NAME: &str = "org.apache.tika.parser.audio.MidiParser";
 
     fn midi(timing: [u8; 2], tracks: &[&[u8]]) -> Vec<u8> {
         let mut file = b"MThd\x00\x00\x00\x06\x00\x01".to_vec();

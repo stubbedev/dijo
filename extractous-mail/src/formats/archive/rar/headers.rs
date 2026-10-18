@@ -49,8 +49,8 @@ pub(super) enum Unopened {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Name {
     Decoded(String),
-    /// A name the port does not take as junrar does, for this reason.
-    Unported(&'static str),
+    /// A name the port may not take as junrar does, for this reason, as the port takes it.
+    Differs(String, &'static str),
 }
 
 /// The RAR 3 `FileHeader` of a file entry, as far as Tika's parser and the extraction read it.
@@ -111,8 +111,9 @@ pub(super) fn read(data: &[u8]) -> Result<Headers, Unopened> {
     match signature_type(data) {
         Signature::Rar15 => {}
         Signature::Rar50 => {
-            return Err(unported(
-                "a RAR 5 archive, which Tika detects as such only with its full marker",
+            return Err(fails(
+                "UnsupportedRarV5Exception: a RAR 5 archive, which Tika detects as such only \
+                 with its full marker",
             ))
         }
         Signature::Rar14 => return Err(unported("a RAR 1.4 archive")),
@@ -588,12 +589,17 @@ fn checked_name(name: &[u16]) -> Result<Name, ()> {
         return Err(());
     }
     let Ok(name) = String::from_utf16(name) else {
-        return Ok(Name::Unported("a name with an unpaired surrogate"));
+        return Ok(Name::Differs(
+            String::from_utf16_lossy(name),
+            "a name with an unpaired surrogate, which the port replaces as Java's encoder does \
+             not",
+        ));
     };
     if name.len() > MAX_SURE_NAME || name.split('/').any(|part| part.len() > MAX_SURE_COMPONENT) {
-        return Ok(Name::Unported(
+        return Ok(Name::Differs(
+            name,
             "a name so long that whether junrar takes it for a path depends on the JVM's \
-             working directory",
+             working directory, which the port takes it for",
         ));
     }
     Ok(Name::Decoded(name))

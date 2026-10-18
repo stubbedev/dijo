@@ -10,7 +10,7 @@ use std::io::{Cursor, Read};
 
 use sevenz_rust2::{ArchiveEntry, ArchiveReader, EncoderMethod, NtTime, Password};
 
-use super::{throws, ArchiveFile, Undecoded, MAX_DECODED, MEMORY_LIMIT_KIB};
+use super::{limit, throws, ArchiveFile, Limited, Undecoded, MAX_DECODED, MEMORY_LIMIT_KIB};
 
 /// The milliseconds from 1601, where NTFS times start, to 1970.
 const NTFS_EPOCH_MILLIS: i64 = 11_644_473_600_000;
@@ -81,34 +81,33 @@ fn entry_name(file: &ArchiveEntry) -> String {
     }
 }
 
-/// The files of the 7z archive `data`, decrypted with `password` where it is encrypted, or why
-/// they are not read natively.
-pub fn files(data: &[u8], password: Option<&str>) -> Result<Vec<ArchiveFile>, Undecoded> {
+/// The files of the 7z archive `data`, decrypted with `password` where it is encrypted, each
+/// decoded up to [`MAX_DECODED`] bytes, or why they are not read natively. The files end at
+/// one that decodes into more, which is cut there.
+pub fn files(data: &[u8], password: Option<&str>) -> Result<Limited<Vec<ArchiveFile>>, Undecoded> {
     let password = password.map_or_else(Password::empty, Password::new);
     let mut reader = ArchiveReader::new(Cursor::new(data), password).map_err(fail)?;
     if over_memory_limit(&reader)? {
         return Err(throws("a coder needs more memory than Tika allows"));
     }
-    let mut contents: HashMap<*const ArchiveEntry, Vec<u8>> = HashMap::new();
-    let mut decoded = 0usize;
+    let mut contents: HashMap<*const ArchiveEntry, Limited<Vec<u8>>> = HashMap::new();
     reader
         .for_each_entries(|entry, read| {
             let mut content = Vec::new();
             read.take(MAX_DECODED as u64 + 1)
                 .read_to_end(&mut content)?;
-            decoded = decoded.saturating_add(content.len());
+            let content = limit(content);
+            let whole = matches!(content, Limited::Whole(_));
             contents.insert(entry, content);
-            Ok(decoded <= MAX_DECODED)
+            Ok(whole)
         })
         .map_err(fail)?;
-    if decoded > MAX_DECODED {
-        return Err(Undecoded::TooLarge);
-    }
-    Ok(reader
-        .archive()
-        .files
-        .iter()
-        .map(|file| ArchiveFile {
+    let mut files = Vec::new();
+    for file in &reader.archive().files {
+        let content = contents
+            .remove(&(file as *const ArchiveEntry))
+            .unwrap_or(Limited::Whole(Vec::new()));
+        let file = content.map(|content| ArchiveFile {
             name: entry_name(file),
             size: file.size,
             modified_millis: file
@@ -116,11 +115,13 @@ pub fn files(data: &[u8], password: Option<&str>) -> Result<Vec<ArchiveFile>, Un
                 .then(|| millis(file.last_modified_date)),
             created_millis: file.has_creation_date.then(|| millis(file.creation_date)),
             directory: file.is_directory,
-            content: contents
-                .remove(&(file as *const ArchiveEntry))
-                .unwrap_or_default(),
-        })
-        .collect())
+            content,
+        });
+        if let Some(cut) = file.add_to(&mut files) {
+            return Ok(cut);
+        }
+    }
+    Ok(Limited::Whole(files))
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -151,6 +152,7 @@ pub mod tests {
     fn reads_the_files_in_the_order_the_archive_lists_them() {
         let data = seven_z(&[("dir/", b""), ("empty.txt", b""), ("dir/a.txt", b"text")]);
         let found: Vec<(String, bool, Vec<u8>)> = files(&data, None)
+            .and_then(Limited::whole)
             .unwrap()
             .into_iter()
             .map(|file| (file.name, file.directory, file.content))
@@ -173,7 +175,10 @@ pub mod tests {
             files(&encrypted, Some("wrong")),
             Err(Undecoded::BadPassword)
         );
-        assert!(!files(&encrypted, Some("extractous")).unwrap().is_empty());
+        assert!(!files(&encrypted, Some("extractous"))
+            .and_then(Limited::whole)
+            .unwrap()
+            .is_empty());
         assert!(files(b"7z\xBC\xAF\x27\x1C\x00\x04 not really", None).is_err());
     }
 }

@@ -14,9 +14,11 @@
 //! Where mime4j and Tika slip, the port reads mail as the RFCs say instead: the modules name
 //! each such place with the issue that records Tika's behaviour.
 //!
-//! A message defers to Tika when it needs a charset the native decoders do not decode, names a
-//! time zone java.time would look up in its time-zone database, or holds a text or HTML part
-//! the native parsers of those defer.
+//! A header that needs a charset the native decoders do not decode, or names a time zone
+//! java.time would look up in its time-zone database, is left out, and an HTML part the native
+//! HTML parser reads otherwise than Tika's is read so: the message's reading then differs from
+//! Tika's. A message defers to Tika when it holds a text or HTML part the native parsers of
+//! those defer.
 
 mod address;
 mod codec;
@@ -33,7 +35,7 @@ mod synthetic;
 
 pub use codec::decode_encoded_words;
 pub use date::{parse_date, MailDate};
-use handler::{read, Inline, Item, Problem};
+use handler::{read, Inline, Item};
 pub use mbox::MboxParser;
 
 use crate::config::ParserConfigs;
@@ -42,7 +44,7 @@ use crate::formats::handlers::parse_inline;
 use crate::formats::html;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::text;
-use crate::formats::{Decline, Deferral, Failure, Parser, Prepared};
+use crate::formats::{Decline, Difference, Failure, Parser, Prepared};
 use crate::java::parse_long;
 
 /// What the port leaves to Tika.
@@ -95,7 +97,7 @@ impl Parser for Rfc822Parser {
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare_message(Ok(input), metadata).map_err(Decline::Deferred)
+        prepare_message(Ok(input), metadata)
     }
 }
 
@@ -117,7 +119,7 @@ impl Parser for EmlxParser {
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare_message(emlx_message(input), metadata).map_err(Decline::Deferred)
+        prepare_message(emlx_message(input), metadata)
     }
 }
 
@@ -216,12 +218,13 @@ enum Part {
 }
 
 /// `RFC822Parser.parse` of `message` prepared: the message read, with the metadata it adds to
-/// `metadata`, and its text and HTML parts prepared by their parsers; or why Tika's path should
-/// read it, something of it the port does not read or a part whose parser defers it.
+/// `metadata`, and its text and HTML parts prepared by their parsers; as a reading that differs
+/// from Tika's where the port does not read something of it as Tika does; or why Tika's path
+/// should read it, a part whose parser defers it.
 fn prepare_message(
     message: Result<&[u8], Failure>,
     metadata: &TikaMetadata,
-) -> Result<Prepared<'static>, Deferral> {
+) -> Result<Prepared<'static>, Decline<'static>> {
     let failed = |failure: Failure| -> Prepared<'static> { Box::new(move |_| Err(failure)) };
     let message = match message {
         Ok(message) => message,
@@ -233,32 +236,53 @@ fn prepare_message(
         )));
     }
     let mut metadata = metadata.clone();
-    let items = match read(strip_emlx_framing(message), &mut metadata) {
-        Ok(items) => items,
-        Err(Problem::Unported(unported)) => return Err(unported.reason().to_owned()),
-        Err(Problem::Malformed(reason)) => {
+    let read = match read(strip_emlx_framing(message), &mut metadata) {
+        Ok(read) => read,
+        Err(error) => {
             return Ok(failed(Failure::Malformed(format!(
-                "Failed to parse an email message: {reason}"
+                "Failed to parse an email message: {}",
+                error.0
             ))))
         }
     };
-    let mut parts = Vec::with_capacity(items.len());
-    for item in items {
+    let mut difference = read.unported.map(|unported| {
+        Difference::new(format!(
+            "{}, so the native reading leaves out the header it is in",
+            unported.reason()
+        ))
+    });
+    let mut parts = Vec::with_capacity(read.items.len());
+    for item in read.items {
         parts.push(match item {
             Item::StartEntry => Part::StartEntry,
             Item::EndEntry => Part::EndEntry,
             Item::Inline(Inline::Text(content)) => Part::Inline(
                 text::prepare_plain(content)
-                    .map_err(|reason| format!("a text part defers: {reason}"))?,
+                    .map_err(|reason| Decline::Deferred(format!("a text part defers: {reason}")))?,
             ),
-            Item::Inline(Inline::Html(content)) => Part::Inline(
-                html::prepare(&content, &TikaMetadata::new())
-                    .map_err(|reason| format!("an HTML part defers: {reason}"))?,
-            ),
+            Item::Inline(Inline::Html(content)) => {
+                match html::prepare(&content, &TikaMetadata::new()) {
+                    Ok(prepared) => Part::Inline(prepared),
+                    Err(Decline::Differs {
+                        reading,
+                        difference: html,
+                    }) => {
+                        difference.get_or_insert_with(|| {
+                            Difference::new(format!("an HTML part differs: {}", html.0))
+                        });
+                        Part::Inline(reading)
+                    }
+                    Err(declined) => {
+                        return Err(Decline::Deferred(format!(
+                            "an HTML part defers: {declined:?}"
+                        )))
+                    }
+                }
+            }
             Item::Embedded(content, metadata) => Part::Embedded(content, metadata),
         });
     }
-    Ok(Box::new(move |xhtml| {
+    let reading: Prepared<'static> = Box::new(move |xhtml| {
         *xhtml.metadata_mut() = metadata;
         for part in parts {
             match part {
@@ -277,7 +301,14 @@ fn prepare_message(
             }
         }
         Ok(())
-    }))
+    });
+    match difference {
+        None => Ok(reading),
+        Some(difference) => Err(Decline::Differs {
+            reading,
+            difference,
+        }),
+    }
 }
 
 /// What the port does otherwise than Tika on purpose: Tika names a message after its
@@ -379,6 +410,28 @@ pub(crate) mod tests {
             metadata.get("message:from-name"),
             Some(&vec!["Novell GroupWise".to_owned()])
         );
+    }
+
+    #[test]
+    fn leaves_out_a_date_that_names_a_zone_as_differing() {
+        let message =
+            b"From: a@example.org\r\nSubject: Zoned\r\nDate: 5 Mar 2024 14:30 EST\r\n\r\nBody.\r\n";
+        let configs = ParserConfigs::default();
+        let Err(Decline::Differs { difference, .. }) =
+            Rfc822Parser.prepare(message, &TikaMetadata::new(), &configs)
+        else {
+            panic!("a date naming a zone is not read as differing");
+        };
+        assert!(difference.0.contains("time zone"), "{difference:?}");
+        if cfg!(feature = "tika") {
+            return;
+        }
+        let (text, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(message)
+            .unwrap();
+        assert!(text.contains("Body."), "{text}");
+        assert_eq!(metadata.get("dc:title"), Some(&vec!["Zoned".to_owned()]));
+        assert_eq!(metadata.get("dcterms:created"), None);
     }
 
     #[test]

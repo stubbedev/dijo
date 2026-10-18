@@ -12,13 +12,15 @@ mod package;
 
 use std::collections::HashSet;
 
+use crate::compress::zip::file::{ZipEntry, ZipFile};
 use crate::config::ParserConfigs;
+use crate::formats::crypt;
 use crate::formats::embedded::{self, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml;
-use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{Decline, Deferral, Failure, Footprint, Parser, Prepared};
+use crate::formats::zip_package::{self, Opened, Undecoded, Unread, ZipPackage};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages};
 use crate::java;
 use crate::java::is_blank;
@@ -26,6 +28,7 @@ use crate::java::is_blank;
 use content::ContentDocument;
 use package::{Contents, Item, MetadataParser};
 
+const TIKA_NAME: &str = "org.apache.tika.parser.epub.EpubParser";
 const CONTAINER: &str = "META-INF/container.xml";
 const ENCRYPTION: &str = "META-INF/encryption.xml";
 const MIMETYPE: &str = "mimetype";
@@ -84,10 +87,10 @@ enum Reading {
     Fallback(&'static str),
 }
 
-/// A failure as Tika's `EpubParser.parse` sees it: an `IOException`, after which it still ends
-/// the document, or any other.
+/// A failure as Tika's `EpubParser.parse` sees it: one after which it still ends the document,
+/// an `IOException` or the `EncryptedDocumentException` it throws once it has, or any other.
 enum Thrown {
-    Io(Failure),
+    Ending(Failure),
     Other(Failure),
 }
 
@@ -103,30 +106,56 @@ impl From<crate::formats::xhtml::Stop> for Thrown {
     }
 }
 
-/// An opened book.
-struct Book<'a> {
-    zip: ZipFile<'a>,
+/// An opened book: the archive Tika reads of it, and the first entry read that the port does not
+/// decode as Tika does.
+struct Book<'p> {
+    package: &'p ZipPackage<'p>,
+    zip: ZipFile<'p>,
+    undecoded: Option<(String, Undecoded)>,
 }
 
-impl<'a> Book<'a> {
-    fn named(&self, name: &str) -> Option<ZipEntry> {
-        self.zip.named(name).cloned()
+impl<'p> Book<'p> {
+    fn new(package: &'p ZipPackage<'p>) -> Self {
+        Self {
+            package,
+            zip: package.zip(),
+            undecoded: None,
+        }
     }
 
-    fn read(&mut self, entry: &ZipEntry) -> Result<Input<'a>, Failure> {
-        self.zip.read(entry)
+    /// `getEntry`: the first entry of `name`.
+    fn named(&self, name: &str) -> Option<ZipEntry> {
+        self.zip.entry(name).cloned()
+    }
+
+    /// The first entry of `name` that `canReadEntryData` lets Tika read.
+    fn readable(&self, name: &str) -> Option<ZipEntry> {
+        self.named(name).filter(ZipEntry::can_read)
+    }
+
+    /// The data of `entry`, which Tika's parser reads `opened` so.
+    fn read(&mut self, entry: &ZipEntry, opened: Opened) -> Result<Input<'p>, Failure> {
+        match zip_package::read(&self.zip, entry) {
+            Ok(bytes) => Ok(self.package.input(bytes)),
+            Err(unread) => {
+                if let (None, Unread::Undecoded(undecoded)) = (&self.undecoded, &unread) {
+                    self.undecoded = Some((entry.name.clone(), *undecoded));
+                }
+                Err(unread.failure(&entry.name, opened, TIKA_NAME))
+            }
+        }
     }
 
     /// `getRoot`: the package document `container.xml` names, or without one, the first entry
-    /// whose name ends in `.opf`.
+    /// Tika can read whose name ends in `.opf`.
     fn root(&mut self) -> Result<Option<String>, Failure> {
         match self.named(CONTAINER) {
-            Some(container) => package::root(&self.read(&container)?),
+            Some(container) => package::root(&self.read(&container, Opened::Directly)?),
             None => Ok(self
                 .zip
                 .entries()
                 .iter()
-                .find(|entry| entry.name.to_lowercase().ends_with(".opf"))
+                .find(|entry| entry.name.to_lowercase().ends_with(".opf") && entry.can_read())
                 .map(|entry| entry.name.clone())),
         }
     }
@@ -138,12 +167,12 @@ impl<'a> Book<'a> {
                 "no OPF found in (possibly truncated) container",
             ));
         };
-        let Some(root) = self.named(&root) else {
+        let Some(root) = self.readable(&root) else {
             return Ok(Reading::Fallback(
                 "OPF entry missing or unreadable in (possibly truncated) container",
             ));
         };
-        let document = self.read(&root)?;
+        let document = self.read(&root, Opened::Tagged)?;
         package::read_metadata(&document, &root.name, MetadataParser::Package, metadata)?;
         let contents = Contents::read(&document, &root.name)?;
         if contents.spine.is_empty() {
@@ -157,18 +186,59 @@ impl<'a> Book<'a> {
         })
     }
 
-    /// `extractMetadata`: the media type the `mimetype` entry names, and `metadata.xml`.
+    /// `extractMetadata`: the media type the `mimetype` entry names, and `metadata.xml`, each
+    /// where Tika can read it.
     fn extract_metadata(&mut self, metadata: &mut TikaMetadata) -> Result<(), Failure> {
-        if let Some(mimetype) = self.named(MIMETYPE) {
-            let bytes = self.read(&mimetype)?;
+        if let Some(mimetype) = self.readable(MIMETYPE) {
+            let bytes = self.read(&mimetype, Opened::Directly)?;
             metadata.set("Content-Type", java::trim(&String::from_utf8_lossy(&bytes)));
         }
-        if let Some(entry) = self.named(METADATA) {
-            let bytes = self.read(&entry)?;
+        if let Some(entry) = self.readable(METADATA) {
+            let bytes = self.read(&entry, Opened::Tagged)?;
             package::read_metadata(&bytes, METADATA, MetadataParser::DublinCore, metadata)?;
         }
         Ok(())
     }
+
+    /// `checkForDRM`: the items `encryption.xml` names, if there is one.
+    fn encrypted_items(&mut self) -> Result<Vec<String>, Failure> {
+        match self.named(ENCRYPTION) {
+            Some(encryption) => {
+                package::encrypted_items(&self.read(&encryption, Opened::Directly)?)
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// The entries `fallbackParseAllHtmlEntries` parses, in the order of the central directory.
+    fn fallback_documents(&self) -> Vec<ZipEntry> {
+        self.zip
+            .entries()
+            .iter()
+            .filter(|entry| is_fallback_document(&entry.name) && entry.can_read())
+            .cloned()
+            .collect()
+    }
+}
+
+/// `maybeThrowEncryptedException`: the `EncryptedDocumentException` naming `items`, in the order
+/// of the `HashSet` Tika collects them in, as many as fit in about 500 characters.
+fn encrypted(items: &[String]) -> Failure {
+    let mut message = String::from("EPUB contains encrypted items: ");
+    for (added, item) in java::hash_set_order(items.iter().map(String::as_str))
+        .into_iter()
+        .enumerate()
+    {
+        if message.encode_utf16().count() > 500 {
+            message.push_str(" and others...");
+            break;
+        }
+        if added > 0 {
+            message.push_str(", ");
+        }
+        message.push_str(item);
+    }
+    Failure::Extraction(crypt::encrypted_document(&message))
 }
 
 /// The directory of the package document, which manifest `href`s are relative to.
@@ -183,7 +253,7 @@ fn write_content_document(
     entry: &ZipEntry,
     xhtml: &mut Xhtml,
 ) -> Result<Option<Failure>, Thrown> {
-    let bytes = book.read(entry).map_err(Thrown::Io)?;
+    let bytes = book.read(entry, Opened::Tagged).map_err(Thrown::Ending)?;
     let mut document = ContentDocument::new(xhtml);
     match xml::parse_part(&bytes, &entry.name, &mut document) {
         Ok(()) => Ok(None),
@@ -208,6 +278,42 @@ fn embedded_metadata(item: &Item, path: &str, cover: bool) -> TikaMetadata {
     metadata
 }
 
+/// The manifest items outside the spine, but those `processed`, that Tika hands to its
+/// `handleEmbedded`, in manifest order, with whether each is the cover: those our `EpubEmbedded`
+/// admits, unless `encryption.xml` names them.
+fn embedded_items<'c>(
+    contents: &'c Contents,
+    relative: &str,
+    processed: &HashSet<&str>,
+    encrypted: &[String],
+) -> Vec<(&'c Item, bool)> {
+    let cover = contents.cover();
+    contents
+        .items
+        .iter()
+        .filter(|(id, item)| {
+            !processed.contains(id.as_str())
+                && !encrypted.contains(&format!("{relative}{}", item.href))
+                && parses_as_embedded(item.media_type.as_deref())
+        })
+        .map(|(id, item)| (item, cover == Some(id.as_str())))
+        .collect()
+}
+
+/// The entry of the manifest item `item` that `handleEmbedded` parses, with the metadata it
+/// gives it: one Tika can read, which the embedded document extractor parses.
+fn embedded_entry(
+    book: &Book,
+    relative: &str,
+    item: &Item,
+    cover: bool,
+) -> Option<(ZipEntry, TikaMetadata)> {
+    let path = format!("{relative}{}", item.href);
+    let entry = book.readable(&path)?;
+    let metadata = embedded_metadata(item, &path, cover);
+    embedded::is_parsed(&metadata).then_some((entry, metadata))
+}
+
 /// `handleEmbedded`: a manifest item outside the spine, parsed as an embedded document in an
 /// `embedded` div, wrapped as a package entry unless it is a font.
 fn write_embedded(
@@ -217,15 +323,10 @@ fn write_embedded(
     cover: bool,
     xhtml: &mut Xhtml,
 ) -> Result<(), Thrown> {
-    let path = format!("{relative}{}", item.href);
-    let Some(entry) = book.named(&path) else {
+    let Some((entry, metadata)) = embedded_entry(book, relative, item, cover) else {
         return Ok(());
     };
-    let metadata = embedded_metadata(item, &path, cover);
-    if !embedded::is_parsed(&metadata) {
-        return Ok(());
-    }
-    let bytes = book.read(&entry).map_err(Thrown::Io)?;
+    let bytes = book.read(&entry, Opened::Tagged).map_err(Thrown::Ending)?;
     // Tika tests the `href` for `fonts` in its case only (#88).
     let font = item
         .media_type
@@ -249,9 +350,30 @@ fn write_embedded(
     Ok(())
 }
 
+/// The content documents of the spine Tika parses, in spine order, with their ids: those with
+/// an entry, or `None` for one without.
+fn spine_documents<'c>(
+    book: &Book,
+    relative: &str,
+    contents: &'c Contents,
+) -> Vec<(&'c str, String, Option<ZipEntry>)> {
+    contents
+        .spine
+        .iter()
+        .filter_map(|id| Some((id.as_str(), contents.item(id)?)))
+        .filter(|(_, item)| is_content_document(item))
+        .map(|(id, item)| {
+            let path = format!("{relative}{}", item.href);
+            let entry = book.named(&path);
+            (id, path, entry)
+        })
+        .collect()
+}
+
 /// `bufferedParseZipFile` along the package document. A malformed content document is
 /// reported as a warning and skipped: Tika fails the whole book on it, after writing everything
-/// else (#89).
+/// else (#89). Items `encryption.xml` names fail the book, as soon as one is in the spine,
+/// else once the document has ended.
 fn read_package(
     book: &mut Book,
     root: &ZipEntry,
@@ -260,16 +382,14 @@ fn read_package(
 ) -> Result<(), Thrown> {
     let relative = relative_path(&root.name).to_owned();
     book.extract_metadata(xhtml.metadata_mut())?;
+    let encrypted_items = book.encrypted_items()?;
     let mut processed: HashSet<&str> = HashSet::new();
     let mut missing = 0;
-    for id in &contents.spine {
-        let Some(item) = contents.item(id) else {
-            continue;
-        };
-        if !is_content_document(item) {
-            continue;
+    for (id, path, entry) in spine_documents(book, &relative, contents) {
+        if encrypted_items.contains(&path) {
+            return Err(Thrown::Other(encrypted(&encrypted_items)));
         }
-        let Some(entry) = book.named(&format!("{relative}{}", item.href)) else {
+        let Some(entry) = entry else {
             missing += 1;
             continue;
         };
@@ -290,102 +410,106 @@ fn read_package(
             );
         }
     }
-    let cover = contents.cover();
-    for (id, item) in &contents.items {
-        if processed.contains(id.as_str()) || !parses_as_embedded(item.media_type.as_deref()) {
-            continue;
-        }
-        write_embedded(book, &relative, item, cover == Some(id.as_str()), xhtml)?;
+    for (item, cover) in embedded_items(contents, &relative, &processed, &encrypted_items) {
+        write_embedded(book, &relative, item, cover, xhtml)?;
     }
     if missing > 0 {
-        return Err(Thrown::Io(Failure::Malformed(format!(
+        return Err(Thrown::Ending(Failure::Malformed(format!(
             "EPUB: {missing} of {} spine items missing from (possibly truncated) container",
             contents.spine.len()
         ))));
+    }
+    if !encrypted_items.is_empty() {
+        return Err(Thrown::Ending(encrypted(&encrypted_items)));
     }
     Ok(())
 }
 
 /// `fallbackParseAllHtmlEntries`: the metadata as far as Tika reads it, failing or not, every HTML
-/// and XML entry, a malformed one skipped, and then a failure.
+/// and XML entry, a malformed or unreadable one skipped, and then a failure.
 fn read_fallback(book: &mut Book, reason: &str, xhtml: &mut Xhtml) -> Result<(), Thrown> {
     match book.extract_metadata(xhtml.metadata_mut()) {
         Ok(()) | Err(_) => {}
     }
-    let entries: Vec<ZipEntry> = book
-        .zip
-        .entries()
-        .iter()
-        .filter(|entry| is_fallback_document(&entry.name))
-        .cloned()
-        .collect();
-    for entry in &entries {
+    for entry in &book.fallback_documents() {
         match write_content_document(book, entry, xhtml) {
-            Ok(_) | Err(Thrown::Io(_)) => {}
+            Ok(_) | Err(Thrown::Ending(_)) => {}
             Err(stopped @ Thrown::Other(_)) => return Err(stopped),
         }
     }
-    Err(Thrown::Io(Failure::Malformed(format!(
+    Err(Thrown::Ending(Failure::Malformed(format!(
         "EPUB: fallback recovery ({reason})"
     ))))
 }
 
-/// Reads the book in `input` as far as deciding whether this parser extracts it as Tika does:
-/// the book and how it is read, along its package document, with the metadata it adds to
-/// `metadata`, and its content documents, each read again as it is written, so that no more than
-/// one is held at a time; or why Tika's path should read it.
+/// Reads each entry the writing of `book` along `reading` reads, whose failures fail the writing
+/// too, for the first one the port does not decode as Tika does. Tika moves on from an entry
+/// of the fallback it cannot read, as the writing does, unless it is past what the port decodes.
+fn check(book: &mut Book, reading: &Reading) {
+    match reading {
+        Reading::Fallback(_) => {
+            for document in book.fallback_documents() {
+                if let Err(Unread::Undecoded(Undecoded::Oversized)) =
+                    zip_package::read(&book.zip, &document)
+                {
+                    book.undecoded = Some((document.name.clone(), Undecoded::Oversized));
+                    return;
+                }
+            }
+        }
+        Reading::Package { root, contents } => {
+            let relative = relative_path(&root.name);
+            let read = book.extract_metadata(&mut TikaMetadata::new());
+            let encrypted_items = book.encrypted_items();
+            let (Ok(()), Ok(encrypted_items)) = (read, encrypted_items) else {
+                return;
+            };
+            let mut processed = HashSet::new();
+            for (id, _, entry) in spine_documents(book, relative, contents) {
+                if let Some(entry) = entry {
+                    processed.insert(id);
+                    if book.read(&entry, Opened::Tagged).is_err() {
+                        return;
+                    }
+                }
+            }
+            for (item, cover) in embedded_items(contents, relative, &processed, &encrypted_items) {
+                if let Some((entry, _)) = embedded_entry(book, relative, item, cover) {
+                    if book.read(&entry, Opened::Tagged).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Reads the book in `input`, whose detection left `metadata`, as far as deciding how it is
+/// written: the archive Tika reads of it, how it is read, along its package document, with the
+/// metadata that adds, and the first entry its writing reads that the port does not decode as
+/// Tika does, which makes the writing a reading that differs from Tika's. Each entry is read
+/// again as it is written, so that no more than one is held at a time.
 fn prepare<'a>(
     input: &'a [u8],
     pages: Pages<'a>,
-    metadata: &mut TikaMetadata,
-) -> Result<(Book<'a>, Result<Reading, Failure>), Deferral> {
-    let Ok(zip) = ZipFile::open(input, pages, "EPUB") else {
-        return Err("its archive is not one the zip crate reads".to_owned());
-    };
-    if !zip.has_every_record(input) {
-        return Err(
-            "its archive has entries the zip crate does not list, such as duplicates".to_owned(),
-        );
+    mut metadata: TikaMetadata,
+) -> Result<Prepared<'a>, Decline<'a>> {
+    let package = ZipPackage::open(input, pages, &metadata, TIKA_NAME)?;
+    let mut book = Book::new(&package);
+    let reading = book.reading(&mut metadata);
+    if let Ok(reading) = &reading {
+        check(&mut book, reading);
     }
-    if !zip.reads_every_entry() {
-        return Err("its archive has entries the zip crate cannot decompress".to_owned());
+    let undecoded = book.undecoded.take();
+    drop(book);
+    let prepared: Prepared<'a> = Box::new(move |xhtml| {
+        *xhtml.metadata_mut() = metadata;
+        write(&mut Book::new(&package), reading, xhtml)
+    });
+    match undecoded {
+        None => Ok(prepared),
+        Some((name, undecoded)) => Err(undecoded.decline(&name, prepared)),
     }
-    let mut book = Book { zip };
-    let reading = book.reading(metadata);
-    let documents: Vec<ZipEntry> = match &reading {
-        Err(_) => Vec::new(),
-        Ok(Reading::Fallback(_)) => book
-            .zip
-            .entries()
-            .iter()
-            .filter(|entry| is_fallback_document(&entry.name))
-            .cloned()
-            .collect(),
-        Ok(Reading::Package { root, contents }) => {
-            if let Some(encryption) = book.named(ENCRYPTION) {
-                let names = book
-                    .read(&encryption)
-                    .and_then(|bytes| package::names_encrypted_items(&bytes));
-                if !matches!(names, Ok(false)) {
-                    return Err("its encryption.xml names encrypted items".to_owned());
-                }
-            }
-            let relative = relative_path(&root.name).to_owned();
-            contents
-                .spine
-                .iter()
-                .filter_map(|id| contents.item(id))
-                .filter(|item| is_content_document(item))
-                .filter_map(|item| book.named(&format!("{relative}{}", item.href)))
-                .collect()
-        }
-    };
-    for document in &documents {
-        if book.read(document).is_err() {
-            return Err(format!("its entry {} cannot be read", document.name));
-        }
-    }
-    Ok((book, reading))
 }
 
 pub struct EpubParser;
@@ -395,7 +519,7 @@ impl Parser for EpubParser {
         "extractous::EpubParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.epub.EpubParser"
+        TIKA_NAME
     }
 
     fn footprint(&self) -> Footprint {
@@ -422,12 +546,7 @@ impl Parser for EpubParser {
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let mut metadata = metadata.clone();
-        let (mut book, reading) = prepare(input, pages, &mut metadata)?;
-        Ok(Box::new(move |xhtml| {
-            *xhtml.metadata_mut() = metadata;
-            write(&mut book, reading, xhtml)
-        }))
+        prepare(input, pages, metadata.clone())
     }
 }
 
@@ -447,7 +566,7 @@ fn write(
     match read {
         Ok(()) => Ok(()),
         Err(Thrown::Other(failure)) => Err(failure),
-        Err(Thrown::Io(failure)) => {
+        Err(Thrown::Ending(failure)) => {
             xhtml.end_document()?;
             Err(failure)
         }
@@ -538,6 +657,7 @@ fn with_one_lang(tag: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::zip_package::tests::{replace_all, with_method};
 
     fn deferral(input: &[u8]) -> Option<String> {
         EpubParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
@@ -551,8 +671,6 @@ mod tests {
     #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.epub.EpubParser";
     #[cfg(feature = "tika")]
     const DOCUMENTS: [&str; 2] = [
         "../quality/corpus/prose.epub",
@@ -1025,54 +1143,184 @@ mod tests {
         assert!(!dates.contains_key("dcterms:issued"));
     }
 
-    #[test]
-    fn leaves_encrypted_books_to_tika() {
+    /// A book of two chapters and a font, whose `encryption.xml` names `uris`.
+    fn encrypted_book(uris: &[&str]) -> Vec<u8> {
         let opf = package(
             "3.0",
-            "",
+            "<dc:title>Låst</dc:title>",
+            r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/><item id="b" href="b.xhtml" media-type="application/xhtml+xml"/><item id="f" href="fonts/f.otf" media-type="application/vnd.ms-opentype"/>"#,
+            r#"<itemref idref="a"/><itemref idref="b"/>"#,
+        );
+        let references: String = uris
+            .iter()
+            .map(|uri| {
+                format!(
+                    r#"<enc:EncryptedData><enc:CipherData><enc:CipherReference URI="{uri}"/></enc:CipherData></enc:EncryptedData>"#
+                )
+            })
+            .collect();
+        let encryption = format!(
+            r#"<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#">{references}</encryption>"#
+        );
+        book(&[
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", &opf),
+            ("OEBPS/a.xhtml", &chapter("<p>Synlig</p>")),
+            ("OEBPS/b.xhtml", &chapter("<p>Også synlig</p>")),
+            ("OEBPS/fonts/f.otf", "not a font"),
+            (ENCRYPTION, &encryption),
+        ])
+    }
+
+    #[test]
+    fn fails_books_with_encrypted_items_as_tika_does() {
+        let error = |uris: &[&str]| {
+            crate::Extractor::new()
+                .extract_bytes_to_string(&encrypted_book(uris))
+                .unwrap_err()
+                .to_string()
+        };
+        let thrown =
+            "Parse error occurred : org.apache.tika.exception.EncryptedDocumentException: \
+                      EPUB contains encrypted items: ";
+        assert_eq!(
+            error(&["OEBPS/fonts/f.otf"]),
+            format!("{thrown}OEBPS/fonts/f.otf")
+        );
+        assert_eq!(error(&["OEBPS/b.xhtml"]), format!("{thrown}OEBPS/b.xhtml"));
+        let many: Vec<String> = (0..40).map(|n| format!("OEBPS/fonts/{n:02}.otf")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert!(error(&many).ends_with(" and others..."));
+        let (text, _) = crate::Extractor::new()
+            .extract_bytes_to_string(&encrypted_book(&[]))
+            .unwrap();
+        assert!(text.contains("Også synlig"), "{text}");
+    }
+
+    /// A book with two entries of the name of its first chapter, and of its `mimetype`.
+    fn duplicated_book() -> Vec<u8> {
+        let opf = package(
+            "2.0",
+            "<dc:title>Dobbelt</dc:title>",
             r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>"#,
             r#"<itemref idref="a"/>"#,
         );
-        let with = |chapter_body: &str, extra: &[(&str, &str)]| {
-            let chapter = chapter(chapter_body);
-            let mut entries = vec![
-                MIMETYPE_ENTRY,
-                CONTAINER_ENTRY,
-                ("OEBPS/content.opf", opf.as_str()),
-                ("OEBPS/a.xhtml", chapter.as_str()),
-            ];
-            entries.extend_from_slice(extra);
-            book(&entries)
+        let duplicated = book(&[
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", &opf),
+            ("OEBPS/a.xhtml", &chapter("<p>Første</p>")),
+            ("OEBPS/a.xhtmm", &chapter("<p>Anden</p>")),
+            ("mimetypf", "application/x-other\n"),
+        ]);
+        replace_all(
+            &replace_all(&duplicated, b"a.xhtmm", b"a.xhtml"),
+            b"mimetypf",
+            b"mimetype",
+        )
+    }
+
+    /// A book whose central directory is cut off, which Tika reads as `ZipSalvager` rebuilds it.
+    fn cut_book() -> Vec<u8> {
+        let opf = package(
+            "2.0",
+            "<dc:title>Afkortet</dc:title>",
+            r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="a"/>"#,
+        );
+        let whole = book(&[
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", &opf),
+            ("OEBPS/a.xhtml", &chapter("<p>Bevaret</p>")),
+        ]);
+        whole[..whole.len() - 10].to_vec()
+    }
+
+    /// A book whose chapter says it is compressed with LZMA, which commons-compress does not
+    /// decompress.
+    fn unsupported_book() -> Vec<u8> {
+        with_method(encrypted_book(&[]), "OEBPS/b.xhtml", 14)
+    }
+
+    #[test]
+    fn reads_duplicated_and_cut_books_as_tika_does() {
+        let read = |input: &[u8]| {
+            crate::Extractor::new()
+                .extract_bytes_to_string(input)
+                .unwrap()
         };
-        let encrypted = with(
-            "<p>x</p>",
-            &[(
-                ENCRYPTION,
-                r#"<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container" xmlns:enc="http://www.w3.org/2001/04/xmlenc#"><enc:EncryptedData><enc:CipherData><enc:CipherReference URI="OEBPS/a.xhtml"/></enc:CipherData></enc:EncryptedData></encryption>"#,
-            )],
-        );
+        let (text, metadata) = read(&duplicated_book());
+        assert!(text.contains("Første") && !text.contains("Anden"), "{text}");
+        assert_eq!(metadata["Content-Type"], ["application/epub+zip"]);
+        let (text, metadata) = read(&cut_book());
+        assert!(text.contains("Bevaret"), "{text}");
+        assert_eq!(metadata["zip:salvaged"], ["true"]);
+    }
+
+    #[test]
+    fn fails_a_chapter_commons_compress_does_not_decompress_as_tika_does() {
+        let error = crate::Extractor::new()
+            .extract_bytes_to_string(&unsupported_book())
+            .unwrap_err();
         assert_eq!(
-            deferral(&encrypted).as_deref(),
-            Some("its encryption.xml names encrypted items")
+            error.to_string(),
+            "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: Illegal \
+             IOException from org.apache.tika.parser.epub.EpubParser <- caused by \
+             org.apache.commons.io.TaggedIOException: Unsupported compression method 14 (LZMA) \
+             used in entry OEBPS/b.xhtml <- caused by \
+             org.apache.commons.compress.archivers.zip.UnsupportedZipFeatureException: \
+             Unsupported compression method 14 (LZMA) used in entry OEBPS/b.xhtml"
         );
-        assert_eq!(deferral(&with("<p>x</p>", &[])), None);
-        assert_eq!(
-            deferral(&with(
-                r#"<h:p xmlns:h="http://www.w3.org/1999/xhtml">x</h:p>"#,
-                &[]
-            )),
-            None
-        );
-        assert_eq!(
-            deferral(&with(
-                r#"<p>x</p>"#,
-                &[(
-                    ENCRYPTION,
-                    r#"<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container"/>"#
-                )]
-            )),
-            None
-        );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn extracts_what_tikas_path_extracts_from_damaged_books() {
+        let scratch = Scratch::new("epub-damaged");
+        let documents = [
+            scratch.write("duplicated.epub", &duplicated_book()),
+            scratch.write("cut.epub", &cut_book()),
+        ];
+        let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+        assert_same_as_tika(&paths, TIKA_NAME);
+    }
+
+    /// Tika's `CompositeParser` names the parser it wraps an `IOException` for by the decorator
+    /// around `EpubParser`, `MimeFilteringDecorator@<hash>`, which differs on each run, where the
+    /// native path names `EpubParser`: what each wraps is compared.
+    #[cfg(feature = "tika")]
+    #[test]
+    fn fails_where_tikas_path_fails_on_damaged_and_encrypted_books() {
+        let scratch = Scratch::new("epub-damaged-failing");
+        let many: Vec<String> = (0..40).map(|n| format!("OEBPS/fonts/{n:02}.otf")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        let encrypted = [
+            scratch.write("font.epub", &encrypted_book(&["OEBPS/fonts/f.otf"])),
+            scratch.write(
+                "chapter.epub",
+                &encrypted_book(&["OEBPS/fonts/f.otf", "OEBPS/b.xhtml", "OEBPS/a.xhtml"]),
+            ),
+            scratch.write("many.epub", &encrypted_book(&many)),
+        ];
+        let unsupported = scratch.write("unsupported.epub", &unsupported_book());
+        let mut documents: Vec<&Path> = encrypted.iter().map(PathBuf::as_path).collect();
+        documents.push(&unsupported);
+        assert_fails_as_tika(&documents);
+        let configs = ParserConfigs::default();
+        for path in &encrypted {
+            let (native, tika) = crate::formats::parity::errors(path, &configs);
+            assert_eq!(native, tika, "{}", path.display());
+        }
+        let cause = |error: &str| {
+            error
+                .split_once(" <- caused by ")
+                .map(|(_, cause)| cause.to_owned())
+        };
+        let (native, tika) = crate::formats::parity::errors(&unsupported, &configs);
+        assert!(cause(&native).is_some(), "{native}");
+        assert_eq!(cause(&native), cause(&tika));
     }
 
     #[cfg(feature = "tika")]

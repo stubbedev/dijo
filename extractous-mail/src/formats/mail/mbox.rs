@@ -24,7 +24,7 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::line_ranges;
 use crate::formats::embedded::{Wrapping, EXCEPTION_WARNING};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::input::{Pages, Paging};
 use crate::java::to_lower_case;
 use crate::text::charset::Charset;
@@ -41,6 +41,8 @@ struct Message<'a> {
     lines: Vec<&'a [u8]>,
     metadata: TikaMetadata,
     cut: bool,
+    /// The first header the port does not read as Tika does, which its metadata leaves out.
+    unported: Option<Unported>,
 }
 
 impl Message<'_> {
@@ -117,7 +119,7 @@ struct Messages<'a, I: Iterator<Item = &'a [u8]>> {
 }
 
 impl<'a, I: Iterator<Item = &'a [u8]>> Iterator for Messages<'a, I> {
-    type Item = Result<Message<'a>, Unported>;
+    type Item = Message<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -180,16 +182,18 @@ impl<'a, I: Iterator<Item = &'a [u8]>> Iterator for Messages<'a, I> {
             };
             self.current = next;
             let charset = declared_charset(&headers);
+            let mut unported = None;
             for header in &headers {
-                if let Err(unported) = save(&mut metadata, &decode_line(header, charset)) {
-                    return Some(Err(unported));
+                if let Err(header_unported) = save(&mut metadata, &decode_line(header, charset)) {
+                    unported.get_or_insert(header_unported);
                 }
             }
-            return Some(Ok(Message {
+            return Some(Message {
                 lines,
                 metadata,
                 cut,
-            }));
+                unported,
+            });
         }
     }
 }
@@ -289,15 +293,15 @@ impl Parser for MboxParser {
         pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let paging = Paging::new(pages);
+        let mut unported = None;
         for message in messages(input).into_iter().flatten() {
-            let message =
-                message.map_err(|unported| Decline::Deferred(unported.reason().to_owned()))?;
+            unported = unported.or(message.unported);
             paging.read(message.size());
         }
         paging.release();
-        Ok(Box::new(move |xhtml| {
+        let reading: Prepared<'a> = Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             metadata.set("Content-Type", "application/mbox");
             metadata.set("Content-Encoding", CHARSET);
@@ -305,13 +309,6 @@ impl Parser for MboxParser {
                 Failure::Malformed("The mailbox has no first line to read".to_owned())
             })?;
             for (index, message) in messages.enumerate() {
-                let message = message.map_err(|unported| {
-                    Failure::Malformed(format!(
-                        "Message {} of the mailbox reads differently the second time: {}",
-                        index + 1,
-                        unported.reason()
-                    ))
-                })?;
                 paging.read(message.size());
                 if message.cut {
                     xhtml.metadata_mut().add(
@@ -329,7 +326,18 @@ impl Parser for MboxParser {
                 )?;
             }
             Ok(())
-        }))
+        });
+        match unported {
+            None => Ok(reading),
+            Some(unported) => Err(Decline::Differs {
+                reading,
+                difference: Difference::new(format!(
+                    "{}, so the native reading leaves the header it is in out of the message's \
+                     metadata",
+                    unported.reason()
+                )),
+            }),
+        }
     }
 }
 
@@ -380,10 +388,8 @@ From carol@example.org Wed Jan  3 00:00:00 2024\n\
 Subject: Caf\xc3\xa9\n\
 \n\
 Third.\n";
-        let messages: Vec<Message> = messages(mailbox)
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
+        let messages: Vec<Message> = messages(mailbox).unwrap().collect();
+        assert!(messages.iter().all(|message| message.unported.is_none()));
         assert_eq!(messages.len(), 3);
         let get = |index: usize, name: &str| {
             messages[index]

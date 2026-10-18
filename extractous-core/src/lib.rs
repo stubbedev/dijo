@@ -13,6 +13,7 @@ pub use extractous_base::config::{
 pub use extractous_base::embedded::{EmbeddedSpool, SpooledEmbedded};
 pub use extractous_base::errors::{Error, ExtractResult, Unsupported};
 pub use extractous_base::extracted::{CharSet, Metadata};
+pub use extractous_base::formats::DIFFERS_FROM_TIKA;
 pub use extractous_base::isolate::IsolateSettings;
 pub use extractous_base::{memory, text, unicode};
 use extractous_image::ocr;

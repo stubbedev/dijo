@@ -10,20 +10,51 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Deferral, Opened, Parser, Prepared};
+use crate::formats::{Decline, Difference, Failure, Opened, Parser, Prepared};
 
 /// The folder of a collection's archives.
 const ARCHIVE: &str = "archive/";
 /// `GZIPInputStream.GZIP_MAGIC`, as the first two bytes of a stream.
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
-/// An archive of the collection, as the embedded document extractor is handed it.
+/// An archive of the collection, as the embedded document extractor is handed it: as much of
+/// it as is read, and, where it is not read whole, the failure of the collection after it.
 #[derive(Debug)]
 struct Archive {
     path: String,
     name: String,
     size: i64,
     data: Vec<u8>,
+    unread: Option<Unread>,
+}
+
+/// Why an archive of the collection is not read whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unread {
+    /// Its data is cut short or corrupt.
+    Cut,
+    /// It starts as gzip does, and does not gunzip.
+    Gzip,
+    /// It decodes into more than the native path decodes.
+    TooLarge,
+}
+
+impl Unread {
+    /// The failure of the collection once what there is of the archive of `path` is written.
+    fn failure(self, path: &str) -> Failure {
+        match self {
+            Unread::Cut => Failure::Malformed(format!(
+                "EOFException: the data of the entry {path} is cut short or corrupt"
+            )),
+            Unread::Gzip => Failure::Malformed(format!(
+                "IOException: the entry {path} starts as gzip does, and does not gunzip"
+            )),
+            Unread::TooLarge => Failure::Embedded(Error::LimitExceeded(format!(
+                "the entry {path}: {}, the most the native parser decodes",
+                crate::compress::Undecoded::TooLarge
+            ))),
+        }
+    }
 }
 
 /// Tika's `WACZParser`.
@@ -46,14 +77,17 @@ impl Parser for WaczParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let zip = ZipFile::open(input).map_err(|_| {
             Decline::Fails(Error::ParseError(
                 "the WACZ collection is not a ZIP archive".to_owned(),
             ))
         })?;
-        let archives = archives(&zip).map_err(Decline::Deferred)?;
-        Ok(Box::new(move |xhtml| {
+        let archives = archives(&zip);
+        let unread = archives
+            .last()
+            .and_then(|archive| archive.unread.map(|unread| (unread, archive.path.clone())));
+        let reading: Prepared<'a> = Box::new(move |xhtml| {
             for archive in &archives {
                 let mut metadata = TikaMetadata::new();
                 metadata.set(INTERNAL_PATH, archive.path.as_str());
@@ -65,42 +99,62 @@ impl Parser for WaczParser {
                     Wrapping::PackageEntry,
                     Opened::Alone,
                 )?;
+                if let Some(unread) = archive.unread {
+                    return Err(unread.failure(&archive.path));
+                }
             }
             Ok(())
-        }))
+        });
+        let Some((unread, path)) = unread else {
+            return Ok(reading);
+        };
+        Err(Decline::Differs {
+            reading,
+            difference: Difference::new(format!(
+                "the archive {path} is not read whole ({unread:?}): the native parser parses \
+                 what it reads of it, then fails the collection, where the stream Tika's \
+                 embedded parser reads throws, which fails it unless that parser catches it"
+            )),
+        })
     }
 }
 
 /// The archives of the collection, an archive gunzipped where its first two bytes are gzip's,
-/// as commons-compress's `IOUtils.readFully` reads them, zero past a shorter entry's end; the
-/// port leaves to Tika an entry it does not read whole and gzip that does not decode, which fail
-/// while the archive's parser reads.
-fn archives(zip: &ZipFile<'_>) -> Result<Vec<Archive>, Deferral> {
+/// as commons-compress's `IOUtils.readFully` reads them, zero past a shorter entry's end, up to
+/// the first that is not read whole, as much of it as is read, which fails the collection while
+/// the archive's parser reads.
+fn archives(zip: &ZipFile<'_>) -> Vec<Archive> {
     let mut archives = Vec::new();
     for entry in zip.entries().iter().filter(|entry| !entry.is_directory()) {
         let Some(name) = entry.name.strip_prefix(ARCHIVE) else {
             continue;
         };
-        let data = match zip.read(entry) {
-            Some(Content::Complete(data)) => data.into_owned(),
-            _ => return Err("an archive entry the port does not read whole".to_owned()),
+        let (data, unread) = match zip.read(entry) {
+            Some(Content::Complete(data)) => (data.into_owned(), None),
+            Some(Content::Truncated(data)) => (data.into_owned(), Some(Unread::Cut)),
+            Some(Content::Oversized(data)) => (data.into_owned(), Some(Unread::TooLarge)),
+            None => (Vec::new(), Some(Unread::Cut)),
         };
-        let data = if data.starts_with(&GZIP_MAGIC) {
-            gzip::decode(&data)
-                .and_then(Limited::whole)
-                .map_err(|_| "a gzip archive the port does not decode".to_owned())?
-                .content
-        } else {
-            data
+        let (data, unread) = match unread {
+            None if data.starts_with(&GZIP_MAGIC) => match gzip::decode(&data) {
+                Ok(Limited::Whole(member)) => (member.content, None),
+                Ok(Limited::Cut(member)) => (member.content, Some(Unread::TooLarge)),
+                Err(_) => (Vec::new(), Some(Unread::Gzip)),
+            },
+            unread => (data, unread),
         };
         archives.push(Archive {
             path: entry.name.clone(),
             name: name.to_owned(),
             size: entry.size,
             data,
+            unread,
         });
+        if unread.is_some() {
+            break;
+        }
     }
-    Ok(archives)
+    archives
 }
 
 #[cfg(all(test, feature = "tika"))]
@@ -147,13 +201,39 @@ Content-Length: 64\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nGod
     }
 
     #[test]
+    fn reads_up_to_an_archive_that_does_not_gunzip_as_differing() {
+        let collection = zip(&[
+            ("archive/data.warc", WARC),
+            ("archive/broken.warc.gz", b"\x1f\x8b not gzip"),
+            ("archive/after.warc", WARC),
+        ]);
+        let archives = archives(&ZipFile::open(&collection).unwrap());
+        let read: Vec<(&str, Option<Unread>)> = archives
+            .iter()
+            .map(|archive| (archive.path.as_str(), archive.unread))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("archive/data.warc", None),
+                ("archive/broken.warc.gz", Some(Unread::Gzip))
+            ]
+        );
+        let configs = ParserConfigs::default();
+        assert!(matches!(
+            WaczParser.prepare(&collection, &TikaMetadata::new(), &configs),
+            Err(Decline::Differs { .. })
+        ));
+    }
+
+    #[test]
     fn hands_on_no_folders() {
         let collection = zip(&[
             ("archive/", b""),
             ("archive/data.warc", WARC),
             ("archive/2024/", b""),
         ]);
-        let archives = archives(&ZipFile::open(&collection).unwrap()).unwrap();
+        let archives = archives(&ZipFile::open(&collection).unwrap());
         let paths: Vec<&str> = archives
             .iter()
             .map(|archive| archive.path.as_str())

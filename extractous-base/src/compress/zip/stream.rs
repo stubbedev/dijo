@@ -2,9 +2,10 @@
 //! `ZipArchiveInputStream` reads them, for the archives `ZipFile` cannot open.
 //!
 //! A stored entry with a data descriptor is found by scanning for the next signature, as
-//! `readStoredEntry` does, without its 512-byte buffering. Entries are read stored, deflated,
-//! shrunk or imploded only, as by [`super::file`]. Names come from the Unicode path extra field where its CRC
-//! matches, as `useUnicodeExtraFields` asks.
+//! `readStoredEntry` does, without its 512-byte buffering. Entries are decoded as by
+//! [`super::file`], but for one with a data descriptor compressed otherwise than deflated. Names
+//! come from the Unicode path extra field where its CRC matches, as `useUnicodeExtraFields`
+//! asks.
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -12,8 +13,8 @@ use std::ops::Range;
 use super::extra::{self, ExtraFields, Times};
 use super::file::{entry_name, unicode_text, NameSource, ZipEntry};
 use super::{
-    decode_legacy, decode_name, inflate, u16_at, u32_at, Content, BZIP2, CFH_SIG, DEFLATE64,
-    DEFLATED, IMPLODING, LFH_SIG, STORED, UNSHRINKING, XZ, ZSTD,
+    decode, decode_name, decompresses, inflate, u16_at, u32_at, Content, CFH_SIG, DEFLATE64,
+    DEFLATED, LFH_SIG, STORED, XZ, ZSTD,
 };
 
 const SPLIT_MARKER: [u8; 4] = *b"PK00";
@@ -33,8 +34,8 @@ pub enum Failure {
     /// decompressor for, whose data the stream refuses with an `UnsupportedZipFeatureException`,
     /// as it refuses an archive that starts as a split one goes on.
     Unsupported,
-    /// An entry compressed with this method, which commons-compress decompresses and the port
-    /// does not.
+    /// An entry with a data descriptor compressed with this method, which commons-compress
+    /// decompresses up to the descriptor, and the port finds the end of only for deflated data.
     Method(u16),
     /// Anything else the stream throws.
     Io,
@@ -279,16 +280,12 @@ impl<'a> ZipStream<'a> {
                 }
                 Ok(content)
             }
-            UNSHRINKING | IMPLODING => {
+            method if decompresses(method) && !current.has_data_descriptor() => {
                 let raw = self.data.get(current.data_start..).unwrap_or_default();
                 let length = usize::try_from(current.compressed_size).map_err(|_| Failure::Io)?;
                 let size = u64::try_from(current.size).map_err(|_| Failure::Io)?;
-                Ok(decode_legacy(
-                    current.method,
-                    current.flags,
-                    &raw[..length.min(raw.len())],
-                    size,
-                ))
+                decode(method, current.flags, &raw[..length.min(raw.len())], size)
+                    .ok_or_else(|| unread(method))
             }
             method => Err(unread(method)),
         }
@@ -302,8 +299,10 @@ impl<'a> ZipStream<'a> {
             STORED if current.has_data_descriptor() => self
                 .read_stored_with_descriptor(current)
                 .map(|(_, end)| end),
-            STORED | UNSHRINKING | IMPLODING => {
-                let size = usize::try_from(if current.method == STORED {
+            method
+                if method == STORED || (decompresses(method) && !current.has_data_descriptor()) =>
+            {
+                let size = usize::try_from(if method == STORED {
                     current.size
                 } else {
                     current.compressed_size
@@ -408,12 +407,10 @@ impl<'a> ZipStream<'a> {
 }
 
 /// Why the data of an entry compressed with `method`, neither stored nor deflated, is not
-/// read: the port does not decompress the methods commons-compress's `ZipUtil.supportsMethodOf`
-/// accepts, and commons-compress refuses the others.
+/// read: the port does not find where data of the methods commons-compress decompresses ends
+/// before a data descriptor, and commons-compress refuses the other methods.
 fn unread(method: u16) -> Failure {
-    let decompressed =
-        [UNSHRINKING, IMPLODING, DEFLATE64, BZIP2, XZ].contains(&method) || ZSTD.contains(&method);
-    if decompressed {
+    if decompresses(method) {
         Failure::Method(method)
     } else {
         Failure::Unsupported

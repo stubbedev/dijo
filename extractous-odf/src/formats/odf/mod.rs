@@ -14,17 +14,19 @@ mod meta;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use crate::compress::zip::file::ZipEntry;
 use crate::config::ParserConfigs;
 use crate::formats::crypt;
 use crate::formats::embedded::{self, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
-use crate::input::{Input, Pages};
+use crate::formats::zip_package::{self, Opened, Undecoded, Unread, ZipPackage};
+use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
+use crate::input::{Input, Pages, Paging};
 use crate::mime::{self, Origin};
 
+const TIKA_NAME: &str = "org.apache.tika.parser.odf.OpenDocumentParser";
 pub(crate) const OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
 pub(crate) const META_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:meta:1.0";
 /// The element in which an OpenDocument part embeds a file, base64-encoded.
@@ -65,8 +67,9 @@ pub(crate) fn decode_base64(text: &str) -> Vec<u8> {
 }
 const OLD_NS: &str = "http://openoffice.org/2000/";
 const NEW_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:";
-const META_NAME: &[u8] = b"meta.xml";
-const MIMETYPE_NAME: &[u8] = b"mimetype";
+const META_NAME: &str = "meta.xml";
+const MIMETYPE_NAME: &str = "mimetype";
+const MANIFEST_NAME: &str = "META-INF/manifest.xml";
 
 /// The media types Tika parses with its `OpenDocumentParser`: those it names, and the StarOffice
 /// Writer template, which Tika's registry makes a kind of StarOffice Writer file.
@@ -157,27 +160,40 @@ enum EntryKind {
 
 impl EntryKind {
     /// The branches of Tika's `handleZipArchiveEntry`, in their order.
-    fn of(name: &[u8]) -> Self {
-        let contains = |part: &[u8]| name.windows(part.len()).any(|window| window == part);
-        if name.ends_with(b"/") {
+    fn of(name: &str) -> Self {
+        if name.ends_with('/') {
             Self::Directory
-        } else if contains(b"manifest.xml") {
+        } else if name.contains("manifest.xml") {
             Self::Manifest
         } else if name == MIMETYPE_NAME {
             Self::Mimetype
         } else if name == META_NAME {
             Self::Meta
-        } else if name.ends_with(b"content.xml") || name.ends_with(b"styles.xml") {
+        } else if name.ends_with("content.xml") || name.ends_with("styles.xml") {
             Self::Body
-        } else if contains(b"Pictures/") {
+        } else if name.contains("Pictures/") {
             Self::Embedded
-        } else if name.starts_with(b"Thumbnails/") {
+        } else if name.starts_with("Thumbnails/") {
             Self::Thumbnail
-        } else if contains(b"Thumbnails/") {
+        } else if name.contains("Thumbnails/") {
             Self::Embedded
         } else {
             Self::Ignored
         }
+    }
+
+    /// Whether Tika's `OpenDocumentParser` reads the data of an entry of this kind.
+    fn is_read(self) -> bool {
+        match self {
+            Self::Manifest | Self::Mimetype | Self::Meta | Self::Body | Self::Embedded => true,
+            Self::Directory | Self::Thumbnail | Self::Ignored => false,
+        }
+    }
+
+    /// Whether the preparation holds on to the data it decompresses of an entry of this kind,
+    /// for the writing to parse.
+    fn is_read_ahead(self) -> bool {
+        matches!(self, Self::Mimetype | Self::Meta | Self::Body)
     }
 }
 
@@ -194,54 +210,68 @@ impl Entry {
     }
 }
 
-/// A document's ZIP archive and its entries.
+/// A document's ZIP archive, its entries, and the parts read ahead to check them.
 struct Archive<'a> {
-    zip: ZipFile<'a>,
+    package: ZipPackage<'a>,
     entries: Vec<Entry>,
-    /// The entries read ahead to check them, by name, each to be read once more.
-    read_ahead: HashMap<String, Input<'a>>,
+    /// The parts read ahead whose data their reading decompressed, by their index among the
+    /// entries, for their writing.
+    read_ahead: HashMap<usize, Vec<u8>>,
 }
 
 impl<'a> Archive<'a> {
-    fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Failure> {
-        let zip = ZipFile::open(input, pages, "OpenDocument")?;
-        let entries = zip
+    fn new(package: ZipPackage<'a>) -> Self {
+        let entries = package
+            .zip()
             .entries()
             .iter()
             .map(|entry| Entry {
-                kind: EntryKind::of(&entry.raw_name),
+                kind: EntryKind::of(&entry.name),
                 entry: entry.clone(),
             })
             .collect();
-        Ok(Self {
-            zip,
+        Self {
+            package,
             entries,
             read_ahead: HashMap::new(),
-        })
-    }
-
-    fn of_kind(&self, kind: EntryKind) -> impl Iterator<Item = &Entry> {
-        self.entries.iter().filter(move |entry| entry.kind == kind)
-    }
-
-    fn read(&mut self, entry: &Entry) -> Result<Input<'a>, Failure> {
-        match self.read_ahead.remove(entry.name()) {
-            Some(bytes) => Ok(bytes),
-            None => self.zip.read(&entry.entry),
         }
     }
 
-    /// Reads `entry` now, for the read that writes it.
-    fn read_now(&mut self, entry: &Entry) -> Result<&[u8], Failure> {
-        let bytes = self.read(entry)?;
-        Ok(self
-            .read_ahead
-            .entry(entry.name().to_owned())
-            .or_insert(bytes))
+    /// The indexes of the entries whose data `handleZipFile` reads, in its order: the first
+    /// manifest and the first `meta.xml` by their names, then every entry but a `meta.xml`.
+    fn handled(&self) -> Vec<usize> {
+        let first = |name: &str| self.entries.iter().position(|entry| entry.name() == name);
+        first(MANIFEST_NAME)
+            .into_iter()
+            .chain(first(META_NAME))
+            .chain(
+                self.entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| entry.name() != META_NAME)
+                    .map(|(index, _)| index),
+            )
+            .filter(|&index| self.entries[index].kind.is_read())
+            .collect()
     }
 
-    fn has_every_record(&self, input: &[u8]) -> bool {
-        self.zip.has_every_record(input)
+    /// Reads the data of each entry `handleZipFile` reads, in its order, for `each` to handle,
+    /// failing where that reading throws.
+    fn read_each(
+        &self,
+        mut each: impl FnMut(&Entry, &Input) -> Result<(), Failure>,
+    ) -> Result<(), Failure> {
+        let zip = self.package.zip();
+        for index in self.handled() {
+            let entry = &self.entries[index];
+            let bytes = match self.read_ahead.get(&index) {
+                Some(bytes) => Cow::Borrowed(bytes.as_slice()),
+                None => zip_package::read(&zip, &entry.entry)
+                    .map_err(|unread| unread.failure(entry.name(), Opened::Tagged, TIKA_NAME))?,
+            };
+            each(entry, &self.package.input(bytes))?;
+        }
+        Ok(())
     }
 }
 
@@ -288,11 +318,8 @@ impl SaxHandler for ElementFinder {
     }
 }
 
-const UNREADABLE_ARCHIVE: &str = "its archive is not one the zip crate reads";
-const DUPLICATES: &str = "its archive has entries the zip crate does not list, such as duplicates";
-const UNREADABLE_MANIFEST: &str = "its manifest cannot be read";
-const NO_BODY: &str = "it has no content.xml or styles.xml, so Tika leaves its XHTML unfinished";
-const UNREADABLE_ENTRY: &str = "an entry it reads cannot be read by the zip crate";
+const UNENDED: &str = "it has pictures but no content.xml or styles.xml, so Tika leaves its \
+                       document unended, where the native parser ends it";
 
 /// The metadata Tika's `OpenDocumentParser` gives the picture or object thumbnail `name` of
 /// `bytes` it hands to the embedded document extractor: a picture's type as its detector finds
@@ -312,48 +339,101 @@ fn embedded_metadata(name: &str, bytes: &[u8]) -> Result<TikaMetadata, Failure> 
     Ok(metadata)
 }
 
-/// The archive of the document in `input`, its metadata, type and bodies read ahead, or why
-/// Tika's path should read it rather than this parser, or the error Tika fails it with: the
-/// `EncryptedDocumentException` its `OpenDocumentManifestHandler` throws on a manifest's
-/// `encryption-data`, which `OpenDocumentParser` reads before any part it writes.
-fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, Decline<'static>> {
-    let deferred = |reason: &str| Decline::Deferred(reason.to_owned());
-    let Ok(mut archive) = Archive::open(input, pages) else {
-        return Err(deferred(UNREADABLE_ARCHIVE));
-    };
-    if !archive.has_every_record(input) {
-        return Err(deferred(DUPLICATES));
-    }
-    let manifests: Vec<Entry> = archive.of_kind(EntryKind::Manifest).cloned().collect();
-    for manifest in &manifests {
-        let Ok(bytes) = archive.read(manifest) else {
-            return Err(deferred(UNREADABLE_MANIFEST));
-        };
-        if ElementFinder::finds("encryption-data", &bytes, manifest.name()) {
-            return Err(Decline::Fails(crypt::encrypted(None)));
+/// Reads the document in `input`, whose detection left `metadata`, as far as deciding how it is
+/// written: each entry Tika reads is read in its order up to the first one that fails Tika's
+/// parser, the decompressed parts it parses held on to. A manifest's `encryption-data` fails
+/// the document at once with the `EncryptedDocumentException` that Tika's
+/// `OpenDocumentManifestHandler` throws.
+///
+/// Without a `content.xml` or `styles.xml`, nothing ends the document Tika starts: without
+/// pictures either, Tika writes nothing of it, and leaves the metadata it read.
+fn prepare<'a>(
+    input: &'a [u8],
+    pages: Pages<'a>,
+    metadata: &TikaMetadata,
+    configs: &'a ParserConfigs,
+) -> Result<Prepared<'a>, Decline<'a>> {
+    let mut archive = Archive::new(ZipPackage::open(input, pages, metadata, TIKA_NAME)?);
+    let paging = Paging::new(pages);
+    let checked = check(&mut archive, &paging);
+    paging.release();
+    let has = |kind| archive.entries.iter().any(|entry| entry.kind == kind);
+    let (bodies, pictures) = (has(EntryKind::Body), has(EntryKind::Embedded));
+    if let (Ok(()), false, false) = (&checked, bodies, pictures) {
+        let mut found = metadata.clone();
+        if archive
+            .read_each(|entry, bytes| read_metadata(entry.kind, bytes, &mut found))
+            .is_ok()
+        {
+            return Err(Decline::Unwritten(found));
         }
     }
-    let bodies: Vec<Entry> = archive.of_kind(EntryKind::Body).cloned().collect();
-    if bodies.is_empty() {
-        return Err(deferred(NO_BODY));
+    let reading: Prepared<'a> = Box::new(move |xhtml| write(archive, configs, xhtml));
+    match checked {
+        Ok(()) if bodies => Ok(reading),
+        Ok(()) => Err(Decline::Differs {
+            reading,
+            difference: Difference::new(UNENDED),
+        }),
+        Err(Checked::Encrypted) => Err(Decline::Fails(crypt::encrypted(None))),
+        Err(Checked::Undecoded(name, undecoded)) => Err(undecoded.decline(&name, reading)),
     }
-    let read: Vec<Entry> = archive
-        .entries
-        .iter()
-        .filter(|entry| matches!(entry.kind, EntryKind::Meta | EntryKind::Mimetype))
-        .cloned()
-        .collect();
-    for entry in &read {
-        archive
-            .read_now(entry)
-            .map_err(|_| deferred(UNREADABLE_ENTRY))?;
+}
+
+/// What ends the check of an archive before its last entry.
+enum Checked {
+    Encrypted,
+    /// The entry of the name is not decoded as Tika decodes it.
+    Undecoded(String, Undecoded),
+}
+
+/// Reads each entry of `archive` that Tika reads, in its order, checking each manifest for
+/// `encryption-data`, up to the first entry that cannot be read. An unsupported entry fails the
+/// writing where it fails Tika's parser, so the check ends there without a reason.
+fn check(archive: &mut Archive, paging: &Paging) -> Result<(), Checked> {
+    let zip = archive.package.zip();
+    for index in archive.handled() {
+        let entry = &archive.entries[index];
+        let bytes = match zip_package::read(&zip, &entry.entry) {
+            Ok(bytes) => bytes,
+            Err(Unread::Unsupported(_)) => return Ok(()),
+            Err(Unread::Undecoded(undecoded)) => {
+                return Err(Checked::Undecoded(entry.name().to_owned(), undecoded))
+            }
+        };
+        paging.read(bytes.len());
+        if entry.kind == EntryKind::Manifest
+            && ElementFinder::finds("encryption-data", &bytes, entry.name())
+        {
+            return Err(Checked::Encrypted);
+        }
+        if let (true, Cow::Owned(bytes)) = (entry.kind.is_read_ahead(), bytes) {
+            archive.read_ahead.insert(index, bytes);
+        }
     }
-    for body in &bodies {
-        archive
-            .read_now(body)
-            .map_err(|_| deferred(UNREADABLE_ENTRY))?;
+    Ok(())
+}
+
+/// Sets what the data `bytes` of an entry of `kind` says of the document in `metadata`: a
+/// `meta.xml` its metadata, a `mimetype` its type.
+fn read_metadata(
+    kind: EntryKind,
+    bytes: &[u8],
+    metadata: &mut TikaMetadata,
+) -> Result<(), Failure> {
+    match kind {
+        EntryKind::Meta => meta::read_meta(bytes, metadata),
+        EntryKind::Mimetype => {
+            metadata.set("Content-Type", String::from_utf8_lossy(bytes));
+            Ok(())
+        }
+        EntryKind::Manifest
+        | EntryKind::Body
+        | EntryKind::Embedded
+        | EntryKind::Directory
+        | EntryKind::Thumbnail
+        | EntryKind::Ignored => Ok(()),
     }
-    Ok(archive)
 }
 
 pub struct OpenDocumentParser;
@@ -363,7 +443,7 @@ impl Parser for OpenDocumentParser {
         "extractous::OpenDocumentParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.odf.OpenDocumentParser"
+        TIKA_NAME
     }
 
     fn footprint(&self) -> Footprint {
@@ -387,48 +467,34 @@ impl Parser for OpenDocumentParser {
         &self,
         input: &'a [u8],
         pages: Pages<'a>,
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let archive = read_ahead(input, pages)?;
-        Ok(Box::new(move |xhtml| write(archive, configs, xhtml)))
+        prepare(input, pages, metadata, configs)
     }
 }
 
-/// Writes the document in `archive` as `OpenDocumentParser.parse` does.
-fn write(mut archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result<(), Failure> {
-    let meta = archive.of_kind(EntryKind::Meta).next().cloned();
-    if let Some(entry) = meta {
-        let bytes = archive.read(&entry)?;
-        meta::read_meta(&bytes, xhtml.metadata_mut())?;
-    }
-    let entries = archive.entries.clone();
-    for entry in &entries {
+/// Writes the document in `archive` as `OpenDocumentParser.handleZipFile` does.
+fn write(archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    archive.read_each(|entry, bytes| {
+        read_metadata(entry.kind, bytes, xhtml.metadata_mut())?;
         match entry.kind {
-            EntryKind::Mimetype => {
-                let bytes = archive.read(entry)?;
-                xhtml
-                    .metadata_mut()
-                    .set("Content-Type", String::from_utf8_lossy(&bytes));
-            }
             EntryKind::Body => {
-                let bytes = archive.read(entry)?;
                 let mut body = body::Body::new(xhtml, configs.office.includes_deleted_content());
-                xml::parse_part(&bytes, entry.name(), &mut body)?;
+                xml::parse_part(bytes, entry.name(), &mut body)
             }
             EntryKind::Embedded => {
-                let bytes = archive.read(entry)?;
-                let metadata = embedded_metadata(entry.name(), &bytes)?;
-                xhtml.parse_embedded(&bytes, &metadata, Wrapping::Bare)?;
+                let metadata = embedded_metadata(entry.name(), bytes)?;
+                Ok(xhtml.parse_embedded(bytes, &metadata, Wrapping::Bare)?)
             }
-            EntryKind::Directory
+            EntryKind::Meta
+            | EntryKind::Mimetype
             | EntryKind::Manifest
-            | EntryKind::Meta
+            | EntryKind::Directory
             | EntryKind::Thumbnail
-            | EntryKind::Ignored => {}
+            | EntryKind::Ignored => Ok(()),
         }
-    }
-    Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -441,13 +507,12 @@ mod tests {
         assert_fails_as_tika, assert_same_as_tika_adjusting, conformance_corpus, Adjustments,
         Scratch,
     };
+    use crate::formats::zip_package::tests::{replace_all, with_method};
     use std::io::Cursor;
     #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
     use zip::CompressionMethod;
 
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.odf.OpenDocumentParser";
     #[cfg(feature = "tika")]
     const DOCUMENTS: [&str; 4] = [
         "../test_files/documents/simple.odt",
@@ -901,51 +966,260 @@ mod tests {
         );
     }
 
+    fn meta_titled(title: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta {NAMESPACES}><office:meta><dc:title>{title}</dc:title></office:meta></office:document-meta>"#
+        )
+    }
+
+    fn paragraph(text: &str) -> String {
+        content(&format!(
+            "<office:text><text:p>{text}</text:p></office:text>"
+        ))
+    }
+
+    /// A document whose central directory is cut off, which Tika reads as `ZipSalvager` rebuilds
+    /// it.
+    fn cut() -> Vec<u8> {
+        let whole = document(
+            TEXT,
+            &[
+                ("content.xml", &paragraph("Kept text")),
+                ("meta.xml", &meta_titled("Cut")),
+                MANIFEST,
+            ],
+        );
+        whole[..whole.len() - 10].to_vec()
+    }
+
+    /// A document cut short in the middle of its `content.xml`.
+    fn cut_in_content() -> Vec<u8> {
+        let whole = document(
+            TEXT,
+            &[
+                ("meta.xml", &meta_titled("Cut")),
+                ("content.xml", &paragraph("Kept text")),
+            ],
+        );
+        let content = whole
+            .windows(b"Kept text".len())
+            .position(|window| window == b"Kept text")
+            .unwrap();
+        whole[..content].to_vec()
+    }
+
+    /// A document with two entries of each name of its parts.
+    fn duplicated() -> Vec<u8> {
+        let duplicated = document(
+            TEXT,
+            &[
+                ("meta.xml", &meta_titled("First")),
+                ("content.xml", &paragraph("One")),
+                ("meta.xmm", &meta_titled("Second")),
+                ("content.xmm", &paragraph("Two")),
+                MANIFEST,
+            ],
+        );
+        replace_all(&duplicated, b".xmm", b".xml")
+    }
+
+    /// A document whose deflated `content.xml` is corrupt.
+    fn corrupt() -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let stored =
+            zip::write::SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        zip.start_file("mimetype", stored).unwrap();
+        std::io::Write::write_all(&mut zip, TEXT.as_bytes()).unwrap();
+        zip.start_file(
+            "content.xml",
+            stored.compression_method(CompressionMethod::Deflated),
+        )
+        .unwrap();
+        std::io::Write::write_all(&mut zip, paragraph("Lost").as_bytes()).unwrap();
+        let mut bytes = zip.finish().unwrap().into_inner();
+        let data = 30 + "mimetype".len() + TEXT.len() + 30 + "content.xml".len();
+        bytes[data..data + 8].copy_from_slice(&[0xFF; 8]);
+        bytes
+    }
+
+    /// A document whose `content.xml` says it is compressed with LZMA, which commons-compress
+    /// does not decompress.
+    fn unsupported() -> Vec<u8> {
+        with_method(
+            document(TEXT, &[("content.xml", &paragraph("Locked")), MANIFEST]),
+            "content.xml",
+            14,
+        )
+    }
+
+    fn salvaged() -> TikaMetadata {
+        let mut metadata = TikaMetadata::new();
+        metadata.set(crate::mime::Key::Salvaged.name(), "true");
+        metadata
+    }
+
     #[test]
-    fn leaves_odd_archives_to_tika() {
-        let text = content("<office:text><text:p>x</text:p></office:text>");
-        assert_eq!(
-            OpenDocumentParser
-                .defers(
-                    b"not a zip",
-                    &TikaMetadata::new(),
-                    &ParserConfigs::default()
-                )
-                .as_deref(),
-            Some(UNREADABLE_ARCHIVE)
+    fn reads_packages_zip_file_cannot_open_as_tika_salvages_them() {
+        let configs = ParserConfigs::default();
+        assert!(OpenDocumentParser
+            .prepare(&cut(), &salvaged(), &configs)
+            .is_ok());
+        let (xml, metadata) = extract(&cut());
+        assert!(xml.contains("<p><b><u>Kept text</u></b></p>"), "{xml}");
+        assert_eq!(metadata["dc:title"], ["Cut"]);
+        let error = crate::Extractor::new()
+            .extract_bytes_to_string(&cut_in_content())
+            .unwrap_err();
+        assert!(error.to_string().contains("content.xml"), "{error}");
+    }
+
+    #[test]
+    fn reads_every_entry_of_a_name() {
+        let (xml, metadata) = extract(&duplicated());
+        assert!(
+            xml.contains("<p><b><u>One</u></b></p>\n<p><b><u>Two</u></b></p>"),
+            "{xml}"
         );
-        let without_content = document(TEXT, &[MANIFEST]);
+        assert_eq!(metadata["dc:title"], ["First"]);
+    }
+
+    #[test]
+    fn fails_as_tika_fails_what_is_not_a_zip_archive() {
+        let configs = ParserConfigs::default();
+        let declined = OpenDocumentParser
+            .prepare(b"not a zip", &TikaMetadata::new(), &configs)
+            .err()
+            .map(|declined| declined.to_string());
         assert_eq!(
-            OpenDocumentParser
-                .defers(
-                    &without_content,
-                    &TikaMetadata::new(),
-                    &ParserConfigs::default()
-                )
-                .as_deref(),
-            Some(NO_BODY)
-        );
-        let duplicated = document(TEXT, &[("content.xml", &text), ("content.xmm", &text)]);
-        let duplicated = replace_all(&duplicated, b"content.xmm", b"content.xml");
-        assert_eq!(
-            OpenDocumentParser
-                .defers(&duplicated, &TikaMetadata::new(), &ParserConfigs::default())
-                .as_deref(),
-            Some(DUPLICATES)
+            declined.as_deref(),
+            Some(
+                "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: \
+                 Illegal IOException from org.apache.tika.parser.odf.OpenDocumentParser <- \
+                 caused by java.util.zip.ZipException: Archive is not a ZIP archive"
+            )
         );
     }
 
-    fn replace_all(bytes: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
-        let mut replaced = bytes.to_vec();
-        let mut index = 0;
-        while let Some(found) = replaced[index..]
-            .windows(from.len())
-            .position(|w| w == from)
-        {
-            replaced[index + found..index + found + from.len()].copy_from_slice(to);
-            index += found + from.len();
+    #[test]
+    fn fails_as_tika_fails_an_entry_commons_compress_does_not_decompress() {
+        let error = crate::Extractor::new()
+            .extract_bytes_to_string(&unsupported())
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: Illegal \
+             IOException from org.apache.tika.parser.odf.OpenDocumentParser <- caused by \
+             org.apache.commons.io.TaggedIOException: Unsupported compression method 14 (LZMA) \
+             used in entry content.xml <- caused by \
+             org.apache.commons.compress.archivers.zip.UnsupportedZipFeatureException: \
+             Unsupported compression method 14 (LZMA) used in entry content.xml"
+        );
+    }
+
+    #[test]
+    fn fails_corrupt_entries_as_malformed() {
+        let (input, configs) = (corrupt(), ParserConfigs::default());
+        let declined = OpenDocumentParser
+            .prepare(&input, &TikaMetadata::new(), &configs)
+            .err();
+        assert!(
+            matches!(
+                &declined,
+                Some(Decline::Differs { difference, .. })
+                    if difference.0.starts_with("the data of the entry content.xml is cut short")
+            ),
+            "{declined:?}"
+        );
+        if !cfg!(feature = "tika") {
+            let error = crate::Extractor::new()
+                .extract_bytes_to_string(&corrupt())
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("content.xml is cut short or corrupt"),
+                "{error}"
+            );
         }
-        replaced
+    }
+
+    fn bodiless() -> Vec<u8> {
+        document(TEXT, &[("meta.xml", &meta_titled("Bodiless")), MANIFEST])
+    }
+
+    fn pictured() -> Vec<u8> {
+        document(
+            TEXT,
+            &[
+                ("meta.xml", &meta_titled("Pictured")),
+                ("Pictures/a.txt", "picture text"),
+                MANIFEST,
+            ],
+        )
+    }
+
+    #[test]
+    fn writes_nothing_of_a_document_without_a_body_or_pictures() {
+        let (input, configs) = (bodiless(), ParserConfigs::default());
+        let declined = OpenDocumentParser
+            .prepare(&input, &TikaMetadata::new(), &configs)
+            .err();
+        let Some(Decline::Unwritten(metadata)) = declined else {
+            panic!("{declined:?}");
+        };
+        assert_eq!(metadata.get("dc:title"), Some("Bodiless"));
+        assert_eq!(metadata.get("Content-Type"), Some(TEXT));
+        let input = pictured();
+        let declined = OpenDocumentParser
+            .prepare(&input, &TikaMetadata::new(), &configs)
+            .err();
+        assert!(
+            matches!(&declined, Some(Decline::Differs { difference, .. }) if difference.0 == UNENDED),
+            "{declined:?}"
+        );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn extracts_what_tikas_path_extracts_from_damaged_packages() {
+        let scratch = Scratch::new("odf-damaged");
+        let documents = [
+            scratch.write("cut.odt", &cut()),
+            scratch.write("duplicated.odt", &duplicated()),
+            scratch.write("bodiless.odt", &bodiless()),
+        ];
+        let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+        assert_same_as_tika(&paths, TIKA_NAME);
+        let pictured = scratch.write("pictured.odt", &pictured());
+        let (_, xhtml) = crate::formats::parity::differing_reading(&OpenDocumentParser, &pictured);
+        assert!(
+            xhtml.contains("<p>picture text</p>") && xhtml.trim_end().ends_with("</body></html>"),
+            "{xhtml}"
+        );
+    }
+
+    /// Tika's `CompositeParser` names the parser it wraps an exception for by the decorator
+    /// around `OpenDocumentParser`, `MimeFilteringDecorator@<hash>`, which differs on each run,
+    /// where the native path names `OpenDocumentParser`: what each wraps is compared.
+    #[cfg(feature = "tika")]
+    #[test]
+    fn fails_where_tikas_path_fails_on_damaged_packages() {
+        let scratch = Scratch::new("odf-damaged-failing");
+        let documents = [
+            scratch.write("cut-in-content.odt", &cut_in_content()),
+            scratch.write("unsupported.odt", &unsupported()),
+        ];
+        let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+        assert_fails_as_tika(&paths);
+        let cause = |error: &str| {
+            error
+                .split_once(" <- caused by ")
+                .map(|(_, cause)| cause.to_owned())
+        };
+        let (native, tika) =
+            crate::formats::parity::errors(&documents[1], &ParserConfigs::default());
+        assert!(cause(&native).is_some(), "{native}");
+        assert_eq!(cause(&native), cause(&tika));
     }
 
     const UNDECRYPTABLE: &str = "../test_files/documents/encrypted/undecryptable.odt";

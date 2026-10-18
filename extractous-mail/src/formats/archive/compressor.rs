@@ -86,7 +86,7 @@ impl Parser for CompressorParser {
         let what = format!("the {compressor:?} stream");
         let decoded = compressor
             .decode(input)
-            .map_err(|reason| undecoded(&what, reason))?;
+            .map_err(|reason| undecoded(&what, reason, self.tika_name()))?;
         let (decoded, cut) = within_limit(what, decoded)?;
         let mut scan = Scan::new();
         if let Some(reason) = scan.entry(&decoded.content) {
@@ -214,9 +214,34 @@ mod tests {
             None
         );
         let data = gzip(b"text", None);
-        let reason = defers(&data[..data.len() - 3], "application/gzip", None).unwrap();
-        assert!(reason.contains("reading it fails"), "{reason}");
         assert_eq!(defers(&data, "application/gzip", Some("\u{130}.Z")), None);
+    }
+
+    #[test]
+    fn fails_data_that_does_not_decode_as_its_reader_fails_tikas_parser() {
+        let data = gzip(b"text", None);
+        let cut = &data[..data.len() - 3];
+        if cfg!(feature = "tika") {
+            let reason = defers(cut, "application/gzip", None).unwrap();
+            assert!(reason.contains("reading it fails"), "{reason}");
+            return;
+        }
+        let mut metadata = TikaMetadata::new();
+        metadata.set("Content-Type", "application/gzip");
+        let configs = ParserConfigs::default();
+        let Err(Decline::Fails(Error::ParseError(reason))) =
+            CompressorParser.prepare(cut, &metadata, &configs)
+        else {
+            panic!("data cut short is not failed");
+        };
+        assert!(
+            reason.starts_with(
+                "Parse error occurred : org.apache.tika.exception.TikaException: TIKA-198: \
+                 Illegal IOException from org.apache.tika.parser.pkg.CompressorParser <- caused \
+                 by java.io.IOException: the Gzip stream: reading it fails"
+            ),
+            "{reason}"
+        );
     }
 
     #[test]

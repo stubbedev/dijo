@@ -624,6 +624,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
+name = "deflate64"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac6b926516df9c60bfa16e107b21086399f8285a44ca9711344b9e553c5146e2"
+
+[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4022,9 +4028,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2d98561b612a84ae525331a7a094429ef8a5772514ed507ff6db5f54badc971"
 dependencies = [
  "bitstream-io",
+ "bzip2",
  "crc32fast",
+ "deflate64",
  "flate2",
  "indexmap",
+ "lzma-rust2",
  "memchr",
  "nix",
  "typed-path",
