@@ -23,10 +23,10 @@ const ENCRYPTED: [(&str, &str); 2] = [
     ("tika-password.doc", "tika"),
 ];
 
-/// Tika's test documents this port reads otherwise than Tika does where Tika slips (#111), each
-/// with what the native XHTML holds where Tika's does not, or the comment persons in order.
+/// Tika's test documents this port reads otherwise than Tika does where Tika slips (#111, #139),
+/// each with what the native XHTML holds where Tika's does not, or the comment persons in order.
 #[cfg(feature = "tika")]
-const DEPARTURES: [(&str, Departure); 3] = [
+const DEPARTURES: [(&str, Departure); 4] = [
     // A hyperlink whose text holds a page reference field ends with its own end mark.
     (
         "testControlCharacters.doc",
@@ -43,6 +43,14 @@ const DEPARTURES: [(&str, Departure); 3] = [
     (
         "testWORD_features.doc",
         Departure::Persons(&["Unknown", "Unknown Author", "Kyle Reese"]),
+    ),
+    // The text of the picture of the embedded document, where POI fails on its font (#142).
+    (
+        "testLargeOLEDoc.doc",
+        Departure::Holds(
+            "<p><img src=\"embedded:image-1.emf\" alt=\"image-1.emf\" /><p>This is an embedded \
+             file.This is an embedded file.",
+        ),
     ),
 ];
 

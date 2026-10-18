@@ -26,4 +26,5 @@ zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2
 [dev-dependencies]
 extractous-base = { path = "../extractous-base", default-features = false, features = ["testing"] }
 extractous-core = { path = "../extractous-core", default-features = false, features = ["parity"] }
+extractous-html = { path = "../extractous-html", default-features = false, features = ["testing"] }
 extractous-image = { path = "../extractous-image", default-features = false, features = ["testing"] }
