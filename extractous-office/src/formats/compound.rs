@@ -5,6 +5,7 @@
 //! type.
 
 use crate::config::ParserConfigs;
+use crate::formats::crypt;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
@@ -12,7 +13,6 @@ use crate::formats::poi::Unread;
 use crate::formats::{Decline, Parser, Prepared};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::Ole2;
-use crate::Error;
 
 /// `POIFSContainerDetector.MS_GRAPH_CHART`.
 const MS_GRAPH_CHART: &str = "application/vnd.ms-graph";
@@ -45,17 +45,13 @@ const ENCRYPTED_PACKAGE: &str = "EncryptedPackage";
 /// information.
 const DRM_ENCRYPTED: &str = "application/x-tika-ole-drm-encrypted";
 
-/// What Tika's path fails a DRM encrypted document with, as our Java reports the
-/// `EncryptedDocumentException` `OfficeParser` throws.
-const DRM_UNSUPPORTED: &str = "Parse error occurred : \
-    org.apache.tika.exception.EncryptedDocumentException: DRM encrypted document is not yet \
-    supported by Apache POI";
+/// The message of the `EncryptedDocumentException` `OfficeParser` throws on a DRM encrypted
+/// document.
+const DRM_UNSUPPORTED: &str = "DRM encrypted document is not yet supported by Apache POI";
 
-/// What Tika's path fails a document of a kind `OfficeParser` reads nothing of but its summary
-/// with, where it has an encrypted package.
-const UNRECOGNIZED_PACKAGE: &str = "Parse error occurred : \
-    org.apache.tika.exception.EncryptedDocumentException: OLE2 file with an unrecognized \
-    EncryptedPackage entry";
+/// The message of the `EncryptedDocumentException` `OfficeParser` throws on a document of a
+/// kind it reads nothing of but its summary, where it has an encrypted package.
+const UNRECOGNIZED_PACKAGE: &str = "OLE2 file with an unrecognized EncryptedPackage entry";
 
 /// Tika's `OfficeParser` of the compound documents it reads the summary information of only.
 pub struct CompoundDocumentParser;
@@ -143,11 +139,11 @@ fn read(
         Some("application/vnd.ms-project" | "application/sldworks" | DRM_ENCRYPTED)
     );
     if document_type == Some(DRM_ENCRYPTED) {
-        return Err(Decline::Fails(Error::Encrypted(DRM_UNSUPPORTED.to_owned())));
+        return Err(Decline::Fails(crypt::encrypted_document(DRM_UNSUPPORTED)));
     }
     if !silent_kind && file.child(root, ENCRYPTED_PACKAGE).is_some() {
-        return Err(Decline::Fails(Error::Encrypted(
-            UNRECOGNIZED_PACKAGE.to_owned(),
+        return Err(Decline::Fails(crypt::encrypted_document(
+            UNRECOGNIZED_PACKAGE,
         )));
     }
     Ok((summaries, document_type))
@@ -195,7 +191,10 @@ mod tests {
         assert_same_as_tika(&paths(&read), CompoundDocumentParser.tika_name());
         let (native, tika) = errors(&encrypted, &ParserConfigs::default());
         assert_eq!(native, tika);
-        assert_eq!(native, format!("Encrypted({UNRECOGNIZED_PACKAGE:?})"));
+        assert_eq!(
+            native,
+            format!("{:?}", crypt::encrypted_document(UNRECOGNIZED_PACKAGE))
+        );
     }
 
     #[test]
@@ -227,7 +226,8 @@ mod tests {
         let input = std::fs::read(&drm).unwrap();
         assert!(matches!(
             CompoundDocumentParser.prepare(&input, &TikaMetadata::new(), &ParserConfigs::default()),
-            Err(Decline::Fails(Error::Encrypted(reason))) if reason == DRM_UNSUPPORTED
+            Err(Decline::Fails(error))
+                if error.to_string() == crypt::encrypted_document(DRM_UNSUPPORTED).to_string()
         ));
         assert_fails_as_tika(&[&drm]);
     }
