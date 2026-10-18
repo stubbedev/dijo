@@ -13,8 +13,8 @@ use crate::formats::ooxml::testing::relationship;
 use crate::formats::parity;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_same_as_tika_delegating_departing_with, assert_same_as_tika_with, Departures,
-    ANCHORED_BLOCKS, ANCHORED_BLOCK_DOCUMENTS,
+    assert_same_as_tika_delegating_departing_with, assert_same_as_tika_with, ANCHORED_BLOCKS,
+    ANCHORED_BLOCK_DOCUMENTS,
 };
 use crate::formats::{Chain, Output, StringOut};
 
@@ -100,32 +100,19 @@ fn word_documents(roots: &[&Path]) -> Vec<PathBuf> {
     parsed
 }
 
-/// The documents of Tika's tests whose altChunk parts are HTML pages, which the native HTML
-/// parser reads as the WHATWG algorithm says: each line break an LF, and the white space after
-/// `</body>` in the body (#84, #138).
-#[cfg(feature = "tika")]
-const HTML_CHUNK_DOCUMENTS: [&str; 2] = ["testAltChunkHTML.docx", "testAltChunkMHT.docx"];
-
 #[cfg(feature = "tika")]
 fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
-    let departing: [(&[&str], Departures); 2] = [
-        (&ANCHORED_BLOCK_DOCUMENTS, ANCHORED_BLOCKS),
-        (&HTML_CHUNK_DOCUMENTS, crate::formats::html::DEPARTURES),
-    ];
-    let mut alike: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-    for (names, departures) in departing {
-        let (departs, rest): (Vec<&Path>, Vec<&Path>) = alike
-            .into_iter()
-            .partition(|path| names.contains(&file_name(path).as_str()));
-        assert_same_as_tika_delegating_departing_with(
-            &departs,
-            TIKA_PARSER,
-            &[],
-            departures,
-            configs,
-        );
-        alike = rest;
-    }
+    let (anchored, alike): (Vec<&Path>, Vec<&Path>) = documents
+        .iter()
+        .map(PathBuf::as_path)
+        .partition(|path| ANCHORED_BLOCK_DOCUMENTS.contains(&file_name(path).as_str()));
+    assert_same_as_tika_delegating_departing_with(
+        &anchored,
+        TIKA_PARSER,
+        &[],
+        ANCHORED_BLOCKS,
+        configs,
+    );
     assert_same_as_tika_with(&alike, TIKA_PARSER, configs);
 }
 

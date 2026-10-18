@@ -63,8 +63,18 @@ const NEVER_CLOSED: [&str; 31] = [
     "wbr",
 ];
 
+/// How many documents [`parse`] has built in this process, for the parity harness, which
+/// compares the documents whose native extraction built one by the HTML parser's [`DEPARTURES`]
+/// and runs one test per process.
+///
+/// [`DEPARTURES`]: super::DEPARTURES
+#[cfg(all(feature = "tika", any(test, feature = "testing")))]
+pub(super) static BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Builds the document `html` holds.
 pub(super) fn parse(html: &str) -> Dom {
+    #[cfg(all(feature = "tika", any(test, feature = "testing")))]
+    BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let builder = TreeBuilder::new(
         Sink::default(),
         TreeBuilderOpts {

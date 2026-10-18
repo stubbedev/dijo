@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use super::*;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus,
-    deferral, documents, spools_as_tika, Scratch,
+    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, deferral, documents,
+    spools_as_tika, Scratch,
 };
 
 #[cfg(feature = "tika")]
@@ -98,11 +98,7 @@ fn extracts_rar_archives_as_tikas_path_does() {
     assert_eq!(unread.len(), UNREAD.len());
     assert_eq!(same.len(), 24, "{:?}", names(&same));
     let same: Vec<&Path> = same.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_departing(
-        &same,
-        RarParser.tika_name(),
-        crate::formats::html::DEPARTURES,
-    );
+    assert_same_as_tika(&same, RarParser.tika_name());
     let failed: Vec<&Path> = failed.iter().map(PathBuf::as_path).collect();
     assert_fails_as_tika(&failed);
     let encrypted = std::fs::read("../test_files/documents/rar/encrypted-headers.rar").unwrap();

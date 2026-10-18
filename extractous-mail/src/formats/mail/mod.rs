@@ -294,9 +294,7 @@ const DEPARTURES: crate::formats::parity::Departures = &[
 const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
 
 /// What the port does otherwise than Tika on purpose with the message or mailbox at `path`:
-/// the [`DEPARTURES`] of every message, the sender's name of the [`OTHER_SENDER_NAMES`], and
-/// the white space of a part typed `text/html`, which the parser hands the native HTML parser
-/// (#84).
+/// the [`DEPARTURES`] of every message, and the sender's name of the [`OTHER_SENDER_NAMES`].
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
 pub fn departures_of(path: &std::path::Path) -> Vec<crate::formats::parity::Departure<'static>> {
     let mut departures = DEPARTURES.to_vec();
@@ -309,20 +307,7 @@ pub fn departures_of(path: &std::path::Path) -> Vec<crate::formats::parity::Depa
             "#77",
         ));
     }
-    if holds_html(path) {
-        departures.extend_from_slice(crate::formats::html::DEPARTURES);
-    }
     departures
-}
-
-/// Whether the message at `path` has a part typed `text/html`.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-fn holds_html(path: &std::path::Path) -> bool {
-    let message =
-        std::fs::read(path).unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
-    message
-        .windows(b"text/html".len())
-        .any(|window| window.eq_ignore_ascii_case(b"text/html"))
 }
 
 #[cfg(test)]
@@ -455,9 +440,8 @@ pub(crate) mod tests {
 
     /// MHTML documents, typed `multipart/related`, which Tika's composite parser hands the
     /// parser of `message/rfc822`, its supertype, spool their parts as Tika's path does, once
-    /// the line breaks of their quoted-printable parts, and the white space the HTML parser
-    /// writes of their pages, are taken alike (#73, #84). Where a budget cuts the spool, the
-    /// departure moves the cut.
+    /// the line breaks of their quoted-printable parts are taken alike (#73). Where a budget cuts
+    /// the spool, the departure moves the cut.
     #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
@@ -471,11 +455,10 @@ pub(crate) mod tests {
             })
             .collect();
         assert_eq!(mhtml.len(), 2, "{mhtml:?}");
-        let departures = [DEPARTURES, crate::formats::html::DEPARTURES].concat();
         let spooled: usize = mhtml
             .iter()
             .map(|path| {
-                crate::formats::parity::spools_as_tika_rewriting(path, u64::MAX, None, &departures)
+                crate::formats::parity::spools_as_tika_rewriting(path, u64::MAX, None, DEPARTURES)
                     .unwrap_or_else(|difference| panic!("{difference}"))
             })
             .sum();

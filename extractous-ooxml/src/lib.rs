@@ -17,8 +17,6 @@ pub mod formats {
     pub(crate) use extractous_base::formats::*;
     #[cfg(test)]
     pub(crate) use extractous_core::parity;
-    #[cfg(all(test, feature = "tika"))]
-    pub(crate) use extractous_html::formats::html;
     pub(crate) use extractous_image::formats::metafile;
     pub(crate) use extractous_office::formats::ole2;
 

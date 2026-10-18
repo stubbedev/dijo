@@ -34,7 +34,7 @@ use crate::compress::zstd::tests::zstd;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
     assert_same_as_tika, assert_same_as_tika_departing_rewriting, assert_same_as_tika_rewriting,
-    conformance_corpus, documents, Departure, NativeRewrite,
+    conformance_corpus, documents, NativeRewrite,
 };
 use crate::formats::parity::{Scratch, ZSTD_WITHOUT_ZSTD_JNI};
 #[cfg(feature = "tika")]
@@ -102,18 +102,17 @@ fn assert_parity_departing(
 #[cfg(feature = "tika")]
 #[derive(PartialEq)]
 struct Contents {
-    /// The departures of the documents it holds.
-    departures: Vec<Departure<'static>>,
+    /// Whether it is one of the
+    /// [`ANCHORED_BLOCK_DOCUMENTS`](crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS), whose
+    /// blocks fall otherwise (#136).
+    anchored_blocks: bool,
     /// Whether it holds class files, whose access keywords Tika misreads (#132).
     class_files: bool,
 }
 
 /// Asserts that the native parser of each of `archives`, which Tika's path parses with
 /// `tika_name`, extracts what Tika's path does, each native result rewritten by `rewrite`, if
-/// any, and each archive departing as the documents it holds depart: those the HTML parser reads
-/// by their white space (#84), class files by the access keywords Tika misreads (#132), and the
-/// [`ANCHORED_BLOCK_DOCUMENTS`](crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS) by where their
-/// blocks fall (#136).
+/// any, and each archive departing as the documents it holds depart, by its [`Contents`].
 #[cfg(feature = "tika")]
 fn assert_same_as_tika_by_contents(
     archives: &[&Path],
@@ -122,21 +121,13 @@ fn assert_same_as_tika_by_contents(
 ) {
     let mut groups: Vec<(Contents, Vec<&Path>)> = Vec::new();
     for archive in archives {
-        let parsers = parsers_of(archive);
-        let holds = |parser: &dyn Parser| parsers.iter().any(|name| name == parser.name());
-        let mut departures = Vec::new();
-        if holds(&crate::formats::html::JSoupParser) {
-            departures.extend_from_slice(crate::formats::html::DEPARTURES);
-        }
-        if crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS
-            .iter()
-            .any(|name| archive.ends_with(name))
-        {
-            departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
-        }
         let contents = Contents {
-            departures,
-            class_files: holds(&class_file::ClassParser),
+            anchored_blocks: crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS
+                .iter()
+                .any(|name| archive.ends_with(name)),
+            class_files: parsers_of(archive)
+                .iter()
+                .any(|name| name == class_file::ClassParser.name()),
         };
         match groups.iter_mut().find(|(group, _)| *group == contents) {
             Some((_, archives)) => archives.push(archive),
@@ -152,7 +143,12 @@ fn assert_same_as_tika_by_contents(
         } else {
             rewrite.map(|rewrite| (rewrite, None))
         };
-        assert_same_as_tika_departing_rewriting(archives, tika_name, &contents.departures, rewrite);
+        let departures = if contents.anchored_blocks {
+            crate::formats::parity::ANCHORED_BLOCKS
+        } else {
+            &[]
+        };
+        assert_same_as_tika_departing_rewriting(archives, tika_name, departures, rewrite);
     }
 }
 
