@@ -199,6 +199,7 @@ static PARSERS: &[&dyn Parser] = &[
     &warc::WarcParser,
     &warc::HttpParser,
     &warc::WaczParser,
+    &wordperfect::OldQuattroProParser,
     &wordperfect::QuattroProParser,
     &wordperfect::WordPerfectParser,
     &xls::OldExcelParser,

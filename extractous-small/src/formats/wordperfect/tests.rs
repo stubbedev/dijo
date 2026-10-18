@@ -198,4 +198,51 @@ fn extracts_tikas_test_wordperfect_and_quattro_pro_as_tikas_path_does() {
     assert_eq!(parsed.len(), 1, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
     assert_same_as_tika(&paths, QuattroProParser.tika_name());
+
+    let (failing, deferred) = documents(&OldQuattroProParser, &[&corpus]);
+    assert_eq!(deferred.len(), 1, "{deferred:?}");
+    assert!(deferred[0].ends_with("testQUATTRO.wb3"), "{deferred:?}");
+    assert_eq!(failing.len(), 4, "{failing:?}");
+    let paths: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
+    assert_fails_as_tika(&paths);
+}
+
+/// The first records of a Quattro Pro 1 spreadsheet for Windows, as `testQuattro.wb1` starts.
+const QUATTRO_WB1: [u8; 16] = [
+    0x00, 0x00, 0x02, 0x00, 0x01, 0x10, 0xC9, 0x00, 0x02, 0x00, 0x00, 0x06, 0x4C, 0x00, 0x02, 0x00,
+];
+
+/// The first records of a Quattro Pro spreadsheet for DOS, as `testQuattro.wq1` starts.
+const QUATTRO_WQ1: [u8; 16] = [
+    0x00, 0x00, 0x02, 0x00, 0x20, 0x51, 0x06, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0D, 0x00,
+];
+
+#[test]
+fn fails_old_quattro_pro_as_office_parser_does() {
+    let error = crate::Extractor::new()
+        .extract_bytes_to_string(&QUATTRO_WB1)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        error,
+        "TIKA-198: Illegal IOException from org.apache.tika.parser.microsoft.OfficeParser <- \
+         caused by org.apache.poi.poifs.filesystem.NotOLE2FileException: Invalid header \
+         signature; read 0x00C9100100020000, expected 0xE11AB1A1E011CFD0 - Your file appears \
+         not to be a valid OLE2 document"
+    );
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn fails_old_quattro_pro_as_tikas_path_does() {
+    let scratch = Scratch::new("old-quattro");
+    let spreadsheets = [
+        scratch.write("sheet.wb1", &QUATTRO_WB1),
+        scratch.write("sheet.wq1", &QUATTRO_WQ1),
+    ];
+    let (failing, deferred) = documents(&OldQuattroProParser, &[scratch.directory()]);
+    assert!(deferred.is_empty(), "{deferred:?}");
+    assert_eq!(failing.len(), spreadsheets.len(), "{failing:?}");
+    let paths: Vec<&Path> = spreadsheets.iter().map(PathBuf::as_path).collect();
+    assert_fails_as_tika(&paths);
 }
