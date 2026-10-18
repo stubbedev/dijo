@@ -5,13 +5,15 @@
 //! the parser's trees against html5lib's.
 
 use super::trees::tree;
-use super::{read, JSoupParser};
+use super::{read, JSoupParser, Reading};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::reference::{cases, difference, digest, Compared};
 use crate::formats::Parser;
+use crate::input::Pages;
 
-const REFERENCE: &[u8] = include_bytes!("../../../tests/fixtures/html/html-reference.tsv.gz");
+pub(super) const REFERENCE: &[u8] =
+    include_bytes!("../../../tests/fixtures/html/html-reference.tsv.gz");
 
 /// The inputs whose metadata the parser gives differently from Tika on purpose: a `meta` title
 /// after the `title` element, which Tika records as `html:dc:title`, is a further `dc:title`, as
@@ -45,8 +47,11 @@ fn parses_as_tika_does() {
             deferred.push(case.label.as_str());
             continue;
         }
-        let document = read(&case.input, Some(&case.content_type));
-        let compared = if digest(&tree(&document.dom)) == case.extra[0] {
+        let document = read(&case.input, Pages::IN_MEMORY, Some(&case.content_type));
+        let Reading::Whole(dom) = &document.reading else {
+            panic!("{} is built whole", case.label);
+        };
+        let compared = if digest(&tree(dom)) == case.extra[0] {
             Compared::Everything
         } else {
             whatwg += 1;

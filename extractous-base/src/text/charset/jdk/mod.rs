@@ -240,7 +240,7 @@ impl Charset {
     /// The text of `bytes` as [`Charset::decode`] gives it, in pieces decoded one at a time
     /// from at least `size` bytes each, the last from what is left, so that decoding a large
     /// input holds no more than a piece of it. `None` for a charset this port does not decode.
-    pub(crate) fn pieces(self, bytes: &[u8], size: usize) -> Option<Pieces<'_>> {
+    pub fn pieces(self, bytes: &[u8], size: usize) -> Option<Pieces<'_>> {
         let decoding = self.decoding();
         let (rest, big_endian) = match decoding {
             Decoding::None => return None,
@@ -301,7 +301,7 @@ impl Charset {
 /// ahead into what follows as the whole's decoding does, and so do ISO-2022-KR and ISO-2022-CN,
 /// whose decoders keep the state their escapes and shifts set from one piece to the next;
 /// ISO-2022-JP decodes with `encoding_rs`'s streaming decoder.
-pub(crate) struct Pieces<'a> {
+pub struct Pieces<'a> {
     decoding: &'static Decoding,
     rest: &'a [u8],
     size: usize,
