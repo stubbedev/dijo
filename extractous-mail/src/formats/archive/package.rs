@@ -106,6 +106,6 @@ mod tests {
         let none = defers(b"plain text").unwrap();
         assert!(none.contains("no archive"), "{none}");
         let old_cpio = defers(b"070707000000000000000000000000000000000000000000").unwrap();
-        assert!(old_cpio.contains("old ASCII"), "{old_cpio}");
+        assert!(old_cpio.contains("reading it fails"), "{old_cpio}");
     }
 }

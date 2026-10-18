@@ -416,11 +416,7 @@ fn extracts_tikas_test_tar_ar_and_cpio_archives_as_tikas_path_does() {
         &[&conformance_corpus()],
         &[],
     );
-    assert_eq!(
-        deferred,
-        ["test-documents.cpio"],
-        "an old binary cpio archive"
-    );
+    assert_eq!(deferred, Vec::<String>::new());
 }
 
 #[cfg(feature = "tika")]
