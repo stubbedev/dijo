@@ -8,6 +8,7 @@ mod creation_time;
 pub(crate) mod gif;
 pub(crate) mod jbig2;
 pub(crate) mod png;
+pub(crate) mod pnm;
 pub(crate) mod wbmp;
 
 use super::extractor::{Target, UNKNOWN_IMG};
@@ -186,6 +187,26 @@ impl<'a> Stream<'a> {
 
     pub(crate) fn u32_le(&mut self) -> Result<u32, Eof> {
         Ok(self.i32_le()? as u32)
+    }
+
+    /// `readLine`: the bytes up to a line feed, a carriage return or both, each a Latin-1
+    /// character, or none at the end.
+    pub(crate) fn read_line(&mut self) -> Option<String> {
+        let mut line = String::new();
+        loop {
+            match self.read() {
+                None if line.is_empty() => return None,
+                None | Some(b'\n') => return Some(line),
+                Some(b'\r') => {
+                    let after = self.position;
+                    if self.read() != Some(b'\n') {
+                        self.position = after;
+                    }
+                    return Some(line);
+                }
+                Some(byte) => line.push(char::from(byte)),
+            }
+        }
     }
 
     /// `skipBytes`, which may move past the end.

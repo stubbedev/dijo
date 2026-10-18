@@ -325,6 +325,12 @@ fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Decline<'s
             imageio::bmp::BmpError::Fails(cause) => fails(cause),
             imageio::bmp::BmpError::Unported(unported) => unported.into(),
         })?,
+        "image/x-portable-pixmap" => imageio::pnm::read(input).map_err(|error| match error {
+            imageio::pnm::PnmError::NotPnm => {
+                fails("RuntimeException: What in the stream isn't a PNM image.".to_owned())
+            }
+            imageio::pnm::PnmError::Eof => fails("EOFException reading the PNM header".to_owned()),
+        })?,
         "image/vnd.wap.wbmp" => imageio::wbmp::read(input).map_err(|error| match error {
             imageio::wbmp::WbmpError::Image(cause) => parse_error(cause),
             imageio::wbmp::WbmpError::Eof => {
@@ -387,6 +393,8 @@ const PORTABLE_ANYMAP: &str = "image/x-portable-anymap";
 enum Recognized {
     WebP,
     Photoshop,
+    /// `ImageParser`, of portable pixmaps.
+    ImageIo,
     /// `EmptyParser`, for the types Tika has no parser of.
     Empty,
 }
@@ -396,6 +404,7 @@ impl Recognized {
         match content_type.split(';').next().unwrap_or_default().trim() {
             "image/webp" => Self::WebP,
             "image/vnd.adobe.photoshop" => Self::Photoshop,
+            "image/x-portable-pixmap" => Self::ImageIo,
             _ => Self::Empty,
         }
     }
@@ -443,6 +452,10 @@ impl Parser for RecognizedImageParser {
                     psd::PsdError::Fails(message) => fails(message),
                     psd::PsdError::Unported(unported) => unported.into(),
                 })?;
+                None
+            }
+            Recognized::ImageIo => {
+                read = image_io(input, read)?.metadata;
                 None
             }
             Recognized::Empty => None,

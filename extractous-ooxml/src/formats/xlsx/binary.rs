@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::cell::CellAddress;
 use super::header_footer;
 use super::sheet::{SheetOutput, SheetSettings};
-use super::{excel, sheet_kind, Sheet, Workbook};
+use super::{excel, refuse_strict, sheet_kind, Sheet, Workbook};
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::data_format::{builtin_format, error_text, DataFormatter, FormatError};
 use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
@@ -102,6 +102,7 @@ impl Parser for XlsbParser {
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
+        refuse_strict(&package, &[BINARY_WORKBOOK_TYPE])?;
         let workbook = open(package, &configs.office).map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| workbook.write(xhtml)))
     }

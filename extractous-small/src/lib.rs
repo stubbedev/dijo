@@ -49,7 +49,6 @@ pub mod formats {
     pub mod sas;
     pub mod source_code;
     pub mod subtitle;
-    mod thrown;
     pub mod translation;
     pub mod tsd;
     pub mod wordperfect;

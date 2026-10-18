@@ -3,6 +3,8 @@
 //! first body content, indents table cells and list items with a tab, ends block elements with a
 //! line break and replaces characters XML cannot hold with U+FFFD.
 
+use std::borrow::Cow;
+
 use crate::formats::embedded::{
     self, EmbeddedRecord, Embedding, ParseContext, Wrapping, PACKAGE_ENTRY,
 };
@@ -25,8 +27,37 @@ pub fn within_budget() -> Result<(), Stop> {
     memory::overrun().map_or(Ok(()), |limit| Err(Stop::MemoryLimit(limit)))
 }
 
-/// The XHTML namespace, which every element a native parser writes is in.
+/// The XHTML namespace, which nearly every element a native parser writes is in.
 pub const XHTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
+
+/// An element's namespace and local name, as a handler keeps the elements it has open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpandedName {
+    namespace: Cow<'static, str>,
+    name: String,
+}
+
+impl ExpandedName {
+    pub fn new(namespace: &str, name: &str) -> Self {
+        let namespace = if namespace == XHTML_NAMESPACE {
+            Cow::Borrowed(XHTML_NAMESPACE)
+        } else {
+            Cow::Owned(namespace.to_owned())
+        };
+        Self {
+            namespace,
+            name: name.to_owned(),
+        }
+    }
+
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
 
 pub const ENDLINE: [&str; 29] = [
     "p",
@@ -77,15 +108,28 @@ pub enum Stop {
     ZipBomb(ZipBomb),
 }
 
-/// Where the XHTML of a document goes: the SAX events Tika's handlers receive, all in the XHTML
-/// namespace and named by their local name, and the namespace prefixes a parser maps.
+/// Where the XHTML of a document goes: the SAX events Tika's handlers receive, elements named by
+/// their namespace and local name, and the namespace prefixes a parser maps.
 pub trait ContentHandler {
     fn start_document(&mut self) -> Result<(), Stop>;
     /// SAX's `startPrefixMapping`: `prefix`, empty for the default namespace, stands for `uri`
     /// from the next element on.
     fn start_prefix_mapping(&mut self, prefix: &str, uri: &str) -> Result<(), Stop>;
-    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop>;
-    fn end_element(&mut self, name: &str) -> Result<(), Stop>;
+    fn start_element_in(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop>;
+    fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop>;
+    /// Starts `name` in the XHTML namespace.
+    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+        self.start_element_in(XHTML_NAMESPACE, name, attributes)
+    }
+    /// Ends `name` in the XHTML namespace.
+    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+        self.end_element_in(XHTML_NAMESPACE, name)
+    }
     fn characters(&mut self, text: &str) -> Result<(), Stop>;
     fn ignorable_whitespace(&mut self, text: &str) -> Result<(), Stop>;
     fn end_document(&mut self) -> Result<(), Stop>;
@@ -110,12 +154,17 @@ impl<H: ContentHandler + ?Sized> ContentHandler for &mut H {
         (**self).start_prefix_mapping(prefix, uri)
     }
 
-    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
-        (**self).start_element(name, attributes)
+    fn start_element_in(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop> {
+        (**self).start_element_in(namespace, name, attributes)
     }
 
-    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
-        (**self).end_element(name)
+    fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop> {
+        (**self).end_element_in(namespace, name)
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Stop> {
@@ -172,7 +221,7 @@ impl Target {
 /// `XHTMLBalancingHandler` around it, which keeps the names of the elements left open in `open`.
 pub(crate) struct Embedded<'a, 'h> {
     pub(crate) outer: &'a mut Xhtml<'h>,
-    pub(crate) open: &'a mut Vec<String>,
+    pub(crate) open: &'a mut Vec<ExpandedName>,
     pub(crate) target: Target,
 }
 
@@ -185,9 +234,15 @@ impl ContentHandler for Embedded<'_, '_> {
         self.outer.start_prefix_mapping(prefix, uri)
     }
 
-    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
-        self.outer.start_in(self.target, name, attributes)?;
-        self.open.push(name.to_owned());
+    fn start_element_in(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop> {
+        self.outer
+            .start_in(self.target, namespace, name, attributes)?;
+        self.open.push(ExpandedName::new(namespace, name));
         Ok(())
     }
 
@@ -195,12 +250,12 @@ impl ContentHandler for Embedded<'_, '_> {
     /// stopped by the length limit inside its body ends its document, whose `body` end tag the
     /// `BodyContentHandler` in front of this passes on while the body's elements are still open.
     /// Tika's path writes that `</body>` into the embedding document (#113).
-    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
-        if !self.open.iter().any(|open| open == name) {
+    fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop> {
+        if !self.open.iter().any(|open| open.name() == name) {
             return Ok(());
         }
         self.open.pop();
-        self.outer.end_in(self.target, name)
+        self.outer.end_in(self.target, namespace, name)
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Stop> {
@@ -234,12 +289,17 @@ impl ContentHandler for Nested<'_, '_> {
         self.outer.start_prefix_mapping(prefix, uri)
     }
 
-    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
-        self.outer.start_element_with(name, attributes)
+    fn start_element_in(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop> {
+        self.outer.start_element_in(namespace, name, attributes)
     }
 
-    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
-        self.outer.end_element(name)
+    fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop> {
+        self.outer.end_element_in(namespace, name)
     }
 
     fn characters(&mut self, text: &str) -> Result<(), Stop> {
@@ -279,8 +339,8 @@ pub struct Held {
 enum HeldEvent {
     StartDocument,
     PrefixMapping(String, String),
-    Start(String, Vec<(String, String)>),
-    End(String),
+    Start(ExpandedName, Vec<(String, String)>),
+    End(ExpandedName),
     Characters(String),
     Whitespace(String),
     EndDocument,
@@ -305,18 +365,26 @@ impl ContentHandler for Held {
         Ok(())
     }
 
-    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+    fn start_element_in(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop> {
         let attributes = attributes
             .iter()
             .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
             .collect();
-        self.events
-            .push(HeldEvent::Start(name.to_owned(), attributes));
+        self.events.push(HeldEvent::Start(
+            ExpandedName::new(namespace, name),
+            attributes,
+        ));
         Ok(())
     }
 
-    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
-        self.events.push(HeldEvent::End(name.to_owned()));
+    fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop> {
+        self.events
+            .push(HeldEvent::End(ExpandedName::new(namespace, name)));
         Ok(())
     }
 
@@ -423,9 +491,9 @@ impl<'h> Xhtml<'h> {
                         .iter()
                         .map(|(name, value)| (name.as_str(), value.as_str()))
                         .collect();
-                    out.start_element(&name, &attributes)?;
+                    out.start_element_in(name.namespace(), name.name(), &attributes)?;
                 }
-                HeldEvent::End(name) => out.end_element(&name)?,
+                HeldEvent::End(name) => out.end_element_in(name.namespace(), name.name())?,
                 HeldEvent::Characters(text) => out.characters(&text)?,
                 HeldEvent::Whitespace(text) => out.ignorable_whitespace(&text)?,
                 HeldEvent::EndDocument => out.end_document()?,
@@ -489,6 +557,17 @@ impl<'h> Xhtml<'h> {
         name: &str,
         attributes: &[(&str, &str)],
     ) -> Result<(), Stop> {
+        self.start_element_in(XHTML_NAMESPACE, name, attributes)
+    }
+
+    /// Starts `name` with `attributes` as a parser that names it in `namespace` does: only an
+    /// element started in the XHTML namespace is indented.
+    pub fn start_element_in(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop> {
         within_budget()?;
         if name == "frameset" {
             return self.end_head(true);
@@ -501,10 +580,10 @@ impl<'h> Xhtml<'h> {
         } else {
             self.end_head(false)?;
         }
-        if INDENT.contains(&name) {
+        if namespace == XHTML_NAMESPACE && INDENT.contains(&name) {
             self.out().ignorable_whitespace("\t")?;
         }
-        self.safe_start_element(name, attributes)
+        self.safe_start_element(namespace, name, attributes)
     }
 
     pub fn end_element(&mut self, name: &str) -> Result<(), Stop> {
@@ -518,7 +597,7 @@ impl<'h> Xhtml<'h> {
         if AUTO.contains(&name) {
             return Ok(());
         }
-        self.out().end_element(name)?;
+        self.out().end_element_in(namespace, name)?;
         if namespace == XHTML_NAMESPACE && ENDLINE.contains(&name) {
             self.newline()?;
         }
@@ -643,19 +722,26 @@ impl<'h> Xhtml<'h> {
     fn start_in(
         &mut self,
         target: Target,
+        namespace: &str,
         name: &str,
         attributes: &[(&str, &str)],
     ) -> Result<(), Stop> {
         match target {
-            Target::Xhtml => self.start_element_with(name, attributes),
-            Target::Handler => self.raw_start_element_with(name, attributes),
+            Target::Xhtml => self.start_element_in(namespace, name, attributes),
+            Target::Handler => {
+                within_budget()?;
+                self.out().start_element_in(namespace, name, attributes)
+            }
         }
     }
 
-    fn end_in(&mut self, target: Target, name: &str) -> Result<(), Stop> {
+    fn end_in(&mut self, target: Target, namespace: &str, name: &str) -> Result<(), Stop> {
         match target {
-            Target::Xhtml => self.end_element(name),
-            Target::Handler => self.raw_end_element(name),
+            Target::Xhtml => self.end_element_in(namespace, name),
+            Target::Handler => {
+                within_budget()?;
+                self.out().end_element_in(namespace, name)
+            }
         }
     }
 
@@ -816,11 +902,11 @@ impl<'h> Xhtml<'h> {
         }
         if wrapping != Wrapping::Bare {
             let target = Target::of(wrapping);
-            self.start_in(target, "div", &[("class", PACKAGE_ENTRY)])?;
+            self.start_in(target, XHTML_NAMESPACE, "div", &[("class", PACKAGE_ENTRY)])?;
             if let Some(name) = embedded::heading(metadata) {
-                self.start_in(target, "h1", &[])?;
+                self.start_in(target, XHTML_NAMESPACE, "h1", &[])?;
                 self.characters_in(target, name)?;
-                self.end_in(target, "h1")?;
+                self.end_in(target, XHTML_NAMESPACE, "h1")?;
             }
         }
         Ok(true)
@@ -834,7 +920,7 @@ impl<'h> Xhtml<'h> {
         data: &[u8],
         metadata: &TikaMetadata,
         opened: Opened,
-        open: &mut Vec<String>,
+        open: &mut Vec<ExpandedName>,
         target: Target,
     ) -> Ended {
         let configs = self.embedding.context().configs();
@@ -884,7 +970,7 @@ impl<'h> Xhtml<'h> {
     fn leave_embedded(
         &mut self,
         ended: Ended,
-        mut open: Vec<String>,
+        mut open: Vec<ExpandedName>,
         wrapping: Wrapping,
     ) -> Result<(), Failure> {
         let (clean, failure) = match ended {
@@ -898,7 +984,7 @@ impl<'h> Xhtml<'h> {
             if !clean {
                 self.end_open(&mut open, target)?;
             }
-            self.end_in(target, "div")?;
+            self.end_in(target, XHTML_NAMESPACE, "div")?;
         }
         failure.map_or(Ok(()), Err)
     }
@@ -911,7 +997,7 @@ impl<'h> Xhtml<'h> {
         bridged: Bridged,
         data: &[u8],
         metadata: &TikaMetadata,
-        open: &mut Vec<String>,
+        open: &mut Vec<ExpandedName>,
         target: Target,
     ) -> Ended {
         let parsed = match self.parse_with_tika_quietly(bridged, data, metadata) {
@@ -978,7 +1064,7 @@ impl<'h> Xhtml<'h> {
         bytes: usize,
         route: EmbeddedRoute<'_>,
         metadata: &TikaMetadata,
-        open: &mut Vec<String>,
+        open: &mut Vec<ExpandedName>,
         target: Target,
     ) -> Ended {
         let EmbeddedRoute {
@@ -1024,7 +1110,7 @@ impl<'h> Xhtml<'h> {
         start: TikaMetadata,
         parser: &str,
         write: impl FnOnce(&mut Xhtml) -> Result<(), Failure>,
-        open: &mut Vec<String>,
+        open: &mut Vec<ExpandedName>,
         target: Target,
     ) -> (Metadata, Result<(), Failure>) {
         let context = self.embedding.context();
@@ -1055,7 +1141,7 @@ impl<'h> Xhtml<'h> {
     fn replay(
         &mut self,
         events: Vec<Event>,
-        open: &mut Vec<String>,
+        open: &mut Vec<ExpandedName>,
         target: Target,
     ) -> Result<(), Stop> {
         for event in events {
@@ -1065,12 +1151,12 @@ impl<'h> Xhtml<'h> {
                         .iter()
                         .map(|(name, value)| (name.as_str(), value.as_str()))
                         .collect();
-                    self.start_in(target, &name, &borrowed)?;
-                    open.push(name);
+                    self.start_in(target, XHTML_NAMESPACE, &name, &borrowed)?;
+                    open.push(ExpandedName::new(XHTML_NAMESPACE, &name));
                 }
                 Event::End(name) => {
                     open.pop();
-                    self.end_in(target, &name)?;
+                    self.end_in(target, XHTML_NAMESPACE, &name)?;
                 }
                 Event::Characters(text) => self.characters_in(target, &text)?,
                 Event::IgnorableWhitespace(text) => self.whitespace_in(target, &text)?,
@@ -1081,9 +1167,9 @@ impl<'h> Xhtml<'h> {
 
     /// `XHTMLBalancingHandler.drainOpenElements`: ends the elements an aborted embedded parse
     /// left open, innermost first.
-    fn end_open(&mut self, open: &mut Vec<String>, target: Target) -> Result<(), Stop> {
-        while let Some(name) = open.pop() {
-            self.end_in(target, &name)?;
+    fn end_open(&mut self, open: &mut Vec<ExpandedName>, target: Target) -> Result<(), Stop> {
+        while let Some(open) = open.pop() {
+            self.end_in(target, open.namespace(), open.name())?;
         }
         Ok(())
     }
@@ -1103,7 +1189,9 @@ impl<'h> Xhtml<'h> {
         }
         let language = self.metadata.get("Content-Language").map(str::to_owned);
         match language {
-            Some(language) => self.safe_start_element("html", &[("lang", &language)])?,
+            Some(language) => {
+                self.safe_start_element(XHTML_NAMESPACE, "html", &[("lang", &language)])?
+            }
             None => self.out().start_element("html", &[])?,
         }
         self.newline()?;
@@ -1132,7 +1220,11 @@ impl<'h> Xhtml<'h> {
     fn write_head(&mut self, metadata: &TikaMetadata) -> Result<(), Stop> {
         for name in metadata.names().filter(|name| *name != "title") {
             for value in metadata.values(name) {
-                self.safe_start_element("meta", &[("name", name), ("content", value)])?;
+                self.safe_start_element(
+                    XHTML_NAMESPACE,
+                    "meta",
+                    &[("name", name), ("content", value)],
+                )?;
                 self.out().end_element("meta")?;
                 self.newline()?;
             }
@@ -1147,9 +1239,14 @@ impl<'h> Xhtml<'h> {
         self.newline()
     }
 
-    fn safe_start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+    fn safe_start_element(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop> {
         if !attributes.iter().any(|(_, value)| has_invalid(value)) {
-            return self.out().start_element(name, attributes);
+            return self.out().start_element_in(namespace, name, attributes);
         }
         let cleaned: Vec<(&str, String)> = attributes
             .iter()
@@ -1159,7 +1256,7 @@ impl<'h> Xhtml<'h> {
             .iter()
             .map(|(attribute, value)| (*attribute, value.as_str()))
             .collect();
-        self.out().start_element(name, &borrowed)
+        self.out().start_element_in(namespace, name, &borrowed)
     }
 
     fn safe_text(&mut self, text: &str, kind: Text) -> Result<(), Stop> {

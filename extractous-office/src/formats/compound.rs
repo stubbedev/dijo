@@ -1,7 +1,8 @@
 //! Compound documents whose content Tika's `OfficeParser` does not read: Works, Project and
-//! SolidWorks documents, StarOffice documents, Corel presentations, Quattro Pro 7 and 8 workbooks
-//! and compound documents of no known kind. Tika writes their summary information as metadata
-//! and, where POI names their kind, sets it as the content type.
+//! SolidWorks documents, StarOffice documents, Corel presentations, Quattro Pro 7 and 8
+//! workbooks, OLE objects embedded whole and compound documents of no known kind. Tika writes
+//! their summary information as metadata and, where POI names their kind, sets it as the content
+//! type.
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
@@ -14,8 +15,6 @@ use crate::Error;
 
 /// `POIFSContainerDetector.MS_GRAPH_CHART`.
 const MS_GRAPH_CHART: &str = "application/vnd.ms-graph";
-/// What POI's container detection names a compound document of no kind it knows.
-const UNKNOWN_KIND: &str = "application/x-tika-msoffice";
 /// A Quattro Pro 7 or 8 workbook, a compound document no parser of Tika's reads by its type, so
 /// that Tika's composite parser hands it to `OfficeParser` by its supertype, which reads its
 /// summary information only.
@@ -23,13 +22,19 @@ const QUATTRO_PRO_7_8: &str = "application/x-quattro-pro; version=7-8";
 
 /// The types `POIFSDocumentType` knows among those this parser reads, which `OfficeParser`
 /// sets as the content type.
-const DOCUMENT_TYPES: [&str; 5] = [
+const DOCUMENT_TYPES: [&str; 7] = [
     "application/vnd.ms-works",
     "application/vnd.ms-project",
     "application/sldworks",
     MS_GRAPH_CHART,
     DRM_ENCRYPTED,
+    "application/x-tika-msoffice-embedded; format=ole10_native",
+    "application/x-tika-msoffice-embedded; format=comp_obj",
 ];
+
+/// The type of the compound documents of no known kind, whose subtypes no parser of their own
+/// reads, such as an OLE object embedded whole, Tika's composite parser hands `OfficeParser`.
+const UNKNOWN_COMPOUND: &str = "application/x-tika-msoffice";
 
 /// The entry of an encrypted package, on which `OfficeParser` throws for a document of a kind it
 /// reads nothing of but its summary.
@@ -67,9 +72,13 @@ impl Parser for CompoundDocumentParser {
             "application/vnd.stardivision.writer",
             "application/x-corelpresentations",
             QUATTRO_PRO_7_8,
-            "application/x-tika-msoffice",
+            UNKNOWN_COMPOUND,
             DRM_ENCRYPTED,
         ]
+    }
+
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &[UNKNOWN_COMPOUND]
     }
 
     /// Defers documents POI does not open as this port does, macros extracted when asked to and
@@ -106,7 +115,7 @@ impl Parser for CompoundDocumentParser {
 pub(crate) fn reads_only_the_summary(input: &[u8]) -> bool {
     Ole2::open(input).is_ok_and(|file| {
         let detected = ole_directory_type(&file, file.root());
-        detected == MediaType::named(UNKNOWN_KIND)
+        detected == MediaType::named(UNKNOWN_COMPOUND)
             || DOCUMENT_TYPES
                 .iter()
                 .any(|&known| detected == MediaType::named(known))
@@ -163,6 +172,11 @@ mod tests {
             scratch.write("writer.sdw", &compound(&["StarWriterDocument"], b"star")),
             scratch.write("calc.sdc", &compound(&["StarCalcDocument"], b"star")),
             scratch.write("unknown.ole", &compound(&["Mystery"], b"data")),
+            scratch.write(
+                "object.bin",
+                &compound(&["CONTENTS", "\u{1}CompObj"], b"object"),
+            ),
+            scratch.write("native.bin", &compound(&["\u{1}Ole10Native"], b"native")),
         ];
         let deferred_one = scratch.write(
             "encrypted.wps",

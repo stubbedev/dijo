@@ -40,10 +40,12 @@ use crate::formats::ooxml::extractor::{self, external_reference, kind, name, Ign
 use crate::formats::ooxml::{
     self, Package, Properties, Relationship, Unported, HYPERLINK_RELATIONSHIP,
 };
+use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, SaxHandler};
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
+use crate::Error;
 
 /// The SpreadsheetML namespace.
 pub(crate) const SPREADSHEETML_NS: &str =
@@ -151,11 +153,47 @@ impl Parser for XlsxParser {
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let package = Package::open(input, pages)?;
+        refuse_strict(&package, &WORKBOOK_TYPES)?;
         let read = Workbook::open(package, &configs.office)
             .and_then(Workbook::prepare)
             .map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| read.write(xhtml)))
     }
+}
+
+/// What Tika's path fails a Strict OOXML workbook with: `XSSFReader` throws on a package whose
+/// main document only a Strict relationship leads to, which the Excel extractor rethrows as an
+/// `IOException`.
+fn strict_unsupported() -> Error {
+    Thrown::Io(Exception::new(
+        "java.io.IOException",
+        "org.apache.poi.ooxml.POIXMLException: Strict OOXML isn't currently supported, please \
+         see bug #57699",
+    ))
+    .into_error(XlsxParser.tika_name())
+}
+
+/// Fails a package whose main document, of one of the `workbook_types`, only a Strict
+/// relationship leads to, as Tika's path fails it once it has read the package's properties.
+fn refuse_strict(package: &Package, workbook_types: &[&str]) -> Result<(), Decline<'static>> {
+    if Package::relationships_of(&package.relationships, kind::OFFICE_DOCUMENT)
+        .next()
+        .is_some()
+    {
+        return Ok(());
+    }
+    let strict_workbook =
+        Package::relationships_of(&package.relationships, kind::STRICT_OFFICE_DOCUMENT)
+            .next()
+            .and_then(|relationship| package.package_part(relationship))
+            .is_some_and(|part| {
+                workbook_types.contains(&package.parts[part].content_type.as_str())
+            });
+    if !strict_workbook {
+        return Ok(());
+    }
+    Properties::read(package)?;
+    Err(Decline::Fails(strict_unsupported()))
 }
 
 /// A sheet of the workbook: its name and its part.

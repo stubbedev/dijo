@@ -118,7 +118,12 @@ impl<H: ContentHandler> ContentHandler for Secure<H> {
         self.next.start_prefix_mapping(prefix, uri)
     }
 
-    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+    fn start_element_in(
+        &mut self,
+        namespace: &str,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop> {
         self.depth += 1;
         if self.depth >= MAXIMUM_DEPTH {
             return Err(self.trip(ZipBomb::ElementNesting(self.depth)));
@@ -133,11 +138,11 @@ impl<H: ContentHandler> ContentHandler for Secure<H> {
                 return Err(self.trip(ZipBomb::PackageEntryNesting(self.package_entries.len())));
             }
         }
-        self.next.start_element(name, attributes)
+        self.next.start_element_in(namespace, name, attributes)
     }
 
-    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
-        self.next.end_element(name)?;
+    fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop> {
+        self.next.end_element_in(namespace, name)?;
         if self.package_entries.last() == Some(&self.depth) {
             self.package_entries.pop();
         }
