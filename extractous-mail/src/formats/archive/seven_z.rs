@@ -40,7 +40,7 @@ impl Parser for SevenZParser {
         const WHAT: &str = "the 7z archive";
         let files = seven_z::files(input, password).map_err(|failure| match failure {
             Undecoded::Encrypted => Decline::Fails(crypt::encrypted(Some(PASSWORD_REQUIRED))),
-            reason => undecoded(WHAT, reason),
+            reason => undecoded(WHAT, reason, self.tika_name()),
         })?;
         let (files, cut) = within_limit(WHAT.to_owned(), files)?;
         if let Some(reason) = Scan::new().files(input.len(), &files) {

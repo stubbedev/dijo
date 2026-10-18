@@ -582,7 +582,7 @@ fn assert_zip_bomb(ended: Result<Vec<String>, crate::Error>, cause: &str) {
 
 #[test]
 fn leaves_a_stream_decoding_past_the_most_the_native_path_decodes_to_a_limit() {
-    let declined = undecoded("the Gzip stream", Undecoded::TooLarge);
+    let declined = undecoded("the Gzip stream", Undecoded::TooLarge, "CompressorParser");
     if cfg!(feature = "tika") {
         assert!(
             matches!(&declined, Decline::Deferred(reason) if reason.contains("Tika's path streams")),
