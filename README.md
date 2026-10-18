@@ -10,7 +10,8 @@ runs as native code inside the process.
 ## Install
 
 Each [release](https://github.com/stubbedev/extractous/releases) has archives for Linux (x86_64, aarch64, and static
-builds for both, `x86_64-linux-static` and `aarch64-linux-static`), macOS (aarch64) and Windows (x86_64) with the binary, its licence and the third-party notices, plus `SHA256SUMS`, CycloneDX
+builds for both, `x86_64-linux-static` and `aarch64-linux-static`, and the static builds without Tika,
+`x86_64-linux-static-native` and `aarch64-linux-static-native`), macOS (aarch64) and Windows (x86_64) with the binary, its licence and the third-party notices, plus `SHA256SUMS`, CycloneDX
 SBOMs of the Rust crates and Java libraries, and build provenance you can check with
 `gh attestation verify <archive> --repo stubbedev/extractous`.
 
@@ -31,7 +32,9 @@ native parsers read everything they read in the default build, and a document th
 with an `unsupported` error naming why (no native parser for its type, or what of it the native parser does not read
 yet); an embedded document of that kind is reported unread in its container, which is extracted. Unpacking embedded
 documents whole (`extract_embedded_*`) is Tika's alone. `just static-native` builds the statically linked musl
-executable without Tika, with tesseract and libheif linked in, into `target/static/extractous`. The tests that compare
+executable without Tika, with tesseract and libheif linked in, into `target/static/extractous`: the flake's `static`
+output, built with Crane, whose `container` output is the image around it and `static-dependencies` the third-party
+crates alone, which a binary cache serves to CI and fresh machines. The tests that compare
 with Tika's path, or that exercise it, are compiled only with the feature; `cargo nextest run --no-default-features`
 runs the rest.
 

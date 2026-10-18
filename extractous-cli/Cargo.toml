@@ -13,7 +13,7 @@ default = ["tika"]
 # Extract what no native parser reads yet with Apache Tika, which needs GraalVM to build.
 tika = ["extractous-core/tika"]
 # The statically linked Linux executable without Tika, tesseract and libheif linked in;
-# ci/static.sh builds it.
+# ci/static-native.nix builds it (`nix build .#static`).
 static = ["extractous-core/static", "dep:mimalloc"]
 # Link into the statically linked Linux executable instead of loading Tika as a shared library;
 # ci/static-image.sh builds it.
