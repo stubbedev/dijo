@@ -10,6 +10,7 @@
 
 pub mod ar;
 pub mod archiver;
+pub mod arj;
 pub mod brotli;
 pub mod bzip2;
 pub mod compressor;
@@ -109,7 +110,8 @@ fn throws(reason: impl Into<String>) -> Undecoded {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveFile<'a> {
     pub name: String,
-    pub size: u64,
+    /// `getSize`: its size, -1 where the archive does not give it before its data.
+    pub size: i64,
     /// The modification time in milliseconds since the epoch, if the archive records one.
     pub modified_millis: Option<i64>,
     /// The creation time in milliseconds since the epoch, if the archive records one.

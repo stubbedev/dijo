@@ -866,7 +866,7 @@ pub fn files<'a>(
         };
         let file = content.map(|content| ArchiveFile {
             name: entry.name,
-            size: entry.size as u64,
+            size: entry.size,
             modified_millis: Some(entry.modified_millis),
             created_millis: None,
             directory,

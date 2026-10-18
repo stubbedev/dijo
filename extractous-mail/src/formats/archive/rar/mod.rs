@@ -203,7 +203,7 @@ fn file(
     };
     let file = ArchiveFile {
         name: name.to_owned(),
-        size: header.full_unpack_size as u64,
+        size: header.full_unpack_size,
         modified_millis: header.modified_millis,
         created_millis: header.created_millis,
         directory: false,

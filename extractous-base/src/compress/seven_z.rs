@@ -113,7 +113,7 @@ impl Listed {
     pub fn file<'a>(&self, content: Input<'a>) -> ArchiveFile<'a> {
         ArchiveFile {
             name: self.name.clone(),
-            size: self.size,
+            size: self.size as i64,
             modified_millis: self.modified_millis,
             created_millis: self.created_millis,
             directory: self.directory,
