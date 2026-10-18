@@ -352,9 +352,10 @@ pub struct Routed<'a> {
 
 /// Routes a document to its native parser, if its format has one, or says why it stays with
 /// Tika. The document is detected in Rust, without the JVM, so a document a native parser reads
-/// never starts it. A file too large to read whole goes to its native parser only if that
-/// parser's memory stays bounded whatever its input's size; otherwise to Tika, which streams
-/// it. The parser itself may still leave the document to Tika, when [`parse_to_string`] or
+/// never starts it. In a build with Tika, a file too large to read whole goes to its native
+/// parser only if that parser's memory stays bounded whatever its input's size, and otherwise to
+/// Tika, which streams it; a build without Tika has every parser read it mapped, under the
+/// extraction's memory budget. The parser itself may still leave the document to Tika, when [`parse_to_string`] or
 /// [`parse_to_stream`] has it prepare the document.
 ///
 /// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
@@ -363,6 +364,7 @@ pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unsupport
     let detected = Detected::detect(&document.from, &document.input, Intent::Parse)
         .map_err(|error| Unsupported::Undetected(error.to_string()))?;
     let parser = parser_for(&detected.media_type)?;
+    #[cfg(feature = "tika")]
     if document.input.is_mapped() && parser.footprint() == Footprint::Proportional {
         return Err(Unsupported::TooLarge {
             parser: parser.name(),
@@ -1689,7 +1691,7 @@ mod tests {
 
     /// A file too large to read whole is mapped, and goes to its native parser where that
     /// parser reads only bounded parts of its input; a parser whose memory grows with its input
-    /// leaves it to Tika, which streams it, or in a build without Tika fails it as too large.
+    /// leaves it to Tika, which streams it, or in a build without Tika reads it mapped too.
     #[test]
     fn files_too_large_to_read_whole_go_to_parsers_of_bounded_memory() {
         let files = LargeFiles::new("routing");
@@ -1702,6 +1704,7 @@ mod tests {
             assert_eq!(routed.parser.name(), parser);
             assert!(routed.input.is_mapped());
         }
+        #[cfg(feature = "tika")]
         assert!(matches!(
             route_file(&files.rtf),
             Err(Unsupported::TooLarge {
@@ -1709,6 +1712,12 @@ mod tests {
                 limit: input::MAX_READ_WHOLE,
             })
         ));
+        #[cfg(not(feature = "tika"))]
+        {
+            let routed = route_file(&files.rtf).unwrap();
+            assert_eq!(routed.parser.name(), "extractous::RTFParser");
+            assert!(routed.input.is_mapped());
+        }
     }
 
     /// The parsers of bounded memory extract a file too large to read whole as Tika's path does.

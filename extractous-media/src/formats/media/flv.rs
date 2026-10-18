@@ -1,13 +1,15 @@
 //! Flash video, as Tika's `FLVParser` reads it: the header's audio and video flags, and the
 //! entries of each `onMetaData` script tag's AMF0 map as `flv:` metadata, each value as Java's
-//! `toString` writes it. A document is left to Tika where a value holds an AMF date, which Java
-//! writes with its default time zone's name.
+//! `toString` writes it. Java writes an AMF date in its default time zone, named; the port
+//! writes it in UTC, which makes the reading differ.
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::xhtml::Xhtml;
+use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
 use crate::java::dtoa::java_double_to_string;
+use crate::java::time;
 use crate::java::{self, JavaHashMap};
 
 const TYPE_METADATA: u8 = 0x12;
@@ -25,11 +27,13 @@ enum Amf {
     String(String),
     Map(JavaHashMap<Option<Amf>>),
     List(Vec<Option<Amf>>),
+    /// A `Date`, in milliseconds since 1970.
+    Date(i64),
     Undefined,
 }
 
 impl Amf {
-    /// `toString` of the value.
+    /// `toString` of the value, a date written in UTC.
     fn text(&self) -> String {
         let text =
             |value: &Option<Amf>| value.as_ref().map_or_else(|| "null".to_owned(), Amf::text);
@@ -48,21 +52,29 @@ impl Amf {
                 let items: Vec<String> = items.iter().map(text).collect();
                 format!("[{}]", items.join(", "))
             }
+            Amf::Date(millis) => time::utc_date_to_string(*millis),
             Amf::Undefined => "UNDEFINED".to_owned(),
+        }
+    }
+
+    /// Whether the value is or holds a date.
+    fn dated(&self) -> bool {
+        let dated = |value: &Option<Amf>| value.as_ref().is_some_and(Amf::dated);
+        match self {
+            Amf::Date(_) => true,
+            Amf::Map(map) => map.iter().any(|(_, value)| dated(value)),
+            Amf::List(items) => items.iter().any(dated),
+            Amf::Number(_) | Amf::Boolean(_) | Amf::String(_) | Amf::Undefined => false,
         }
     }
 }
 
-/// Why a read stops: what Java throws, which fails the parse, or a value the port does not
-/// write.
+/// What Java throws, which stops the read and fails the parse.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Stop {
-    Thrown(String),
-    Unported(&'static str),
-}
+struct Stop(String);
 
 fn end_of_file() -> Stop {
-    Stop::Thrown("EOFException".to_owned())
+    Stop("EOFException".to_owned())
 }
 
 /// A `DataInputStream` over bytes.
@@ -108,7 +120,7 @@ impl<'a> Input<'a> {
     /// `readAMFData`.
     fn amf(&mut self, kind: Option<u8>, depth: usize) -> Result<Option<Amf>, Stop> {
         if depth > MAX_AMF_DEPTH {
-            return Err(Stop::Thrown(format!(
+            return Err(Stop(format!(
                 "IOException: AMF nesting exceeds the maximum depth of {MAX_AMF_DEPTH}"
             )));
         }
@@ -127,7 +139,7 @@ impl<'a> Input<'a> {
             10 => {
                 let count = u64::from(self.u32()?);
                 if count > MAX_AMF_ELEMENTS {
-                    return Err(Stop::Thrown(format!(
+                    return Err(Stop(format!(
                         "IOException: AMF array count {count} exceeds the maximum of \
                          {MAX_AMF_ELEMENTS}"
                     )));
@@ -138,7 +150,13 @@ impl<'a> Input<'a> {
                 }
                 Amf::List(items)
             }
-            11 => return Err(Stop::Unported("an AMF date")),
+            11 => {
+                let millis = f64::from_bits(u64::from_be_bytes(
+                    self.take(8)?.try_into().expect("eight bytes"),
+                )) as i64;
+                self.u16()?;
+                Amf::Date(millis)
+            }
             13 => Amf::Undefined,
             _ => return Ok(None),
         }))
@@ -163,7 +181,7 @@ impl<'a> Input<'a> {
                 break;
             }
             if index >= MAX_AMF_ELEMENTS {
-                return Err(Stop::Thrown(format!(
+                return Err(Stop(format!(
                     "IOException: AMF object exceeds the maximum of {MAX_AMF_ELEMENTS} entries"
                 )));
             }
@@ -178,7 +196,7 @@ impl<'a> Input<'a> {
     fn ecma_array(&mut self, depth: usize) -> Result<Amf, Stop> {
         let size = u64::from(self.u32()?);
         if size > MAX_AMF_ELEMENTS {
-            return Err(Stop::Thrown(format!(
+            return Err(Stop(format!(
                 "IOException: AMF array size {size} exceeds the maximum of {MAX_AMF_ELEMENTS}"
             )));
         }
@@ -202,13 +220,20 @@ impl<'a> Input<'a> {
     }
 }
 
-/// The header flags and the metadata entries of `input`, or why the parse stops: what Java
-/// throws before the document starts, and what it throws after it, with the entries read
-/// before.
+/// The header flags and the metadata entries of `input`, whether an entry holds a date, or why
+/// the parse stops: what Java throws before the document starts, and what it throws after it,
+/// with the entries read before.
 struct Flv {
     flags: u8,
-    entries: Vec<(String, String)>,
+    entries: Entries,
     thrown: Option<String>,
+}
+
+/// The metadata entries read, and whether a value of one holds a date.
+#[derive(Default)]
+struct Entries {
+    written: Vec<(String, String)>,
+    dated: bool,
 }
 
 /// `FLVParser.parse` up to the output.
@@ -218,31 +243,27 @@ fn read(input: &[u8]) -> Result<Flv, Stop> {
         at: 0,
     };
     if data.take(3).ok() != Some(b"FLV".as_slice()) {
-        return Err(Stop::Thrown("FLV signature not detected".to_owned()));
+        return Err(Stop("FLV signature not detected".to_owned()));
     }
     let version = data.u8()?;
     if version != 1 {
-        return Err(Stop::Thrown(format!("Unpexpected FLV version: {version}")));
+        return Err(Stop(format!("Unpexpected FLV version: {version}")));
     }
     let flags = data.u8()?;
     let length = data.u32()?;
     if length != 9 {
-        return Err(Stop::Thrown(format!(
-            "Unpexpected FLV header length: {length}"
-        )));
+        return Err(Stop(format!("Unpexpected FLV header length: {length}")));
     }
     let previous = data.u32()?;
     if previous != 0 {
-        return Err(Stop::Thrown(format!(
+        return Err(Stop(format!(
             "Unpexpected FLV first previous block size: {previous}"
         )));
     }
-    let mut entries = Vec::new();
-    let thrown = match tags(&mut data, &mut entries) {
-        Ok(()) => None,
-        Err(Stop::Thrown(thrown)) => Some(thrown),
-        Err(unported) => return Err(unported),
-    };
+    let mut entries = Entries::default();
+    let thrown = tags(&mut data, &mut entries)
+        .err()
+        .map(|Stop(thrown)| thrown);
     Ok(Flv {
         flags,
         entries,
@@ -252,7 +273,7 @@ fn read(input: &[u8]) -> Result<Flv, Stop> {
 
 /// The tags after the header: each script tag's second AMF value, where it is a map, read for
 /// its entries.
-fn tags(data: &mut Input, entries: &mut Vec<(String, String)>) -> Result<(), Stop> {
+fn tags(data: &mut Input, entries: &mut Entries) -> Result<(), Stop> {
     while let Some(kind) = data.read() {
         let length = data.u24()?;
         data.u32()?;
@@ -274,7 +295,8 @@ fn tags(data: &mut Input, entries: &mut Vec<(String, String)>) -> Result<(), Sto
             if let Some(Amf::Map(map)) = value {
                 for (key, value) in map.iter() {
                     if let Some(value) = value {
-                        entries.push((key.to_owned(), value.text()));
+                        entries.dated |= value.dated();
+                        entries.written.push((key.to_owned(), value.text()));
                     }
                 }
             }
@@ -309,25 +331,27 @@ impl Parser for FlvParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let flv = read(input).map_err(|stop| match stop {
-            Stop::Thrown(thrown) => Decline::Fails(Error::ParseError(thrown)),
-            Stop::Unported(what) => Decline::Deferred(format!(
-                "{what}, which Java writes with its default time zone's name"
-            )),
-        })?;
-        Ok(Box::new(move |xhtml| {
+        let flv = read(input).map_err(|Stop(thrown)| Decline::Fails(Error::ParseError(thrown)))?;
+        let difference = flv.entries.dated.then(|| {
+            Difference::new(
+                "an AMF date, which Java writes in its default time zone, named, and the port in \
+                 UTC",
+            )
+        });
+        let reading = Box::new(move |xhtml: &mut Xhtml<'_>| {
             let metadata = xhtml.metadata_mut();
             metadata.set("Content-Type", "video/x-flv");
             metadata.set("flv:hasVideo", (flv.flags & MASK_VIDEO != 0).to_string());
             metadata.set("flv:hasAudio", (flv.flags & MASK_AUDIO != 0).to_string());
-            for (key, value) in &flv.entries {
+            for (key, value) in &flv.entries.written {
                 metadata.add_prefixed(PREFIX, key, value.clone());
             }
             match &flv.thrown {
                 Some(thrown) => Err(Failure::Malformed(thrown.clone())),
                 None => Ok(()),
             }
-        }))
+        });
+        unless_different(reading, difference)
     }
 }
 
@@ -336,7 +360,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
+    use crate::formats::parity::{
+        assert_same_as_tika, conformance_corpus, differing_reading, documents, Scratch,
+    };
 
     const TIKA_NAME: &str = "org.apache.tika.parser.video.FLVParser";
 
@@ -346,10 +372,25 @@ mod tests {
         bytes
     }
 
-    fn flv() -> Vec<u8> {
+    /// An AMF date of `millis` since 1970, with the offset of the zone it names in minutes.
+    fn date(millis: f64, offset: i16) -> Vec<u8> {
+        let mut date = vec![11];
+        date.extend(millis.to_be_bytes());
+        date.extend(offset.to_be_bytes());
+        date
+    }
+
+    /// A video whose `onMetaData` map has the entries of an encoder's, then `extra`, each a key
+    /// and its AMF value.
+    fn flv(extra: &[(&str, Vec<u8>)]) -> Vec<u8> {
         let mut script = vec![2];
         script.extend(amf_string("onMetaData"));
-        script.extend([8, 0, 0, 0, 4]);
+        script.push(8);
+        script.extend((4 + u32::try_from(extra.len()).unwrap()).to_be_bytes());
+        for (key, value) in extra {
+            script.extend(amf_string(key));
+            script.extend(value);
+        }
         script.extend(amf_string("duration"));
         script.push(0);
         script.extend(12.5f64.to_be_bytes());
@@ -379,7 +420,7 @@ mod tests {
     #[test]
     fn extracts_flash_videos_as_tikas_path_does() {
         let scratch = Scratch::new("flv");
-        let read = [scratch.write("video.flv", &flv())];
+        let read = [scratch.write("video.flv", &flv(&[]))];
         let (parsed, deferred) = documents(&FlvParser, &[scratch.directory()]);
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), read.len());
@@ -387,6 +428,42 @@ mod tests {
             &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,
         );
+    }
+
+    /// Dates are written in UTC, as Tika's path writes them where Java's default time zone is
+    /// UTC, and the reading differs from Tika's in other zones.
+    #[test]
+    fn writes_flash_video_dates_in_utc() {
+        let scratch = Scratch::new("flv-dates");
+        let mut dates = vec![10, 0, 0, 0, 5];
+        for millis in [
+            f64::NAN,
+            1e300,
+            -1e15,
+            -12_219_292_800_001.0,
+            951_782_400_123.0,
+        ] {
+            dates.extend(date(millis, 0));
+        }
+        let path = scratch.write(
+            "dated.flv",
+            &flv(&[
+                ("creationdate", date(1_791_836_869_000.0, -120)),
+                ("dates", dates),
+            ]),
+        );
+        let (parsed, deferred) = documents(&FlvParser, &[scratch.directory()]);
+        assert!(parsed.is_empty(), "{parsed:?}");
+        assert_eq!(deferred, std::slice::from_ref(&path));
+        let (Difference(difference), xhtml) = differing_reading(&FlvParser, &path);
+        assert!(difference.starts_with("an AMF date"), "{difference}");
+        for meta in [
+            r#"<meta name="flv:creationdate" content="Mon Oct 12 20:27:49 UTC 2026" />"#,
+            r#"<meta name="flv:dates" content="[Thu Jan 01 00:00:00 UTC 1970, Sun Aug 17 07:12:55 UTC 292278994, Tue Nov 16 22:13:20 UTC 29720, Thu Oct 04 23:59:59 UTC 1582, Tue Feb 29 00:00:00 UTC 2000]" />"#,
+            r#"<meta name="flv:duration" content="12.5" />"#,
+        ] {
+            assert!(xhtml.contains(meta), "{meta} in {xhtml}");
+        }
     }
 
     #[test]

@@ -19,7 +19,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, ResourceType, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Footprint, Opened, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Failure, Footprint, Opened, Parser, Prepared};
 
 /// `MP4`: the prefix of the QuickTime metadata keys, which the file names.
 const QUICK_TIME_KEY_PREFIX: &str = "mp4:";
@@ -79,10 +79,13 @@ impl Parser for Mp4Parser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let walked = walk::walk(input).map_err(Decline::Deferred)?;
+        let walked = walk::walk(input);
         let mut events = walked.events;
         directory::metadata(&walked.movie, &walked.tracks, &mut events);
-        Ok(Box::new(move |xhtml| write(&events, xhtml)))
+        unless_different(
+            Box::new(move |xhtml| write(&events, xhtml)),
+            walked.difference,
+        )
     }
 }
 
@@ -176,8 +179,9 @@ mod tests {
 
     use super::*;
     use crate::formats::parity::{
-        assert_same_as_tika_rewriting, conformance_corpus, documents, Scratch,
+        assert_same_as_tika_rewriting, conformance_corpus, differing_reading, documents, Scratch,
     };
+    use crate::formats::Difference;
 
     const TIKA_NAME: &str = "org.apache.tika.parser.mp4.MP4Parser";
 
@@ -425,6 +429,13 @@ mod tests {
             ],
             &huge,
         );
+        let with_uuids = |uuids: &[Vec<u8>]| {
+            file(
+                b"mp42",
+                &[&[movie_header(0, 1000, 2500)][..], uuids].concat(),
+                &[],
+            )
+        };
         let read = [
             scratch.write("audio.m4a", &audio),
             scratch.write("video.mov", &video),
@@ -442,15 +453,26 @@ mod tests {
                 "canon.cr3",
                 &file(b"crx ", &[movie_header(0, 1000, 2500)], &[]),
             ),
-        ];
-        let deferred = [scratch.write(
-            "exif.mp4",
-            &file(
-                b"mp42",
-                &[boxed(b"uuid", &[&READER_UUID[..], b"Exif"].concat())],
-                &[],
+            scratch.write(
+                "uuids.mp4",
+                &with_uuids(&[
+                    boxed(b"uuid", &[&IPTC_UUID[..], &iptc()].concat()),
+                    boxed(b"uuid", &[&PHOTOSHOP_UUID[..], &photoshop()].concat()),
+                    boxed(b"uuid", &[&PHOTOSHOP_UUID[..], b"8BIM\x04"].concat()),
+                    boxed(b"uuid", &[&XMP_UUID[..], XMP].concat()),
+                ]),
             ),
-        )];
+        ];
+        let differing = [
+            scratch.write(
+                "exif.mp4",
+                &with_uuids(&[boxed(b"uuid", &[&EXIF_UUID[..], &tiff()].concat())]),
+            ),
+            scratch.write(
+                "not-tiff.mp4",
+                &with_uuids(&[boxed(b"uuid", &[&EXIF_UUID[..], b"Exif"].concat())]),
+            ),
+        ];
         // The parse of this one never ends on Tika's path (#118).
         let endless = file(b"mp42", &[movie_header(1, 1024, i64::MIN)], &[]);
         let (_, metadata) = crate::Extractor::new()
@@ -458,8 +480,16 @@ mod tests {
             .unwrap();
         assert_eq!(metadata["xmpDM:duration"], ["-9007199254740992.0"]);
         let (parsed, left) = documents(&Mp4Parser, &[scratch.directory()]);
-        assert_eq!(left.len(), deferred.len(), "{left:?}");
+        assert_eq!(left, differing);
         assert_eq!(parsed.len(), read.len(), "{parsed:?}");
+        for path in &differing {
+            let (Difference(difference), xhtml) = differing_reading(&Mp4Parser, path);
+            assert!(difference.starts_with("an Exif uuid box"), "{difference}");
+            assert!(
+                xhtml.contains(r#"<meta name="xmpDM:duration" content="2.5" />"#),
+                "{xhtml}"
+            );
+        }
         assert_same_as_tika_rewriting(
             &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
             TIKA_NAME,
@@ -467,11 +497,57 @@ mod tests {
         );
     }
 
-    /// The UUID of an Exif `uuid` box.
-    const READER_UUID: [u8; 16] = [
+    /// The UUIDs of the `uuid` boxes metadata-extractor reads with its Exif, IPTC, Photoshop
+    /// and XMP readers.
+    const EXIF_UUID: [u8; 16] = [
         0x05, 0x37, 0xcd, 0xab, 0x9d, 0x0c, 0x44, 0x31, 0xa7, 0x2a, 0xfa, 0x56, 0x1f, 0x2a, 0x11,
         0x3e,
     ];
+    const IPTC_UUID: [u8; 16] = [
+        0x33, 0xc7, 0xa4, 0xd2, 0xb8, 0x1d, 0x47, 0x23, 0xa0, 0xba, 0xf1, 0xa3, 0xe0, 0x97, 0xad,
+        0x38,
+    ];
+    const PHOTOSHOP_UUID: [u8; 16] = [
+        0x2c, 0x4c, 0x01, 0x00, 0x85, 0x04, 0x40, 0xb9, 0xa0, 0x3e, 0x56, 0x21, 0x48, 0xd6, 0xdf,
+        0xeb,
+    ];
+    const XMP_UUID: [u8; 16] = [
+        0xbe, 0x7a, 0xcf, 0xcb, 0x97, 0xa9, 0x42, 0xe8, 0x9c, 0x71, 0x99, 0x94, 0x91, 0xe3, 0xaf,
+        0xac,
+    ];
+    const XMP: &[u8] = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/" dc:format="video/mp4"/></rdf:RDF></x:xmpmeta>"#;
+
+    /// Big-endian TIFF data of one IFD with the camera's make, and an offset past its end.
+    fn tiff() -> Vec<u8> {
+        let mut tiff = b"MM\x00\x2A\x00\x00\x00\x08\x00\x02".to_vec();
+        tiff.extend_from_slice(&[0x01, 0x0F, 0, 2, 0, 0, 0, 6, 0, 0, 0, 38]);
+        tiff.extend_from_slice(&[0x01, 0x10, 0, 2, 0, 0, 0, 9, 0x7F, 0, 0, 0]);
+        tiff.extend_from_slice(&[0, 0, 0, 0]);
+        tiff.extend_from_slice(b"Canon\0");
+        tiff
+    }
+
+    /// An IPTC record with a title, then a tag cut short.
+    fn iptc() -> Vec<u8> {
+        [
+            &b"\x1C\x02\x05\x00\x05Titel"[..],
+            b"\x1C\x02\x78\x00\x40kort",
+        ]
+        .concat()
+    }
+
+    /// Photoshop image resources: the IPTC record, then a resource cut short.
+    fn photoshop() -> Vec<u8> {
+        let iptc = iptc();
+        let mut resources = b"8BIM\x04\x04\x00\x00".to_vec();
+        resources.extend_from_slice(&u32::try_from(iptc.len()).unwrap().to_be_bytes());
+        resources.extend_from_slice(&iptc);
+        if iptc.len() % 2 == 1 {
+            resources.push(0);
+        }
+        resources.extend_from_slice(b"8BIM\x04\x0C\x00\x00\x00\x00\x10\x00");
+        resources
+    }
 
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
