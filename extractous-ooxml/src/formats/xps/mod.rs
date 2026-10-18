@@ -218,7 +218,12 @@ fn write(package: &Package, document: Document, xhtml: &mut Xhtml) -> Result<(),
         let Ok(data) = zip_entry(package, &source) else {
             continue;
         };
-        xhtml.parse_embedded_opened(&data, &metadata, Wrapping::PackageEntry, Opened::Alone)?;
+        xhtml.parse_embedded_input_opened(
+            &data,
+            &metadata,
+            Wrapping::PackageEntry,
+            Opened::Alone,
+        )?;
     }
     Ok(())
 }
