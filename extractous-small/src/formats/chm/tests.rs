@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use super::*;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+    assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus,
+    documents, Scratch,
 };
 
 const CHUNK: usize = 0x1000;
@@ -162,7 +163,11 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
         .partition(|path| path.ends_with("testChm_oom.chm"));
     assert_eq!(parsed.len(), 12, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&paths, ChmParser.tika_name());
+    assert_same_as_tika_departing(
+        &paths,
+        ChmParser.tika_name(),
+        crate::formats::html::DEPARTURES,
+    );
     let failing: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
     assert_fails_as_tika(&failing);
 }
