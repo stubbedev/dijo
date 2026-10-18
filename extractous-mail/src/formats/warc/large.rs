@@ -64,3 +64,29 @@ fn inflates_a_gzipped_archive_past_the_memory_limit_to_a_spool() {
     let (text, _) = file.extract_with(&Extractor::new(), SPOOLING_BUDGET, "extractous::WARCParser");
     assert!(text.contains(END), "{text}");
 }
+
+/// A collection whose archive is deflated, and inflates past what a stream may decode into
+/// memory, is read with the archive spooled, a record at a time.
+#[test]
+fn spools_a_collection_archive_past_the_memory_limit() {
+    let file = LargeFile::written("large.wacz", |out| {
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .compression_level(Some(1))
+            .large_file(true);
+        let mut zip = zip::ZipWriter::new_stream(out);
+        zip.start_file("datapackage.json", options)
+            .map_err(io::Error::other)?;
+        zip.write_all(br#"{"profile": "data-package", "resources": []}"#)?;
+        zip.start_file("archive/data.warc", options)
+            .map_err(io::Error::other)?;
+        archive_of_large_payload(&mut zip, LARGE)?;
+        zip.finish().map_err(io::Error::other)?.flush()
+    });
+    let (text, metadata) =
+        file.extract_with(&Extractor::new(), SPOOLING_BUDGET, "extractous::WACZParser");
+    assert!(text.contains(END), "{text}");
+    assert!(metadata["tk:parsed-by"]
+        .iter()
+        .any(|parser| parser == "extractous::WARCParser"));
+}
