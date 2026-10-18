@@ -1579,6 +1579,58 @@ mod tests {
         assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
     }
 
+    /// A document of a page and a file specification, object 6, whose update gives the object
+    /// a generation 1 of another file, the table listing both generations.
+    fn two_generations() -> Vec<u8> {
+        let stream = |text: &str| {
+            format!(
+                "<< /Type /EmbeddedFile /Length {} >>\nstream\n{text}\nendstream",
+                text.len() + 1
+            )
+        };
+        let mut objects = page_objects(TEXT);
+        objects.extend([
+            "<< /Type /Filespec /F (gammel.txt) /EF << /F 7 0 R >> >>".to_owned(),
+            stream("Den gamle udgave af filen."),
+        ]);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let mut out = document(&objects, b"", &[]);
+        let prev = startxref(&out);
+        let spec = out.len();
+        out.extend_from_slice(
+            b"6 1 obj\n<< /Type /Filespec /F (ny.txt) /EF << /F 8 0 R >> >>\nendobj\n",
+        );
+        let file = object_at(&mut out, 8, stream("Den nye udgave af filen.").as_bytes());
+        let xref = out.len();
+        out.extend_from_slice(
+            format!(
+                "xref\n6 1\n{spec:010} 00001 n \n8 1\n{file:010} 00000 n \ntrailer\n<< /Size 9 \
+                 /Root 1 0 R /Prev {prev} >>\nstartxref\n{xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    #[test]
+    fn extracts_the_files_of_both_generations_of_an_object() {
+        let input = two_generations();
+        let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
+        assert_eq!(deferral, None);
+        let (xml, _) = native_xml(&input);
+        let old = xml.find("Den gamle udgave af filen.").expect(&xml);
+        let new = xml.find("Den nye udgave af filen.").expect(&xml);
+        assert!(old < new, "{xml}");
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn extracts_the_files_of_both_generations_of_an_object_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-generations");
+        let path = scratch.write("generations.pdf", &two_generations());
+        assert_same_as_tika_delegating(&[&path], tika_name(), &DELEGATES);
+    }
+
     #[test]
     fn defers_a_needed_object_the_port_cannot_read() {
         let mut objects = page_objects(TEXT);

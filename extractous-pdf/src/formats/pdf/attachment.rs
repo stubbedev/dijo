@@ -296,9 +296,10 @@ pub(super) fn document_specs<'p>(pdf: &'p Pdf) -> Result<Vec<(String, &'p Dictio
 }
 
 /// `COSDocument.getObjectsByType(COSName.FILESPEC)`: the file specifications among the
-/// objects the cross-reference table lists, by object number. Tika takes them in the order
-/// PDFBox's `HashMap` of their keys holds them, which follows hash buckets, not the document
-/// (#109).
+/// objects the cross-reference table lists, by object number and generation. Tika takes them
+/// in the order PDFBox's `HashMap` of their keys holds them, which follows hash buckets, not
+/// the document (#109). The table keeps an earlier generation of an object an update replaces,
+/// and so does PDFBox's.
 ///
 /// PDFBox reads every object for it. A document whose bytes do not spell `Filespec` and whose
 /// table puts no object in an object stream holds none, and its objects are left unread.
@@ -306,12 +307,6 @@ fn file_spec_objects<'p>(pdf: &'p Pdf) -> Result<Vec<&'p Dictionary>, Unported> 
     let listed = pdf.listed();
     if !pdf.spells_filespec && !listed.iter().any(|&id| pdf.is_compressed(id)) {
         return Ok(Vec::new());
-    }
-    if let Some(&(number, generation)) = listed.iter().find(|(_, generation)| *generation > 0) {
-        return Err(Unported(format!(
-            "object {number} of generation {generation}, whose earlier generations PDFBox may \
-             still list among the document's objects"
-        )));
     }
     Ok(listed
         .into_iter()
