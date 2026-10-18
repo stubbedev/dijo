@@ -1123,6 +1123,22 @@ mod tests {
                 "Tika records the JBIG2 dimension node twice (#120)",
             ),
             (
+                "testQuattro.wq1",
+                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
+            ),
+            (
+                "testQuattro.wq2",
+                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
+            ),
+            (
+                "testQuattro.wb1",
+                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
+            ),
+            (
+                "testQuattro.wb2",
+                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
+            ),
+            (
                 "testFODS_embeddedChart.fods",
                 "a flat document's master pages and version are read, which Tika's path leaves out (#69, #91)",
             ),

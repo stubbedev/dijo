@@ -2,12 +2,15 @@
 //! `QuattroProParser` ([`quattro`]) read them through their `WPInputStream`. A WordPerfect 5 or 6
 //! document's prefix area becomes metadata, then its document area is read byte by byte into
 //! paragraphs of text, its functions skipped and its extended characters looked up in
-//! WordPerfect's character sets ([`charsets`]).
+//! WordPerfect's character sets ([`charsets`]). The spreadsheets of Quattro Pro 1 to 6, which
+//! Tika does not read, are read natively ([`old_quattro`]).
 
 mod charsets;
+mod old_quattro;
 mod quattro;
 
-pub use quattro::{OldQuattroProParser, QuattroProParser};
+pub use old_quattro::OldQuattroProParser;
+pub use quattro::QuattroProParser;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
