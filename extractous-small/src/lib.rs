@@ -37,6 +37,7 @@ pub mod formats {
     pub mod iwork;
     pub mod iwork_package;
     pub mod markdown;
+    pub mod mat;
     pub mod mif;
     pub mod mobi;
     pub mod ms_owner;
@@ -47,6 +48,7 @@ pub mod formats {
     pub mod prt;
     pub mod source_code;
     pub mod subtitle;
+    mod thrown;
     pub mod translation;
     pub mod tsd;
     pub mod wordperfect;

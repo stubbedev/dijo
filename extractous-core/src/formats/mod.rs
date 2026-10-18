@@ -68,6 +68,7 @@ pub(crate) use extractous_small::formats::idml;
 pub(crate) use extractous_small::formats::iwork;
 pub(crate) use extractous_small::formats::iwork_package;
 pub(crate) use extractous_small::formats::markdown;
+pub(crate) use extractous_small::formats::mat;
 pub(crate) use extractous_small::formats::mif;
 pub(crate) use extractous_small::formats::mobi;
 pub(crate) use extractous_small::formats::ms_owner;
@@ -146,6 +147,7 @@ static PARSERS: &[&dyn Parser] = &[
     &metafile::WmfParser,
     &mail::MboxParser,
     &markdown::MarkdownParser,
+    &mat::MatParser,
     &media::FlacParser,
     &media::OpusParser,
     &media::VorbisParser,
