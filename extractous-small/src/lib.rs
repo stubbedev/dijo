@@ -18,7 +18,7 @@ pub mod formats {
     pub(crate) use extractous_base::formats::*;
     #[cfg(test)]
     pub(crate) use extractous_core::parity;
-    pub(crate) use extractous_html::formats::html;
+    pub(crate) use extractous_html::formats::{data_uri, html};
 
     pub mod apple_single;
     pub mod chm;
