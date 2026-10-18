@@ -95,7 +95,9 @@ fn without_departures(documents: &[PathBuf]) -> Vec<PathBuf> {
 fn anchored_textboxes(path: &Path) -> Vec<String> {
     let input = std::fs::read(path).unwrap();
     let configs = ParserConfigs::default();
-    let file = office::open(&input, &configs, MEDIA_TYPE, "Word document").unwrap();
+    let file = office::open(&input, &configs, MEDIA_TYPE, "Word document")
+        .unwrap()
+        .file;
     let Ok(Word::Modern(document)) = Document::read(&file, file.root(), &configs) else {
         return Vec::new();
     };
@@ -232,7 +234,7 @@ fn decrypts_an_encrypted_document_with_its_password_only() {
     let configs = |password: &str| {
         ParserConfigs::default().with_password(Some(&crate::config::Password::new(password)))
     };
-    let (_, extracted) = read(&input, &configs("tika")).unwrap();
+    let (_, extracted, _) = read(&input, &configs("tika")).unwrap();
     let text: String = extracted
         .out
         .iter()
@@ -248,7 +250,7 @@ fn decrypts_an_encrypted_document_with_its_password_only() {
     for configs in [ParserConfigs::default(), configs("wrong")] {
         assert!(matches!(
             read(&input, &configs),
-            Err(Declined::Fails(crate::Error::Encrypted(_)))
+            Err(Decline::Fails(crate::Error::Encrypted(_)))
         ));
     }
 }

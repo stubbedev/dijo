@@ -30,7 +30,7 @@ use crate::formats::ooxml::extractor::{self, DescribedPart, DescribedParts};
 use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Input;
 use crate::input::Pages;
 use crate::java::JavaHashMap;
@@ -130,7 +130,7 @@ impl Parser for DocxParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
@@ -140,7 +140,7 @@ impl Parser for DocxParser {
         pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let package = Package::open(input, pages)?;
         let read = Document::open(package, &configs.office)
             .and_then(Document::prepare)

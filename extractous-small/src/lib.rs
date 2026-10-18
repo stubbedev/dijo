@@ -37,6 +37,7 @@ pub mod formats {
     pub mod iwork;
     pub mod iwork_package;
     pub mod markdown;
+    pub mod mat;
     pub mod mif;
     pub mod mobi;
     pub mod ms_owner;
@@ -45,8 +46,10 @@ pub mod formats {
     pub mod open_pgp;
     pub mod plist;
     pub mod prt;
+    pub mod sas;
     pub mod source_code;
     pub mod subtitle;
+    mod thrown;
     pub mod translation;
     pub mod tsd;
     pub mod wordperfect;

@@ -24,9 +24,10 @@ use extractor::{extract, Out};
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{office, Summaries};
+use crate::formats::ole2::office::{self, Opened};
+use crate::formats::ole2::Summaries;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-powerpoint";
 /// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
@@ -53,27 +54,34 @@ impl Parser for PptParser {
     }
 
     /// Fails encrypted presentations the password does not open, and defers those POI or Tika
-    /// throws on, those before PowerPoint 97, those with pictures or objects Tika records
-    /// failing on, and macros extracted when asked to.
+    /// throws on, those before PowerPoint 97 and macros extracted when asked to. Pictures or
+    /// objects Tika records failing on, which the native reading leaves out, differ from Tika's.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let (summaries, out) = read(input, configs)?;
-        Ok(Box::new(move |xhtml| {
-            summaries.write(xhtml.metadata_mut());
-            xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-            write(out, xhtml)
-        }))
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let (summaries, out, difference) = read(input, configs)?;
+        unless_different(
+            Box::new(move |xhtml| {
+                summaries.write(xhtml.metadata_mut());
+                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+                write(out, xhtml)
+            }),
+            difference,
+        )
     }
 }
 
 /// The summary information and what Tika's extractor makes of the presentation in a compound
-/// document.
-fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<Out>), Declined> {
-    let file = office::open(input, configs, MEDIA_TYPE, "presentation")?;
+/// document, and where the native reading differs from Tika's, if it does: POI reads the
+/// document differently from a stream, or fails on a picture or object Tika records.
+fn read(
+    input: &[u8],
+    configs: &ParserConfigs,
+) -> Result<(Summaries, Vec<Out>, Option<Difference>), Decline<'static>> {
+    let Opened { file, difference } = office::open(input, configs, MEDIA_TYPE, "presentation")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
     let directory = show::presentation_directory(&file, root)?;
@@ -84,8 +92,8 @@ fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<Out>), 
     let show = show::Show::new(&records)?;
     let pictures = pictures::read(&file, directory, &records, encryption.as_ref())?;
     let objects = pictures::objects(&records);
-    let out = extract(&show, objects, &pictures, configs)?;
-    Ok((summaries, out))
+    let (out, recorded) = extract(&show, objects, &pictures, configs)?;
+    Ok((summaries, out, difference.or(recorded)))
 }
 
 /// Writes the presentation as Tika's extractor does while it reads it. Where the length limit

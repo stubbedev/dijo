@@ -7,13 +7,13 @@
 mod charsets;
 mod quattro;
 
-pub use quattro::QuattroProParser;
+pub use quattro::{OldQuattroProParser, QuattroProParser};
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 
 /// `WPPrefixArea.WP5_MAJOR_VERSION`.
@@ -43,9 +43,9 @@ impl From<EndOfFile> for Failure {
     }
 }
 
-impl From<EndOfFile> for Declined {
+impl From<EndOfFile> for Decline<'_> {
     fn from(_: EndOfFile) -> Self {
-        Declined::Fails(Error::IoError(EndOfFile::REASON.to_owned()))
+        Decline::Fails(Error::IoError(EndOfFile::REASON.to_owned()))
     }
 }
 
@@ -190,16 +190,16 @@ impl Parser for WordPerfectParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let prefix = PrefixArea::read(input)?;
         if prefix.major_version != WP5_MAJOR_VERSION && prefix.major_version != WP6_MAJOR_VERSION {
-            return Err(Declined::Fails(Error::ParseError(format!(
+            return Err(Decline::Fails(Error::ParseError(format!(
                 "UnsupportedFormatException: Parser doesn't recognize this major version: {}",
                 prefix.major_version
             ))));
         }
         if prefix.encrypted {
-            return Err(Declined::Fails(Error::Encrypted(
+            return Err(Decline::Fails(Error::Encrypted(
                 "EncryptedDocumentException: the WordPerfect document is encrypted".to_owned(),
             )));
         }

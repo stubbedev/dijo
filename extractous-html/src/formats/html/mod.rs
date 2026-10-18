@@ -16,7 +16,7 @@
 //!
 //! A document defers to Tika when a detector may name a charset the native decoders do not
 //! decode, or when Tika would parse embedded content or resolve links against a URL
-//! ([`handler::deferral`]).
+//! ([`handler::difference`]), where the parser reads the document differently from Tika's.
 
 mod dom;
 mod handler;
@@ -33,7 +33,7 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Failure, Parser, Prepared};
 use crate::text::charset::{self, Charset, Detection};
 
 /// Where the text the parser writes departs from Tika's, for the parity tests of every parser
@@ -88,41 +88,47 @@ impl Parser for JSoupParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        prepare(input, metadata).map_err(Declined::Deferred)
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        prepare(input, metadata)
     }
 }
 
-/// What [`JSoupParser`] prepares of `input`, which holds nothing of it.
-pub fn prepare(input: &[u8], metadata: &TikaMetadata) -> Result<Prepared<'static>, Deferral> {
+/// What [`JSoupParser`] prepares of `input`, which holds nothing of it: a document it cannot
+/// read is [`Decline::Deferred`], and one it reads differently from Tika's parser
+/// [`Decline::Differs`].
+pub fn prepare(
+    input: &[u8],
+    metadata: &TikaMetadata,
+) -> Result<Prepared<'static>, Decline<'static>> {
     if let Some(reason) = AutoDetectReader::defers(input) {
-        return Err(reason.to_owned());
+        return Err(Decline::Deferred(reason.to_owned()));
     }
     let previous = metadata.get("Content-Type").map(str::to_owned);
     let document = read(input, previous.as_deref())
-        .map_err(|_| "the document cannot be decoded natively".to_owned())?;
-    if let Some(reason) = handler::deferral(&document.dom, metadata.get("tk:resource-name")) {
-        return Err(reason.to_owned());
-    }
-    Ok(Box::new(move |xhtml| {
-        write(&document, previous.as_deref(), xhtml)
-    }))
+        .map_err(|_| Decline::Deferred("the document cannot be decoded natively".to_owned()))?;
+    let difference = handler::difference(&document.dom, metadata.get("tk:resource-name"));
+    unless_different(
+        Box::new(move |xhtml| write(&document, previous.as_deref(), xhtml)),
+        difference,
+    )
 }
 
 /// What `JSoupParser.parseString` prepares of HTML already decoded, as Java's UTF-16 units: a
-/// lone surrogate is U+FFFD, as the WHATWG decoder of UTF-16 makes it.
-pub fn prepare_string(html: &[u16]) -> Result<Prepared<'static>, Deferral> {
+/// lone surrogate is U+FFFD, as the WHATWG decoder of UTF-16 makes it. It is
+/// [`Decline::Differs`] where the parser reads the HTML differently from Tika's.
+pub fn prepare_string(html: &[u16]) -> Result<Prepared<'static>, Decline<'static>> {
     let dom = tree_builder::parse(&String::from_utf16_lossy(html));
-    if let Some(reason) = handler::deferral(&dom, None) {
-        return Err(reason.to_owned());
-    }
-    Ok(Box::new(move |xhtml| {
-        let Err(stop) = handler::write(&dom, xhtml) else {
-            return Ok(());
-        };
-        xhtml.end_document()?;
-        Err(stop.into())
-    }))
+    let difference = handler::difference(&dom, None);
+    unless_different(
+        Box::new(move |xhtml| {
+            let Err(stop) = handler::write(&dom, xhtml) else {
+                return Ok(());
+            };
+            xhtml.end_document()?;
+            Err(stop.into())
+        }),
+        difference,
+    )
 }
 
 /// Writes the document as `JSoupParser.parse` does, which ends the document even when writing
@@ -243,7 +249,11 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika_departing, conformance_corpus, documents};
+    use crate::formats::parity::{
+        assert_same_as_tika_departing, conformance_corpus, differing_reading, documents,
+    };
+    #[cfg(feature = "tika")]
+    use crate::formats::Difference;
 
     #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.html.JSoupParser";
@@ -268,6 +278,42 @@ mod tests {
         assert!(parsed.len() >= 3, "{} documents", parsed.len());
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
         assert_same_as_whatwg_tika(&paths);
+    }
+
+    /// The documents of Tika's that the parser reads differently from Tika's are read natively,
+    /// as a build without Tika takes them: links unresolved, and without the data a data URI or
+    /// an `iframe`'s `srcdoc` holds (#144).
+    #[cfg(feature = "tika")]
+    #[test]
+    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
+    fn reads_natively_the_documents_it_reads_differently_from_tika() {
+        let documents = conformance_corpus().join("tika-parsers-standard");
+        let modules = documents.join(
+            "tika-parsers-standard-modules/tika-parser-html-module/src/test/resources/test-documents",
+        );
+        let integration = documents
+            .join("tika-parsers-standard-integration-tests/src/test/resources/test-documents");
+        for (path, difference, text) in [
+            (
+                integration.join("big-preamble.html"),
+                "an object's codebase is a URL",
+                "Агентство недвижимости",
+            ),
+            (
+                modules.join("testHTML_embedded_img.html"),
+                "a data URI",
+                "some other content",
+            ),
+            (
+                modules.join("testSrcDoc.html"),
+                "an iframe's srcdoc",
+                "outside",
+            ),
+        ] {
+            let (Difference(reason), read) = differing_reading(&JSoupParser, &path);
+            assert!(reason.starts_with(difference), "{path:?}: {reason}");
+            assert!(read.contains(text), "{path:?}: {read}");
+        }
     }
 
     #[cfg(feature = "tika")]

@@ -13,13 +13,13 @@ use crate::formats::metadata::office::{
 };
 use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
 use crate::formats::ole2::{office_document, Embedded, Handed};
-use crate::formats::Unported;
+use crate::formats::{Difference, Unported};
 use crate::java::is_blank;
 use crate::mime::{self, MediaType, Origin};
 use crate::ole2::{self, Ole2, Unreadable};
 
 use super::headers::{notes_sheet, HeadersFooters, Part, Scope};
-use super::pictures::{Object, Pictures, StoreEntry};
+use super::pictures::{Object, Pictures, StoreEntry, Unread};
 use super::records::kind;
 use super::shapes::{sheet_shapes, Kind, Shape, BLIP_TO_DISPLAY, PICTURE_ID};
 use super::show::{Sheet, Show};
@@ -72,15 +72,19 @@ struct Extractor<'s, 'a> {
     processed: HashSet<i32>,
     objects: Vec<Object<'a>>,
     has_animations: bool,
+    /// The first picture or object whose data POI fails to read, which Tika records before it
+    /// goes on and the native reading leaves out.
+    difference: Option<Difference>,
 }
 
-/// `HSLFExtractor.parse`: the presentation's events.
+/// `HSLFExtractor.parse`: the presentation's events, and where they differ from Tika's, if they
+/// do.
 pub(super) fn extract<'a>(
     show: &Show<'a>,
     objects: Vec<Object<'a>>,
     pictures: &Pictures,
     configs: &ParserConfigs,
-) -> Result<Vec<Out>, Unported> {
+) -> Result<(Vec<Out>, Option<Difference>), Unported> {
     let config = &configs.office;
     let mut extractor = Extractor {
         show,
@@ -91,6 +95,7 @@ pub(super) fn extract<'a>(
         processed: HashSet::new(),
         objects,
         has_animations: false,
+        difference: None,
     };
     extractor.out.push(Out::StartClass("div", "slideShow"));
     let mut hidden = 0;
@@ -112,7 +117,7 @@ pub(super) fn extract<'a>(
     extractor.pictures(pictures)?;
     extractor.show_objects()?;
     extractor.out.push(Out::End("div"));
-    Ok(extractor.out)
+    Ok((extractor.out, extractor.difference))
 }
 
 /// `HSLFSlide.isHidden`.
@@ -457,10 +462,26 @@ impl<'s, 'a> Extractor<'s, 'a> {
             ));
             self.end("div");
             let prog_id = self.prog_id(shape)?;
-            let data = self.objects[object].data()?;
+            let Some(data) = self.readable(self.objects[object].data())? else {
+                continue;
+            };
             self.data_stream(data, &id, prog_id.as_deref())?;
         }
         Ok(())
+    }
+
+    /// The data of a picture or an object, or none where POI fails reading it, which Tika
+    /// records before it goes on, where the native reading leaves the picture or object out.
+    fn readable(&mut self, data: Result<Vec<u8>, Unread>) -> Result<Option<Vec<u8>>, Unported> {
+        match data {
+            Ok(data) => Ok(Some(data)),
+            Err(recorded @ Unread::Recorded(_)) => {
+                let Unported(reason) = recorded.into();
+                self.difference.get_or_insert(Difference(reason));
+                Ok(None)
+            }
+            Err(Unread::Unported(unported)) => Err(unported),
+        }
     }
 
     /// `getExEmbed`: the last embedding of the document's objects with the shape's object id.
@@ -559,7 +580,9 @@ impl<'s, 'a> Extractor<'s, 'a> {
         }
         for picture in &pictures.pictures {
             let media_type = picture.kind.media_type();
-            let data = picture.data()?;
+            let Some(data) = self.readable(picture.data())? else {
+                continue;
+            };
             let name = format!(
                 "image-{}{}",
                 picture.index,
@@ -613,7 +636,9 @@ impl<'s, 'a> Extractor<'s, 'a> {
             if self.processed.contains(&self.objects[at].persist_id) {
                 continue;
             }
-            let data = self.objects[at].data()?;
+            let Some(data) = self.readable(self.objects[at].data())? else {
+                continue;
+            };
             let media_type = detect(&data)?;
             let name = format!(
                 "embedded-{index}{}",

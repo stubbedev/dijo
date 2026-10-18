@@ -4,8 +4,9 @@
 //! document of the spine, read as XML and written body by body, a malformed one reported and
 //! skipped, and then, in manifest order, the items outside the spine our `EpubEmbedded` admits,
 //! such as pictures and fonts, each in an `embedded` div. Without a package document, or with an
-//! empty spine, Tika writes every HTML and XML entry it can and fails. Encrypted books, and books
-//! with elements outside XHTML in a content document's body, are left to Tika.
+//! empty spine, Tika writes every HTML and XML entry it can and fails. Encrypted books are left to
+//! Tika; books with elements outside XHTML in a content document's body are read differently from
+//! Tika's, the content document reported as malformed.
 
 mod content;
 mod package;
@@ -18,7 +19,9 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml;
 use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{Declined, Deferral, Failure, Footprint, Parser, Prepared};
+use crate::formats::{
+    unless_different, Decline, Deferral, Difference, Failure, Footprint, Parser, Prepared,
+};
 use crate::input::{Input, Pages};
 use crate::java;
 use crate::java::is_blank;
@@ -330,15 +333,24 @@ fn read_fallback(book: &mut Book, reason: &str, xhtml: &mut Xhtml) -> Result<(),
     ))))
 }
 
+/// A book read as far as deciding that this parser extracts it: the book, how it is read, and
+/// where the native reading differs from Tika's, if it does.
+struct Decided<'a> {
+    book: Book<'a>,
+    reading: Result<Reading, Failure>,
+    difference: Option<Difference>,
+}
+
 /// Reads the book in `input` as far as deciding whether this parser extracts it as Tika does:
 /// its package document, with the metadata it adds to `metadata`, and its content documents,
-/// each read again as it is written, so that no more than one is held at a time; or why
-/// Tika's path should read it.
+/// each read again as it is written, so that no more than one is held at a time; and the first
+/// content document with elements outside XHTML in its body, which the native reading records
+/// as malformed where Tika's writes them; or why Tika's path should read it.
 fn prepare<'a>(
     input: &'a [u8],
     pages: Pages<'a>,
     metadata: &mut TikaMetadata,
-) -> Result<(Book<'a>, Result<Reading, Failure>), Deferral> {
+) -> Result<Decided<'a>, Deferral> {
     let Ok(zip) = ZipFile::open(input, pages, "EPUB") else {
         return Err("its archive is not one the zip crate reads".to_owned());
     };
@@ -380,18 +392,23 @@ fn prepare<'a>(
                 .collect()
         }
     };
+    let mut difference = None;
     for document in &documents {
         let Ok(bytes) = book.read(document) else {
             return Err(format!("its entry {} cannot be read", document.name));
         };
-        if content::holds_foreign_elements(&bytes, &document.name) {
-            return Err(format!(
+        if difference.is_none() && content::holds_foreign_elements(&bytes, &document.name) {
+            difference = Some(Difference(format!(
                 "its content document {} has elements outside XHTML in its body",
                 document.name
-            ));
+            )));
         }
     }
-    Ok((book, reading))
+    Ok(Decided {
+        book,
+        reading,
+        difference,
+    })
 }
 
 pub struct EpubParser;
@@ -417,7 +434,7 @@ impl Parser for EpubParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
@@ -427,13 +444,20 @@ impl Parser for EpubParser {
         pages: Pages<'a>,
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let mut metadata = metadata.clone();
-        let (mut book, reading) = prepare(input, pages, &mut metadata)?;
-        Ok(Box::new(move |xhtml| {
-            *xhtml.metadata_mut() = metadata;
-            write(&mut book, reading, xhtml)
-        }))
+        let Decided {
+            mut book,
+            reading,
+            difference,
+        } = prepare(input, pages, &mut metadata)?;
+        unless_different(
+            Box::new(move |xhtml| {
+                *xhtml.metadata_mut() = metadata;
+                write(&mut book, reading, xhtml)
+            }),
+            difference,
+        )
     }
 }
 
@@ -539,7 +563,7 @@ mod tests {
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_rewriting,
-        conformance_corpus, documents, Scratch,
+        conformance_corpus, differing_reading, documents, Scratch,
     };
     use std::io::{Cursor, Write};
     #[cfg(feature = "tika")]
@@ -1054,6 +1078,12 @@ mod tests {
             .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["testiBooks.ibooks"]);
+        let (Difference(reason), text) = differing_reading(&EpubParser, &deferred[0]);
+        assert!(
+            reason.ends_with("has elements outside XHTML in its body"),
+            "{reason}"
+        );
+        assert!(text.contains("Lorem ipsum dolor sit amet"), "{text}");
         // Its pictures outside the spine come in manifest order, which Tika's `HashMap` of
         // their ids does not keep (#88).
         let (reordered, parsed): (Vec<&Path>, Vec<&Path>) = parsed

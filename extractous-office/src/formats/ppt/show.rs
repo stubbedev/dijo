@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::config::ParserConfigs;
-use crate::formats::{Declined, Unported};
+use crate::formats::{Decline, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
 use super::drawing::{textbox_records, Drawing, Wrapper};
@@ -100,7 +100,7 @@ pub(super) fn read_records(
     file: &Ole2<'_>,
     directory: EntryId,
     configs: &ParserConfigs,
-) -> Result<Records, Declined> {
+) -> Result<Records, Decline<'static>> {
     let edit = current_edit_offset(file, directory)?;
     let stream = match file.child_ignoring_case(directory, POWERPOINT_DOCUMENT) {
         Some(entry) if file.kind(entry) == EntryKind::Document => entry,
@@ -139,7 +139,7 @@ fn build_records(
     document: &mut [u8],
     edit: i32,
     configs: &ParserConfigs,
-) -> Result<Records, Declined> {
+) -> Result<Records, Decline<'static>> {
     let (mut map, persist_ids) = chain(document, edit)?;
     let encryption = encryption(document, &mut map, configs)?;
     let mut records = Vec::with_capacity(map.len());
@@ -261,7 +261,7 @@ fn encryption(
     document: &[u8],
     map: &mut BTreeMap<i32, Chained>,
     configs: &ParserConfigs,
-) -> Result<Option<Encryption>, Declined> {
+) -> Result<Option<Encryption>, Decline<'static>> {
     let mut found = None;
     for chained in map.values().rev() {
         let Chained::Edit(user) = chained else {

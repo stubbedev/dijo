@@ -41,7 +41,7 @@ use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{java_file_name, Declined, Failure, InputFile, Parser, Prepared, Unported};
+use crate::formats::{java_file_name, Decline, Failure, InputFile, Parser, Prepared, Unported};
 use crate::java::time::TimeZone;
 use enricher::Enricher;
 use extractor::Target;
@@ -137,7 +137,7 @@ impl Parser for JpegParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         prepare(Format::Jpeg, input, metadata, configs)
     }
 }
@@ -165,7 +165,7 @@ impl Parser for TiffParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         prepare(Format::Tiff, input, metadata, configs)
     }
 }
@@ -199,7 +199,7 @@ impl Parser for HeifParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         prepare(Format::Heif, input, metadata, configs)
     }
 }
@@ -229,7 +229,7 @@ impl Parser for JxlParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         prepare(Format::Jxl, input, metadata, configs)
     }
 }
@@ -254,7 +254,7 @@ impl Parser for BpgParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         prepare(Format::Bpg, input, metadata, configs)
     }
 }
@@ -293,14 +293,14 @@ impl Parser for ImageParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         prepare(Format::ImageIo, input, metadata, configs)
     }
 }
 
 /// `ImageParser.extractMetadata`: the reader ImageIO picks for the type reads the image's
 /// count, size and metadata trees, and the comment and bits per sample are mapped to Tika's.
-fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Declined> {
+fn image_io(input: &[u8], mut metadata: TikaMetadata) -> Result<Read, Decline<'static>> {
     let content_type = metadata.get("Content-Type").unwrap_or_default().to_owned();
     let parse_error = |cause: &str| fails(format!("{content_type} parse error: {cause}"));
     // The reader is picked by the type without its parameters, where Tika finds none for a
@@ -433,7 +433,7 @@ impl Parser for RecognizedImageParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let content_type = metadata.get("Content-Type").unwrap_or_default();
         let mut read = metadata.clone();
         let file_directory = match Recognized::of(content_type) {
@@ -464,7 +464,7 @@ impl Parser for RecognizedImageParser {
 fn webp_metadata(
     input: &[u8],
     read: &mut TikaMetadata,
-) -> Result<(&'static TimeZone, usize), Declined> {
+) -> Result<(&'static TimeZone, usize), Decline<'static>> {
     let zone = dates_zone();
     image_xmp::extract_webp(input, read)?;
     let mut directories = Metadata::default();
@@ -503,8 +503,8 @@ fn add_file_directory(
 
 /// A failure Tika throws reading an image's metadata: before the document starts without the
 /// enricher, and once it has ended with it, either way failing the extraction.
-fn fails(message: String) -> Declined {
-    Declined::Fails(Error::ParseError(message))
+fn fails(message: String) -> Decline<'static> {
+    Decline::Fails(Error::ParseError(message))
 }
 
 /// The metadata `extractMetadata` gives an image, up to the directory of the file it reads,
@@ -523,7 +523,7 @@ fn prepare<'a>(
     input: &'a [u8],
     metadata: &TikaMetadata,
     configs: &'a ParserConfigs,
-) -> Result<Prepared<'a>, Declined> {
+) -> Result<Prepared<'a>, Decline<'static>> {
     let content_type = metadata.get("Content-Type").unwrap_or_default();
     let enriched = enriched(content_type);
     let zone = dates_zone();
@@ -554,7 +554,7 @@ fn extract_metadata(
     input: &[u8],
     mut metadata: TikaMetadata,
     zone: &'static TimeZone,
-) -> Result<Read, Declined> {
+) -> Result<Read, Decline<'static>> {
     let mut directories = Metadata::default();
     match format {
         Format::Jpeg => {

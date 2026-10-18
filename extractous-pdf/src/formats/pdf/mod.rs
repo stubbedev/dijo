@@ -52,7 +52,7 @@ use crate::config::{MarkedContentStrategy, ParserConfigs, Password};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{crypt, Declined, Failure, Footprint, Parser, Prepared, PASSWORD_USED};
+use crate::formats::{crypt, Decline, Failure, Footprint, Parser, Prepared, PASSWORD_USED};
 use crate::input::{Pages, Paging};
 
 use cos::Pdf;
@@ -133,7 +133,7 @@ impl Parser for PdfParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         prepare(input, Pages::IN_MEMORY, metadata, configs, RECORDING_LIMIT)
     }
 
@@ -143,7 +143,7 @@ impl Parser for PdfParser {
         pages: Pages<'a>,
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         prepare(input, pages, metadata, configs, RECORDING_LIMIT)
     }
 }
@@ -155,7 +155,7 @@ fn prepare<'a>(
     metadata: &TikaMetadata,
     configs: &'a ParserConfigs,
     limit: usize,
-) -> Result<Prepared<'a>, Declined> {
+) -> Result<Prepared<'a>, Decline<'a>> {
     match record(input, pages, metadata, configs, limit)? {
         Recorded::Whole {
             mut recording,
@@ -281,8 +281,8 @@ fn record<'a>(
     metadata: &TikaMetadata,
     configs: &ParserConfigs,
     limit: usize,
-) -> Result<Recorded<'a>, Declined> {
-    let deferred = |Unported(reason)| Declined::Deferred(reason);
+) -> Result<Recorded<'a>, Decline<'static>> {
+    let deferred = |Unported(reason)| Decline::Deferred(reason);
     let settings = Settings::of(configs).map_err(deferred)?;
     let loaded = load(input, pages, configs)?;
     let mut recording = new_recording(metadata.clone(), configs);
@@ -296,20 +296,20 @@ fn record<'a>(
     let recorded =
         extract(&loaded, input, settings, &mut recording, &mut large).map_err(|failure| {
             match failure {
-                WriteFailure::Unported(Unported(reason)) => Declined::Deferred(reason),
+                WriteFailure::Unported(Unported(reason)) => Decline::Deferred(reason),
                 WriteFailure::Stop(Stop::MemoryLimit(limit)) => {
-                    Declined::Fails(Error::MemoryLimit(limit))
+                    Decline::Fails(Error::MemoryLimit(limit))
                 }
                 WriteFailure::Stop(stop) => {
                     unreachable!("a recording stops only at the memory budget, not at {stop:?}")
                 }
             }
         });
-    if let Err(failure @ Declined::Fails(_)) = recorded {
+    if let Err(failure @ Decline::Fails(_)) = recorded {
         return Err(failure);
     }
     if let Some(reason) = unread_objects(&loaded).map_err(deferred)? {
-        return Err(Declined::Deferred(reason));
+        return Err(Decline::Deferred(reason));
     }
     if recorded?.is_break() {
         return Ok(Recorded::Large(Box::new(loaded), settings));
@@ -453,7 +453,7 @@ fn load<'a>(
     input: &'a [u8],
     pages: Pages<'a>,
     configs: &ParserConfigs,
-) -> Result<Loaded<'a>, Declined> {
+) -> Result<Loaded<'a>, Decline<'static>> {
     let paging = Paging::new(pages);
     let resolution = xref::resolve(input, &paging)?;
     let password = configs.password.as_ref().map_or("", Password::expose);
@@ -506,9 +506,9 @@ fn load<'a>(
 
 /// How a document the password does not open declines: as Tika's path fails it, where PDFBox
 /// throws `InvalidPasswordException`.
-fn refused(refusal: Refusal) -> Declined {
+fn refused(refusal: Refusal) -> Decline<'static> {
     match refusal {
-        Refusal::WrongPassword => Declined::Fails(crypt::encrypted(Some(&format!(
+        Refusal::WrongPassword => Decline::Fails(crypt::encrypted(Some(&format!(
             "org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException: {WRONG_PASSWORD}"
         )))),
         Refusal::Unported(unported) => unported.into(),
@@ -909,7 +909,7 @@ mod tests {
             input: &'a [u8],
             metadata: &TikaMetadata,
             configs: &'a ParserConfigs,
-        ) -> Result<Prepared<'a>, Declined> {
+        ) -> Result<Prepared<'a>, Decline<'a>> {
             prepare(input, Pages::IN_MEMORY, metadata, configs, 0)
         }
     }
@@ -1750,7 +1750,7 @@ mod tests {
                 .map(drop)
         });
         assert!(
-            matches!(prepared, Err(Declined::Fails(Error::MemoryLimit(1)))),
+            matches!(prepared, Err(Decline::Fails(Error::MemoryLimit(1)))),
             "{prepared:?}"
         );
     }

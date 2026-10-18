@@ -24,7 +24,7 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::line_ranges;
 use crate::formats::embedded::{Wrapping, EXCEPTION_WARNING};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::{Pages, Paging};
 use crate::java::to_lower_case;
 use crate::text::charset::Charset;
@@ -277,7 +277,7 @@ impl Parser for MboxParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
@@ -289,11 +289,11 @@ impl Parser for MboxParser {
         pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let paging = Paging::new(pages);
         for message in messages(input).into_iter().flatten() {
             let message =
-                message.map_err(|unported| Declined::Deferred(unported.reason().to_owned()))?;
+                message.map_err(|unported| Decline::Deferred(unported.reason().to_owned()))?;
             paging.read(message.size());
         }
         paging.release();

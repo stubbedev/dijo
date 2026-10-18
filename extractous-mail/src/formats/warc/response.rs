@@ -6,7 +6,7 @@ use super::http::{self, Unread};
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Deferral, Failure, Opened, Parser, Prepared};
+use crate::formats::{Decline, Deferral, Failure, Opened, Parser, Prepared};
 use crate::java;
 
 /// Tika's `HttpParser`.
@@ -29,8 +29,8 @@ impl Parser for HttpParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let payload = payload(input).map_err(Declined::Deferred)?;
+    ) -> Result<Prepared<'a>, Decline<'static>> {
+        let payload = payload(input).map_err(Decline::Deferred)?;
         Ok(Box::new(move |xhtml| match payload {
             Payload::Absent => Ok(()),
             Payload::Present(payload) => Ok(xhtml.parse_embedded_opened(

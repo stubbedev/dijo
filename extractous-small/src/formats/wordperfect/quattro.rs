@@ -1,14 +1,19 @@
 //! Tika's `QuattroProParser`: the records of a Quattro Pro 9 workbook's `NativeContent_MAIN`
 //! stream, read by its `QPWTextExtractor` into metadata and the text of its labels, links,
 //! sheet names, headers, footers and comments, in one paragraph.
+//!
+//! The spreadsheets of Quattro Pro 1 to 6, which are no compound documents, Tika's composite
+//! parser hands to `OfficeParser`, as their types specialize `application/x-tika-msoffice`: POI
+//! throws on their header, and [`OldQuattroProParser`] fails them as it does.
 
 use super::Stream;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
-use crate::ole2::{Ole2, Unreadable};
+use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::ole2::{self, Ole2, Unreadable};
 
 /// `OLE_DOCUMENT_NAME`, the stream of the workbook's records.
 const DOCUMENT: &str = "NativeContent_MAIN";
@@ -33,8 +38,8 @@ impl Parser for QuattroProParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let records = records(input).map_err(Declined::Fails)?;
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let records = records(input).map_err(Decline::Fails)?;
         Ok(Box::new(move |xhtml| {
             xhtml.start_element("p")?;
             Records {
@@ -45,6 +50,59 @@ impl Parser for QuattroProParser {
             xhtml.end_element("p")?;
             Ok(())
         }))
+    }
+}
+
+/// `HeaderBlock._signature`, as POI shows it beside the signature it reads instead.
+const OLE2_SIGNATURE: &str = "0xE11AB1A1E011CFD0";
+
+/// Tika's `OfficeParser`, which Tika's composite parser hands the spreadsheets of Quattro Pro 1
+/// to 6, and which POI's `HeaderBlock` throws on, as they are no compound documents.
+pub struct OldQuattroProParser;
+
+impl Parser for OldQuattroProParser {
+    fn name(&self) -> &'static str {
+        "extractous::OfficeParser"
+    }
+    fn tika_name(&self) -> &'static str {
+        "org.apache.tika.parser.microsoft.OfficeParser"
+    }
+
+    fn media_types(&self) -> &'static [&'static str] {
+        &[
+            "application/x-quattro-pro",
+            "application/x-quattro-pro; version=1-4",
+            "application/x-quattro-pro; version=5",
+            "application/x-quattro-pro; version=1+5",
+            "application/x-quattro-pro; version=6",
+        ]
+    }
+
+    /// Fails a spreadsheet as `OfficeParser` fails on its header, and defers one that is a
+    /// compound document after all, which `OfficeParser` opens.
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        _metadata: &TikaMetadata,
+        _configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        if ole2::is_ole(input) {
+            return Err(Decline::Deferred(
+                "a compound document, which OfficeParser opens".to_owned(),
+            ));
+        }
+        let mut signature = [0; 8];
+        let read = input.len().min(signature.len());
+        signature[..read].copy_from_slice(&input[..read]);
+        let thrown = Thrown::Io(Exception::new(
+            "org.apache.poi.poifs.filesystem.NotOLE2FileException",
+            format!(
+                "Invalid header signature; read 0x{:016X}, expected {OLE2_SIGNATURE} - Your \
+                 file appears not to be a valid OLE2 document",
+                u64::from_le_bytes(signature)
+            ),
+        ));
+        Err(Decline::Fails(thrown.into_error(self.tika_name())))
     }
 }
 

@@ -19,7 +19,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::extractor::{self, kind, name};
 use crate::formats::ooxml::{Package, Properties, Relationship, Unported, HYPERLINK_RELATIONSHIP};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::is_blank;
 use crate::text::charset::Charset;
 
@@ -100,7 +100,7 @@ impl Parser for XlsbParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
         let workbook = open(package, &configs.office).map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| workbook.write(xhtml)))

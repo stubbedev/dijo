@@ -6,7 +6,7 @@
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 use crate::text::charset::Charset;
 
@@ -33,7 +33,7 @@ impl Parser for PrtParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         Ok(Box::new(move |xhtml| {
             let mut stream = Stream {
                 bytes: input,

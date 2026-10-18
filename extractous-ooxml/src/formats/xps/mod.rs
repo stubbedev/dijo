@@ -13,7 +13,7 @@ use crate::formats::ooxml::extractor;
 use crate::formats::ooxml::{Package, Properties, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Opened, Parser, Prepared};
+use crate::formats::{Decline, Failure, Opened, Parser, Prepared};
 use crate::input::{Input, Pages};
 
 use page::{Block, Images, PageHandler};
@@ -44,7 +44,7 @@ impl Parser for XpsParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let package = Package::open(input, Pages::IN_MEMORY)?;
         let properties = Properties::read(&package).map_err(|Unported(reason)| reason)?;
         let document = read_document(&package);

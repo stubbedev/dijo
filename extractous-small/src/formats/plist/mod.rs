@@ -22,7 +22,7 @@ use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::simple_date_format::SimpleDateFormat;
 use crate::java::time::TimeZone;
 
@@ -294,11 +294,11 @@ impl Parser for PListParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let (root, dates) = read(input).map_err(|problem| match problem {
-            Problem::Unread(why) => Declined::Deferred(why.to_owned()),
+            Problem::Unread(why) => Decline::Deferred(why.to_owned()),
             Problem::Failed(reason) => {
-                Declined::Fails(Error::ParseError(format!("problem parsing root: {reason}")))
+                Decline::Fails(Error::ParseError(format!("problem parsing root: {reason}")))
             }
         })?;
         Ok(Box::new(move |xhtml| {

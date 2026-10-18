@@ -11,7 +11,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, ResourceType, Wrapping};
 use crate::formats::metadata::office::RESOURCE_NAME_EXTENSION_INFERRED;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Opened, Parser, Prepared};
+use crate::formats::{Decline, Opened, Parser, Prepared};
 use crate::mime::{self, MediaType};
 
 /// The type of the previews.
@@ -66,7 +66,7 @@ impl Parser for RawTiffParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let zone = dates_zone();
         let read = if is_big_tiff(input) {
             let mut metadata = metadata.clone();

@@ -72,7 +72,7 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Deferral, Failure, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Deferral, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
 use crate::mime::MediaType;
 
@@ -108,7 +108,7 @@ impl Parser for TextAndCsvParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
@@ -118,8 +118,8 @@ impl Parser for TextAndCsvParser {
         pages: Pages<'a>,
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        prepare(input, pages, metadata).map_err(Declined::Deferred)
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        prepare(input, pages, metadata).map_err(Decline::Deferred)
     }
 }
 

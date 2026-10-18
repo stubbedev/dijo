@@ -5,10 +5,11 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::ole2::office::{self, Opened};
 use crate::formats::ole2::Summaries;
-use crate::formats::{Declined, Parser, Prepared, Unported};
+use crate::formats::{unless_different, Decline, Difference, Parser, Prepared, Unported};
 use crate::mime::{ole_directory_type, MediaType};
-use crate::ole2::{Ole2, Unreadable};
+use crate::ole2::Ole2;
 use crate::Error;
 
 /// `POIFSContainerDetector.MS_GRAPH_CHART`.
@@ -66,27 +67,28 @@ impl Parser for CompoundDocumentParser {
 
     /// Defers documents POI does not open as this port does, macros extracted when asked to and
     /// an encrypted package Tika throws on, and fails a DRM encrypted document as `OfficeParser`
-    /// does.
+    /// does. A document POI reads differently from a stream differs from Tika's path.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
-        let (summaries, document_type) = read(input, configs)?;
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let (summaries, document_type, difference) = read(input, configs)?;
         if document_type == Some(DRM_ENCRYPTED) {
-            return Err(Declined::Fails(Error::Encrypted(
-                DRM_UNSUPPORTED.to_owned(),
-            )));
+            return Err(Decline::Fails(Error::Encrypted(DRM_UNSUPPORTED.to_owned())));
         }
-        Ok(Box::new(move |xhtml| {
-            let metadata = xhtml.metadata_mut();
-            summaries.write(metadata);
-            if let Some(document_type) = document_type {
-                metadata.set("Content-Type", document_type);
-            }
-            Ok(())
-        }))
+        unless_different(
+            Box::new(move |xhtml| {
+                let metadata = xhtml.metadata_mut();
+                summaries.write(metadata);
+                if let Some(document_type) = document_type {
+                    metadata.set("Content-Type", document_type);
+                }
+                Ok(())
+            }),
+            difference,
+        )
     }
 }
 
@@ -101,25 +103,13 @@ pub(crate) fn is_ms_graph_chart(input: &[u8]) -> bool {
     })
 }
 
-/// The summary information of a compound document, and the content type `OfficeParser` sets for
-/// it, if any.
+/// The summary information of a compound document, the content type `OfficeParser` sets for
+/// it, if any, and where POI reads it differently from a stream, if it does.
 fn read(
     input: &[u8],
     configs: &ParserConfigs,
-) -> Result<(Summaries, Option<&'static str>), Unported> {
-    if configs.office.extracts_macros() {
-        return Err(Unported(
-            "macros are extracted, which this port does not do".to_owned(),
-        ));
-    }
-    let file = Ole2::open(input).map_err(|Unreadable(reason)| {
-        Unported(format!("POI cannot open the compound document: {reason}"))
-    })?;
-    if let Err(Unreadable(reason)) = Ole2::open_stream(input) {
-        return Err(Unported(format!(
-            "POI reads the compound document from a stream differently: {reason}"
-        )));
-    }
+) -> Result<(Summaries, Option<&'static str>, Option<Difference>), Unported> {
+    let Opened { file, difference } = office::open_file(input, configs)?;
     let root = file.root();
     let detected = ole_directory_type(&file, root);
     let document_type = DOCUMENT_TYPES
@@ -134,7 +124,7 @@ fn read(
             "an encrypted package, on which Tika throws an EncryptedDocumentException".to_owned(),
         ));
     }
-    Ok((Summaries::read(&file, root)?, document_type))
+    Ok((Summaries::read(&file, root)?, document_type, difference))
 }
 
 #[cfg(all(test, feature = "tika"))]
@@ -203,7 +193,7 @@ mod tests {
         let input = std::fs::read(&drm).unwrap();
         assert!(matches!(
             CompoundDocumentParser.prepare(&input, &TikaMetadata::new(), &ParserConfigs::default()),
-            Err(Declined::Fails(Error::Encrypted(reason))) if reason == DRM_UNSUPPORTED
+            Err(Decline::Fails(Error::Encrypted(reason))) if reason == DRM_UNSUPPORTED
         ));
         assert_fails_as_tika(&[&drm]);
     }

@@ -27,7 +27,7 @@ use crate::formats::metadata::TikaMetadata;
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
 use crate::formats::parity::{Departure, Departures};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 
 const STRUCTURE_FAILED: &str = "OneNote parse failed; falling back to legacy text dump";
 const PACKAGE_FAILED: &str = "OneNote FSSHTTPB parse failed; falling back to legacy text dump";
@@ -54,12 +54,12 @@ impl Parser for OneNoteParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let mut document = Document::default();
         let mut reader = Reader::new(Dif::new(input), &mut document);
         let header = reader
             .header()
-            .map_err(|Thrown(exception)| Declined::Fails(Error::ParseError(exception)))?;
+            .map_err(|Thrown(exception)| Decline::Fails(Error::ParseError(exception)))?;
         if !header.is_ms_one_store() {
             if header.alternative_packaging {
                 let read = fsshttpb::read(input)?;
@@ -81,7 +81,7 @@ impl Parser for OneNoteParser {
                     }
                 }));
             }
-            return Err(Declined::Fails(Error::ParseError(
+            return Err(Decline::Fails(Error::ParseError(
                 "Invalid OneStore document - could not parse headers".to_owned(),
             )));
         }

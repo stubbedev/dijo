@@ -8,10 +8,16 @@ mod parsers;
 use crate::mime::MediaType;
 use parsers::TIKA_PARSERS;
 
-/// The types Tika's container detection names that its default types do not declare and that no
-/// parser of Tika's reads, so that its composite parser falls back to its `EmptyParser`: an MS
-/// Graph chart or an equation an Office document embeds.
-const UNPARSED_UNDECLARED: [&str; 2] = ["application/vnd.ms-equation", "application/vnd.ms-graph"];
+/// The types Tika's detection names that its default types do not declare and that no parser of
+/// Tika's reads, so that its composite parser falls back to its `EmptyParser`: an MS Graph chart
+/// or an equation an Office document embeds, an OOXML package of no more specific type (a theme),
+/// and an OS/2 bitmap array.
+const UNPARSED_UNDECLARED: [&str; 4] = [
+    "application/vnd.ms-equation",
+    "application/vnd.ms-graph",
+    "application/vnd.openxmlformats-officedocument",
+    "image/x-os2-graphics",
+];
 
 /// Whether `kind` is one of the [`UNPARSED_UNDECLARED`] types.
 pub(super) fn is_unparsed_undeclared(kind: &MediaType) -> bool {
@@ -194,13 +200,42 @@ mod tests {
         }
     }
 
+    /// Tika's test documents of types its detection names that no parser of Tika's reads: an
+    /// OOXML theme and an OS/2 bitmap array (#144).
+    const UNPARSED_DOCUMENTS: [&str; 2] = [
+        "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT.thmx",
+        "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testOS2BitmapArray",
+    ];
+
+    /// The documents of Tika's that its composite parser reads with the empty parser, as their
+    /// detected types say, are read with the empty parser, rather than go to Tika's path (#144).
+    #[test]
+    #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+    fn reads_with_the_empty_parser_the_documents_tika_reads_with_none() {
+        for document in UNPARSED_DOCUMENTS {
+            let data = std::fs::read(formats::parity::conformance_corpus().join(document)).unwrap();
+            let detected = mime::detect(&data, mime::Origin::Bytes)
+                .unwrap()
+                .media_type
+                .to_string();
+            let parser = formats::parser_for(&detected).unwrap();
+            assert_eq!(parser.tika_name(), EMPTY_PARSER, "{document}: {detected}");
+            #[cfg(feature = "tika")]
+            assert_eq!(
+                tika_class(&detected),
+                EMPTY_PARSER,
+                "{document}: {detected}"
+            );
+        }
+    }
+
     #[test]
     fn walks_to_the_supertype_tika_reads_a_type_as() {
         assert_eq!(
             formats::parser_for("text/x-matlab").unwrap().name(),
             formats::parser_for("text/plain").unwrap().name()
         );
-        assert!(formats::parser_for("application/x-matlab-data").is_err());
+        assert!(formats::parser_for("application/x-hwp-v5").is_err());
         assert!(TIKA_PARSERS.is_sorted());
     }
 }

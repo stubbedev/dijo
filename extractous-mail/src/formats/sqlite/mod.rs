@@ -18,7 +18,7 @@ use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::mime::{self, Origin};
@@ -74,7 +74,7 @@ impl Parser for Sqlite3Parser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'static>> {
         let connection = open(input).map_err(|error| fails("opening the database", error))?;
         let tables = table_names(&connection)
             .map_err(|error| fails("reading the database's table names", error))?;
@@ -100,8 +100,8 @@ impl Parser for Sqlite3Parser {
     }
 }
 
-fn fails(reading: &str, error: impl Display) -> Declined {
-    Declined::Fails(Error::ParseError(format!(
+fn fails(reading: &str, error: impl Display) -> Decline<'static> {
+    Decline::Fails(Error::ParseError(format!(
         "SQLite3Parser failed {reading}: {error}"
     )))
 }

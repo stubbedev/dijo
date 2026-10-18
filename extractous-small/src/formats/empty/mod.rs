@@ -6,7 +6,7 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Declined, Parser, Prepared};
+use crate::formats::{Decline, Parser, Prepared};
 
 /// Tika's `EmptyParser`.
 pub struct EmptyParser;
@@ -28,7 +28,7 @@ impl Parser for EmptyParser {
         _input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         Ok(Box::new(|_| Ok(())))
     }
 }

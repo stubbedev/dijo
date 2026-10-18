@@ -19,7 +19,7 @@ use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
-use crate::formats::{Declined, Failure, Parser, Prepared, Unported};
+use crate::formats::{Decline, Failure, Parser, Prepared, Unported};
 use crate::mime::{IworkDocument, IWORK_CONTENT_ENTRIES};
 
 /// `MARK_LIMIT`: the bytes of a content entry its root element is looked for in.
@@ -206,12 +206,12 @@ impl Parser for IworkPackageParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         _: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let Package { entries, failure } = read(input)?;
         if entries.is_empty() {
             return Err(match failure {
-                Some(failure) => Declined::Fails(Error::ParseError(failure)),
-                None => Declined::Unwritten(metadata.clone()),
+                Some(failure) => Decline::Fails(Error::ParseError(failure)),
+                None => Decline::Unwritten(metadata.clone()),
             });
         }
         let media_type = match &entries[0] {

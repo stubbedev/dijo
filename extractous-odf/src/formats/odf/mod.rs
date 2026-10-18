@@ -21,7 +21,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{Declined, Failure, Footprint, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages};
 use crate::mime::{self, Origin};
 
@@ -316,8 +316,8 @@ fn embedded_metadata(name: &str, bytes: &[u8]) -> Result<TikaMetadata, Failure> 
 /// Tika's path should read it rather than this parser, or the error Tika fails it with: the
 /// `EncryptedDocumentException` its `OpenDocumentManifestHandler` throws on a manifest's
 /// `encryption-data`, which `OpenDocumentParser` reads before any part it writes.
-fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, Declined> {
-    let deferred = |reason: &str| Declined::Deferred(reason.to_owned());
+fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, Decline<'static>> {
+    let deferred = |reason: &str| Decline::Deferred(reason.to_owned());
     let Ok(mut archive) = Archive::open(input, pages) else {
         return Err(deferred(UNREADABLE_ARCHIVE));
     };
@@ -330,7 +330,7 @@ fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, Decl
             return Err(deferred(UNREADABLE_MANIFEST));
         };
         if ElementFinder::finds("encryption-data", &bytes, manifest.name()) {
-            return Err(Declined::Fails(crypt::encrypted(None)));
+            return Err(Decline::Fails(crypt::encrypted(None)));
         }
     }
     let bodies: Vec<Entry> = archive.of_kind(EntryKind::Body).cloned().collect();
@@ -379,7 +379,7 @@ impl Parser for OpenDocumentParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
@@ -389,7 +389,7 @@ impl Parser for OpenDocumentParser {
         pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let archive = read_ahead(input, pages)?;
         Ok(Box::new(move |xhtml| write(archive, configs, xhtml)))
     }
@@ -953,13 +953,14 @@ mod tests {
     #[test]
     fn fails_encrypted_documents_as_encrypted() {
         let input = std::fs::read(UNDECRYPTABLE).unwrap();
+        let configs = ParserConfigs::default();
         let declined = OpenDocumentParser
-            .prepare(&input, &TikaMetadata::new(), &ParserConfigs::default())
+            .prepare(&input, &TikaMetadata::new(), &configs)
             .err();
         assert!(
             matches!(
                 &declined,
-                Some(Declined::Fails(crate::Error::Encrypted(reason)))
+                Some(Decline::Fails(crate::Error::Encrypted(reason)))
                     if *reason == crypt::encrypted(None).to_string()
             ),
             "{declined:?}"

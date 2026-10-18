@@ -8,7 +8,7 @@ use crate::formats::jdk_zip::{self, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Nested, Xhtml};
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 
 /// The attributes `TMXContentHandler.extractAttributes` copies onto a unit's or variant's
@@ -65,7 +65,7 @@ impl Parser for TmxParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         Ok(Box::new(move |xhtml| {
             xhtml
                 .metadata_mut()
@@ -206,11 +206,11 @@ impl Parser for Xliff12Parser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let mut finder = NamespacedUnitAttribute(false);
         let _ = xml::parse_sax(input, "the XLIFF document", &mut finder);
         if finder.0 {
-            return Err(Declined::Deferred(
+            return Err(Decline::Deferred(
                 "a trans-unit attribute in a namespace, which Tika copies onto the XHTML, whose \
                  writer fails on a namespace no element declares"
                     .to_owned(),
@@ -371,10 +371,10 @@ impl Parser for XlzParser {
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let refused = |refusal| match refusal {
-            Refusal::Unread(reason) => Declined::Deferred(reason.to_owned()),
-            Refusal::Failed(reason) => Declined::Fails(Error::ParseError(reason)),
+            Refusal::Unread(reason) => Decline::Deferred(reason.to_owned()),
+            Refusal::Failed(reason) => Decline::Fails(Error::ParseError(reason)),
         };
         let zip = jdk_zip::open(input).map_err(refused)?;
         let mut documents = Vec::new();
@@ -384,15 +384,15 @@ impl Parser for XlzParser {
             .filter(|entry| entry.name.contains(".xlf"))
         {
             let document = jdk_zip::read_whole(&zip, entry).map_err(refused)?;
-            if let Err(Declined::Deferred(reason)) =
+            if let Err(Decline::Deferred(reason)) =
                 Xliff12Parser.prepare(&document, metadata, configs)
             {
-                return Err(Declined::Deferred(format!("{}: {reason}", entry.name)));
+                return Err(Decline::Deferred(format!("{}: {reason}", entry.name)));
             }
             documents.push(document);
         }
         if documents.is_empty() {
-            return Err(Declined::Deferred(
+            return Err(Decline::Deferred(
                 "no XLIFF entry, of which Tika's path starts no document".to_owned(),
             ));
         }

@@ -23,6 +23,7 @@ pub mod formats {
 
     pub mod access;
     pub mod compound;
+    pub mod dgn;
     pub mod doc;
     pub mod escher;
     pub mod msg;

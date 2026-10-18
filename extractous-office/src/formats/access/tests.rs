@@ -435,12 +435,13 @@ fn writes_dates_with_their_time_whatever_the_time_zone() {
 #[test]
 fn writes_rich_text_whole() {
     let long = "æ".repeat(150_000);
-    let text = rich_text(
+    let (text, difference) = rich_text(
         &format!("<div><b>{long}</b></div>"),
         &ParserConfigs::default(),
     )
     .unwrap();
     assert!(text.contains(&long), "{}", text.len());
+    assert_eq!(difference, None);
 }
 
 #[test]

@@ -7,7 +7,7 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{attribute, Attribute};
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 
 const MEDIA_TYPE: &str = "application/vnd.ms-spreadsheetml";
@@ -34,7 +34,7 @@ impl Parser for SpreadsheetMlParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         super::prepare(input, MEDIA_TYPE, Excel::default())
     }
 }

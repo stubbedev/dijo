@@ -9,7 +9,7 @@ use crate::formats::embedded::{
 use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::secure::ZipBomb;
-use crate::formats::{self, Bridged, Declined, EmbeddedRoute, Failure, Opened, Unrouted};
+use crate::formats::{self, Bridged, EmbeddedRoute, Failure, Opened, Unrouted};
 use crate::memory;
 #[cfg(feature = "tika")]
 use crate::tika::{self, EmbeddedOutcome, Event};
@@ -838,7 +838,7 @@ impl<'h> Xhtml<'h> {
                 self.embedding.record_zero_bytes();
                 Ended::Recorded
             }
-            Err(Bridged::Declined(parser, Declined::Unwritten(start))) => {
+            Err(Bridged::Unwritten(parser, start)) => {
                 let parsed = formats::unwritten(parser, start, configs).to_map();
                 self.embedding.absorb_parsers(&parsed);
                 self.embedding.absorb_failures(&parsed, None);
@@ -847,11 +847,11 @@ impl<'h> Xhtml<'h> {
             #[cfg(feature = "tika")]
             Err(bridged) => self.parse_with_tika(bridged, data, metadata, open, target),
             #[cfg(not(feature = "tika"))]
-            Err(Bridged::Declined(parser, Declined::Fails(error))) => {
+            Err(Bridged::Fails(parser, error)) => {
                 self.record_unread(parser, metadata, &embedded::error_reason(&error))
             }
             #[cfg(not(feature = "tika"))]
-            Err(Bridged::Declined(parser, Declined::Deferred(reason))) => {
+            Err(Bridged::Deferred(parser, reason)) => {
                 let unsupported = crate::Unsupported::Deferred { parser, reason };
                 self.record_unread(UNSUPPORTED, metadata, &unsupported.to_string())
             }
@@ -964,7 +964,9 @@ impl<'h> Xhtml<'h> {
     /// starts from, its events passed on to this document as they come. Where the parser fails
     /// on the document, as Tika's would throw, the failure is recorded in this document's
     /// metadata, which goes on: what failed, on which document and why, where Tika records the
-    /// stack trace of the exception its own parser throws (#68).
+    /// stack trace of the exception its own parser throws (#68). Where the parser reads the
+    /// document differently from Tika's parser, in a build without Tika, the difference is
+    /// recorded first, as a failure of the embedded document.
     fn parse_natively(
         &mut self,
         route: EmbeddedRoute<'_>,
@@ -976,8 +978,16 @@ impl<'h> Xhtml<'h> {
             parser,
             start,
             prepared,
+            #[cfg(not(feature = "tika"))]
+            difference,
         } = route;
         let (parsed, result) = self.write_natively(start, parser.name(), prepared, open, target);
+        #[cfg(not(feature = "tika"))]
+        if let Some(difference) = difference {
+            let recorded = embedded::describe_difference(parser.name(), metadata, &difference);
+            self.embedding
+                .absorb_failures(&Metadata::new(), Some(recorded));
+        }
         let reason = match result {
             Ok(()) => {
                 self.embedding.absorb_failures(&parsed, None);

@@ -16,7 +16,7 @@ use crate::errors::Error;
 use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java;
 use crate::java::decimal::Rounding;
 use crate::java::decimal_format::DecimalFormat;
@@ -287,8 +287,8 @@ fn extract_duration(duration: f64, xhtml: &mut Xhtml) -> Result<(), Failure> {
     Ok(xhtml.element("p", &text)?)
 }
 
-fn thrown(thrown: String) -> Declined {
-    Declined::Fails(Error::ParseError(thrown))
+fn thrown(thrown: String) -> Decline<'static> {
+    Decline::Fails(Error::ParseError(thrown))
 }
 
 pub struct VorbisParser;
@@ -310,7 +310,7 @@ impl Parser for VorbisParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let vorbis = streams::vorbis(input).map_err(thrown)?;
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
@@ -358,7 +358,7 @@ impl Parser for OpusParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let opus = streams::opus(input).map_err(thrown)?;
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
@@ -424,7 +424,7 @@ impl Parser for FlacParser {
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Declined> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let flac = streams::flac(input).map_err(thrown)?;
         let Some(comments) = flac.comments.clone() else {
             return Err(thrown(
