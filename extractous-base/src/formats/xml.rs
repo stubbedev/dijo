@@ -168,6 +168,17 @@ fn parse_sax_paged(
     })
 }
 
+/// Whether the XML document `input` cannot hold an element or attribute named `name`, an ASCII
+/// name, as a search of its bytes tells: it is read as UTF-8, and neither the name nor a
+/// document type declaration, whose entities could spell the name, stands in its bytes. A
+/// document read otherwise may hold the name whatever its bytes are.
+pub fn lacks_name(input: &Input<'_>, name: &str) -> bool {
+    let paging = Paging::new(input.pages());
+    xml::is_read_as_utf8(input)
+        && paging.find(input, name.as_bytes()).is_none()
+        && paging.find(input, b"<!DOCTYPE").is_none()
+}
+
 /// Whether the XML document `input` declares a document type before its root element, under
 /// which Xerces may report whitespace as ignorable, which Tika's handlers drop or keep as their
 /// own `ignorableWhitespace` decides.
@@ -367,5 +378,25 @@ mod tests {
         );
         assert!(events(b"<a>\xe6</a>").is_err());
         assert!(events(b"<?xml version=\"1.0\" encoding=\"no-such\"?><a/>").is_err());
+    }
+
+    #[test]
+    fn tells_a_name_absent_only_from_bytes_read_as_utf8() {
+        let lacks = |bytes: &[u8]| lacks_name(&Input::Borrowed(bytes), "lock");
+        assert!(lacks(b"<a><b/></a>"));
+        assert!(lacks(
+            b"\xef\xbb\xbf<?xml version=\"1.0\" encoding=\"utf-8\"?><a/>"
+        ));
+        assert!(lacks(b"<?xml version='1.0' encoding = 'UTF-8' ?><a/>"));
+        assert!(!lacks(b"<a><lock/></a>"));
+        assert!(!lacks(b"<a><x:b lock=\"1\" xmlns:x=\"urn:x\"/></a>"));
+        assert!(!lacks(
+            b"<?xml version=\"1.0\" encoding=\"windows-1252\"?><a/>"
+        ));
+        assert!(!lacks(b"<?xml version=\"1.0\" encoding=\"UTF-8\"<a/>"));
+        assert!(!lacks(b"\xff\xfe<\0a\0/\0>\0"));
+        assert!(!lacks(
+            b"<!DOCTYPE a [<!ENTITY e \"&#60;lo&#99;k/&#62;\">]><a>&e;</a>"
+        ));
     }
 }

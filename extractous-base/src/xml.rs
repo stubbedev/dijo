@@ -137,6 +137,42 @@ pub fn parse(bytes: &[u8], handler: &mut dyn FnMut(Event<'_>) -> Flow) -> Result
     parse_paged(bytes, &Paging::new(Pages::IN_MEMORY), handler)
 }
 
+/// Whether `bytes` are read as UTF-8 throughout, so that the ASCII characters of the document
+/// stand in them as their ASCII bytes: their first bytes imply UTF-8, and the XML declaration
+/// they start with, if any, names no other encoding.
+pub fn is_read_as_utf8(bytes: &[u8]) -> bool {
+    let Some((detected, _, start)) = detect_encoding(bytes) else {
+        return false;
+    };
+    if detected != "UTF-8" {
+        return false;
+    }
+    let Some(declaration) = bytes[start..].strip_prefix(b"<?xml") else {
+        return true;
+    };
+    let Some(end) = memchr::memmem::find(declaration, b"?>") else {
+        return false;
+    };
+    let declaration = &declaration[..end];
+    let Some(at) = memchr::memmem::find(declaration, b"encoding") else {
+        return true;
+    };
+    let Some(value) = declaration[at + b"encoding".len()..]
+        .trim_ascii_start()
+        .strip_prefix(b"=")
+        .map(<[u8]>::trim_ascii_start)
+    else {
+        return false;
+    };
+    match value.split_first() {
+        Some((&quote, value)) if quote == b'"' || quote == b'\'' => value
+            .split(|&byte| byte == quote)
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(b"UTF-8")),
+        _ => false,
+    }
+}
+
 /// [`parse`] of `bytes` whose pages `paging` releases as their characters are first checked.
 pub(crate) fn parse_paged(
     bytes: &[u8],

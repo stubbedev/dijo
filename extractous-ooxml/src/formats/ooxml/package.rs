@@ -1,21 +1,30 @@
 //! An Office Open XML package as POI's `OPCPackage` opens it: the parts of a ZIP archive with the
 //! content types `[Content_Types].xml` gives them, ordered as POI orders part names, and the
-//! relationships of the package and of each part. A package POI would open in a degraded way or
-//! refuse, or one using what this port does not read, is [`Unported`].
+//! relationships of the package and of each part. An archive whose central directory
+//! commons-compress's `ZipFile` cannot read is read front to back by its local headers, as POI's
+//! `ZipPackage` falls back to a `ZipArchiveInputStream`. A package POI would open in a degraded
+//! way, or one using what this port does not read, is [`Unported`]; one POI fails to open is
+//! [`Unopened::Corrupt`].
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
+use std::sync::Arc;
 
 use zip::ZipArchive;
 
 use super::uri::{self, Resolution};
+use crate::compress::zip::file::ZipFile;
+use crate::compress::zip::stream::{self, ZipStream};
+use crate::compress::zip::Content;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::zip_file::{self, central_directory_records};
-use crate::formats::Failure;
 pub(crate) use crate::formats::Unported;
+use crate::formats::{Declined, Failure};
 use crate::input::{Input, Pages};
 use crate::java;
+use crate::Error;
 
 const CONTENT_TYPES: &str = "[Content_Types].xml";
 const TYPES_NAMESPACE: &str = "http://schemas.openxmlformats.org/package/2006/content-types";
@@ -88,13 +97,179 @@ pub(crate) struct Part {
     pub(crate) relationships: Vec<Relationship>,
 }
 
-/// An opened package.
-pub(crate) struct Package<'a> {
+/// Why a package is not opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Unopened {
+    /// What this port does not open as POI does: Tika's path reads it.
+    Unported(Unported),
+    /// Why POI fails to open it, where `OOXMLExtractorFactory` throws `Error opening OOXML file`.
+    Corrupt(String),
+}
+
+impl From<Unported> for Unopened {
+    fn from(unported: Unported) -> Self {
+        Self::Unported(unported)
+    }
+}
+
+impl From<Unopened> for Declined {
+    fn from(unopened: Unopened) -> Self {
+        match unopened {
+            Unopened::Unported(unported) => unported.into(),
+            Unopened::Corrupt(reason) => Declined::Fails(Error::ParseError(format!(
+                "Error opening OOXML file: {reason}"
+            ))),
+        }
+    }
+}
+
+/// Where the entries of the package's archive are read from.
+enum Entries<'a> {
+    /// The central directory.
+    Directory(ZipArchive<Cursor<&'a [u8]>>),
+    /// The local headers, front to back: each entry's content, read as the archive was opened.
+    Stream(Vec<Input<'a>>),
+}
+
+/// The archive of a package.
+struct Archive<'a> {
     input: &'a [u8],
     pages: Pages<'a>,
-    archive: ZipArchive<Cursor<&'a [u8]>>,
-    /// The names of the archive's entries, in its order.
-    entry_names: Vec<String>,
+    entries: Entries<'a>,
+    /// The names of the entries, in the archive's order.
+    names: Vec<String>,
+}
+
+impl<'a> Archive<'a> {
+    /// `ZipPackage`'s archive: `ZipFile`'s, else, where `ZipFile` cannot read the central
+    /// directory, `ZipInputStreamZipEntrySource`'s.
+    fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Unopened> {
+        let archive = match ZipArchive::new(Cursor::new(input)) {
+            Ok(archive) => archive,
+            Err(_) if ZipFile::open(input).is_err() => return Self::stream(input, pages),
+            Err(e) => {
+                return Err(
+                    Unported(format!("the ZIP archive cannot be read as a whole: {e}")).into(),
+                )
+            }
+        };
+        if archive.len() > MAX_ENTRIES {
+            return Err(Unported(format!(
+                "the archive has {} entries, more than POI opens",
+                archive.len()
+            ))
+            .into());
+        }
+        let names = entry_names(&archive, input)?;
+        Ok(Self {
+            input,
+            pages,
+            entries: Entries::Directory(archive),
+            names,
+        })
+    }
+
+    /// `ZipInputStreamZipEntrySource` over `ZipHelper.openZipStream`: every entry read whole
+    /// as the archive is opened, by a stream that reads names as UTF-8 and allows stored entries
+    /// with a data descriptor.
+    fn stream(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Unopened> {
+        let mut zip = ZipStream::new(input, true).without_unicode_extra_fields();
+        let mut names = Vec::new();
+        let mut contents = Vec::new();
+        let mut seen = HashSet::new();
+        while let Some(entry) = zip.next_entry().map_err(unstreamed)? {
+            if entry.name.is_empty() {
+                return Err(Unopened::Corrupt(
+                    "Input file contains an entry with an empty name".to_owned(),
+                ));
+            }
+            if !seen.insert(entry.name.to_lowercase()) {
+                return Err(Unopened::Corrupt(format!(
+                    "Input file contains more than 1 entry with the name {}",
+                    entry.name
+                )));
+            }
+            let content = match zip.content().map_err(unstreamed)? {
+                Content::Complete(content) => content,
+                Content::Truncated(_) => {
+                    return Err(Unopened::Corrupt(format!(
+                        "Truncated ZIP file: the archive has no central directory, and the data \
+                         of its entry {} ends before the entry does",
+                        entry.name
+                    )))
+                }
+                Content::Oversized(_) => {
+                    return Err(Unported(format!(
+                        "the entry {} inflates past what the port holds",
+                        entry.name
+                    ))
+                    .into())
+                }
+            };
+            contents.push(match content {
+                Cow::Borrowed(stored) => Input::Within(stored, pages),
+                Cow::Owned(inflated) => Input::Read(Arc::new(inflated)),
+            });
+            names.push(entry.name);
+        }
+        Ok(Self {
+            input,
+            pages,
+            entries: Entries::Stream(contents),
+            names,
+        })
+    }
+
+    /// The content of the entry `index`: the archive's own bytes where it is stored.
+    fn read(&self, index: usize) -> Result<Input<'a>, Unported> {
+        match &self.entries {
+            Entries::Directory(archive) => {
+                zip_file::read_entry(&mut archive.clone(), self.input, self.pages, index)
+                    .map_err(|e| Unported(format!("the ZIP entry {index} cannot be read: {e}")))
+            }
+            Entries::Stream(contents) => Ok(contents[index].clone()),
+        }
+    }
+
+    /// The uncompressed size of the entry `index`.
+    fn size(&self, index: usize) -> Result<u64, Unported> {
+        match &self.entries {
+            Entries::Directory(archive) => archive
+                .clone()
+                .by_index_raw(index)
+                .map(|entry| entry.size())
+                .map_err(|e| {
+                    Unported(format!(
+                        "the ZIP entry of {} cannot be read: {e}",
+                        self.names[index]
+                    ))
+                }),
+            Entries::Stream(contents) => Ok(contents[index].len() as u64),
+        }
+    }
+}
+
+/// Why the stream POI falls back to stops on an archive: what commons-compress throws, which
+/// fails the package, but for a compression method this port does not decompress.
+fn unstreamed(failure: stream::Failure) -> Unopened {
+    match failure {
+        stream::Failure::Method(method) => Unopened::Unported(Unported(format!(
+            "an entry is compressed with method {method}, which the port does not decompress"
+        ))),
+        stream::Failure::DataDescriptor | stream::Failure::Unsupported => Unopened::Corrupt(
+            "the archive has no central directory, and an entry uses a ZIP feature its stream \
+             does not read"
+                .to_owned(),
+        ),
+        stream::Failure::Io => Unopened::Corrupt(
+            "the archive has no central directory, and its local headers cannot be read".to_owned(),
+        ),
+    }
+}
+
+/// An opened package.
+pub(crate) struct Package<'a> {
+    archive: Archive<'a>,
     /// The parts in POI's order of part names, which is that of `getParts`.
     pub(crate) parts: Vec<Part>,
     /// The package's own relationships, by id.
@@ -103,28 +278,16 @@ pub(crate) struct Package<'a> {
 
 impl<'a> Package<'a> {
     /// Opens `input`, whose pages are `pages`, as `OPCPackage.open` does.
-    pub(crate) fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Unported> {
-        let mut archive = ZipArchive::new(Cursor::new(input))
-            .map_err(|e| Unported(format!("the ZIP archive cannot be read as a whole: {e}")))?;
-        if archive.len() > MAX_ENTRIES {
-            return Err(Unported(format!(
-                "the archive has {} entries, more than POI opens",
-                archive.len()
-            )));
-        }
-        let names = entry_names(&archive, input)?;
-        let content_types_entry = names
+    pub(crate) fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Unopened> {
+        let archive = Archive::open(input, pages)?;
+        let content_types_entry = archive
+            .names
             .iter()
             .position(|name| name == CONTENT_TYPES)
             .ok_or_else(|| Unported(format!("the package has no {CONTENT_TYPES}")))?;
-        let content_types = ContentTypes::read(&read_entry(
-            &mut archive,
-            input,
-            pages,
-            content_types_entry,
-        )?)?;
+        let content_types = ContentTypes::read(&archive.read(content_types_entry)?)?;
         let mut entries: Vec<(String, String, usize)> = Vec::new();
-        for (index, name) in names.iter().enumerate() {
+        for (index, name) in archive.names.iter().enumerate() {
             if name.eq_ignore_ascii_case(CONTENT_TYPES)
                 || name.starts_with("[trash]")
                 || name.ends_with('/')
@@ -134,7 +297,8 @@ impl<'a> Package<'a> {
             if !name.chars().all(uri::is_plain_name_character) {
                 return Err(Unported(format!(
                     "the entry {name:?} has characters this port does not read part names of"
-                )));
+                ))
+                .into());
             }
             let part_name = if name.starts_with('/') {
                 name.clone()
@@ -151,7 +315,8 @@ impl<'a> Package<'a> {
                 return Err(Unported(format!(
                     "the part {part_name} has the content type {content_type:?}, which this \
                      port does not read"
-                )));
+                ))
+                .into());
             }
             entries.push((part_name, content_type.to_owned(), index));
         }
@@ -161,13 +326,10 @@ impl<'a> Package<'a> {
         for (name, content_type, entry) in entries {
             let key = name.to_ascii_lowercase();
             if by_name.contains_key(&key) {
-                return Err(Unported(format!("the package has two parts named {name}")));
+                return Err(Unported(format!("the package has two parts named {name}")).into());
             }
             by_name.insert(key, parts.len());
-            let size = archive
-                .by_index_raw(entry)
-                .map_err(|e| Unported(format!("the ZIP entry of {name} cannot be read: {e}")))?
-                .size();
+            let size = archive.size(entry)?;
             parts.push(Part {
                 name,
                 content_type,
@@ -177,10 +339,7 @@ impl<'a> Package<'a> {
             });
         }
         let mut package = Package {
-            input,
-            pages,
             archive,
-            entry_names: names,
             parts,
             relationships: Vec::new(),
         };
@@ -197,21 +356,18 @@ impl<'a> Package<'a> {
 
     /// The bytes of `part`: the archive's own where it is stored.
     pub(crate) fn read(&self, part: usize) -> Result<Input<'a>, Failure> {
-        read_entry(
-            &mut self.archive.clone(),
-            self.input,
-            self.pages,
-            self.parts[part].entry,
-        )
-        .map_err(|Unported(reason)| Failure::Malformed(reason))
+        self.archive
+            .read(self.parts[part].entry)
+            .map_err(|Unported(reason)| Failure::Malformed(reason))
     }
 
     /// The bytes of the archive's entry named `name` exactly, as `ZipPackage.getZipArchive()`
     /// finds it among the entries, if there is one.
     pub(crate) fn read_entry_named(&self, name: &str) -> Option<Result<Input<'a>, Failure>> {
-        let entry = self.entry_names.iter().position(|entry| entry == name)?;
+        let entry = self.archive.names.iter().position(|entry| entry == name)?;
         Some(
-            read_entry(&mut self.archive.clone(), self.input, self.pages, entry)
+            self.archive
+                .read(entry)
                 .map_err(|Unported(reason)| Failure::Malformed(reason)),
         )
     }
@@ -271,12 +427,7 @@ impl<'a> Package<'a> {
         let Some(&rels_part) = by_name.get(&rels_name.to_ascii_lowercase()) else {
             return Ok(Vec::new());
         };
-        let bytes = read_entry(
-            &mut self.archive,
-            self.input,
-            self.pages,
-            self.parts[rels_part].entry,
-        )?;
+        let bytes = self.archive.read(self.parts[rels_part].entry)?;
         let mut reader = RelationshipsReader::default();
         xml::parse_sax(&bytes, &rels_name, &mut reader)
             .map_err(|e| Unported(format!("POI fails on {rels_name}: {}", describe(&e))))?;
@@ -387,18 +538,6 @@ fn entry_names(archive: &ZipArchive<Cursor<&[u8]>>, input: &[u8]) -> Result<Vec<
                 .map_err(|e| Unported(format!("an entry name cannot be read: {e}")))
         })
         .collect()
-}
-
-/// The bytes of the entry `index` of the archive `input`: the archive's own where the entry is
-/// stored.
-fn read_entry<'a>(
-    archive: &mut ZipArchive<Cursor<&'a [u8]>>,
-    input: &'a [u8],
-    pages: Pages<'a>,
-    index: usize,
-) -> Result<Input<'a>, Unported> {
-    zip_file::read_entry(archive, input, pages, index)
-        .map_err(|e| Unported(format!("the ZIP entry {index} cannot be read: {e}")))
 }
 
 /// `PackagingURIHelper.getRelationshipPartName`.

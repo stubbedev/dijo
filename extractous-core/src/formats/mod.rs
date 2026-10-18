@@ -1230,7 +1230,8 @@ mod tests {
                 if exceptions.iter().any(|(exception, _)| *exception == name) {
                     continue;
                 }
-                // The fixes of #89, #99, #105 and #118 depart from Tika's path systematically.
+                // The fixes of #89, #99, #105, #118, #129 and #132 depart from Tika's path
+                // systematically.
                 let head: crate::formats::parity::Normalisation =
                     crate::formats::dc_xml::without_head;
                 let departure: Option<(crate::formats::parity::NativeRewrite, _)> = match parser
@@ -1253,10 +1254,20 @@ mod tests {
                         Some((crate::formats::dif::as_tika_keeps_last_pieces, None))
                     }
                     "extractous::MIFParser" => Some((crate::formats::mif::as_tika_writes_it, None)),
+                    "extractous::OneNoteParser" => Some((
+                        crate::formats::onenote::as_tika_names_packaged_objects,
+                        None,
+                    )),
+                    "extractous::ClassParser" => Some((
+                        crate::formats::class_file::as_written,
+                        Some(crate::formats::class_file::without_misread_access),
+                    )),
                     _ => None,
                 };
-                // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared, and that of
-                // #118 the source language XLIFF stores as `original`.
+                // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared, that of
+                // #118 the source language XLIFF stores as `original`, and that of #124 the page
+                // counts Tika's IDMLParser adds up across the documents it parses, so that the
+                // second parse of a document, under a byte budget, counts twice.
                 let mut departures: Vec<crate::formats::parity::Departure> = match parser.name() {
                     "extractous::RFC822Parser"
                     | "extractous::EmlxParser"
@@ -1264,6 +1275,9 @@ mod tests {
                     "extractous::OfficeParser" => crate::formats::msg::RECIPIENT_NAMES.to_vec(),
                     "extractous::XLIFF12Parser" | "extractous::XLZParser" => {
                         crate::formats::translation::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
+                    }
+                    "extractous::IDMLParser" => {
+                        crate::formats::idml::ACCUMULATED_PAGE_COUNTS.to_vec()
                     }
                     _ => Vec::new(),
                 };

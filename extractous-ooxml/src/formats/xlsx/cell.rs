@@ -6,11 +6,13 @@ use std::cmp::Ordering;
 
 use crate::formats::Failure;
 use crate::java::{is_digit, parse_int};
+use crate::Error;
 
+/// The `IllegalArgumentException` POI throws on an invalid reference, which fails Tika's parse.
 fn invalid(what: &str, reference: &str) -> Failure {
-    Failure::Malformed(format!(
+    Failure::Extraction(Error::ParseError(format!(
         "The cell reference {reference:?} is invalid: {what}"
-    ))
+    )))
 }
 
 /// `CellReference.convertColStringToIndex`: letters as a base-26 number from `A` = 0, a `$` only

@@ -5,16 +5,15 @@
 //! adapter of Microsoft's protocol test suites.
 //!
 //! The basic objects are read bit by bit, low bit first, as the suite's `BitReader` reads
-//! them. Tika reads every GUID with `UUID.nameUUIDFromBytes`, the MD5 hash of its sixteen bytes,
-//! which this port keeps: the GUIDs only tell objects apart, and Tika names some by them.
+//! them. GUIDs are read as the GUIDs they are, where Tika makes each the MD5 hash of its sixteen
+//! bytes with `UUID.nameUUIDFromBytes`, so that the encryption key root it compares them with
+//! never matched (#129).
 
 mod store;
 mod stream;
 mod walk;
 
 use std::fmt;
-
-use md5::{Digest, Md5};
 
 use super::file::Thrown;
 use crate::formats::xhtml::Xhtml;
@@ -54,29 +53,18 @@ pub(super) fn walk(package: &Package, xhtml: &mut Xhtml) -> Walked {
     walk::walk(package, xhtml)
 }
 
-/// A `java.util.UUID`, by its sixteen bytes, most significant first.
+/// A GUID, by its sixteen bytes in the order it is written as text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Uuid([u8; 16]);
 
 impl Uuid {
-    /// `new UUID(0, 0)`, `GuidUtil.emptyGuid`.
+    /// The null GUID, `GuidUtil.emptyGuid`.
     const EMPTY: Uuid = Uuid([0; 16]);
 
-    /// `UUID.nameUUIDFromBytes`: the MD5 hash of `bytes`, marked as a version 3 UUID.
-    fn named(bytes: &[u8]) -> Uuid {
-        let mut hash: [u8; 16] = Md5::digest(bytes).into();
-        hash[6] = (hash[6] & 0x0f) | 0x30;
-        hash[8] = (hash[8] & 0x3f) | 0x80;
-        Uuid(hash)
-    }
-
-    /// `UUID.hashCode`.
-    fn java_hash(self) -> u32 {
-        let half = |range: std::ops::Range<usize>| {
-            u64::from_be_bytes(self.0[range].try_into().expect("eight bytes"))
-        };
-        let folded = half(0..8) ^ half(8..16);
-        ((folded >> 32) as u32) ^ (folded as u32)
+    /// The GUID stored as `bytes`: its first three fields little-endian, the rest as written.
+    fn stored(bytes: [u8; 16]) -> Uuid {
+        let order = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+        Uuid(order.map(|at| bytes[at]))
     }
 }
 
@@ -107,11 +95,6 @@ struct ExGuid {
 }
 
 impl ExGuid {
-    /// `hashCode`.
-    fn java_hash(self) -> u32 {
-        self.guid.java_hash().wrapping_add(self.value as u32)
-    }
-
     /// `equals`, which leaves the type out.
     fn same(self, other: ExGuid) -> bool {
         self.guid == other.guid && self.value == other.value
@@ -172,15 +155,14 @@ fn thrown(class: &str, message: impl fmt::Display) -> Thrown {
     Thrown(format!("{class}: {message}"))
 }
 
-/// The message of an exception the JVM throws implicitly, as an array index out of bounds, as
-/// the native image of Tika's path, built to keep less of such exceptions, gives it.
-const IMPRECISE: &str = "Stack trace is imprecise, the top frames are missing and/or have wrong \
-                         line numbers. To get precise stack traces, build the image with option \
-                         -H:-ReduceImplicitExceptionStackTraceInformation";
-
-/// The `ArrayIndexOutOfBoundsException` of reading a byte array past its end.
-fn out_of_bounds() -> Thrown {
-    thrown("java.lang.ArrayIndexOutOfBoundsException", IMPRECISE)
+/// The `ArrayIndexOutOfBoundsException` of reading the byte at `index` of an array of `length`
+/// bytes, with the message the JVM gives it, where the native image of Tika's path gives one
+/// that says its stack trace is imprecise (#129).
+fn out_of_bounds(index: usize, length: usize) -> Thrown {
+    thrown(
+        "java.lang.ArrayIndexOutOfBoundsException",
+        format_args!("Index {index} out of bounds for length {length}"),
+    )
 }
 
 /// An exception of `class` that wraps `cause` as its message and its cause, as
@@ -239,13 +221,13 @@ impl<'a> Bits<'a> {
         Ok(self.read(count)? as u32 as i32)
     }
 
-    /// `readGuid`: sixteen bytes, as `UUID.nameUUIDFromBytes` makes a UUID of them.
+    /// `readGuid`: the GUID of the next sixteen bytes.
     fn guid(&mut self) -> Result<Uuid, Thrown> {
         let mut bytes = [0u8; 16];
         for byte in &mut bytes {
             *byte = self.read(8)? as u8;
         }
-        Ok(Uuid::named(&bytes))
+        Ok(Uuid::stored(bytes))
     }
 
     /// How many zero bits come before the next one bit, at most eight: the type of a compact
@@ -337,11 +319,13 @@ impl<'a> Cursor<'a> {
                 bits.read(64)?;
                 self.index += 25;
             }
-            _ => {
+            kind => {
                 return Err(thrown(
                     ILLEGAL_ARGUMENT,
-                    "Failed to parse SerialNumber object, Expect the type value is either 0 or \
-                     128, but the actual value is 0",
+                    format_args!(
+                        "Failed to parse SerialNumber object, Expect the type value is either 0 \
+                         or 128, but the actual value is {kind}"
+                    ),
                 ))
             }
         }
@@ -386,7 +370,10 @@ impl<'a> Cursor<'a> {
                 self.index += bytes.len();
                 Ok(bytes.to_vec())
             }
-            None => Err(out_of_bounds()),
+            None => Err(out_of_bounds(
+                self.data.len().max(self.index),
+                self.data.len(),
+            )),
         }
     }
 }
@@ -406,12 +393,10 @@ fn copy_of_range<const N: usize>(data: &[u8], from: usize) -> Result<[u8; N], Fa
     Ok(bytes)
 }
 
-/// `BitConverter.toUInt32`: four bytes from `index`, padded past the end, as the `long` it
-/// widens Java's `int` to.
-fn uint32(data: &[u8], index: usize) -> Result<i64, Failure> {
-    Ok(i64::from(i32::from_le_bytes(copy_of_range::<4>(
-        data, index,
-    )?)))
+/// `BitConverter.toUInt32`: the unsigned four bytes from `index`, padded past the end, where
+/// Tika widens a signed `int` to its `long` (#129).
+fn uint32(data: &[u8], index: usize) -> Result<u32, Failure> {
+    Ok(u32::from_le_bytes(copy_of_range::<4>(data, index)?))
 }
 
 /// `BitConverter.toInt32`, which fails on an array of fewer than four bytes.
@@ -426,8 +411,9 @@ fn int32(data: &[u8], index: usize) -> Result<i32, Failure> {
     Ok(uint32(data, index)? as i32)
 }
 
-/// `BitConverter.toInt16`, which fails on an array of fewer than two bytes.
-fn int16(data: &[u8], index: usize) -> Result<i16, Failure> {
+/// `BitConverter.toUInt16`: the unsigned two bytes from `index`, padded past the end, failing on
+/// an array of fewer than two bytes, where Tika reads them signed with `toInt16` (#129).
+fn uint16(data: &[u8], index: usize) -> Result<u16, Failure> {
     if data.len() < 2 {
         return Err(thrown(
             IO_EXCEPTION,
@@ -435,12 +421,50 @@ fn int16(data: &[u8], index: usize) -> Result<i16, Failure> {
         )
         .into());
     }
-    Ok(i16::from_le_bytes(copy_of_range::<2>(data, index)?))
+    Ok(u16::from_le_bytes(copy_of_range::<2>(data, index)?))
 }
 
-/// `AdapterHelper.readGuid`: the UUID of the sixteen bytes at `index`, padded past the end.
+/// `AdapterHelper.readGuid`: the GUID of the sixteen bytes at `index`, padded past the end.
 fn read_guid(data: &[u8], index: usize) -> Result<Uuid, Failure> {
-    Ok(Uuid::named(&copy_of_range::<16>(data, index)?))
+    Ok(Uuid::stored(copy_of_range::<16>(data, index)?))
+}
+
+/// `text` with the GUID of each embedded document's relationship ID, `_value_guid`, as the UUID
+/// `UUID.nameUUIDFromBytes` makes of its stored bytes, and each array index out of bounds with
+/// the message the native image of Tika's path gives it.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub(super) fn as_tika_names(text: &str) -> String {
+    use md5::{Digest, Md5};
+    use regex::{Captures, Regex};
+
+    const IMPRECISE: &str = "Stack trace is imprecise, the top frames are missing and/or have \
+                             wrong line numbers. To get precise stack traces, build the image \
+                             with option -H:-ReduceImplicitExceptionStackTraceInformation";
+    let relationship = Regex::new(
+        r"(_-?\d+_)([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})\b",
+    )
+    .expect("the relationship ID pattern is valid");
+    let named = relationship.replace_all(text, |groups: &Captures| {
+        let hex: String = (2..=6).map(|group| &groups[group]).collect();
+        let canonical: Vec<u8> = (0..16)
+            .map(|at| u8::from_str_radix(&hex[2 * at..2 * at + 2], 16).expect("hex digits"))
+            .collect();
+        let order = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+        let stored = order.map(|at| canonical[at]);
+        let mut hash: [u8; 16] = Md5::digest(stored).into();
+        hash[6] = (hash[6] & 0x0f) | 0x30;
+        hash[8] = (hash[8] & 0x3f) | 0x80;
+        format!("{}{}", &groups[1], Uuid(hash))
+    });
+    let index =
+        Regex::new(r"ArrayIndexOutOfBoundsException: Index \d+ out of bounds for length \d+")
+            .expect("the index pattern is valid");
+    index
+        .replace_all(
+            &named,
+            format!("ArrayIndexOutOfBoundsException: {IMPRECISE}"),
+        )
+        .into_owned()
 }
 
 #[cfg(test)]

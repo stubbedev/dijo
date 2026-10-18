@@ -1,7 +1,8 @@
 //! Tika's `OneNoteParser` over OneNote 2010 and later sections in the MS-ONESTORE format: the
-//! header's numbers as metadata, then the file node lists walked from the root
-//! ([`structure`], [`walker`]), the text of their objects written and their file data handed
-//! to the embedded document extractor. Where the structure or the walk throws, Tika records the
+//! header's numbers as metadata, then the file node lists read from the root ([`structure`]),
+//! and the current revision of the section walked from its root object space ([`walker`]), the
+//! text of its objects written and their file data handed to the embedded document extractor,
+//! where Tika walks every revision (#122). Where the structure or the walk throws, Tika records the
 //! exception and falls back to dumping the file's runs of printable characters ([`legacy`]),
 //! after anything the walk wrote. Sections in the alternative packaging of MS-FSSHTTPB, which
 //! OneNote writes for files from OneDrive, are read as Tika reads them ([`fsshttpb`]), and
@@ -139,7 +140,10 @@ fn set_header_metadata(metadata: &mut TikaMetadata, header: &Header) {
             "cbFreeSpaceInFreeChunkList",
             header.cb_free_space_in_free_chunk_list,
         ),
-        ("cbLegacyExpectedFileLength", 0),
+        (
+            "cbLegacyExpectedFileLength",
+            header.cb_legacy_expected_file_length,
+        ),
         (
             "cbLegacyFreeSpaceInFreeChunkList",
             header.cb_legacy_free_space_in_free_chunk_list,
@@ -185,19 +189,36 @@ fn set_found_metadata(metadata: &mut TikaMetadata, found: Found) {
             metadata.set_values(name, sorted(values));
         }
     }
-    metadata.set(
-        "onenote:creationTimestamp",
-        found.creation_timestamp.to_string(),
-    );
+    if let Some(created) = found.creation_timestamp {
+        metadata.set("onenote:creationTimestamp", created.to_string());
+    }
     if let Some(seconds) = found.last_modified_timestamp {
         metadata.set(
             "onenote:lastModifiedTimestamp",
             (seconds * 1000).to_string(),
         );
     }
-    if found.last_modified > i64::MIN {
-        metadata.set("dcterms:modified", found.last_modified.to_string());
+    if let Some(modified) = found.last_modified {
+        metadata.set("dcterms:modified", modified.to_string());
     }
+}
+
+/// For a parity comparison (#129): a native result as Tika's path writes what the fixes of the
+/// FSSHTTPB reading change. The GUID of each embedded document's relationship ID becomes the
+/// MD5-named UUID Tika makes of its bytes, and each array index out of bounds takes the message
+/// the native image of Tika's path gives it.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn as_tika_names_packaged_objects(
+    text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    _: &crate::formats::parity::ComparedMetadata,
+) {
+    let rewrite = |value: &mut String| *value = fsshttpb::as_tika_names(value);
+    rewrite(text);
+    metadata
+        .iter_mut()
+        .flat_map(|(_, values)| values.iter_mut())
+        .for_each(rewrite);
 }
 
 #[cfg(all(test, feature = "tika"))]

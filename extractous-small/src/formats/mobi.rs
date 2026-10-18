@@ -1,9 +1,10 @@
 //! Mobipocket and Kindle books (MOBI, AZW, AZW3) without DRM, as our Java `MobiParser` reads
 //! them: the title, authors and language of the book's MOBI and EXTH headers as metadata, then
 //! the text records of the Palm database, decompressed and handed with their charset to the
-//! HTML parser, which writes the document under the book's metadata. The book is read as
-//! Java's `ByteBuffer` reads it, big-endian at `int` indexes, an index outside it failing the
-//! parse.
+//! HTML parser, which writes the document under the book's metadata. The book is read
+//! big-endian, an index outside it failing the parse. Positions are summed without overflow, so
+//! a header naming metadata past the book's end is passed over, where Java's `int` sums wrap
+//! around to an index that fails the parse (#105).
 //!
 //! Our Java parser has the HTML parser write the head from the HTML's own metadata, and adds the
 //! book's after the document has ended, where the head never shows it (#105).
@@ -16,25 +17,25 @@ use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::strip;
 use crate::text::charset::Charset;
 
-const PALM_DATABASE_HEADER: i32 = 78;
-const RECORD_COUNT: i32 = 76;
-const RECORD_ENTRY: i32 = 8;
-const NO_COMPRESSION: i32 = 1;
-const PALMDOC_COMPRESSION: i32 = 2;
-const HUFF_CDIC_COMPRESSION: i32 = 17480;
-const MOBI_HEADER: i32 = 16;
-const MOBI_MAGIC: i32 = 0x4D4F_4249;
-const UTF_8: i32 = 65001;
-const EXTRA_FLAGS_MIN_HEADER_LENGTH: i32 = 0xE4;
-const EXTRA_FLAGS: i32 = 0xF2;
-const FULL_NAME_OFFSET: i32 = 0x54;
-const FULL_NAME_LENGTH: i32 = 0x58;
-const EXTH_FLAGS: i32 = MOBI_HEADER + 0x70;
-const EXTH_PRESENT: i32 = 0x40;
-const EXTH_MAGIC: i32 = 0x4558_5448;
-const EXTH_AUTHOR: i32 = 100;
-const EXTH_TITLE: i32 = 503;
-const EXTH_LANGUAGE: i32 = 524;
+const PALM_DATABASE_HEADER: i64 = 78;
+const RECORD_COUNT: i64 = 76;
+const RECORD_ENTRY: i64 = 8;
+const NO_COMPRESSION: i64 = 1;
+const PALMDOC_COMPRESSION: i64 = 2;
+const HUFF_CDIC_COMPRESSION: i64 = 17480;
+const MOBI_HEADER: i64 = 16;
+const MOBI_MAGIC: i64 = 0x4D4F_4249;
+const UTF_8: i64 = 65001;
+const EXTRA_FLAGS_MIN_HEADER_LENGTH: i64 = 0xE4;
+const EXTRA_FLAGS: i64 = 0xF2;
+const FULL_NAME_OFFSET: i64 = 0x54;
+const FULL_NAME_LENGTH: i64 = 0x58;
+const EXTH_FLAGS: i64 = MOBI_HEADER + 0x70;
+const EXTH_PRESENT: i64 = 0x40;
+const EXTH_MAGIC: i64 = 0x4558_5448;
+const EXTH_AUTHOR: i64 = 100;
+const EXTH_TITLE: i64 = 503;
+const EXTH_LANGUAGE: i64 = 524;
 const MAX_TEXT_BYTES: usize = 256 << 20;
 /// The most a PalmDOC byte decompresses to: a two-byte back copy of ten.
 const MAX_EXPANSION: usize = 5;
@@ -43,22 +44,22 @@ fn broken(reason: impl Into<String>) -> Error {
     Error::ParseError(reason.into())
 }
 
-/// The book as Java's `ByteBuffer` reads it: big-endian, at `int` indexes, an index outside it
-/// an `IndexOutOfBoundsException`.
+/// The book, read big-endian at indexes wide enough that no sum of a position and a length
+/// read from it overflows.
 #[derive(Clone, Copy)]
 struct Book<'a> {
     bytes: &'a [u8],
-    limit: i32,
+    limit: i64,
 }
 
 impl<'a> Book<'a> {
     fn new(bytes: &'a [u8]) -> Result<Self, Error> {
-        let limit = i32::try_from(bytes.len())
-            .map_err(|_| broken("The book is larger than a Java array holds"))?;
+        let limit = i64::try_from(bytes.len())
+            .map_err(|_| broken("The book is larger than an index addresses"))?;
         Ok(Self { bytes, limit })
     }
 
-    fn bytes(self, at: i32, length: i32) -> Result<&'a [u8], Error> {
+    fn bytes(self, at: i64, length: i64) -> Result<&'a [u8], Error> {
         usize::try_from(at)
             .ok()
             .zip(usize::try_from(length).ok())
@@ -67,15 +68,17 @@ impl<'a> Book<'a> {
     }
 
     /// `getShort(at) & 0xffff`.
-    fn u16_at(self, at: i32) -> Result<i32, Error> {
+    fn u16_at(self, at: i64) -> Result<i64, Error> {
         let bytes = self.bytes(at, 2)?;
-        Ok(i32::from(u16::from_be_bytes([bytes[0], bytes[1]])))
+        Ok(i64::from(u16::from_be_bytes([bytes[0], bytes[1]])))
     }
 
-    /// `getInt(at)`.
-    fn i32_at(self, at: i32) -> Result<i32, Error> {
+    /// The signed 32-bit integer at `at`.
+    fn i32_at(self, at: i64) -> Result<i64, Error> {
         let bytes = self.bytes(at, 4)?;
-        Ok(i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        Ok(i64::from(i32::from_be_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3],
+        ])))
     }
 }
 
@@ -83,9 +86,9 @@ impl<'a> Book<'a> {
 struct Markup<'a> {
     book: Book<'a>,
     /// The offset of record 0, which holds the PalmDOC and MOBI headers.
-    header: i32,
+    header: i64,
     /// The length of the MOBI header, when the book has one.
-    mobi_length: Option<i32>,
+    mobi_length: Option<i64>,
     charset: Charset,
     html: Vec<u8>,
 }
@@ -111,7 +114,7 @@ fn read(input: &[u8]) -> Result<Markup<'_>, Error> {
     let records = book.u16_at(RECORD_COUNT)?;
     let mut offsets = (0..records)
         .map(|index| book.i32_at(PALM_DATABASE_HEADER + index * RECORD_ENTRY))
-        .collect::<Result<Vec<i32>, Error>>()?;
+        .collect::<Result<Vec<i64>, Error>>()?;
     offsets.push(book.limit);
     if let Some(index) = offsets
         .windows(2)
@@ -123,9 +126,9 @@ fn read(input: &[u8]) -> Result<Markup<'_>, Error> {
     }
     let header = offsets[0];
     let compression = book.u16_at(header)?;
-    let text_length = book.i32_at(header.wrapping_add(4))? as u32;
-    let text_records = book.u16_at(header.wrapping_add(8))?;
-    let encryption = book.u16_at(header.wrapping_add(12))?;
+    let text_length = book.i32_at(header + 4)? as u32;
+    let text_records = book.u16_at(header + 8)?;
+    let encryption = book.u16_at(header + 12)?;
     if encryption != 0 {
         return Err(Error::Encrypted("The book is protected by DRM".to_owned()));
     }
@@ -140,20 +143,20 @@ fn read(input: &[u8]) -> Result<Markup<'_>, Error> {
             "The book's header names more text than the book holds",
         ));
     }
-    let mobi = header.wrapping_add(MOBI_HEADER + 4) <= book.limit
-        && book.i32_at(header.wrapping_add(MOBI_HEADER))? == MOBI_MAGIC;
+    let mobi =
+        header + MOBI_HEADER + 4 <= book.limit && book.i32_at(header + MOBI_HEADER)? == MOBI_MAGIC;
     let mobi_length = if mobi {
-        Some(book.i32_at(header.wrapping_add(MOBI_HEADER + 4))?)
+        Some(book.i32_at(header + MOBI_HEADER + 4)?)
     } else {
         None
     };
     let extra_flags = match mobi_length {
         Some(length) if length >= EXTRA_FLAGS_MIN_HEADER_LENGTH => {
-            book.u16_at(header.wrapping_add(EXTRA_FLAGS))?
+            book.u16_at(header + EXTRA_FLAGS)?
         }
         _ => 0,
     };
-    let charset = if mobi && book.i32_at(header.wrapping_add(MOBI_HEADER + 12))? == UTF_8 {
+    let charset = if mobi && book.i32_at(header + MOBI_HEADER + 12)? == UTF_8 {
         Charset::named("UTF-8")
     } else {
         Charset::named("windows-1252")
@@ -185,7 +188,7 @@ fn read(input: &[u8]) -> Result<Markup<'_>, Error> {
 /// `trailingBytes`: the size of the entries the book's extra data flags say end a text record,
 /// one entry, sized by a backward variable-length integer, per flag from the second on, then
 /// the bytes of a multibyte character cut by the record's end when the first flag is set.
-fn trailing_bytes(record: &[u8], extra_flags: i32) -> Result<usize, Error> {
+fn trailing_bytes(record: &[u8], extra_flags: i64) -> Result<usize, Error> {
     let cut = || broken("A text record ends before its trailing entries");
     let length = record.len();
     let mut trailing = 0;
@@ -275,31 +278,32 @@ fn book_metadata(markup: &Markup, metadata: &mut TikaMetadata) -> Result<(), Err
             ))
         })
     };
-    let name_offset = book.i32_at(header.wrapping_add(FULL_NAME_OFFSET))?;
-    let name_length = book.i32_at(header.wrapping_add(FULL_NAME_LENGTH))?;
-    let name_at = header.wrapping_add(name_offset);
-    if name_offset > 0 && name_length > 0 && name_at.wrapping_add(name_length) <= book.limit {
+    let name_offset = book.i32_at(header + FULL_NAME_OFFSET)?;
+    let name_length = book.i32_at(header + FULL_NAME_LENGTH)?;
+    let name_at = header + name_offset;
+    if name_offset > 0 && name_length > 0 && name_at + name_length <= book.limit {
         metadata.set("dc:title", decode(book.bytes(name_at, name_length)?)?);
     }
-    let flags = book.i32_at(header.wrapping_add(EXTH_FLAGS))?;
-    let exth = header.wrapping_add(MOBI_HEADER).wrapping_add(mobi_length);
+    let flags = book.i32_at(header + EXTH_FLAGS)?;
+    let exth = header + MOBI_HEADER + mobi_length;
     if flags & EXTH_PRESENT == 0
-        || exth.wrapping_add(12) > book.limit
+        || mobi_length < 0
+        || exth + 12 > book.limit
         || book.i32_at(exth)? != EXTH_MAGIC
     {
         return Ok(());
     }
-    let count = book.i32_at(exth.wrapping_add(8))?;
-    let mut offset = exth.wrapping_add(12);
+    let count = book.i32_at(exth + 8)?;
+    let mut offset = exth + 12;
     let mut entry = 0;
-    while entry < count && offset.wrapping_add(8) <= book.limit {
+    while entry < count && offset + 8 <= book.limit {
         let kind = book.i32_at(offset)?;
-        let length = book.i32_at(offset.wrapping_add(4))?;
-        if length < 8 || offset.wrapping_add(length) > book.limit {
+        let length = book.i32_at(offset + 4)?;
+        if length < 8 || offset + length > book.limit {
             return Ok(());
         }
         if matches!(kind, EXTH_AUTHOR | EXTH_TITLE | EXTH_LANGUAGE) {
-            let value = decode(book.bytes(offset.wrapping_add(8), length - 8)?)?;
+            let value = decode(book.bytes(offset + 8, length - 8)?)?;
             let value = strip(&value);
             match kind {
                 EXTH_AUTHOR => metadata.add("dc:creator", value),
@@ -307,7 +311,7 @@ fn book_metadata(markup: &Markup, metadata: &mut TikaMetadata) -> Result<(), Err
                 _ => metadata.set("dc:language", value),
             }
         }
-        offset = offset.wrapping_add(length);
+        offset += length;
         entry += 1;
     }
     Ok(())
@@ -397,6 +401,30 @@ mod tests {
             }
         }
         assert!(metadata.contains_key("dc:title"), "{metadata:?}");
+    }
+
+    #[test]
+    fn passes_over_metadata_a_header_places_past_the_book() {
+        let mut bytes = book(&Spec {
+            exth: vec![(100, b"Ada Lovelace")],
+            name: b"Full Name",
+            records: vec!["<p>Bølgerne</p>".as_bytes().to_vec()],
+            ..Spec::default()
+        });
+        let header = 78 + 8 * 2;
+        put(&mut bytes, header + 0x14, &0x7FFF_FFF0u32.to_be_bytes());
+        put(&mut bytes, header + 0x54, &0x7FFF_FFF0u32.to_be_bytes());
+        let (text, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(&bytes)
+            .unwrap();
+        assert_eq!(text.trim(), "Bølgerne");
+        assert!(!metadata.contains_key("dc:title"), "{metadata:?}");
+        assert!(!metadata.contains_key("dc:creator"), "{metadata:?}");
+        put(&mut bytes, header + 0x14, &(-8i32).to_be_bytes());
+        let (text, _) = crate::Extractor::new()
+            .extract_bytes_to_string(&bytes)
+            .unwrap();
+        assert_eq!(text.trim(), "Bølgerne");
     }
 
     /// A book to write: its PalmDOC header's fields, a MOBI header when `encoding` is given,

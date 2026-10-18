@@ -1,10 +1,16 @@
 //! Tika's `PagesContentHandler`: each page a `div`, headed and footed by the default header
 //! and footer with the page number in its format, its paragraphs, footnotes, annotations and
-//! the tables it refers to, three cells to a row, and the document's metadata.
+//! the tables it refers to, and the document's metadata.
+//!
+//! Where Tika's handler misreads the document, this one reads it as it is written (#132): a
+//! table's rows have as many cells as its grid has columns, each cell of its data source one,
+//! numbers and dates included; a header or footer keeps all of its text; a page group, which
+//! holds the objects placed on a page, is numbered as that page; and tables and annotations
+//! are found by their IDs only.
 
 use std::collections::HashMap;
 
-use super::{cell, integer, value, ContentHandler};
+use super::{integer, value, ContentHandler};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::StartTag;
 use crate::formats::Failure;
@@ -12,8 +18,6 @@ use crate::formats::Failure;
 const PAGE_COUNT: &str = "meta:page-count";
 /// The prefix `PAGES` gives metadata it maps to no property of its own.
 const METADATA_PREFIX: &str = "pages:";
-/// The cells `parseTableData` puts in a row, whatever the table's columns.
-const ROW_CELLS: usize = 3;
 const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 /// `AutoPageNumberUtils.MAX`.
 const LETTERS: i32 = 26;
@@ -138,12 +142,99 @@ fn roman(page: i32) -> Result<String, Failure> {
     Ok(numerals)
 }
 
-/// `Annotations`: the text of each annotation by its target, which may be missing, as a Java
-/// `HashMap` keys one by `null`.
+/// `Annotations`: the text of each annotation by its target, and the annotation being read,
+/// with its target if it has one.
 #[derive(Default)]
 struct Annotations {
-    texts: HashMap<Option<String>, String>,
+    texts: HashMap<String, String>,
     current: Option<(Option<String>, String)>,
+}
+
+/// A table being read: its ID, its columns, its rows, and where in its data source the reading
+/// is.
+#[derive(Default)]
+struct Table {
+    id: Option<String>,
+    columns: Option<usize>,
+    rows: Vec<Vec<String>>,
+    row: Vec<String>,
+    /// Inside the data source, how many elements are open in it: one for a cell being read.
+    datasource: Option<usize>,
+    /// The value of the cell being read.
+    cell: String,
+}
+
+impl Table {
+    /// The start of an element of the table.
+    fn start(&mut self, tag: &StartTag<'_>) -> Result<(), Failure> {
+        let name = tag.qualified_name;
+        match self.datasource {
+            Some(0) => {
+                self.cell = ["sf:v", "sf:cell-date"]
+                    .iter()
+                    .find_map(|attribute| value(tag, attribute))
+                    .unwrap_or_default()
+                    .to_owned();
+            }
+            Some(_) if name == "sf:ct" => {
+                if let Some(text) = value(tag, "sfa:s") {
+                    self.cell = text.to_owned();
+                }
+            }
+            Some(_) => {}
+            None if name == "sf:datasource" => {
+                self.datasource = Some(0);
+                return Ok(());
+            }
+            None => {
+                if name == "sf:grid" {
+                    let columns = integer(tag, "sf:numcols")?;
+                    self.columns = Some(
+                        usize::try_from(columns)
+                            .ok()
+                            .filter(|&n| n > 0)
+                            .ok_or_else(|| {
+                                Failure::Malformed(format!(
+                                    "A Pages table's grid has {columns} columns"
+                                ))
+                            })?,
+                    );
+                }
+                return Ok(());
+            }
+        }
+        self.datasource = self.datasource.map(|open| open + 1);
+        Ok(())
+    }
+
+    /// The end of an element of the table.
+    fn end(&mut self) -> Result<(), Failure> {
+        match self.datasource {
+            None => {}
+            Some(0) => self.datasource = None,
+            Some(open) => {
+                self.datasource = Some(open - 1);
+                if open == 1 {
+                    let columns = self.columns.ok_or_else(|| {
+                        Failure::Malformed("A Pages table has cells before its grid".to_owned())
+                    })?;
+                    self.row.push(std::mem::take(&mut self.cell));
+                    if self.row.len() == columns {
+                        self.rows.push(std::mem::take(&mut self.row));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The rows read, the last one even where it is cut short.
+    fn into_rows(mut self) -> Vec<Vec<String>> {
+        if !self.row.is_empty() {
+            self.rows.push(self.row);
+        }
+        self.rows
+    }
 }
 
 /// A Java `NullPointerException` the handler throws on a document whose parts come out of
@@ -159,39 +250,41 @@ pub(super) struct Pages {
     part: Option<Part>,
     ghost_text: bool,
     parse_property: bool,
+    /// The pages the text has started.
     pages: i32,
-    page_groups: i32,
+    /// The highest page a page group is placed on.
+    last_group_page: i32,
+    /// The number of the page being written, from when the first page or page group opens.
+    page: Option<i32>,
     headers: Option<HeaderFooter>,
     footers: Option<HeaderFooter>,
     /// The footnotes by their marks, and the mark last seen.
     footnotes: Option<(HashMap<String, String>, Option<String>)>,
     annotations: Option<Annotations>,
-    /// The tables by their IDs, which may be missing, as a Java `HashMap` keys one by `null`.
-    tables: HashMap<Option<String>, Vec<Vec<Option<String>>>>,
-    /// The ID of the table being read (`activeTableId`), which a table without one has not.
-    table: Option<String>,
-    row: Vec<Option<String>>,
+    /// The tables by their IDs.
+    tables: HashMap<String, Vec<Vec<String>>>,
+    table: Option<Table>,
     /// The local and qualified names of the element of metadata being read.
     metadata_element: Option<(String, String)>,
 }
 
 impl Pages {
     fn header(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        match &self.headers {
-            Some(headers) => headers.output(xhtml, self.pages),
-            None => Ok(()),
+        match (&self.headers, self.page) {
+            (Some(headers), Some(page)) => headers.output(xhtml, page),
+            _ => Ok(()),
         }
     }
 
     fn footer(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        match &self.footers {
-            Some(footers) => footers.output(xhtml, self.pages),
-            None => Ok(()),
+        match (&self.footers, self.page) {
+            (Some(footers), Some(page)) => footers.output(xhtml, page),
+            _ => Ok(()),
         }
     }
 
     fn any_page(&self) -> bool {
-        self.pages + self.page_groups > 0
+        self.page.is_some()
     }
 
     /// `writeMetaData`: the value of a primitive element of metadata, as Tika's property for its
@@ -211,37 +304,19 @@ impl Pages {
         }
     }
 
-    /// `parseTableData`: the columns of a grid, which go unused, and each `sf:ct` value a cell.
-    fn table_data(&mut self, tag: &StartTag<'_>) -> Result<(), Failure> {
-        match tag.qualified_name {
-            "sf:grid" => {
-                integer(tag, "sf:numcols")?;
-            }
-            "sf:ct" => {
-                self.row.push(value(tag, "sfa:s").map(str::to_owned));
-                if self.row.len() >= ROW_CELLS {
-                    let row = std::mem::take(&mut self.row);
-                    self.tables
-                        .get_mut(&self.table)
-                        .ok_or_else(|| null("table data of a table it lost"))?
-                        .push(row);
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// `outputTable` of the table `id` refers to, if it was read.
+    /// `outputTable` of the table `id` refers to, if it was read: each cell a `td`, an empty one
+    /// too.
     fn output_table(&self, xhtml: &mut Xhtml, id: Option<&str>) -> Result<(), Failure> {
-        let Some(rows) = self.tables.get(&id.map(str::to_owned)) else {
+        let Some(rows) = id.and_then(|id| self.tables.get(id)) else {
             return Ok(());
         };
         xhtml.start_element("table")?;
         for row in rows {
             xhtml.start_element("tr")?;
             for value in row {
-                cell(xhtml, value.as_deref())?;
+                xhtml.start_element("td")?;
+                xhtml.characters(value)?;
+                xhtml.end_element("td")?;
             }
             xhtml.end_element("tr")?;
         }
@@ -276,11 +351,15 @@ impl ContentHandler for Pages {
                     xhtml.end_element("div")?;
                 }
                 xhtml.start_element("div")?;
-                if name == "sl:page-group" {
-                    self.page_groups += 1;
+                let page = if name == "sl:page-group" {
+                    let page = integer(tag, "sl:page")?;
+                    self.last_group_page = self.last_group_page.max(page);
+                    page
                 } else {
                     self.pages += 1;
-                }
+                    self.pages
+                };
+                self.page = Some(page);
                 self.header(xhtml)?;
                 if reopen {
                     xhtml.start_element("p")?;
@@ -294,9 +373,11 @@ impl ContentHandler for Pages {
             }
             "sf:attachment" => {
                 if value(tag, "sf:kind") == Some("tabular-attachment") {
-                    let id = value(tag, "sfa:ID").map(str::to_owned);
-                    self.tables.insert(id.clone(), Vec::new());
-                    self.table = id;
+                    self.table = Some(Table {
+                        id: value(tag, "sfa:ID").map(str::to_owned),
+                        ..Table::default()
+                    });
+                    return Ok(());
                 }
             }
             "sf:attachment-ref" => self.output_table(xhtml, value(tag, "sfa:IDREF"))?,
@@ -375,9 +456,7 @@ impl ContentHandler for Pages {
                     .annotations
                     .as_ref()
                     .ok_or_else(|| null("an annotated field without annotations"))?;
-                let text = annotations
-                    .texts
-                    .get(&value(tag, "sfa:ID").map(str::to_owned));
+                let text = value(tag, "sfa:ID").and_then(|id| annotations.texts.get(id));
                 if let Some(text) = text {
                     xhtml.start_element_with("div", &[("style", "annotation")])?;
                     xhtml.characters(text)?;
@@ -387,8 +466,8 @@ impl ContentHandler for Pages {
             "sf:ghost-text" => self.ghost_text = true,
             _ => {}
         }
-        if self.table.is_some() {
-            self.table_data(tag)?;
+        if let Some(table) = &mut self.table {
+            table.start(tag)?;
         }
         if self.part == Some(Part::Metadata) {
             self.metadata_element = Some((tag.local_name.to_owned(), name.to_owned()));
@@ -406,13 +485,25 @@ impl ContentHandler for Pages {
             self.metadata_element = None;
             self.parse_property = false;
         }
+        if let Some(table) = &mut self.table {
+            if name != "sf:attachment" {
+                table.end()?;
+            }
+        }
         match name {
             "sl:publication-info" | "sf:metadata" => self.part = None,
             "sf:p" if self.any_page() => {
                 self.part = None;
                 xhtml.end_element("p")?;
             }
-            "sf:attachment" => self.table = None,
+            "sf:attachment" => {
+                if let Some(table) = self.table.take() {
+                    if let Some(id) = table.id.clone() {
+                        self.tables.insert(id, table.into_rows());
+                    }
+                }
+            }
+            "sf:header" | "sf:footer" => self.part = None,
             "sf:annotation" if self.part == Some(Part::Annotations) => {
                 let annotations = self
                     .annotations
@@ -423,7 +514,9 @@ impl ContentHandler for Pages {
                     .as_ref()
                     .ok_or_else(|| null("an annotation ended twice"))?;
                 if !text.is_empty() {
-                    annotations.texts.insert(target.clone(), text.clone());
+                    if let Some(target) = target {
+                        annotations.texts.insert(target.clone(), text.clone());
+                    }
                     annotations.current = None;
                 }
             }
@@ -443,15 +536,16 @@ impl ContentHandler for Pages {
         let Some(part) = self.part else {
             return Ok(());
         };
-        let owned = || Some(text.to_owned());
+        let append =
+            |piece: &mut Option<String>| piece.get_or_insert_with(String::new).push_str(text);
         match part {
             Part::ParsableText if !self.ghost_text => xhtml.characters_chunk(text)?,
-            Part::HeaderFirst => self.headers_mut()?.first = owned(),
-            Part::HeaderEven => self.headers_mut()?.even = owned(),
-            Part::HeaderOdd => self.headers_mut()?.odd = owned(),
-            Part::FooterFirst => self.footers_mut()?.first = owned(),
-            Part::FooterEven => self.footers_mut()?.even = owned(),
-            Part::FooterOdd => self.footers_mut()?.odd = owned(),
+            Part::HeaderFirst => append(&mut self.headers_mut()?.first),
+            Part::HeaderEven => append(&mut self.headers_mut()?.even),
+            Part::HeaderOdd => append(&mut self.headers_mut()?.odd),
+            Part::FooterFirst => append(&mut self.footers_mut()?.first),
+            Part::FooterEven => append(&mut self.footers_mut()?.even),
+            Part::FooterOdd => append(&mut self.footers_mut()?.odd),
             Part::Footnotes => {
                 if let Some((footnotes, Some(mark))) = &mut self.footnotes {
                     footnotes.entry(mark.clone()).or_default().push_str(text);
@@ -472,7 +566,9 @@ impl ContentHandler for Pages {
     }
 
     fn end_document(&mut self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        xhtml.metadata_mut().set(PAGE_COUNT, self.pages.to_string());
+        xhtml
+            .metadata_mut()
+            .set(PAGE_COUNT, self.pages.max(self.last_group_page).to_string());
         if self.any_page() {
             self.footer(xhtml)?;
             xhtml.end_element("div")?;
