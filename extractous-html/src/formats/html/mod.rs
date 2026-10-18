@@ -14,9 +14,9 @@
 //!   `foreignObject` wrongly;
 //! - Tika's traversal and `HtmlHandler` write it ([`handler`]).
 //!
-//! A document defers to Tika when a detector may name a charset the native decoders do not
-//! decode, and the parser reads it differently from Tika's where it embeds the text of a data
-//! URI in a charset it does not encode ([`handler::difference`]).
+//! The parser reads a document differently from Tika's where a declaration names a charset the
+//! native decoders do not decode ([`AutoDetectReader::difference`]), and where it embeds the text
+//! of a data URI in a charset it does not encode ([`handler::difference`]).
 
 mod dom;
 mod handler;
@@ -124,20 +124,16 @@ impl Parser for JSoupParser {
     }
 }
 
-/// What [`JSoupParser`] prepares of `input`, which holds nothing of it: a document it cannot
-/// read is [`Decline::Deferred`], and one it reads differently from Tika's parser
-/// [`Decline::Differs`].
+/// What [`JSoupParser`] prepares of `input`, which holds nothing of it: a document it reads
+/// differently from Tika's parser is [`Decline::Differs`].
 pub fn prepare(
     input: &[u8],
     metadata: &TikaMetadata,
 ) -> Result<Prepared<'static>, Decline<'static>> {
-    if let Some(reason) = AutoDetectReader::defers(input) {
-        return Err(Decline::Deferred(reason.to_owned()));
-    }
     let previous = metadata.get("Content-Type").map(str::to_owned);
-    let document = read(input, previous.as_deref())
-        .map_err(|_| Decline::Deferred("the document cannot be decoded natively".to_owned()))?;
-    let difference = handler::difference(&document.dom);
+    let document = read(input, previous.as_deref());
+    let difference = AutoDetectReader::difference(input, previous.as_deref())
+        .or_else(|| handler::difference(&document.dom));
     let base = Base::of(metadata);
     unless_different(
         Box::new(move |xhtml| write(&document, previous.as_deref(), base, xhtml)),
@@ -199,13 +195,13 @@ struct Document {
 }
 
 /// Detects, decodes and builds the document as JSoupParser does.
-fn read(input: &[u8], content_type: Option<&str>) -> Result<Document, Failure> {
-    let detection = charset::detect(input, content_type);
-    let text = decode(input, detection.decode_as)?;
-    Ok(Document {
+fn read(input: &[u8], content_type: Option<&str>) -> Document {
+    let detection = charset::detect_decodable(input, content_type);
+    let text = decode(input, detection.decode_as);
+    Document {
         detection,
         dom: tree_builder::parse(&text),
-    })
+    }
 }
 
 /// A document parsed from a string, for a parser that walks its nodes itself.
@@ -261,7 +257,7 @@ impl ParsedDocument {
 /// The text jsoup reads: decoded with a byte order mark's charset when the input starts with
 /// one, else with `decode_as`. A UTF-32 mark needs four bytes of input: jsoup pads a shorter
 /// input with zeros, so `FF FE` alone reads as UTF-32 there (#85).
-fn decode(input: &[u8], decode_as: Charset) -> Result<String, Failure> {
+fn decode(input: &[u8], decode_as: Charset) -> String {
     let (charset, bytes) = match input {
         [0x00, 0x00, 0xFE, 0xFF, ..] | [0xFF, 0xFE, 0x00, 0x00, ..] => {
             (Charset::named("UTF-32"), input)
@@ -270,12 +266,9 @@ fn decode(input: &[u8], decode_as: Charset) -> Result<String, Failure> {
         [0xEF, 0xBB, 0xBF, ..] => (Charset::named("UTF-8"), &input[3..]),
         _ => (decode_as, input),
     };
-    charset.decode(bytes).ok_or_else(|| {
-        Failure::Malformed(format!(
-            "jsoup decodes the document as {}, which the native decoders do not decode",
-            charset.name()
-        ))
-    })
+    charset
+        .decode(bytes)
+        .expect("the port decodes every charset its detection settles on")
 }
 
 #[cfg(test)]
@@ -367,14 +360,11 @@ mod tests {
     #[test]
     fn decodes_with_a_byte_order_mark_over_the_detection() {
         let windows = Charset::named("windows-1252");
-        assert_eq!(decode(b"\xEF\xBB\xBFcaf\xC3\xA9", windows).unwrap(), "café");
-        assert_eq!(decode(b"\xFE\xFF\x00a", windows).unwrap(), "a");
-        assert_eq!(decode(b"caf\xE9", windows).unwrap(), "café");
-        assert_eq!(decode(b"\xFF\xFE", windows).unwrap(), "");
-        assert_eq!(decode(b"\xFF\xFEa\x00", windows).unwrap(), "a");
-        assert_eq!(
-            decode(b"\xFF\xFE\x00\x00a\x00\x00\x00", windows).unwrap(),
-            "a"
-        );
+        assert_eq!(decode(b"\xEF\xBB\xBFcaf\xC3\xA9", windows), "café");
+        assert_eq!(decode(b"\xFE\xFF\x00a", windows), "a");
+        assert_eq!(decode(b"caf\xE9", windows), "café");
+        assert_eq!(decode(b"\xFF\xFE", windows), "");
+        assert_eq!(decode(b"\xFF\xFEa\x00", windows), "a");
+        assert_eq!(decode(b"\xFF\xFE\x00\x00a\x00\x00\x00", windows), "a");
     }
 }

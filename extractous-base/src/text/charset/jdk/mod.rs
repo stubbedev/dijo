@@ -4,11 +4,13 @@
 //! (`models/java-charsets.bin`, written by `just encoding-reference`), character for character as
 //! Java does; UTF-8, UTF-16 and UTF-32 decode with ports of the JDK's decoders, which replace
 //! malformed input differently from WHATWG's, as does ISCII-91, whose decoder holds characters
-//! back; ISO-2022-JP decodes with `encoding_rs`, whose decoder is the WHATWG equivalent of the
-//! JDK's; the rest, rarely seen charsets such as the IBM EBCDIC double-byte ones, are known by
+//! back, and ISO-2022-KR and ISO-2022-CN, whose decoders read the JDK's KS X 1001, GB 2312 and
+//! CNS 11643 tables; ISO-2022-JP decodes with `encoding_rs`, whose decoder is the WHATWG
+//! equivalent of the JDK's; the rest, rarely seen charsets such as the IBM EBCDIC double-byte ones, are known by
 //! name but not decoded.
 
 mod iscii91;
+mod iso2022;
 mod multibyte;
 
 use std::collections::HashMap;
@@ -16,6 +18,7 @@ use std::sync::LazyLock;
 
 use encoding_rs::Encoding;
 
+use iso2022::Variant;
 use multibyte::{Family, MultiByte};
 
 const TABLES: &[u8] = include_bytes!("../../../../models/java-charsets.bin");
@@ -41,6 +44,7 @@ enum Decoding {
         sniff_bom: bool,
     },
     Iscii91,
+    Iso2022(Variant),
     None,
 }
 
@@ -137,7 +141,10 @@ impl Registry {
                         sniff_bom: false,
                     },
                     "x-ISCII91" => Decoding::Iscii91,
-                    other => whatwg(other).map_or(Decoding::None, Decoding::Whatwg),
+                    other => match Variant::from_name(other) {
+                        Some(variant) => Decoding::Iso2022(variant),
+                        None => whatwg(other).map_or(Decoding::None, Decoding::Whatwg),
+                    },
                 },
                 kind => {
                     let family = Family::from_kind(kind)
@@ -176,6 +183,23 @@ impl Charset {
         &REGISTRY.entries[usize::from(self.0)].decoding
     }
 
+    /// The tables of an East Asian multi-byte charset the port itself names.
+    fn multi_byte(name: &str) -> &'static MultiByte {
+        match Self::named(name).decoding() {
+            Decoding::MultiByte(decoder) => decoder,
+            _ => panic!("The JDK's {name} is no multi-byte charset"),
+        }
+    }
+
+    fn iso2022(variant: Variant) -> iso2022::Decoder {
+        iso2022::Decoder::new(variant, Self::multi_byte)
+    }
+
+    /// Whether this port decodes the charset.
+    pub fn decodes(self) -> bool {
+        !matches!(self.decoding(), Decoding::None)
+    }
+
     /// The text `new String(bytes, charset)` gives, malformed input replaced by U+FFFD, or
     /// `None` for a charset this port does not decode.
     pub fn decode(self, bytes: &[u8]) -> Option<String> {
@@ -195,6 +219,9 @@ impl Charset {
                 sniff_bom,
             } => decode_utf32(bytes, *big_endian, *sniff_bom),
             Decoding::Iscii91 => iscii91::decode(bytes),
+            Decoding::Iso2022(variant) => {
+                Self::iso2022(*variant).decode_prefix(bytes, bytes.len()).0
+            }
             Decoding::None => return None,
         })
     }
@@ -239,12 +266,17 @@ impl Charset {
             Decoding::Whatwg(encoding) => Some(encoding.new_decoder_without_bom_handling()),
             _ => None,
         };
+        let iso2022 = match decoding {
+            Decoding::Iso2022(variant) => Some(Self::iso2022(*variant)),
+            _ => None,
+        };
         Some(Pieces {
             decoding,
             rest,
             size: size.max(1),
             big_endian,
             whatwg,
+            iso2022,
         })
     }
 
@@ -264,16 +296,18 @@ impl Charset {
 /// follows gives what decoding the whole gives: anywhere for a single-byte charset, before an
 /// ASCII byte for UTF-8, which no sequence continues with, after a whole unit that is no high
 /// surrogate for UTF-16 and after a whole unit for UTF-32, once a byte order mark has set the
-/// byte order; ISCII-91, whose decoder can hold a character back to the end, in one piece. The East Asian multi-byte charsets decode the characters that end past the
-/// piece's size, looking ahead into what follows as the whole's decoding does; ISO-2022-JP,
-/// whose escapes switch the decoder's state for what follows, decodes with `encoding_rs`'s
-/// streaming decoder.
+/// byte order; ISCII-91, whose decoder can hold a character back to the end, in one piece. The
+/// East Asian multi-byte charsets decode the characters that end past the piece's size, looking
+/// ahead into what follows as the whole's decoding does, and so do ISO-2022-KR and ISO-2022-CN,
+/// whose decoders keep the state their escapes and shifts set from one piece to the next;
+/// ISO-2022-JP decodes with `encoding_rs`'s streaming decoder.
 pub(crate) struct Pieces<'a> {
     decoding: &'static Decoding,
     rest: &'a [u8],
     size: usize,
     big_endian: bool,
     whatwg: Option<encoding_rs::Decoder>,
+    iso2022: Option<iso2022::Decoder>,
 }
 
 impl Pieces<'_> {
@@ -288,6 +322,7 @@ impl Pieces<'_> {
         match self.decoding {
             Decoding::SingleByte(_)
             | Decoding::MultiByte(_)
+            | Decoding::Iso2022(_)
             | Decoding::Whatwg(_)
             | Decoding::None => size,
             Decoding::Utf8 => at_or_end(rest[size..].iter().position(u8::is_ascii)),
@@ -325,11 +360,18 @@ impl Iterator for Pieces<'_> {
             self.rest = &self.rest[read..];
             return Some(text);
         }
+        if let Some(decoder) = &mut self.iso2022 {
+            let (text, read) = decoder.decode_prefix(self.rest, self.size);
+            self.rest = &self.rest[read..];
+            return Some(text);
+        }
         let (piece, rest) = self.rest.split_at(self.cut());
         self.rest = rest;
         Some(match self.decoding {
             Decoding::SingleByte(table) => piece.iter().map(|&b| table[usize::from(b)]).collect(),
-            Decoding::MultiByte(_) => unreachable!("a multi-byte charset decodes its own pieces"),
+            Decoding::MultiByte(_) | Decoding::Iso2022(_) => {
+                unreachable!("a multi-byte or ISO-2022 charset decodes its own pieces")
+            }
             Decoding::Utf8 => decode_utf8(piece),
             Decoding::Utf16 { .. } => decode_utf16(piece, self.big_endian, false),
             Decoding::Utf32 { .. } => decode_utf32(piece, self.big_endian, false),
@@ -607,6 +649,64 @@ mod tests {
         hash
     }
 
+    /// The escapes and shifts `ISO_2022_TOKENS` in `CharsetTables.java` draws from.
+    const ISO_2022_TOKENS: [&[u8]; 16] = [
+        b"\x1b$)C", b"\x1b$)A", b"\x1b$)G", b"\x1b$)X", b"\x1b$A", b"\x1b$*H", b"\x1b$+I",
+        b"\x1b$*X", b"\x1bN", b"\x1bO", b"\x1b", b"\x1b$", b"\x1b$)", b"\x0e", b"\x0f", b"\n",
+    ];
+    const ISO_2022_INPUTS: usize = 20000;
+    const ISO_2022_MAX_TOKENS: u64 = 24;
+
+    /// The inputs `DecoderReference.iso2022Hash` draws.
+    fn iso2022_inputs() -> impl Iterator<Item = Vec<u8>> {
+        let mut random = SplitMix64(0x2022);
+        (0..ISO_2022_INPUTS).map(move |_| {
+            let tokens = 1 + random.next() % ISO_2022_MAX_TOKENS;
+            let mut input = Vec::new();
+            for _ in 0..tokens {
+                let r = random.next();
+                let rest = r >> 8;
+                match (r % 32) as usize {
+                    kind if kind < ISO_2022_TOKENS.len() => {
+                        input.extend_from_slice(ISO_2022_TOKENS[kind])
+                    }
+                    kind if kind < 30 => input.push(0x21 + (rest % 94) as u8),
+                    30 => input.push(0x80 | (rest & 0x7F) as u8),
+                    _ => input.push((rest & 0x7F) as u8),
+                }
+            }
+            input
+        })
+    }
+
+    /// The hash `DecoderReference.iso2022Hash` takes of the same inputs.
+    fn iso2022_hash(charset: Charset) -> u64 {
+        let mut hash = FNV_OFFSET;
+        let mut add = |unit: u16| hash = (hash ^ u64::from(unit)).wrapping_mul(FNV_PRIME);
+        for input in iso2022_inputs() {
+            let text = charset.decode(&input).expect("the charset decodes");
+            text.encode_utf16().for_each(&mut add);
+            add(ERROR);
+        }
+        hash
+    }
+
+    #[test]
+    fn decodes_iso2022_as_the_jdk_does_on_known_text() {
+        let kr = Charset::named("ISO-2022-KR");
+        assert_eq!(
+            kr.decode(b"\x1b$)C\x0e\x30\x21\x0f hello\n").as_deref(),
+            Some("\u{AC00} hello\n")
+        );
+        let cn = Charset::named("ISO-2022-CN");
+        assert_eq!(
+            cn.decode(b"\x1b$)A\x0e\x30\x21\x0f hi \x1b$)G\x0e\x44\x21\x0f")
+                .as_deref(),
+            Some("\u{554A} hi \u{4E00}")
+        );
+        assert_eq!(kr.decode(b"ok\x1b$)").as_deref(), Some("ok\u{FFFD}"));
+    }
+
     #[test]
     fn decodes_in_pieces_as_whole() {
         let mut random = SplitMix64(0x9133);
@@ -631,9 +731,10 @@ mod tests {
                 b"\x1b$B$3$s$K$A$O\x1b(B world, \x1b$B@$3&\x1b(B".to_vec(),
             ])
             .collect();
+        let iso2022: Vec<Vec<u8>> = iso2022_inputs().take(500).collect();
         for entry in &REGISTRY.entries {
             let charset = Charset::named(&entry.name);
-            for input in &inputs {
+            for input in inputs.iter().chain(&iso2022) {
                 let Some(whole) = charset.decode(input) else {
                     continue;
                 };
@@ -665,6 +766,7 @@ mod tests {
                         | Decoding::Utf8
                         | Decoding::Utf16 { .. }
                         | Decoding::Iscii91
+                        | Decoding::Iso2022(_)
                 )
             })
             .map(|entry| entry.name.as_str())
@@ -673,13 +775,17 @@ mod tests {
         ported.sort_unstable();
         assert_eq!(
             expected, ported,
-            "the reference covers every multi-byte, UTF-8, UTF-16 and ISCII-91 charset"
+            "the reference covers every multi-byte, UTF-8, UTF-16, ISCII-91 and ISO-2022 charset"
         );
         let mismatches: Vec<String> = REFERENCE
             .lines()
             .filter_map(|line| {
                 let (name, reference) = line.split_once('\t')?;
-                let actual = format!("{:x}", hash(Charset::named(name)));
+                let charset = Charset::named(name);
+                let actual = match charset.decoding() {
+                    Decoding::Iso2022(_) => format!("{:x}", iso2022_hash(charset)),
+                    _ => format!("{:x}", hash(charset)),
+                };
                 (actual != reference).then(|| format!("{name}: JDK {reference}, port {actual}"))
             })
             .collect();

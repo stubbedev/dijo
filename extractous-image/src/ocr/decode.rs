@@ -140,6 +140,9 @@ pub(crate) enum Undecoded {
     NoDecoder,
     /// It could not be decoded, for this reason.
     Failed(String),
+    /// libheif, which Tika's path decodes it with as well, cannot decode it, failing with this
+    /// message, which Tika's path throws.
+    Rejected(String),
 }
 
 impl From<String> for Undecoded {
@@ -187,9 +190,9 @@ pub(crate) fn decode(
         Format::Pcx => Ok(single(raster::pcx(input)?)),
         Format::Jpeg2000 => Ok(single(jpeg2000(input)?)),
         Format::Jbig2 => Ok(single(Bitmap::Gray(jbig2::decode(input)?))),
-        Format::Avif => match avif::decode(input)? {
-            avif::Avif::Decoded(bitmap) => Ok(single(bitmap)),
-            avif::Avif::OfOtherCodecs => heif::decode(input, timeout).map(single),
+        Format::Avif => match avif::decode(input) {
+            Ok(avif::Avif::Decoded(bitmap)) => Ok(single(bitmap)),
+            Ok(avif::Avif::OfOtherCodecs) | Err(_) => heif::decode(input, timeout).map(single),
         },
         Format::Heif => heif::decode(input, timeout).map(single),
         Format::Jxl => Ok(single(jxl(input)?)),
@@ -616,6 +619,23 @@ mod tests {
             single(&heic, Format::Avif).gray(),
             single(&heic, Format::Heif).gray()
         );
+    }
+
+    /// A truncated HEIC or AVIF file, which libheif rejects for Tika's path too, is rejected with
+    /// libheif's failure (#173).
+    #[test]
+    fn rejects_heif_files_libheif_cannot_decode() {
+        for (file, format) in [
+            ("prose-scan.avif", Format::Avif),
+            ("prose-scan.heic", Format::Heif),
+        ] {
+            let input = std::fs::read(format!("../quality/corpus/{file}")).unwrap();
+            match decode(&input[..input.len() / 2], format, None) {
+                Err(Undecoded::Rejected(message)) => assert!(!message.is_empty(), "{file}"),
+                Ok(_) => panic!("{file}: a truncated file decodes"),
+                Err(other) => panic!("{file}: {other:?}"),
+            }
+        }
     }
 
     #[test]

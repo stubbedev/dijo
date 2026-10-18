@@ -138,7 +138,7 @@ impl Parser for JpegParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::Jpeg, input, metadata, configs)
+        prepare(Format::Jpeg, self.tika_name(), input, metadata, configs)
     }
 }
 
@@ -166,7 +166,7 @@ impl Parser for TiffParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::Tiff, input, metadata, configs)
+        prepare(Format::Tiff, self.tika_name(), input, metadata, configs)
     }
 }
 
@@ -200,7 +200,7 @@ impl Parser for HeifParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::Heif, input, metadata, configs)
+        prepare(Format::Heif, self.tika_name(), input, metadata, configs)
     }
 }
 
@@ -230,7 +230,7 @@ impl Parser for JxlParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::Jxl, input, metadata, configs)
+        prepare(Format::Jxl, self.tika_name(), input, metadata, configs)
     }
 }
 
@@ -255,7 +255,7 @@ impl Parser for BpgParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::Bpg, input, metadata, configs)
+        prepare(Format::Bpg, self.tika_name(), input, metadata, configs)
     }
 }
 
@@ -294,7 +294,7 @@ impl Parser for ImageParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        prepare(Format::ImageIo, input, metadata, configs)
+        prepare(Format::ImageIo, self.tika_name(), input, metadata, configs)
     }
 }
 
@@ -460,7 +460,13 @@ impl Parser for RecognizedImageParser {
             }
             Recognized::Empty => None,
         };
-        let enricher = Enricher::of(enriched(content_type), content_type, input, configs)?;
+        let enricher = Enricher::of(
+            enriched(content_type),
+            content_type,
+            input,
+            configs,
+            self.tika_name(),
+        )?;
         Ok(Box::new(move |xhtml| {
             *xhtml.metadata_mut() = read;
             if let Some((zone, prefix_route_names)) = file_directory {
@@ -529,10 +535,12 @@ struct Read {
     reads_file: bool,
 }
 
-/// `AbstractImageParser.parse` of a JPEG or TIFF: its metadata read now, the file's own when the
-/// document is written, then the enricher and the motion photo's video.
+/// `AbstractImageParser.parse` of a JPEG or TIFF by the image parser `tika_name`: its metadata
+/// read now, the file's own when the document is written, then the enricher and the motion
+/// photo's video.
 fn prepare<'a>(
     format: Format,
+    tika_name: &str,
     input: &'a [u8],
     metadata: &TikaMetadata,
     configs: &'a ParserConfigs,
@@ -542,7 +550,7 @@ fn prepare<'a>(
     let zone = dates_zone();
     let read = extract_metadata(format, input, metadata.clone(), zone)?;
     let trailer = motion_photo::trailer(&read.metadata, input)?;
-    let enricher = Enricher::of(enriched, content_type, input, configs)?;
+    let enricher = Enricher::of(enriched, content_type, input, configs, tika_name)?;
     Ok(Box::new(move |xhtml| {
         *xhtml.metadata_mut() = read.metadata;
         if read.reads_file {
