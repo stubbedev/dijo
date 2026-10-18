@@ -5,16 +5,20 @@
 //! loses its leading slashes; a directory is an entry of the directory type or a name ending in
 //! a slash.
 //!
-//! The stream's own order of work is kept, quirks included: an entry right after a global PAX
-//! header has the global headers applied again over its own, and an old GNU sparse file after a
-//! long name or a global header has its extension records read again.
+//! The headers before an entry are applied to it once, where commons-compress applies them as
+//! its recursion unwinds (#184): the global PAX headers again over the entry's own after a
+//! global header or a long name, and an old GNU sparse file's extension records read again from
+//! its data after any header. A PAX header without a sparse map leaves an old GNU sparse file its
+//! own sparse structs.
 //!
 //! Where commons-compress reads the next header from the data of a directory, which its stream
 //! never skips, the port skips that data as it skips a file's.
 
 use std::collections::BTreeMap;
 
-use super::tar_header::{normalize, sparse_structs, Header, RECORD};
+use super::tar_header::{
+    normalize, sparse_structs, Header, EXTENSION_IS_EXTENDED, RECORD, SPARSE_STRUCTS_IN_EXTENSION,
+};
 use super::zip::decode_name;
 use super::{throws, ArchiveFile, Decoding, Limited, Undecoded};
 use crate::input::{Input, Pages};
@@ -26,10 +30,6 @@ const LF_GNU_LONG_NAME: u8 = b'L';
 const LF_OLD_GNU_SPARSE: u8 = b'S';
 const LF_PAX_GLOBAL: u8 = b'g';
 const LF_PAX_LOCAL: [u8; 2] = *b"xX";
-/// The sparse structs of an old GNU extension record, and where its flag that another follows
-/// stands.
-const SPARSE_STRUCTS_IN_EXTENSION: usize = 21;
-const EXTENSION_IS_EXTENDED: usize = 504;
 
 /// `TarGnuSparseKeys` and the other PAX keys the stream reads.
 const GNU_SPARSE_MAP: &str = "GNU.sparse.map";
@@ -67,6 +67,34 @@ enum Piece {
     Zeros(u64),
     /// This many bytes of the archive, read on from where the stream stands.
     Data(u64),
+}
+
+/// A header read before the entry it belongs to.
+enum Extension {
+    /// A GNU long name.
+    LongName(String),
+    /// Local PAX headers, over the global ones they were read after, and the sparse map they
+    /// give.
+    Local(Pax, Vec<Sparse>),
+}
+
+/// A PAX header read before the entry it belongs to, which fails the stream where the archive
+/// ends first.
+#[derive(Debug, Clone, Copy)]
+enum Awaiting {
+    Global,
+    Local,
+}
+
+impl Awaiting {
+    fn failure(self) -> Undecoded {
+        throws(match self {
+            Awaiting::Global => "Error detected parsing the pax header",
+            Awaiting::Local => {
+                "premature end of tar archive. Didn't find any entry after PAX header."
+            }
+        })
+    }
 }
 
 /// What reading an entry's data hands on: bytes of the archive, or zeros.
@@ -146,7 +174,8 @@ impl Entry {
         self.name = normalize(name);
     }
 
-    /// `updateEntryFromPaxHeaders` and `setSparseHeaders`.
+    /// `updateEntryFromPaxHeaders` and `setSparseHeaders`, but for an old GNU sparse file, which
+    /// keeps its own sparse structs where the headers give none.
     fn apply_pax(&mut self, headers: &Pax, sparse: Vec<Sparse>) -> Result<(), Undecoded> {
         let filled_last = |key: &str| FILLED_LAST.contains(&key);
         for (key, value) in headers.iter().filter(|(key, _)| !filled_last(key)) {
@@ -157,7 +186,9 @@ impl Entry {
                 self.process_pax_header(key, value, headers)?;
             }
         }
-        self.sparse = sparse;
+        if self.link_flag != LF_OLD_GNU_SPARSE || !sparse.is_empty() {
+            self.sparse = sparse;
+        }
         Ok(())
     }
 
@@ -396,7 +427,8 @@ impl<'a> Stream<'a> {
     }
 
     /// `getNextTarEntry`: on to the next entry, `false` at the end of the archive. The entry
-    /// left is read to its end and its last record's padding skipped.
+    /// left is read to its end and its last record's padding skipped. The GNU long names and
+    /// links and the PAX headers before the entry are read in turn, then applied to it.
     fn next_entry(&mut self) -> Result<bool, Undecoded> {
         if self.eof {
             return Ok(false);
@@ -404,44 +436,81 @@ impl<'a> Stream<'a> {
         if self.current.is_some() {
             self.skip_entry()?;
         }
-        let Some(record) = self.record() else {
-            self.current = None;
-            return Ok(false);
-        };
-        let archtype = self
-            .global
-            .get(SCHILY_ARCHTYPE)
-            .map(|archtype| archtype == "xustar" || archtype == "exustar");
-        let header = Header::parse(record, archtype)
-            .map_err(|_| throws("Error detected parsing the header"))?;
-        self.current = Some(Entry::of(header));
-        if self.current().link_flag == LF_GNU_LONG_LINK && self.long_name_data()?.is_none() {
-            return Ok(false);
-        }
-        if self.current().link_flag == LF_GNU_LONG_NAME {
-            let Some(data) = self.long_name_data()? else {
-                return Ok(false);
+        let mut extensions = Vec::new();
+        let mut awaiting = None;
+        loop {
+            let Some(record) = self.record() else {
+                self.current = None;
+                return awaiting.map_or(Ok(false), |awaiting: Awaiting| Err(awaiting.failure()));
             };
-            let name = decode_name(&data);
-            let entry = self.current_mut();
-            entry.set_name(&name);
-            if entry.is_directory() && !name.ends_with('/') {
-                entry.set_name(&format!("{name}/"));
+            let archtype = self
+                .global
+                .get(SCHILY_ARCHTYPE)
+                .map(|archtype| archtype == "xustar" || archtype == "exustar");
+            let header = Header::parse(record, archtype)
+                .map_err(|_| throws("Error detected parsing the header"))?;
+            self.current = Some(Entry::of(header));
+            match self.current().link_flag {
+                LF_GNU_LONG_LINK => {
+                    self.long_name()?;
+                }
+                LF_GNU_LONG_NAME => {
+                    let name = decode_name(&self.long_name()?);
+                    extensions.push(Extension::LongName(name));
+                }
+                LF_PAX_GLOBAL => {
+                    self.read_global_pax_headers()?;
+                    awaiting = Some(Awaiting::Global);
+                }
+                _ if self.current().is_pax_header() => {
+                    extensions.push(self.local_pax_headers()?);
+                    awaiting = Some(Awaiting::Local);
+                }
+                _ => break,
             }
+            self.skip_entry()?;
         }
-        if self.current().link_flag == LF_PAX_GLOBAL {
-            self.read_global_pax_headers()?;
-        }
-        if self.current().is_pax_header() {
-            self.pax_headers()?;
-        } else if !self.global.is_empty() {
+        self.apply(extensions)?;
+        Ok(true)
+    }
+
+    /// The headers read before the current entry applied to it once, in the order of
+    /// commons-compress's recursion: the global PAX headers, the extension records of an old GNU
+    /// sparse file, then the long names and local PAX headers from the last read to the first,
+    /// and the 1.0 sparse map before the entry's data.
+    fn apply(&mut self, extensions: Vec<Extension>) -> Result<(), Undecoded> {
+        if !self.global.is_empty() {
             let (global, sparse) = (self.global.clone(), self.global_sparse.clone());
             self.current_mut().apply_pax(&global, sparse)?;
         }
-        if self.current().link_flag == LF_OLD_GNU_SPARSE {
+        let old_gnu_sparse = self.current().link_flag == LF_OLD_GNU_SPARSE;
+        if old_gnu_sparse {
             self.read_old_gnu_sparse()?;
         }
-        Ok(true)
+        let mut local = false;
+        for extension in extensions.into_iter().rev() {
+            match extension {
+                Extension::LongName(name) => {
+                    let entry = self.current_mut();
+                    entry.set_name(&name);
+                    if entry.is_directory() && !name.ends_with('/') {
+                        entry.set_name(&format!("{name}/"));
+                    }
+                }
+                Extension::Local(headers, sparse) => {
+                    self.current_mut().apply_pax(&headers, sparse)?;
+                    local = true;
+                }
+            }
+        }
+        if local && self.current().pax_gnu_1x_sparse {
+            let sparse = self.parse_pax1x_sparse_headers()?;
+            self.current_mut().sparse = sparse;
+        }
+        if old_gnu_sparse || local {
+            self.current_mut().build_sparse_streams()?;
+        }
+        Ok(())
     }
 
     /// The rest of the current entry's data read, and the padding of its last record skipped;
@@ -517,36 +586,28 @@ impl<'a> Stream<'a> {
         Ok(data)
     }
 
-    /// `getLongNameData`: the current entry's data without its trailing NULs, once the stream
-    /// is on the entry it names; none where the archive ends first.
-    fn long_name_data(&mut self) -> Result<Option<Vec<u8>>, Undecoded> {
+    /// `getLongNameData`: the current entry's data without its trailing NULs.
+    fn long_name(&mut self) -> Result<Vec<u8>, Undecoded> {
         let mut data = self.entry_data()?;
-        if !self.next_entry()? {
-            return Ok(None);
-        }
         while data.last() == Some(&0) {
             data.pop();
         }
-        Ok(Some(data))
+        Ok(data)
     }
 
-    /// `readGlobalPaxHeaders`: the global headers, read over those before, then the entry they
-    /// precede.
+    /// `readGlobalPaxHeaders`: the global headers, read over those before.
     fn read_global_pax_headers(&mut self) -> Result<(), Undecoded> {
         let size = self.current().size;
         let data = self.entry_data()?;
         let mut sparse = std::mem::take(&mut self.global_sparse);
         self.global = parse_pax_headers(&data, &mut sparse, &self.global, size)?;
         self.global_sparse = sparse;
-        if !self.next_entry()? {
-            return Err(throws("Error detected parsing the pax header"));
-        }
         Ok(())
     }
 
-    /// `paxHeaders`: the local headers over the global ones, applied to the entry they
-    /// precede, with its sparse layout from a 0.0 or 0.1 map, or a 1.0 one before its data.
-    fn pax_headers(&mut self) -> Result<(), Undecoded> {
+    /// `paxHeaders`' reading: the local headers over the global ones, with the sparse layout of
+    /// a 0.0 or 0.1 map.
+    fn local_pax_headers(&mut self) -> Result<Extension, Undecoded> {
         let size = self.current().size;
         let data = self.entry_data()?;
         let mut sparse = Vec::new();
@@ -554,21 +615,11 @@ impl<'a> Stream<'a> {
         if let Some(map) = headers.get(GNU_SPARSE_MAP) {
             sparse = parse_pax01_sparse_headers(map)?;
         }
-        if !self.next_entry()? {
-            return Err(throws(
-                "premature end of tar archive. Didn't find any entry after PAX header.",
-            ));
-        }
-        self.current_mut().apply_pax(&headers, sparse)?;
-        if self.current().pax_gnu_1x_sparse {
-            let sparse = self.parse_pax1x_sparse_headers()?;
-            self.current_mut().sparse = sparse;
-        }
-        self.current_mut().build_sparse_streams()
+        Ok(Extension::Local(headers, sparse))
     }
 
     /// `readOldGNUSparse`: the sparse structs of the extension records that follow an old GNU
-    /// sparse file's header, while each says another follows.
+    /// sparse file's header, while each says another follows, added to its own.
     fn read_old_gnu_sparse(&mut self) -> Result<(), Undecoded> {
         if self.current().extended {
             loop {
@@ -590,7 +641,7 @@ impl<'a> Stream<'a> {
                 }
             }
         }
-        self.current_mut().build_sparse_streams()
+        Ok(())
     }
 
     /// `TarUtils.parsePAX1XSparseHeaders`: the 1.0 sparse map before a file's data, decimal
@@ -881,7 +932,7 @@ pub fn files<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::tar_header::tests::{header, pax, tar};
+    use super::super::tar_header::tests::{ended, header, old_gnu_sparse, pax, records, tar};
     use super::*;
 
     fn names_and_contents(data: &[u8]) -> Vec<(String, bool, Vec<u8>)> {
@@ -984,22 +1035,43 @@ mod tests {
         );
     }
 
-    /// commons-compress applies the global headers again to the entry right after them, over
-    /// that entry's own PAX headers.
+    /// An entry's own PAX headers win over the global ones right after a global header too,
+    /// where commons-compress applies the global ones again over them (#184).
     #[test]
-    fn applies_global_pax_headers_again_over_the_next_entry_s_own() {
+    fn applies_an_entry_s_own_pax_headers_over_the_global_ones_right_after_them() {
         let data = tar(&[
-            (b"pax_global_header", b'g', &pax(&[("path", "global.txt")])),
-            (b"././@PaxHeader", b'x', &pax(&[("path", "local.txt")])),
+            (
+                b"pax_global_header",
+                b'g',
+                &pax(&[("path", "global.txt"), ("mtime", "1")]),
+            ),
+            (
+                b"././@PaxHeader",
+                b'x',
+                &pax(&[("path", "local.txt"), ("mtime", "2")]),
+            ),
             (b"a.txt", b'0', b"a"),
             (b"././@PaxHeader", b'x', &pax(&[("path", "later.txt")])),
             (b"b.txt", b'0', b"b"),
+            (b"c.txt", b'0', b"c"),
         ]);
-        let names: Vec<String> = names_and_times(&data)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        assert_eq!(names, ["global.txt", "later.txt"]);
+        assert_eq!(
+            names_and_times(&data),
+            [
+                ("local.txt".to_owned(), Some(2_000)),
+                ("later.txt".to_owned(), Some(1_000)),
+                ("global.txt".to_owned(), Some(1_000)),
+            ]
+        );
+        let sized = tar(&[
+            (b"pax_global_header", b'g', &pax(&[("size", "0")])),
+            (b"././@PaxHeader", b'x', &pax(&[("size", "600")])),
+            (b"sized.txt", b'0', &[b'x'; 600]),
+        ]);
+        assert_eq!(
+            names_and_contents(&sized),
+            [("sized.txt".to_owned(), false, vec![b'x'; 600])]
+        );
     }
 
     /// The content of the sparse file every sparse test archive holds: `ab`, four zeros, `cd`
@@ -1071,55 +1143,55 @@ mod tests {
         );
     }
 
-    /// An old GNU header of `name` whose sparse structs are `structs` and real size 10, and
-    /// whose flag says whether an extension record follows.
-    fn old_gnu_sparse(name: &[u8], size: usize, structs: &[(u64, u64)], extended: bool) -> Vec<u8> {
-        let mut record = header(name, b'S', size);
-        record[257..265].copy_from_slice(b"ustar  \0");
-        for (index, (offset, numbytes)) in structs.iter().enumerate() {
-            let at = 386 + index * 24;
-            record[at..at + 12].copy_from_slice(format!("{offset:011o}\0").as_bytes());
-            record[at + 12..at + 24].copy_from_slice(format!("{numbytes:011o}\0").as_bytes());
-        }
-        record[482] = u8::from(extended);
-        record[483..495].copy_from_slice(format!("{:011o}\0", 10).as_bytes());
-        record
-    }
-
     #[test]
     fn reassembles_old_gnu_sparse_files_with_their_extension_records() {
-        let mut data = old_gnu_sparse(b"old.txt", 4, &[(0, 2), (6, 2), (10, 0)], false);
-        let mut stored = b"abcd".to_vec();
-        stored.resize(512, 0);
-        data.extend_from_slice(&stored);
-        data.extend(old_gnu_sparse(
-            b"extended.txt",
-            5,
-            &[(0, 1), (2, 1), (4, 1), (6, 1)],
-            true,
-        ));
-        let mut extension = vec![0u8; 512];
-        for (index, (offset, numbytes)) in [(8u64, 1u64), (10, 0)].iter().enumerate() {
-            let at = index * 24;
-            extension[at..at + 12].copy_from_slice(format!("{offset:011o}\0").as_bytes());
-            extension[at + 12..at + 24].copy_from_slice(format!("{numbytes:011o}\0").as_bytes());
-        }
-        data.extend_from_slice(&extension);
-        let mut stored = b"abcde".to_vec();
-        stored.resize(512, 0);
-        data.extend_from_slice(&stored);
-        data.resize(data.len() + 1024, 0);
+        let mut data = old_gnu_sparse(b"old.txt", 10, &[(0, 2), (6, 2), (10, 0)], b"abcd");
+        data.extend(old_gnu_sparse(b"extended.txt", 10, &EXTENDED, b"abcde"));
         assert_eq!(
-            names_and_contents(&data),
+            names_and_contents(&ended(data)),
             [
                 ("old.txt".to_owned(), false, SPARSE.to_vec()),
-                (
-                    "extended.txt".to_owned(),
-                    false,
-                    b"a\0b\0c\0d\0e\0".to_vec()
-                ),
+                ("extended.txt".to_owned(), false, EXTENDED_CONTENT.to_vec()),
             ]
         );
+    }
+
+    /// The sparse structs of an old GNU sparse file of real size 10 with an extension record,
+    /// and the content of the file whose data is `abcde`.
+    const EXTENDED: [(u64, u64); 6] = [(0, 1), (2, 1), (4, 1), (6, 1), (8, 1), (10, 0)];
+    const EXTENDED_CONTENT: &[u8] = b"a\0b\0c\0d\0e\0";
+
+    /// An old GNU sparse file's extension records are read once after a long name, a global
+    /// header or a local one too, where commons-compress reads them again from the file's data
+    /// (#184), and the global headers leave it its own sparse structs.
+    #[test]
+    fn reads_an_old_gnu_sparse_file_s_extension_records_once_after_other_headers() {
+        let mut data = records(&[(b"././@LongLink", b'L', b"long-sparse.txt\0")]);
+        data.extend(old_gnu_sparse(b"cut", 10, &EXTENDED, b"abcde"));
+        data.extend(records(&[(
+            b"././@PaxHeader",
+            b'x',
+            &pax(&[("path", "local-sparse.txt")]),
+        )]));
+        data.extend(old_gnu_sparse(b"local", 10, &EXTENDED, b"abcde"));
+        data.extend(records(&[(
+            b"pax_global_header",
+            b'g',
+            &pax(&[("comment", "a commit")]),
+        )]));
+        data.extend(old_gnu_sparse(
+            b"global-sparse.txt",
+            10,
+            &EXTENDED,
+            b"abcde",
+        ));
+        let read = names_and_contents(&ended(data));
+        let expected: Vec<(String, bool, Vec<u8>)> =
+            ["long-sparse.txt", "local-sparse.txt", "global-sparse.txt"]
+                .into_iter()
+                .map(|name| (name.to_owned(), false, EXTENDED_CONTENT.to_vec()))
+                .collect();
+        assert_eq!(read, expected);
     }
 
     #[test]

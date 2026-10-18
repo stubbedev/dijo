@@ -37,6 +37,10 @@ const GNU_CTIME: Range<usize> = 357..369;
 const GNU_SPARSE: usize = 386;
 const GNU_IS_EXTENDED: usize = 482;
 const GNU_REAL_SIZE: Range<usize> = 483..495;
+/// The sparse structs of an old GNU extension record, and where its flag that another follows
+/// stands.
+pub(super) const SPARSE_STRUCTS_IN_EXTENSION: usize = 21;
+pub(super) const EXTENSION_IS_EXTENDED: usize = 504;
 
 const LF_CHR: u8 = b'3';
 const LF_BLK: u8 = b'4';
@@ -306,7 +310,7 @@ pub mod tests {
 
     /// A header of `name`, `flag` and `size` with the POSIX magic, a modification time of
     /// 1700000000 and a sound checksum.
-    pub(crate) fn header(name: &[u8], flag: u8, size: usize) -> Vec<u8> {
+    pub fn header(name: &[u8], flag: u8, size: usize) -> Vec<u8> {
         let mut header = vec![0u8; RECORD];
         header[..name.len()].copy_from_slice(name);
         header[MODE].copy_from_slice(b"0000644\0");
@@ -328,16 +332,63 @@ pub mod tests {
         header[CHECKSUM].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
     }
 
-    /// An archive of `entries`, each a name, a type flag and the data, ended by two zero
-    /// records.
-    pub fn tar(entries: &[(&[u8], u8, &[u8])]) -> Vec<u8> {
+    /// The records of `entries`, each a name, a type flag and the data, its last record padded.
+    pub fn records(entries: &[(&[u8], u8, &[u8])]) -> Vec<u8> {
         let mut out = Vec::new();
         for (name, flag, data) in entries {
             out.extend_from_slice(&header(name, *flag, data.len()));
             out.extend_from_slice(data);
-            out.resize(out.len().div_ceil(RECORD) * RECORD, 0);
+            out.resize(out.len().next_multiple_of(RECORD), 0);
         }
-        out.resize(out.len() + 2 * RECORD, 0);
+        out
+    }
+
+    /// An archive of `entries`, as [`records`] writes them, ended by two zero records.
+    pub fn tar(entries: &[(&[u8], u8, &[u8])]) -> Vec<u8> {
+        ended(records(entries))
+    }
+
+    /// `records` ended by two zero records.
+    pub fn ended(mut records: Vec<u8>) -> Vec<u8> {
+        records.resize(records.len() + 2 * RECORD, 0);
+        records
+    }
+
+    /// The records of an old GNU sparse file of `name` and `real_size`: its header, which holds
+    /// the first four of `structs`, an extension record for each further 21, and `stored`, its
+    /// data, its last record padded.
+    pub fn old_gnu_sparse(
+        name: &[u8],
+        real_size: u64,
+        structs: &[(u64, u64)],
+        stored: &[u8],
+    ) -> Vec<u8> {
+        let octal = |value: u64| format!("{value:011o}\0");
+        let write = |record: &mut [u8], at: usize, structs: &[(u64, u64)]| {
+            for (index, (offset, numbytes)) in structs.iter().enumerate() {
+                let at = at + index * SPARSE_STRUCT;
+                record[at..at + 12].copy_from_slice(octal(*offset).as_bytes());
+                record[at + 12..at + SPARSE_STRUCT].copy_from_slice(octal(*numbytes).as_bytes());
+            }
+        };
+        let (own, mut rest) = structs.split_at(structs.len().min(GNU_SPARSE_STRUCTS));
+        let mut out = header(name, LF_OLD_GNU_SPARSE, stored.len());
+        out[MAGIC].copy_from_slice(b"ustar ");
+        out[VERSION].copy_from_slice(b" \0");
+        write(&mut out, GNU_SPARSE, own);
+        out[GNU_IS_EXTENDED] = u8::from(!rest.is_empty());
+        out[GNU_REAL_SIZE].copy_from_slice(octal(real_size).as_bytes());
+        sign(&mut out);
+        while !rest.is_empty() {
+            let (these, after) = rest.split_at(rest.len().min(SPARSE_STRUCTS_IN_EXTENSION));
+            let mut extension = vec![0u8; RECORD];
+            write(&mut extension, 0, these);
+            extension[EXTENSION_IS_EXTENDED] = u8::from(!after.is_empty());
+            out.extend_from_slice(&extension);
+            rest = after;
+        }
+        out.extend_from_slice(stored);
+        out.resize(out.len().next_multiple_of(RECORD), 0);
         out
     }
 
