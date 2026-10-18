@@ -198,6 +198,7 @@ fn standalone<'a>(file: &Ole2<'a>, directory: EntryId) -> Result<Storage<'a>, Un
             .entries
             .push((name_id, Node::Storage(file.storage(names)?)));
     }
+    storage.check_writable()?;
     Ok(storage)
 }
 

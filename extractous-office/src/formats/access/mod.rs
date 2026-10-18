@@ -49,7 +49,6 @@ use crate::formats::embedded::{ParseContext, Wrapping};
 use crate::formats::handlers::{Body, ToText};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{handed_on, Embedded, Handed};
-
 use crate::formats::thrown::{Exception as JavaException, Thrown as Rethrown};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{

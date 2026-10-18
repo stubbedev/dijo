@@ -8,7 +8,6 @@
 
 use std::borrow::Cow;
 use std::io::{self, Write};
-
 use std::sync::Arc;
 
 use super::{Content, EntryId, EntryKind, Ole2, Result, Unreadable};
@@ -128,6 +127,11 @@ impl<'a> Node<'a> {
 }
 
 impl Storage<'_> {
+    /// Fails where the storage cannot be written as a compound document, as [`write`] fails.
+    pub fn check_writable(&self) -> Result<()> {
+        Layout::of(self).map(|_| ())
+    }
+
     /// The same, owning the documents it borrowed.
     pub fn into_owned(self) -> Storage<'static> {
         Storage {
@@ -566,7 +570,6 @@ mod tests {
         };
         let data = write(&root).unwrap();
         assert_eq!(Layout::of(&root).unwrap().size(), data.len() as u64);
-
         let file = Ole2::open(&data).unwrap();
         assert_eq!(file.top_level_names(), ["Zeta", "Alpha", "Empty", "Folder"]);
         assert_eq!(file.storage(file.root()).unwrap(), root);

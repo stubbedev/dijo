@@ -373,7 +373,6 @@ pub(super) fn rebuild_paragraph_runs(
     let mut last_index = 0;
     for &char_index in marks {
         let start_inclusive = last_start;
-
         let end_exclusive = char_index + 1;
         let mut broken = false;
         let mut ending: Vec<usize> = Vec::new();

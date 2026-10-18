@@ -361,7 +361,6 @@ impl Document<'_> {
                     &[CELL_MARK],
                 )?;
             let ends_cell = ends_with_mark || paragraph.pap.inner_table_cell;
-
             if ends_cell && paragraph.table_level() == level {
                 let first = self.paragraph(row, cell_start)?;
                 cells.push(self.subrange(first.span.start, paragraph.span.end)?);

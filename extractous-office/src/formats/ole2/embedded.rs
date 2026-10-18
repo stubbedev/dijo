@@ -8,7 +8,6 @@
 use std::borrow::Cow;
 
 use crate::config::ParserConfigs;
-
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::embedded::{PARSER_OVERRIDE, RELATIONSHIP_ID, RESOURCE_NAME};
@@ -258,6 +257,7 @@ pub(crate) fn office_document<'a>(
         metadata.set(PARSER_OVERRIDE, opened.to_string());
     }
     let storage = file.storage(directory).map_err(unreadable)?;
+    storage.check_writable().map_err(unreadable)?;
     Ok(Some(Handed::Document(Embedded {
         data: Node::Storage(storage),
         metadata,
@@ -517,7 +517,6 @@ mod tests {
         );
         let written = embedded.data.into_input().unwrap();
         let copy = Ole2::open(&written).unwrap();
-
         assert_eq!(copy.top_level_names(), ["WordDocument", "1Table"]);
         assert_eq!(copy.class_id(copy.root()), [1; 16]);
     }

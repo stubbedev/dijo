@@ -4,7 +4,6 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
-
 use std::sync::OnceLock;
 
 use regex::Regex;
