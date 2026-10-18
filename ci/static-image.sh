@@ -59,10 +59,11 @@ mapfile -t tesseract_cflags < "$toolchain/extractous/tesseract-cflags"
 mapfile -t tesseract_libs < "$toolchain/extractous/tesseract-libs"
 mapfile -t images_cflags < "$toolchain/extractous/images-cflags"
 mapfile -t images_libs < "$toolchain/extractous/images-libs"
-for source in "$static_sources"/*.cc; do
+heif_sources="$root/extractous-native/heif-png"
+for source in "$static_sources"/*.cc "$heif_sources/heif.cc"; do
     object="$work/$(basename "$source" .cc).o"
     "$toolchain/bin/$triple-g++" -c -O2 -fPIC -std=c++20 "${tesseract_cflags[@]}" \
-        "${images_cflags[@]}" -I"$graalvm/include" -I"$graalvm/include/linux" \
+        "${images_cflags[@]}" -I"$heif_sources" -I"$graalvm/include" -I"$graalvm/include/linux" \
         -o "$object" "$source"
     objects+=("$object")
 done

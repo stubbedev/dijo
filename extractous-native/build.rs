@@ -326,8 +326,8 @@ impl Platform {
         Tesseract::Library(self.dynamic_library(OCR_TESSERACT_LIBRARY_STEM))
     }
 
-    /// Whether the OCR bundle carries heif-png (ci/heif-png): everywhere but macOS, whose own
-    /// sips decodes HEIC, HEIF and AVIF.
+    /// Whether the OCR bundle carries heif-png (extractous-native/heif-png): everywhere but
+    /// macOS, whose own sips decodes HEIC, HEIF and AVIF.
     fn heif_decoder_bundled(self) -> bool {
         self != Platform::MacOs
     }

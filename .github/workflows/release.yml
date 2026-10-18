@@ -4,7 +4,7 @@ on:
   push:
     tags: ["v*"]
   pull_request:
-    paths: [.github/workflows/release.yml, .github/actions/**, flake.nix, flake.lock, ci/**]
+    paths: [.github/workflows/release.yml, .github/actions/**, flake.nix, flake.lock, ci/**, extractous-native/heif-png/**]
   workflow_dispatch:
 
 permissions:
