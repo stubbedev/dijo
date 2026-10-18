@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The tesseract the builds other than the static executable load into their process: a library of the JNI
-# functions LinkedTesseract calls (extractous-core/tika-native/src/static/tesseract.cc) and of the
-# tesseract C API native readings call (ci/tesseract-jni/c-api.txt), linked
-# with tesseract built from its pinned source, patched as the Linux builds patch it
-# (ci/tesseract.nix), and with Leptonica and the image libraries vcpkg builds statically at a
-# pinned commit (ci/tesseract-jni); on Linux and Windows heif-png (ci/heif-png) to decode HEIC,
-# HEIF and AVIF, which macOS decodes with its own sips; and the license files of everything linked
-# into them. On Linux it builds against the system's C library, which the glibc release binary
+# The tesseract the builds other than the static executable load into their process: a library of the
+# tesseract C API native readings call (ci/tesseract-library/c-api.txt), linked with tesseract built
+# from its pinned source, patched as the Linux builds patch it (ci/tesseract.nix), and with Leptonica
+# and the image libraries vcpkg builds statically at a pinned commit (ci/tesseract-library); on Linux
+# and Windows heif-png (ci/heif-png) to decode HEIC, HEIF and AVIF, which macOS decodes with its own
+# sips; and the license files of everything linked into them. On Linux it builds against the system's C library, which the glibc release binary
 # then needs, as it does.
 
 if [ "$#" -ne 1 ]; then
     echo "usage: $0 <output directory>" >&2
     exit 2
 fi
-: "${JAVA_HOME:?JAVA_HOME must name the JDK whose JNI headers the tesseract library is built with}"
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 output=$1
@@ -71,9 +68,9 @@ fi
 mkdir "$root/tesseract"
 tar -xzf "$archive" -C "$root/tesseract" --strip-components 1
 patch --directory "$root/tesseract" --strip 1 --input "$here/tesseract-inline-stridemap.patch"
-cmake -S "$(native "$here/tesseract-jni")" -B "$(native "$root/tesseract-jni")" "${toolchain[@]}" \
+cmake -S "$(native "$here/tesseract-library")" -B "$(native "$root/tesseract-library")" "${toolchain[@]}" \
     -DCMAKE_BUILD_TYPE=Release -DTESSERACT_SOURCE="$(native "$root/tesseract")"
-cmake --build "$(native "$root/tesseract-jni")" --config Release --target extractous_tesseract
+cmake --build "$(native "$root/tesseract-library")" --config Release --target extractous_tesseract
 
 if [ -n "$heif" ]; then
     "$root/vcpkg" install --triplet "$triplet" --clean-after-build "libheif[core,aom]"
@@ -86,7 +83,7 @@ installed="$root/installed"
 staging="$output.partial"
 rm -rf "$staging"
 mkdir -p "$staging/licenses/tesseract"
-cp "$root/tesseract-jni/out/$library" "$staging/$library"
+cp "$root/tesseract-library/out/$library" "$staging/$library"
 cp "$root/tesseract/LICENSE" "$staging/licenses/tesseract/LICENSE"
 if [ -n "$heif" ]; then
     cp "$root/heif-png/out/$heif" "$staging/$heif"

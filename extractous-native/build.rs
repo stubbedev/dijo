@@ -179,8 +179,7 @@ fn build_tika_library(out_dir: &Path, platform: Platform) {
 }
 
 /// The OCR bundle `ci/ocr-bundle.sh` assembles, which `EXTRACTOUS_OCR_BUNDLE` names: tesseract as
-/// a library of LinkedTesseract's JNI functions and of the C API native readings call unless the
-/// static executable links it, heif-png
+/// a library of the C API native readings call unless the static executable links it, heif-png
 /// on the platforms that need it, the language data and the licenses of what they link,
 /// compressed beside the native libraries.
 struct OcrBundle {
@@ -198,8 +197,7 @@ struct OcrBundle {
 /// How the built program runs tesseract, which decides what it embeds of the OCR bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Tesseract {
-    /// The bundled library of LinkedTesseract's JNI functions and tesseract's C API of this name,
-    /// unpacked and loaded into the process.
+    /// The bundled library of tesseract's C API of this name, unpacked and loaded into the process.
     Library(String),
     /// tesseract linked into the static executable, which needs only the language data.
     Linked,

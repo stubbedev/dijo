@@ -395,7 +395,7 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | --- | --- |
 | `just check` | Every gate in order: format check, lint, tests |
 | `just build` | Build the workspace, without Tika |
-| `just ocr-bundle [dir]` | Assemble the tesseract library a build loads, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` (built with vcpkg, which on NixOS needs a container such as `ubuntu:22.04`, and a JDK's JNI headers in `JAVA_HOME`) |
+| `just ocr-bundle [dir]` | Assemble the tesseract library a build loads, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` (built with vcpkg, which on NixOS needs a container such as `ubuntu:22.04`) |
 | `just static-native` | Build the statically linked Linux executable as released, with tesseract and libheif linked in, into `target/static/extractous` (uses nix) |
 | `just static-tika` | Build the statically linked Linux executable linked into Tika's native image, which is never released, into `target/static-image/extractous` (uses nix and GraalVM) |
 | `just container` | Build the container image around `target/static/extractous` and load it into Docker as `extractous:local` |

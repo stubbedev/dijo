@@ -17,10 +17,9 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
- * Tesseract linked into the process, as the static build links it and the other builds with an
- * OCR bundle load the bundle's library of these native functions: an engine per model, loaded
- * once and reused by one read at a time, so that reading an image starts no process and loads no
- * model. A read recognizes each page as the tesseract program does and hands its text over as
+ * Tesseract linked into the static executable with these native functions: an engine per model,
+ * loaded once and reused by one read at a time, so that reading an image starts no process and
+ * loads no model. A read recognizes each page as the tesseract program does and hands its text over as
  * the program's text renderer writes it. Detection reports what the program reports, without the
  * page segmentation the program runs first and then discards.
  */

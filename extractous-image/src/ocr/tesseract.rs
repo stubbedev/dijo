@@ -661,11 +661,11 @@ impl Drop for MonitorGuard<'_> {
 mod tests {
     use super::*;
 
-    /// `ci/tesseract-jni` builds the bundled library to export the functions this module calls,
+    /// `ci/tesseract-library` builds the bundled library to export the functions this module calls,
     /// which it lists in `c-api.txt`.
     #[test]
     fn the_bundled_library_exports_every_function_readings_call() {
-        let exported = std::fs::read_to_string("../ci/tesseract-jni/c-api.txt").unwrap();
+        let exported = std::fs::read_to_string("../ci/tesseract-library/c-api.txt").unwrap();
         assert_eq!(exported.lines().collect::<Vec<_>>(), SYMBOLS);
     }
 

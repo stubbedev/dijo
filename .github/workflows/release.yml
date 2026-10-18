@@ -23,16 +23,12 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-linux
-            graalvm: linux-x64
           - os: ubuntu-22.04-arm
             target: aarch64-linux
-            graalvm: linux-aarch64
           - os: macos-15
             target: aarch64-macos
-            graalvm: macos-aarch64
           - os: windows-2025
             target: x86_64-windows
-            graalvm: windows-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     defaults:
@@ -42,14 +38,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install the JDK whose JNI headers the OCR bundle's tesseract library is built with
-        run: |
-          if [ "${{ runner.os }}" = Windows ]; then
-            home=$(cygpath --windows "$(ci/install-graalvm.sh ${{ matrix.graalvm }} "$(cygpath --unix "$RUNNER_TEMP")/graalvm")")
-          else
-            home=$(ci/install-graalvm.sh ${{ matrix.graalvm }} "$RUNNER_TEMP/graalvm")
-          fi
-          echo "JAVA_HOME=$home" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - name: Install Ninja and NASM, which vcpkg builds with on Linux
         if: runner.os == 'Linux'

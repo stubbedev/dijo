@@ -320,11 +320,6 @@ jbyteArray detect_pix(JNIEnv *env, tesseract::TessBaseAPI &api, Pix *pix, jobjec
 
 extern "C" {
 
-/** The version of the tesseract linked with these functions. */
-JNIEXPORT const char *extractous_tesseract_version() {
-    return tesseract::TessBaseAPI::Version();
-}
-
 JNIEXPORT jlong JNICALL Java_ai_yobix_LinkedTesseract_create(JNIEnv *env, jclass,
                                                              jbyteArray tessdata,
                                                              jbyteArray language) {

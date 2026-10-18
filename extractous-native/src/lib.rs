@@ -166,12 +166,9 @@ fn program_version(program: &Path) -> Result<String, String> {
 fn library_version(library: &Path) -> Result<String, String> {
     let fail = |e: libloading::Error| format!("Failed to load {}: {e}", library.display());
     let loaded = unsafe { libloading::Library::new(library) }.map_err(fail)?;
-    let version = unsafe {
-        loaded.get::<unsafe extern "C" fn() -> *const std::ffi::c_char>(
-            b"extractous_tesseract_version",
-        )
-    }
-    .map_err(fail)?;
+    let version =
+        unsafe { loaded.get::<unsafe extern "C" fn() -> *const std::ffi::c_char>(b"TessVersion") }
+            .map_err(fail)?;
     Ok(linked_version(
         &unsafe { std::ffi::CStr::from_ptr(version()) }.to_string_lossy(),
     ))

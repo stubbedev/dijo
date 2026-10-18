@@ -10,8 +10,7 @@ pub(crate) use shared_library::create_isolate;
 pub(crate) use static_image::create_isolate;
 
 /// The system properties Tika is started with: its temporary directory, headless AWT, the
-/// processors OCR may use, the bundled tesseract's language data, the bundled tesseract library
-/// unless the static build links it, and the bundled heif-png.
+/// processors OCR may use, the bundled tesseract's language data and the bundled heif-png.
 fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, String)>, String> {
     let mut properties = vec![("java.awt.headless", "true".to_string())];
     if let Some(dir) = &settings.temp_dir {
@@ -25,13 +24,6 @@ fn system_properties(settings: &IsolateSettings) -> Result<Vec<(&'static str, St
     }
     if !OCR_FILES.is_empty() {
         let dir = unpacked()?;
-        #[cfg(not(feature = "static"))]
-        if let Some(library) = crate::bundle::OCR_TESSERACT_LIBRARY {
-            properties.push((
-                "extractous.ocr.library",
-                dir.join(library).display().to_string(),
-            ));
-        }
         properties.push((
             "extractous.ocr.tessdata",
             dir.join(OCR_MODELS).display().to_string(),
