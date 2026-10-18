@@ -325,6 +325,56 @@ mod tests {
         assert_same_as_tika(&paths, TIKA_NAME);
     }
 
+    #[cfg(feature = "tika")]
+    #[test]
+    #[ignore = "compares with Tika's path"]
+    fn extracts_iso2022_text_as_tikas_path() {
+        let documents: [(&str, &[u8]); 6] = [
+            (
+                "korean.txt",
+                b"\x1b$)C\n\x0e\x30\x21\x30\x22\x30\x23 \x31\x21\x31\x22\x31\x23\x0f hello\n\
+                  \x0e\x33\x21\x33\x22\x33\x23\x33\x24\x0f world\n",
+            ),
+            (
+                "korean-broken.txt",
+                b"\x1b$)C\x0e\x30\x21\x30\x22\x30\x23\x30\x24\x7f\x7f\x0f \x1bN\x21\x21 x \x1bZ\
+                  \x0e\x30\x21\x30\x22\x30",
+            ),
+            (
+                "korean-stray.txt",
+                b"\x1b$)C\x0e!!\x0f hello world plain text here\n",
+            ),
+            (
+                "chinese-gb.txt",
+                b"\x1b$)A\x0e\x30\x21\x30\x22\x30\x23\x30\x24\x30\x25\x0f text\n\
+                  \x0e\x3d\x21\x3d\x22\x3d\x23\x0f\n",
+            ),
+            (
+                "chinese-cns.txt",
+                b"\x1b$)G\x0e\x44\x21\x44\x22\x44\x23\x44\x24\x0f \x1b$*H\x1bN\x21\x21\x1bN\x21\x22 \
+                  \x0e\x44\x25\x44\x26\x0f\x1b$+I\x1bO\x21\x21 end\n",
+            ),
+            (
+                "chinese-stray.txt",
+                b"plain \x1b$)A\x0e!!\x0f text, then more plain text\n",
+            ),
+        ];
+        let directory =
+            std::env::temp_dir().join(format!("extractous-iso2022-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let paths: Vec<PathBuf> = documents
+            .iter()
+            .map(|(name, bytes)| {
+                let path = directory.join(name);
+                std::fs::write(&path, bytes).unwrap();
+                path
+            })
+            .collect();
+        let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        assert_same_as_tika(&paths, TIKA_NAME);
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
     #[test]
     fn reads_every_charset_natively() {
         let reading = |input: &[u8]| {
