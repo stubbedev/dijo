@@ -166,7 +166,7 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
     assert_same_as_tika_departing(
         &paths,
         ChmParser.tika_name(),
-        crate::formats::html::DEPARTURES,
+        crate::formats::html::TREE_DEPARTURES,
     );
     let failing: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
     assert_fails_as_tika(&failing);

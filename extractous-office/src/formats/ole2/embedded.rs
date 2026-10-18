@@ -92,7 +92,7 @@ impl Handed {
 
 /// POI's `POIFSDocumentType`: what Tika's container detector names a storage, and the extension
 /// it names such a document by.
-fn document_type(media_type: &MediaType) -> (MediaType, &'static str) {
+pub(crate) fn document_type(media_type: &MediaType) -> (MediaType, &'static str) {
     const TYPES: [(&str, &str); 16] = [
         ("application/vnd.ms-excel", "xls"),
         ("application/msword", "doc"),

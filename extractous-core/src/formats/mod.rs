@@ -257,7 +257,7 @@ impl Routes for Registry {
         let detected = Detected::detect_embedded(data, metadata, opened)
             .map_err(|error| Unrouted::Unsupported(Unsupported::Undetected(error.to_string())))?;
         let parsed_as = metadata
-            .get(PARSER_OVERRIDE)
+            .get(embedded::PARSER_OVERRIDE)
             .unwrap_or(&detected.media_type);
         let parser = parser_for(parsed_as).map_err(Unrouted::Unsupported)?;
         let start = detected.metadata_for(parser);
@@ -368,9 +368,6 @@ pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unsupport
 pub fn route_file(path: &str) -> Result<Routed<'_>, Unsupported> {
     route(&open(Source::File(path), None).expect("the file opens"))
 }
-
-/// The metadata key naming the type whose parser parses a document, whatever it is detected as.
-const PARSER_OVERRIDE: &str = "tk:content-type-parser-override";
 
 /// Detects the media type of a document as Tika's `DefaultDetector` does: in Rust, and with Tika
 /// for a document Tika's detection throws on, so the failure is Tika's own. A build without Tika

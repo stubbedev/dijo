@@ -26,9 +26,11 @@ mod tests {
     use super::*;
     #[cfg(feature = "tika")]
     use crate::config::{ParserConfigs, TesseractOcrConfig};
-    use crate::formats::{self, PARSERS};
     #[cfg(feature = "tika")]
-    use crate::formats::{parity, PARSER_OVERRIDE};
+    use crate::formats::embedded::PARSER_OVERRIDE;
+    #[cfg(feature = "tika")]
+    use crate::formats::parity;
+    use crate::formats::{self, PARSERS};
     #[cfg(feature = "tika")]
     use crate::isolate::isolate;
     #[cfg(feature = "tika")]

@@ -153,11 +153,10 @@ mod tests {
     }
 
     #[test]
-    fn decodes_every_charset_it_names_but_iscii() {
+    fn decodes_every_charset_it_names() {
         let undecodable: Vec<&str> = all_names()
             .filter(|name| named(name).decode(b"a\x80\xff").is_none())
             .collect();
-        assert_eq!(undecodable, ["x-ISCII91"]);
-        assert_eq!(ansicpg_name(57002), Some("x-ISCII91"));
+        assert_eq!(undecodable, Vec::<&str>::new());
     }
 }

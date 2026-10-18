@@ -40,9 +40,24 @@ pub struct Orientation(u8);
 impl Orientation {
     /// The orientation a TIFF or EXIF orientation value records, when it needs anything done.
     pub(crate) fn parse(value: &str) -> Option<Self> {
-        match value.trim().parse::<u8>() {
-            Ok(value @ 2..=8) => Some(Self(value)),
+        Self::of(value.trim().parse().ok()?)
+    }
+
+    /// The orientation of the value 1 to 8, when it needs anything done.
+    pub(crate) fn of(value: u32) -> Option<Self> {
+        match value {
+            2..=8 => Some(Self(value as u8)),
             _ => None,
+        }
+    }
+
+    /// The orientation that takes an image turned by this one back: a quarter turn the other
+    /// way for 6 and 8; the others undo themselves.
+    pub(crate) fn undone(self) -> Self {
+        match self.0 {
+            6 => Self(8),
+            8 => Self(6),
+            value => Self(value),
         }
     }
 
