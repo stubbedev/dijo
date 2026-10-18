@@ -638,9 +638,9 @@ struct ContentTypes {
 }
 
 impl ContentTypes {
-    fn read(bytes: &[u8]) -> Result<Self, Unported> {
+    fn read(bytes: &Input<'_>) -> Result<Self, Unported> {
         let mut reader = ContentTypesReader::default();
-        xml::parse_sax(bytes, CONTENT_TYPES, &mut reader)
+        xml::parse_part(bytes, CONTENT_TYPES, &mut reader)
             .map_err(|e| Unported(format!("POI fails on {CONTENT_TYPES}: {}", describe(&e))))?;
         let mut defaults = HashMap::new();
         let mut overrides = HashMap::new();
