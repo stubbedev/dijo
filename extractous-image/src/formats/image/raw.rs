@@ -11,7 +11,8 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, ResourceType, Wrapping};
 use crate::formats::metadata::office::RESOURCE_NAME_EXTENSION_INFERRED;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Opened, Parser, Prepared};
+use crate::formats::{Decline, Footprint, Opened, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::mime::{self, MediaType};
 
 /// The type of the previews.
@@ -61,23 +62,40 @@ impl Parser for RawTiffParser {
         ]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// The image's metadata, its XMP searched for in all of it as the `pages` it is mapped to
+    /// are released, and its previews found in place.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         let zone = dates_zone();
+        let paging = Paging::new(pages);
         let read = if is_big_tiff(input) {
             let mut metadata = metadata.clone();
-            image_xmp::scan_and_extract(input, &mut metadata)?;
+            image_xmp::scan_and_extract(input, &paging, &mut metadata)?;
             Read {
                 metadata,
                 prefix_route_names: 0,
                 reads_file: false,
             }
         } else {
-            extract_metadata(Format::Tiff, input, metadata.clone(), zone)?
+            extract_metadata(Format::Tiff, input, &paging, metadata.clone(), zone)?
         };
         let previews = previews(input, MAX_TOTAL_PREVIEW_BYTES);
         Ok(Box::new(move |xhtml| {

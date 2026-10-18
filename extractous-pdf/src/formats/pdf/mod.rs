@@ -25,6 +25,8 @@ mod font;
 mod form;
 mod function;
 mod images;
+#[cfg(test)]
+mod large;
 mod matrix;
 mod metadata;
 mod ocr;

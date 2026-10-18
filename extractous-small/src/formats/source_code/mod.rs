@@ -14,7 +14,7 @@ use lexer::{Scanner, Tables};
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::embedded::RESOURCE_NAME;
-use crate::formats::html::{ParsedDocument, ParsedNode};
+use crate::formats::html::{walk_parsed, ParsedNode, Visitor};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{unless_different, Decline, Failure, Parser, Prepared};
@@ -109,8 +109,13 @@ impl Parser for SourceCodeParser {
                 code = code.replace('\u{FFFD}', "?");
             }
             let html = render(language, &name, &code);
-            let document = ParsedDocument::parse(&html);
-            let walked = walk(&document, document.root(), xhtml, &mut true);
+            let mut walk = Walk {
+                xhtml,
+                ignore: true,
+                left_out: 0,
+                written: Vec::new(),
+            };
+            let walked = walk_parsed(&html, &mut walk);
             xhtml.end_document()?;
             walked
         });
@@ -319,55 +324,89 @@ fn tabs_to_spaces(line: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
-/// `TikaNodeFilter` over jsoup's tree from `node`: from the `html` element on, the `head`,
-/// `meta`, `title`, `link` and `style` elements left out with what they hold, the `html` and
-/// `body` elements but not what they hold, text and data written as characters, and every
-/// other node as an element in no namespace with its attributes. `ignore` holds whether the
-/// walk is outside the `html` element.
-fn walk(
-    document: &ParsedDocument,
-    node: usize,
-    xhtml: &mut Xhtml,
-    ignore: &mut bool,
-) -> Result<(), Failure> {
-    let parsed = document.node(node);
-    let name = match &parsed {
+/// `TikaNodeFilter` over jsoup's tree: from the `html` element on, the `head`, `meta`, `title`,
+/// `link` and `style` elements left out with what they hold, the `html` and `body` elements but
+/// not what they hold, text and data written as characters, and every other node as an element
+/// in no namespace with its attributes.
+struct Walk<'x, 'h> {
+    xhtml: &'x mut Xhtml<'h>,
+    /// Whether the walk is outside the `html` element.
+    ignore: bool,
+    /// How deep the walk is in an element it leaves out, if it is.
+    left_out: usize,
+    /// Whether each node started and not yet ended was written as an element.
+    written: Vec<bool>,
+}
+
+fn node_name<'n>(node: &ParsedNode<'n>) -> &'n str {
+    match node {
         ParsedNode::Document => "#document",
         ParsedNode::Element { name, .. } => name,
-        ParsedNode::Text(_) => "#text",
-        ParsedNode::Other(name) => name,
-    };
-    if name == "html" {
-        *ignore = false;
+        ParsedNode::Comment => "#comment",
+        ParsedNode::Doctype => "#doctype",
     }
-    let mut emitted = false;
-    if !*ignore {
-        if matches!(name, "head" | "meta" | "title" | "link" | "style") {
+}
+
+impl Visitor for Walk<'_, '_> {
+    type Stop = Failure;
+
+    fn start(&mut self, node: &ParsedNode<'_>) -> Result<(), Failure> {
+        if self.left_out > 0 {
+            self.left_out += 1;
             return Ok(());
         }
-        match &parsed {
-            _ if matches!(name, "html" | "body") => {}
-            ParsedNode::Text(text) => xhtml.characters(text)?,
-            ParsedNode::Element { attributes, .. } => {
-                xhtml.start_element_with(name, attributes)?;
-                emitted = true;
-            }
-            ParsedNode::Document | ParsedNode::Other(_) => {
-                xhtml.start_element(name)?;
-                emitted = true;
+        let name = node_name(node);
+        if name == "html" {
+            self.ignore = false;
+        }
+        if !self.ignore && matches!(name, "head" | "meta" | "title" | "link" | "style") {
+            self.left_out = 1;
+            return Ok(());
+        }
+        let written = !self.ignore && !matches!(name, "html" | "body");
+        if written {
+            match node {
+                ParsedNode::Element { attributes, .. } => {
+                    let attributes: Vec<(&str, &str)> = attributes
+                        .iter()
+                        .map(|attribute| (attribute.key.as_str(), attribute.value.as_str()))
+                        .collect();
+                    self.xhtml.start_element_with(name, &attributes)?;
+                }
+                ParsedNode::Document | ParsedNode::Comment | ParsedNode::Doctype => {
+                    self.xhtml.start_element(name)?;
+                }
             }
         }
+        self.written.push(written);
+        Ok(())
     }
-    for &child in document.children(node) {
-        walk(document, child, xhtml, ignore)?;
+
+    fn text(&mut self, text: &str) -> Result<(), Failure> {
+        if self.left_out == 0 && !self.ignore {
+            self.xhtml.characters(text)?;
+        }
+        Ok(())
     }
-    if name == "html" {
-        *ignore = true;
+
+    fn end(&mut self, node: &ParsedNode<'_>) -> Result<(), Failure> {
+        if self.left_out > 0 {
+            self.left_out -= 1;
+            return Ok(());
+        }
+        let name = node_name(node);
+        if name == "html" {
+            self.ignore = true;
+        }
+        if self
+            .written
+            .pop()
+            .expect("the walk ends the nodes it started")
+        {
+            self.xhtml.end_element_in("", name)?;
+        }
+        Ok(())
     }
-    if emitted {
-        xhtml.end_element_in("", name)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

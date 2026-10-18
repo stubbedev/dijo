@@ -19,6 +19,8 @@ use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::memory;
+
 /// How long an engine may sit unused before it is freed with the model it loaded.
 const IDLE: Duration = Duration::from_secs(5 * 60);
 /// The model orientation and script detection runs with.
@@ -29,6 +31,10 @@ const MODEL_EXTENSION: &str = ".traineddata";
 const OSD_ONLY: c_int = 0;
 /// `L_SEVERITY_NONE`: Leptonica reports nothing.
 const LEPTONICA_QUIET: c_int = 6;
+/// The memory tesseract and Leptonica take to read a grey image, a pixel.
+const GRAY_BYTES_PER_PIXEL: u64 = 4;
+/// The memory tesseract and Leptonica take to read a colour image, a pixel.
+const COLOUR_BYTES_PER_PIXEL: u64 = 11;
 
 #[repr(C)]
 struct BaseApi {
@@ -159,10 +165,14 @@ pub(crate) enum Pixels<'a> {
         width: u32,
         height: u32,
     },
-    /// An image file, which tesseract decodes with Leptonica, as the `tesseract` program does a
-    /// file it is handed: with the resolution the file records, and the transparency of a PNG
-    /// laid over white.
-    Encoded(Cow<'a, [u8]>),
+    /// An image file of an image of `width` by `height` pixels, which tesseract decodes with
+    /// Leptonica, as the `tesseract` program does a file it is handed: with the resolution the
+    /// file records, and the transparency of a PNG laid over white.
+    Encoded {
+        data: Cow<'a, [u8]>,
+        width: u32,
+        height: u32,
+    },
 }
 
 impl Pixels<'_> {
@@ -171,8 +181,31 @@ impl Pixels<'_> {
             Self::Gray { width, height, .. } | Self::Rgb { width, height, .. } => {
                 format!("a {width}x{height} image")
             }
-            Self::Encoded(data) => format!("an image file of {} bytes", data.len()),
+            Self::Encoded { data, .. } => format!("an image file of {} bytes", data.len()),
         }
+    }
+
+    /// The memory tesseract and Leptonica take to read the image, beyond the counting
+    /// allocator's sight: their copy of it, thresholded, and what recognition holds besides. A
+    /// grey image takes four bytes a pixel, a colour one, held in 32 bits a pixel and turned
+    /// grey, eleven, as the `tesseract` program's peak shows on images of 14 million pixels.
+    fn footprint(&self) -> u64 {
+        let (width, height, bytes) = match self {
+            Self::Gray { width, height, .. } => (width, height, GRAY_BYTES_PER_PIXEL),
+            Self::Rgb { width, height, .. } | Self::Encoded { width, height, .. } => {
+                (width, height, COLOUR_BYTES_PER_PIXEL)
+            }
+        };
+        u64::from(*width) * u64::from(*height) * bytes
+    }
+
+    /// Reserves the memory reading the image takes against the budget of the extraction, or
+    /// fails when it does not fit.
+    fn reserve(&self) -> Result<memory::Reserved, OcrError> {
+        memory::reserve(self.footprint()).map_err(|limit| OcrError::MemoryLimit {
+            image: self.describe(),
+            limit,
+        })
     }
 
     /// Hands the image to an engine, which copies it: false when Leptonica cannot decode it.
@@ -202,7 +235,7 @@ impl Pixels<'_> {
                 3,
                 (*width * 3) as c_int,
             ),
-            Self::Encoded(data) => {
+            Self::Encoded { data, .. } => {
                 let mut pix = (api.read_pix)(data.as_ptr(), data.len());
                 if pix.is_null() {
                     return false;
@@ -245,6 +278,9 @@ pub enum OcrError {
     Models { dir: String, reason: String },
     /// The tesseract the build carries could not be set up, for this reason.
     Unavailable { reason: String },
+    /// Reading the image would take more memory than is left of the extraction's budget, of
+    /// `limit` bytes.
+    MemoryLimit { image: String, limit: u64 },
 }
 
 impl fmt::Display for OcrError {
@@ -263,6 +299,11 @@ impl fmt::Display for OcrError {
                 write!(f, "Listing tesseract's models under {dir} failed: {reason}")
             }
             Self::Unavailable { reason } => write!(f, "tesseract cannot run: {reason}"),
+            Self::MemoryLimit { image, limit } => write!(
+                f,
+                "Reading {image} failed: it takes more memory than is left of the budget of \
+                 {limit} bytes"
+            ),
         }
     }
 }
@@ -359,6 +400,7 @@ impl Tesseract {
         thresholding: Thresholding,
         timeout: Option<Duration>,
     ) -> Result<Reading, OcrError> {
+        let _reserved = image.reserve()?;
         let engine = self.take(model)?;
         let result = self.recognize(&engine, image, model, segmentation, thresholding, timeout);
         self.release(model, engine);
@@ -419,6 +461,7 @@ impl Tesseract {
     /// too little text or one where no script is likelier than another, gives no script and no
     /// turns.
     pub(crate) fn detect(&self, image: Pixels<'_>) -> Result<Detection, OcrError> {
+        let _reserved = image.reserve()?;
         let engine = self.take(OSD_MODEL)?;
         let api = &self.api;
         let handle = engine.0.as_ptr();
@@ -712,13 +755,20 @@ mod tests {
     /// from and given back to the shared pool, read what one reading alone reads (#62).
     #[test]
     fn reads_alike_on_many_threads_at_once() {
+        fn encoded(image: &[u8]) -> Pixels<'_> {
+            Pixels::Encoded {
+                data: Cow::Borrowed(image),
+                width: 1377,
+                height: 648,
+            }
+        }
         let tesseract = crate::ocr::tesseract().unwrap();
         let image =
             std::fs::read("../test_files/documents/table-multi-row-column-cells.png").unwrap();
         let read = || {
             tesseract
                 .read(
-                    Pixels::Encoded(Cow::Borrowed(&image)),
+                    encoded(&image),
                     "eng",
                     PageSegMode(3),
                     Thresholding::Otsu,
@@ -726,11 +776,7 @@ mod tests {
                 )
                 .unwrap()
         };
-        let detect = || {
-            tesseract
-                .detect(Pixels::Encoded(Cow::Borrowed(&image)))
-                .unwrap()
-        };
+        let detect = || tesseract.detect(encoded(&image)).unwrap();
         let (alone, detected) = (read(), detect());
         assert!(alone.text.contains("Participants"), "{}", alone.text);
         std::thread::scope(|scope| {

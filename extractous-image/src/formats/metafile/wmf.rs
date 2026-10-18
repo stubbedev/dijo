@@ -4,7 +4,7 @@
 //! `HwmfPicture`, which Tika reads the picture with, parses every record and fails the picture on
 //! many it cannot read, bitmaps among them, none of which give text (#127).
 
-use super::{slice, u16_at, u32_at, Picture};
+use super::{slice, u16_at, u32_at, Broken};
 use crate::formats::wmf_placeable;
 
 /// `META_EOF`.
@@ -43,9 +43,13 @@ pub(super) enum Record<'a> {
     Text(&'a [u8]),
 }
 
-/// The records of the WMF picture `data` up to its end-of-file record or its end.
-pub(super) fn records(data: &[u8]) -> Picture<Record<'_>> {
-    let mut picture = Picture::default();
+/// Hands `each` the records of the WMF picture `data` in turn, read in place, up to its
+/// end-of-file record or its end: why reading them stopped short of the picture's end, if it
+/// did, unless `each` stopped it first.
+pub(super) fn records<'a, E>(
+    data: &'a [u8],
+    mut each: impl FnMut(Record<'a>) -> Result<(), E>,
+) -> Result<Broken, E> {
     let mut at = if u32_at(data, 0, "the placeable key") == Ok(wmf_placeable::KEY) {
         wmf_placeable::LENGTH
     } else {
@@ -60,8 +64,9 @@ pub(super) fn records(data: &[u8]) -> Picture<Record<'_>> {
     match header {
         Ok(size) => at += size,
         Err(reason) => {
-            picture.broken = Some(format!("the data starts with no WMF header: {reason}"));
-            return picture;
+            return Ok(Some(format!(
+                "the data starts with no WMF header: {reason}"
+            )))
         }
     }
     while at < data.len() {
@@ -77,16 +82,15 @@ pub(super) fn records(data: &[u8]) -> Picture<Record<'_>> {
         match read {
             Ok((EOF, ..)) => break,
             Ok((_, size, record)) => {
-                picture.records.extend(record);
+                if let Some(record) = record {
+                    each(record)?;
+                }
                 at += size;
             }
-            Err(reason) => {
-                picture.broken = Some(format!("the WMF record at {at:#x}: {reason}"));
-                break;
-            }
+            Err(reason) => return Ok(Some(format!("the WMF record at {at:#x}: {reason}"))),
         }
     }
-    picture
+    Ok(None)
 }
 
 /// What Tika reads of the record of `function`, whose bytes after its size and function are
@@ -117,6 +121,25 @@ fn record(function: u16, body: &[u8]) -> Result<Option<Record<'_>>, String> {
 mod tests {
     use super::super::testing::{wmf, wmf_ext_text_out, wmf_font, wmf_record, wmf_text_out};
     use super::*;
+
+    /// The records of a picture, and why reading them stopped short of its end, if it did.
+    struct Picture<'a> {
+        records: Vec<Record<'a>>,
+        broken: Option<String>,
+    }
+
+    fn records(data: &[u8]) -> Picture<'_> {
+        let mut read = Vec::new();
+        let broken = super::records(data, |record| {
+            read.push(record);
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|never| match never {});
+        Picture {
+            records: read,
+            broken,
+        }
+    }
 
     #[test]
     fn reads_the_texts_and_objects_up_to_the_end_of_file_record() {

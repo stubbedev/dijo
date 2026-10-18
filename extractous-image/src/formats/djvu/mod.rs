@@ -19,7 +19,7 @@ use crate::errors::Error;
 use crate::formats::image::enricher::OcrReader;
 use crate::formats::image::PREPARING_OCR_PARSER;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::java::{is_blank, strip, utf8};
 use crate::ocr::{Bitmap, Decoded};
 use document::{DjvuDocument, Form};
@@ -70,6 +70,10 @@ impl Parser for DjvuParser {
         &["image/vnd.djvu"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -78,16 +82,10 @@ impl Parser for DjvuParser {
     ) -> Result<Prepared<'a>, Decline<'static>> {
         let document = DjvuDocument::read(input)
             .map_err(|error| Decline::Fails(Error::ParseError(error.message())))?;
-        let texts: Vec<Result<String, DjvuError>> = document
-            .pages()
-            .iter()
-            .map(|page| page_text(&document, page))
-            .collect();
-        let blank =
-            |text: &Result<String, DjvuError>| text.as_ref().is_ok_and(|text| is_blank(text));
+        let blank = |page| page_text(&document, page).is_ok_and(|text| is_blank(&text));
         let reader = match !configs.ocr.skips_ocr()
             && crate::ocr::tesseract_runs()
-            && texts.iter().any(blank)
+            && document.pages().iter().any(blank)
         {
             true => Some(OcrReader::of(configs)?),
             false => None,
@@ -96,8 +94,9 @@ impl Parser for DjvuParser {
             xhtml
                 .metadata_mut()
                 .set(PAGES, document.pages().len().to_string());
-            for (index, (page, text)) in document.pages().iter().zip(texts).enumerate() {
-                let text = text.map_err(|error| Failure::Malformed(error.message()))?;
+            for (index, page) in document.pages().iter().enumerate() {
+                let text = page_text(&document, page)
+                    .map_err(|error| Failure::Malformed(error.message()))?;
                 xhtml.start_element_with("div", &[("class", "page")])?;
                 if is_blank(&text) {
                     if let Some(reader) = &reader {

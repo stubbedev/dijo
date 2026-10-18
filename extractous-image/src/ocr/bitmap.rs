@@ -151,7 +151,11 @@ impl Bitmap {
                         image::ExtendedColorType::Rgba8,
                     )
                     .expect("an image in memory encodes as PNG");
-                Pixels::Encoded(png.into())
+                Pixels::Encoded {
+                    data: png.into(),
+                    width: image.width(),
+                    height: image.height(),
+                }
             }
         }
     }
