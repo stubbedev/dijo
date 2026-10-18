@@ -6,7 +6,7 @@
 
 mod compressor;
 #[cfg(all(test, not(feature = "tika")))]
-mod large;
+pub(crate) mod large;
 mod nesting;
 mod package;
 mod rar;
