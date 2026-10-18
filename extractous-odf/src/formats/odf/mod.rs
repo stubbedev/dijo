@@ -3,7 +3,7 @@
 //! the `mimetype` entry names, and the text of every `content.xml` and `styles.xml` in the
 //! archive, embedded objects' included, in the order of its central directory, with the
 //! pictures, object thumbnails and base64 binary data it embeds parsed as embedded documents.
-//! Encrypted documents are left to Tika.
+//! An encrypted document fails, as Tika fails it, before anything of it is written.
 
 mod body;
 mod flat;
@@ -15,6 +15,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::config::ParserConfigs;
+use crate::formats::crypt;
 use crate::formats::embedded::{self, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
@@ -290,7 +291,6 @@ impl SaxHandler for ElementFinder {
 const UNREADABLE_ARCHIVE: &str = "its archive is not one the zip crate reads";
 const DUPLICATES: &str = "its archive has entries the zip crate does not list, such as duplicates";
 const UNREADABLE_MANIFEST: &str = "its manifest cannot be read";
-const ENCRYPTED: &str = "it is encrypted";
 const NO_BODY: &str = "it has no content.xml or styles.xml, so Tika leaves its XHTML unfinished";
 const UNREADABLE_ENTRY: &str = "an entry it reads cannot be read by the zip crate";
 
@@ -313,26 +313,29 @@ fn embedded_metadata(name: &str, bytes: &[u8]) -> Result<TikaMetadata, Failure> 
 }
 
 /// The archive of the document in `input`, its metadata, type and bodies read ahead, or why
-/// Tika's path should read it rather than this parser.
-fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, &'static str> {
+/// Tika's path should read it rather than this parser, or the error Tika fails it with: the
+/// `EncryptedDocumentException` its `OpenDocumentManifestHandler` throws on a manifest's
+/// `encryption-data`, which `OpenDocumentParser` reads before any part it writes.
+fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, Declined> {
+    let deferred = |reason: &str| Declined::Deferred(reason.to_owned());
     let Ok(mut archive) = Archive::open(input, pages) else {
-        return Err(UNREADABLE_ARCHIVE);
+        return Err(deferred(UNREADABLE_ARCHIVE));
     };
     if !archive.has_every_record(input) {
-        return Err(DUPLICATES);
+        return Err(deferred(DUPLICATES));
     }
     let manifests: Vec<Entry> = archive.of_kind(EntryKind::Manifest).cloned().collect();
     for manifest in &manifests {
         let Ok(bytes) = archive.read(manifest) else {
-            return Err(UNREADABLE_MANIFEST);
+            return Err(deferred(UNREADABLE_MANIFEST));
         };
         if ElementFinder::finds("encryption-data", &bytes, manifest.name()) {
-            return Err(ENCRYPTED);
+            return Err(Declined::Fails(crypt::encrypted(None)));
         }
     }
     let bodies: Vec<Entry> = archive.of_kind(EntryKind::Body).cloned().collect();
     if bodies.is_empty() {
-        return Err(NO_BODY);
+        return Err(deferred(NO_BODY));
     }
     let read: Vec<Entry> = archive
         .entries
@@ -341,10 +344,14 @@ fn read_ahead<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Archive<'a>, &'st
         .cloned()
         .collect();
     for entry in &read {
-        archive.read_now(entry).map_err(|_| UNREADABLE_ENTRY)?;
+        archive
+            .read_now(entry)
+            .map_err(|_| deferred(UNREADABLE_ENTRY))?;
     }
     for body in &bodies {
-        archive.read_now(body).map_err(|_| UNREADABLE_ENTRY)?;
+        archive
+            .read_now(body)
+            .map_err(|_| deferred(UNREADABLE_ENTRY))?;
     }
     Ok(archive)
 }
@@ -383,7 +390,7 @@ impl Parser for OpenDocumentParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let archive = read_ahead(input, pages).map_err(str::to_owned)?;
+        let archive = read_ahead(input, pages)?;
         Ok(Box::new(move |xhtml| write(archive, configs, xhtml)))
     }
 }
@@ -429,10 +436,10 @@ mod tests {
     use super::*;
     #[cfg(feature = "tika")]
     use crate::config::OfficeParserConfig;
-    use crate::formats::parity::conformance_corpus;
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika_adjusting, Adjustments, Scratch,
+        assert_fails_as_tika, assert_same_as_tika_adjusting, conformance_corpus, Adjustments,
+        Scratch,
     };
     use std::io::Cursor;
     #[cfg(feature = "tika")]
@@ -522,6 +529,7 @@ mod tests {
         assert_same_as_tika(&paths(&DOCUMENTS), TIKA_NAME);
     }
 
+    #[cfg(feature = "tika")]
     const MISC_OFFICE: &str = "tika-parsers-standard/tika-parsers-standard-modules/\
                                tika-parser-miscoffice-module/src/test/resources/test-documents";
     #[cfg(feature = "tika")]
@@ -594,9 +602,22 @@ mod tests {
         ),
     ];
 
-    /// Tika's own test documents of this format that Tika's path keeps, and why.
-    const CONFORMANCE_DEFERRED: [(&str, &str, &str); 1] =
-        [(MISC_OFFICE, "testODTEncrypted.odt", ENCRYPTED)];
+    /// Tika's own test documents of this format that Tika's path fails on.
+    #[cfg(feature = "tika")]
+    const CONFORMANCE_FAILING: [(&str, &str); 1] = [(MISC_OFFICE, "testODTEncrypted.odt")];
+
+    #[cfg(feature = "tika")]
+    #[test]
+    #[ignore]
+    fn fails_where_tikas_path_fails_on_tikas_documents() {
+        let corpus = conformance_corpus();
+        let documents: Vec<PathBuf> = CONFORMANCE_FAILING
+            .iter()
+            .map(|(directory, name)| corpus.join(directory).join(name))
+            .collect();
+        let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+        assert_fails_as_tika(&documents);
+    }
 
     #[cfg(feature = "tika")]
     #[test]
@@ -614,22 +635,6 @@ mod tests {
             for text in texts {
                 assert!(xml.contains(text), "{name}: {text:?} in {xml}");
             }
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn leaves_tikas_documents_with_pictures_or_encryption_to_tika() {
-        let corpus = conformance_corpus();
-        for (directory, name, reason) in CONFORMANCE_DEFERRED {
-            let input = std::fs::read(corpus.join(directory).join(name)).unwrap();
-            assert_eq!(
-                OpenDocumentParser
-                    .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
-                    .as_deref(),
-                Some(reason),
-                "{name}"
-            );
         }
     }
 
@@ -943,15 +948,28 @@ mod tests {
         replaced
     }
 
+    const UNDECRYPTABLE: &str = "../test_files/documents/encrypted/undecryptable.odt";
+
     #[test]
-    fn leaves_encrypted_documents_to_tika() {
-        let input = std::fs::read("../test_files/documents/encrypted/undecryptable.odt").unwrap();
-        assert_eq!(
-            OpenDocumentParser
-                .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
-                .as_deref(),
-            Some(ENCRYPTED)
+    fn fails_encrypted_documents_as_encrypted() {
+        let input = std::fs::read(UNDECRYPTABLE).unwrap();
+        let declined = OpenDocumentParser
+            .prepare(&input, &TikaMetadata::new(), &ParserConfigs::default())
+            .err();
+        assert!(
+            matches!(
+                &declined,
+                Some(Declined::Fails(crate::Error::Encrypted(reason)))
+                    if *reason == crypt::encrypted(None).to_string()
+            ),
+            "{declined:?}"
         );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn fails_encrypted_documents_where_tikas_path_fails() {
+        assert_fails_as_tika(&[Path::new(UNDECRYPTABLE)]);
     }
 
     #[cfg(feature = "tika")]

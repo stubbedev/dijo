@@ -422,7 +422,6 @@ fn metadata_is_normalised_per_format() {
     assert_eq!(metadata(5)["authors"][0], "Grace Hopper");
 }
 
-#[cfg(feature = "tika")]
 #[test]
 fn damaged_parts_make_a_partial_result() {
     let objects = json_objects(&[&document("partially-damaged.zip")]);
@@ -610,7 +609,6 @@ fn archives_nested_past_the_limit_stop_there() {
     assert!(message.len() < 1000, "{message}");
 }
 
-#[cfg(feature = "tika")]
 #[test]
 fn partial_results_succeed_unless_strict() {
     let lenient = extractous(&[&document("partially-damaged.zip")]);

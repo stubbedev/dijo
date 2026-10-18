@@ -231,7 +231,7 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
     }
 
     /// `closeAnyPending`: closes the formatting and the elements left open, innermost first.
-    fn close_any_pending(&mut self) -> Result<(), Stop> {
+    pub(super) fn close_any_pending(&mut self) -> Result<(), Stop> {
         self.formatting.close_all(self.xhtml)?;
         while let Some(tag) = self.open.pop() {
             self.xhtml.end_element(&tag)?;

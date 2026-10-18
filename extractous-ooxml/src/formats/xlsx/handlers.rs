@@ -99,6 +99,11 @@ pub(crate) struct Protection {
     pub(crate) protected: bool,
 }
 
+impl Protection {
+    /// The local name of the element that protects a sheet.
+    pub(crate) const ELEMENT: &'static str = "sheetProtection";
+}
+
 impl SaxHandler for Protection {
     fn start_element(
         &mut self,
@@ -106,7 +111,7 @@ impl SaxHandler for Protection {
         local_name: &str,
         _attributes: &[Attribute],
     ) -> Result<(), Failure> {
-        if namespace == SPREADSHEETML_NS && local_name == "sheetProtection" {
+        if namespace == SPREADSHEETML_NS && local_name == Self::ELEMENT {
             self.protected = true;
         }
         Ok(())

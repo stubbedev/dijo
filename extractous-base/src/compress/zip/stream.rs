@@ -87,7 +87,7 @@ impl<'a> ZipStream<'a> {
 
     /// The stream that reads names as they are, without their Unicode extra fields, as one
     /// made with `useUnicodeExtraFields` false.
-    pub(crate) fn without_unicode_extra_fields(self) -> Self {
+    pub fn without_unicode_extra_fields(self) -> Self {
         Self {
             use_unicode_extra_fields: false,
             ..self

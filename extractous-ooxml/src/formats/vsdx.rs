@@ -51,7 +51,8 @@ impl Parser for VsdxParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let drawing = Drawing::open(input).map_err(|Unported(reason)| reason)?;
+        let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
+        let drawing = Drawing::open(package).map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| drawing.write(xhtml)))
     }
 }
@@ -64,8 +65,7 @@ struct Drawing<'a> {
 }
 
 impl<'a> Drawing<'a> {
-    fn open(input: &'a [u8]) -> Result<Self, Unported> {
-        let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
+    fn open(package: Package<'a>) -> Result<Self, Unported> {
         let pages = page_parts(&package);
         for &page in &pages {
             ooxml::read_quietly(&package, page, Ignore)?;

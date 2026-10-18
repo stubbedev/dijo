@@ -33,7 +33,7 @@ fn test_decrypts_with_the_right_password(name: &str, password: &str, expected: &
 #[test_case("tika-password.ppt"; "powerpoint 97")]
 #[test_case("tika-password.xls"; "excel 97")]
 #[cfg_attr(feature = "tika", test_case("tika-password.accdb"; "access"))]
-#[cfg_attr(feature = "tika", test_case("undecryptable.odt"; "odf, which tika cannot decrypt"))]
+#[test_case("undecryptable.odt"; "odf, which tika cannot decrypt")]
 #[test_case("pgp-encrypted.gpg"; "openpgp")]
 #[test_case("pgp-encrypted.asc"; "ascii-armored openpgp")]
 fn test_reports_encrypted_without_the_password(name: &str) {
