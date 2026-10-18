@@ -11,6 +11,10 @@
 //! that deep, or decode into enough to come near the output limit. The scan counts the archives
 //! and compressed files the port reads; what other formats' parsers write for the documents
 //! embedded in them is not counted.
+//!
+//! Without Tika's path there is nothing to defer to, and the scan finds nothing: the native
+//! path's own `SecureContentHandler` stops the document, as a zip bomb, where Tika's top-level
+//! handler does.
 
 use super::rar;
 use crate::compress::archiver::Archiver;
@@ -19,12 +23,12 @@ use crate::compress::zip::file::ZipFile;
 use crate::compress::zip::Content;
 use crate::compress::MAX_DECODED;
 use crate::compress::{ar, cpio, seven_z, tar, ArchiveFile};
+use crate::formats::secure::{MAXIMUM_PACKAGE_ENTRY_DEPTH, MAXIMUM_RATIO, OUTPUT_THRESHOLD};
 
-/// The nesting below an entry at which Tika's count reaches its limit of ten package entries.
-const TOO_DEEP: usize = 9;
-/// `SecureContentHandler`'s output threshold and maximum compression ratio.
-const OUTPUT_THRESHOLD: usize = 1_000_000;
-const MAXIMUM_RATIO: usize = 100;
+/// Whether there is a Tika path to leave a document to.
+const DEFERS: bool = cfg!(feature = "tika");
+/// The nesting below an entry at which Tika's count reaches its limit of package entries.
+const TOO_DEEP: usize = MAXIMUM_PACKAGE_ENTRY_DEPTH - 1;
 /// The most bytes the scan of one document decodes, past which it counts the document as
 /// nesting too deep.
 const BUDGET: usize = 4 * MAX_DECODED;
@@ -49,6 +53,9 @@ impl Scan {
     /// an entry of it, if it cannot: its archives nest too deep, or more than the scan can
     /// decode to tell.
     pub(super) fn entry(&mut self, content: &[u8]) -> Option<String> {
+        if !DEFERS {
+            return None;
+        }
         (self.depth(content, TOO_DEEP) >= TOO_DEEP).then(|| {
             "archives nest nine deep inside an entry, where Tika's top-level \
              SecureContentHandler, which counts the native parser's level too, stops the parse"
@@ -75,8 +82,11 @@ impl Scan {
     /// the output Tika's top-level `SecureContentHandler` takes for a zip bomb, which their
     /// text may reach.
     pub(super) fn document(&self, length: usize) -> Option<String> {
-        let limit = OUTPUT_THRESHOLD.max(length.saturating_mul(MAXIMUM_RATIO));
-        (self.documents.saturating_mul(2) > limit).then(|| {
+        if !DEFERS {
+            return None;
+        }
+        let limit = OUTPUT_THRESHOLD.max((length as u64).saturating_mul(MAXIMUM_RATIO));
+        ((self.documents as u64).saturating_mul(2) > limit).then(|| {
             format!(
                 "the documents its entries hold come to more than half of the {limit} \
                  characters past which Tika's top-level SecureContentHandler stops the parse as \
@@ -169,21 +179,45 @@ mod tests {
     use crate::compress::tar_header::tests::tar;
     use crate::compress::zip::file::tests::zip;
 
+    fn nested_eight_deep() -> Vec<u8> {
+        let mut nested = zip(&[("level.txt", b"text")]);
+        for _ in 1..8 {
+            nested = zip(&[("level.txt", b"text"), ("inner.zip", &nested)]);
+        }
+        nested
+    }
+
     #[test]
     fn counts_the_archives_inside_one_another() {
         let mut scan = Scan::new();
         assert_eq!(scan.depth(b"plain text", TOO_DEEP), 0);
         let tgz = gzip(&tar(&[(b"a.txt", b'0', b"text")]), None);
         assert_eq!(scan.depth(&tgz, TOO_DEEP), 2);
-        let mut nested = zip(&[("level.txt", b"text")]);
-        for _ in 1..8 {
-            nested = zip(&[("level.txt", b"text"), ("inner.zip", &nested)]);
-        }
-        assert_eq!(scan.depth(&nested, TOO_DEEP), 8);
+        assert_eq!(scan.depth(&nested_eight_deep(), TOO_DEEP), 8);
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn defers_archives_nested_nine_deep() {
+        let mut scan = Scan::new();
+        let nested = nested_eight_deep();
         assert_eq!(scan.entry(&nested), None);
         assert!(scan.entry(&zip(&[("inner.zip", &nested)])).is_some());
     }
 
+    #[cfg(not(feature = "tika"))]
+    #[test]
+    fn finds_nothing_to_defer_without_tika() {
+        let mut scan = Scan::new();
+        assert_eq!(
+            scan.entry(&zip(&[("inner.zip", &nested_eight_deep())])),
+            None
+        );
+        assert_eq!(scan.entry(&gzip(&[b'c'; 2_000_000], None)), None);
+        assert_eq!(scan.document(1000), None);
+    }
+
+    #[cfg(feature = "tika")]
     #[test]
     fn counts_what_the_entries_decode_into() {
         let mut scan = Scan::new();

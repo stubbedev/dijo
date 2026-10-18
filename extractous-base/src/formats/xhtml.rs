@@ -8,6 +8,7 @@ use crate::formats::embedded::{
 };
 use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::secure::ZipBomb;
 use crate::formats::{self, Bridged, Declined, EmbeddedRoute, Failure, Opened, Unrouted};
 use crate::memory;
 #[cfg(feature = "tika")]
@@ -72,6 +73,8 @@ pub enum Stop {
     ReaderGone,
     /// The extraction holds more memory than its budget of this many bytes.
     MemoryLimit(u64),
+    /// Tika's `SecureContentHandler` takes the document for a zip bomb.
+    ZipBomb(ZipBomb),
 }
 
 /// Where the XHTML of a document goes: the SAX events Tika's handlers receive, all in the XHTML

@@ -3,7 +3,7 @@
 //! `handleEntryMetadata` gives them, their creation and modification times among it.
 
 use super::nesting::Scan;
-use super::write_files;
+use super::{undecoded, write_files};
 use crate::compress::{seven_z, Undecoded};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
@@ -37,9 +37,9 @@ impl Parser for SevenZParser {
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         let password = configs.password.as_ref().map(|password| password.expose());
-        let files = seven_z::files(input, password).map_err(|undecoded| match undecoded {
+        let files = seven_z::files(input, password).map_err(|failure| match failure {
             Undecoded::Encrypted => Declined::Fails(crypt::encrypted(Some(PASSWORD_REQUIRED))),
-            undecoded => Declined::Deferred(format!("the 7z archive: {undecoded}")),
+            reason => undecoded("the 7z archive", reason),
         })?;
         if let Some(reason) = Scan::new().files(input.len(), &files) {
             return Err(Declined::Deferred(reason));
