@@ -3,8 +3,7 @@
 //! languages and tools as metadata, and the units counted once the document has ended.
 
 use crate::config::ParserConfigs;
-use crate::errors::Error;
-use crate::formats::jdk_zip::{self, Refusal};
+use crate::formats::jdk_zip;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Nested, Xhtml};
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
@@ -401,18 +400,14 @@ impl Parser for XlzParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let refused = |refusal| match refusal {
-            Refusal::Unread(reason) => Decline::Deferred(reason.to_owned()),
-            Refusal::Failed(reason) => Decline::Fails(Error::ParseError(reason)),
-        };
-        let zip = jdk_zip::open(input).map_err(refused)?;
+        let zip = jdk_zip::open(input)?;
         let mut documents = Vec::new();
         for entry in zip
             .entries()
             .iter()
             .filter(|entry| entry.name.contains(".xlf"))
         {
-            let document = jdk_zip::read_whole(&zip, entry).map_err(refused)?;
+            let document = jdk_zip::read_whole(&zip, entry)?;
             if let Err(Decline::Deferred(reason)) =
                 Xliff12Parser.prepare(&document, metadata, configs)
             {

@@ -2,21 +2,24 @@
 //! sections the package lists, in their order, as paragraphs and tables, footnotes, endnotes,
 //! running headers, footers and master pages where they are anchored, and the title, language,
 //! authors and dates of the package as metadata. The package is read as [`jdk_zip`] reads the
-//! JDK's `ZipFile`, its XML parts as Tika's SAX parser reads them.
+//! JDK's `ZipFile`, its XML parts as Tika's SAX parser reads them, each spooled as it is read:
+//! the sections are read ahead to tell whether the port reads them, and again as they are
+//! written, one at a time.
 //!
 //! Our Java parser leaves headers, footers and master pages out, ends the collection of a
 //! metadata value at any end tag, and fails on an end tag it has no open element for (#105).
 
 use std::collections::HashMap;
 
-use crate::compress::zip::file::ZipFile;
+use crate::compress::zip::file::ZipEntry;
+
 use crate::config::ParserConfigs;
-use crate::errors::Error;
-use crate::formats::jdk_zip::{self, failed, Refusal};
+use crate::formats::jdk_zip::{self, failed, Archive, Checked, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java::is_blank;
 use crate::java::strip;
 
@@ -35,51 +38,55 @@ enum Change {
 /// The package file: the changes it makes to the metadata, the parts it lists by id and the
 /// order of its sections. A `HashMap` that, as Java's, takes a missing id or href.
 struct Package<'a> {
-    zip: ZipFile<'a>,
+    archive: Archive<'a>,
     changes: Vec<Change>,
     manifest: HashMap<Option<String>, Option<String>>,
     spine: Vec<Option<String>>,
 }
 
 impl Package<'_> {
-    /// The part of the section `idref` names, or the failure `parse` throws on it.
-    fn section(&self, idref: &Option<String>) -> Result<Vec<u8>, Refusal> {
+    /// The part of the section `idref` names, read ahead, or the failure `parse` throws on it.
+    fn section(&self, idref: &Option<String>) -> Result<Checked, Refusal> {
         let href = self.manifest.get(idref).cloned().flatten().ok_or_else(|| {
             failed(format!(
                 "The HWPX spine names the missing item {}",
                 idref.as_deref().unwrap_or("null")
             ))
         })?;
-        part(&self.zip, &href)
+        self.archive.check(entry(&self.archive, &href)?)
     }
 }
 
-/// `parsePart`'s bytes: the part at `path` from the archive's root.
-fn part(zip: &ZipFile<'_>, path: &str) -> Result<Vec<u8>, Refusal> {
-    let entry = jdk_zip::entry(zip, path)?
-        .ok_or_else(|| failed(format!("The HWPX archive has no part {path}")))?;
-    jdk_zip::read_whole(zip, entry)
+/// `parsePart`'s entry: the part at `path` from the archive's root.
+fn entry<'z>(archive: &'z Archive<'_>, path: &str) -> Result<&'z ZipEntry, Refusal> {
+    jdk_zip::entry(archive.zip(), path)?
+        .ok_or_else(|| failed(format!("The HWPX archive has no part {path}")))
 }
 
-/// A part parsed by `handler`, failing as the SAX parser fails.
-fn parse_part(bytes: &[u8], path: &str, handler: &mut impl SaxHandler) -> Result<(), Refusal> {
-    xml::parse_sax(bytes, path, handler).map_err(|failure| failed(format!("{failure:?}")))
+/// The part at `path` parsed by `handler`, failing as the SAX parser fails.
+fn parse_part(
+    archive: &Archive<'_>,
+    path: &str,
+    handler: &mut impl SaxHandler,
+) -> Result<(), Refusal> {
+    let part = archive.spool(entry(archive, path)?)?;
+    xml::parse_part(&part, path, handler).map_err(|failure| failed(format!("{failure:?}")))
 }
 
 /// What `parse` reads before it starts the document: the container, then the package file.
-fn package(input: &[u8]) -> Result<Package<'_>, Refusal> {
-    let zip = jdk_zip::open(input)?;
+fn package<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Package<'a>, Refusal> {
+    let archive = Archive::open(input, pages)?;
     let mut container = Container(Vec::new());
-    parse_part(&part(&zip, CONTAINER)?, CONTAINER, &mut container)?;
+    parse_part(&archive, CONTAINER, &mut container)?;
     let path = container
         .0
         .into_iter()
         .next()
         .ok_or_else(|| failed("The HWPX container names no package file"))?;
     let mut handler = PackageHandler::default();
-    parse_part(&part(&zip, &path)?, &path, &mut handler)?;
+    parse_part(&archive, &path, &mut handler)?;
     Ok(Package {
-        zip,
+        archive,
         changes: handler.changes,
         manifest: handler.manifest,
         spine: handler.spine,
@@ -334,26 +341,34 @@ impl Parser for HwpxParser {
         &["application/hwp+zip"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let package = package(input).map_err(|refusal| match refusal {
-            Refusal::Unread(why) => Decline::Deferred(why.to_owned()),
-            Refusal::Failed(reason) => Decline::Fails(Error::ParseError(reason)),
-        })?;
-        let sections = package
-            .spine
-            .iter()
-            .map(|idref| package.section(idref))
-            .collect::<Vec<_>>();
-        if let Some(why) = sections.iter().find_map(|section| match section {
-            Err(Refusal::Unread(why)) => Some((*why).to_owned()),
-            _ => None,
-        }) {
-            return Err(Decline::Deferred(why));
+        let package = package(input, pages)?;
+        let mut sections = Vec::with_capacity(package.spine.len());
+        for idref in &package.spine {
+            match package.section(idref) {
+                Err(Refusal::Unread(why)) => return Err(Decline::Deferred(why.to_owned())),
+                Err(Refusal::Unspooled(reason)) => return Err(Refusal::Unspooled(reason).into()),
+                section => sections.push(section),
+            }
         }
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
@@ -364,8 +379,9 @@ impl Parser for HwpxParser {
                 }
             }
             for section in sections {
-                let section =
-                    section.map_err(|refusal| Failure::Malformed(format!("{refusal:?}")))?;
+                let section = package
+                    .archive
+                    .take(section.map_err(|refusal| Failure::Malformed(format!("{refusal:?}")))?)?;
                 let mut handler = Section {
                     xhtml,
                     paragraphs: Vec::new(),
@@ -373,7 +389,7 @@ impl Parser for HwpxParser {
                     text_depth: 0,
                     in_section: false,
                 };
-                xml::parse_sax(&section, "an HWPX section", &mut handler)?;
+                xml::parse_part(&section, "an HWPX section", &mut handler)?;
             }
             Ok(())
         }))
@@ -533,5 +549,46 @@ mod tests {
             TIKA_NAME,
         );
         assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
+    }
+
+    /// A package whose first section decodes past what a spool holds in memory, with noise
+    /// outside its `sec` that is not written, and whose second section ends the document: each
+    /// spools as it is read, to a file past the memory, under a budget far below them.
+    #[test]
+    fn reads_a_package_too_large_to_read_whole_a_section_at_a_time() {
+        use extractous_core::large::{LargeFile, SPOOLING_BUDGET};
+
+        use crate::formats::large::{bytes, noise, package, END, LARGE};
+
+        let last = SECTION1.replace("Second section, 한국어 텍스트.", END);
+        let file = LargeFile::written("large.hwpx", |out| {
+            package(
+                out,
+                vec![
+                    ("mimetype", bytes(b"application/hwp+zip")),
+                    ("META-INF/container.xml", bytes(CONTAINER_XML.as_bytes())),
+                    ("Contents/content.hpf", bytes(PACKAGE_XML.as_bytes())),
+                    (
+                        "Contents/section0.xml",
+                        Box::new(|out| {
+                            write!(
+                                out,
+                                r#"<?xml version="1.0" encoding="UTF-8"?><hs:noise xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">"#
+                            )?;
+                            noise(out, "hs:n", LARGE)?;
+                            out.write_all(b"<hs:sec/></hs:noise>")
+                        }),
+                    ),
+                    ("Contents/section1.xml", bytes(last.as_bytes())),
+                ],
+            )
+        });
+        let (text, metadata) = file.extract_with(
+            &crate::Extractor::new(),
+            SPOOLING_BUDGET,
+            "extractous::HwpxParser",
+        );
+        assert!(text.contains(END), "{text}");
+        assert_eq!(metadata["dc:title"], ["A title"]);
     }
 }

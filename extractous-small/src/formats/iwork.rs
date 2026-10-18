@@ -67,7 +67,7 @@ fn extract(input: &[u8]) -> Result<Extraction<'_>, &'static str> {
     let mut paragraphs = Vec::new();
     let end = match read_package(input, &mut paragraphs) {
         Ok(end) => end,
-        Err(Refusal::Failed(reason)) => End::Failed(reason),
+        Err(Refusal::Failed(reason) | Refusal::Unspooled(reason)) => End::Failed(reason),
         Err(Refusal::Unread(why)) => return Err(why),
     };
     Ok(Extraction { paragraphs, end })

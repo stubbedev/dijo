@@ -9,7 +9,6 @@
 //! path counts each document's own pages.
 
 use crate::config::ParserConfigs;
-use crate::errors::Error;
 use crate::formats::jdk_zip::{self, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
@@ -44,10 +43,7 @@ impl Parser for IdmlParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let entries = entries(input).map_err(|refusal| match refusal {
-            Refusal::Unread(reason) => Decline::Deferred(reason.to_owned()),
-            Refusal::Failed(reason) => Decline::Fails(Error::ParseError(reason)),
-        })?;
+        let entries = entries(input)?;
         Ok(Box::new(move |xhtml| write(&entries, xhtml)))
     }
 }

@@ -4,15 +4,22 @@
 //! The port opens an archive with the port of commons-compress's `ZipFile`, failing where the
 //! JDK refuses to open it (encrypted entries, methods other than stored and deflated, names
 //! that are not UTF-8), and reads local headers with the CRC and size checks `ZipInputStream`
-//! makes. What the JDK might read differently (duplicate names, names commons-compress takes
+//! makes. An entry is read as a document of its own ([`Archive::spool`]): a stored one in place,
+//! a deflated one decoded to a spool, which keeps as much in memory as a file read whole and the
+//! rest in a mapped temporary file. What the JDK might read differently (duplicate names, names commons-compress takes
 //! from elsewhere, ZIP64 sizes, data descriptors, damaged data) is left to Tika's path.
 
 use std::collections::HashSet;
 use std::io::Read;
 
+#[cfg(doc)]
+use crate::compress::decode_limit;
 use crate::compress::zip::file::{ZipEntry, ZipFile};
-use crate::compress::zip::{u16_at, u32_at, Content, DEFLATED, LFH_SIG, STORED};
+use crate::compress::zip::{u16_at, u32_at, Content, Decoded, DEFLATED, LFH_SIG, STORED};
 use crate::compress::{crc32, MAX_DECODED};
+use crate::errors::Error;
+use crate::formats::{Decline, Failure};
+use crate::input::{Input, Pages, Paging};
 
 const LOCAL_HEADER_BYTES: usize = 30;
 const ENCRYPTED: u16 = 0x0001;
@@ -20,11 +27,36 @@ const DATA_DESCRIPTOR: u16 = 0x0008;
 const ZIP64_SIZE: i64 = 0xFFFF_FFFF;
 
 /// Why a port stops reading: Tika's path is left to read the document, or the Java parser
-/// fails on it, for the reason given.
+/// fails on it, for the reason given, or spooling an entry fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     Unread(&'static str),
     Failed(String),
+    /// Spooling what an entry decodes to a temporary file fails, as this says.
+    Unspooled(String),
+}
+
+impl From<Refusal> for Decline<'_> {
+    fn from(refusal: Refusal) -> Self {
+        match refusal {
+            Refusal::Unread(why) => Decline::Deferred(why.to_owned()),
+            Refusal::Failed(reason) => Decline::Fails(Error::ParseError(reason)),
+            Refusal::Unspooled(reason) => Decline::Fails(Error::IoError(reason)),
+        }
+    }
+}
+
+/// The failure of a writing that reads again an entry its check read.
+impl From<Refusal> for Failure {
+    fn from(refusal: Refusal) -> Self {
+        match refusal {
+            Refusal::Unread(why) => {
+                Failure::Malformed(format!("an entry its check read is not read again: {why}"))
+            }
+            Refusal::Failed(reason) => Failure::Malformed(reason),
+            Refusal::Unspooled(reason) => Failure::Extraction(Error::IoError(reason)),
+        }
+    }
 }
 
 pub fn failed(reason: impl Into<String>) -> Refusal {
@@ -76,6 +108,92 @@ pub fn read_whole(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Vec<u8>, Refusa
     match read(zip, entry)? {
         Content::Complete(bytes) => Ok(bytes.into_owned()),
         _ => Err(Refusal::Unread("an entry larger than the port reads")),
+    }
+}
+
+/// An archive opened as [`open`] opens it, from bytes whose pages are `pages`, whose entries are
+/// read as documents of their own, the pages of their compressed data released as it is
+/// decoded.
+pub struct Archive<'a> {
+    zip: ZipFile<'a>,
+    pages: Pages<'a>,
+    paging: Paging<'a>,
+}
+
+/// An entry an [`Archive`] read to its end ahead of its writing: kept where it spooled to a
+/// file, which holds no memory, else read again as it is written.
+pub struct Checked {
+    entry: ZipEntry,
+    kept: Option<Input<'static>>,
+}
+
+impl<'a> Archive<'a> {
+    /// `new ZipFile(file)` of `input`, whose pages are `pages`.
+    pub fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Refusal> {
+        Ok(Self {
+            zip: open(input)?,
+            pages,
+            paging: Paging::new(pages),
+        })
+    }
+
+    pub fn zip(&self) -> &ZipFile<'a> {
+        &self.zip
+    }
+
+    /// `zip.getInputStream(entry)` read to its end as a document of its own: a stored entry in
+    /// place, whose reading releases the archive's pages, a deflated one decoded to a spool, up
+    /// to [`decode_limit`] bytes of its compressed data, past which it is left to Tika's path,
+    /// which streams it.
+    pub fn spool(&self, entry: &ZipEntry) -> Result<Input<'a>, Refusal> {
+        let spooled = self.zip.spool(entry, self.pages);
+        if entry.method != STORED {
+            self.paging
+                .read(usize::try_from(entry.compressed_size).unwrap_or(usize::MAX));
+        }
+        match spooled {
+            Some(Ok(Decoded::Complete(input))) => Ok(input),
+            Some(Ok(Decoded::Oversized(_))) => {
+                Err(Refusal::Unread("an entry larger than the port reads"))
+            }
+            Some(Ok(Decoded::Truncated(_))) | None => Err(Refusal::Unread("a damaged entry")),
+            Some(Err(undecoded)) => Err(Refusal::Unspooled(format!(
+                "reading the entry {} fails: {undecoded}",
+                entry.name
+            ))),
+        }
+    }
+
+    /// [`Archive::spool`] of `entry` ahead of its writing, which [`Archive::take`] reads.
+    pub fn check(&self, entry: &ZipEntry) -> Result<Checked, Refusal> {
+        Ok(Self::keep(entry, self.spool(entry)?))
+    }
+
+    /// `entry` read ahead into `data`, as [`Archive::spool`] reads it, for [`Archive::take`] to
+    /// read: the data kept where it spooled to a file, else let go of.
+    pub fn keep(entry: &ZipEntry, data: Input<'_>) -> Checked {
+        let kept = match data {
+            Input::Mapped(map) => Some(Input::Mapped(map)),
+            _ => None,
+        };
+        Checked {
+            entry: entry.clone(),
+            kept,
+        }
+    }
+
+    /// The data of the entry `checked` read ahead: what it kept, or read again.
+    pub fn take(&self, checked: Checked) -> Result<Input<'a>, Refusal> {
+        match checked.kept {
+            Some(kept) => Ok(kept),
+            None => self.spool(&checked.entry),
+        }
+    }
+}
+
+impl Checked {
+    pub fn entry(&self) -> &ZipEntry {
+        &self.entry
     }
 }
 
