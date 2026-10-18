@@ -3,19 +3,22 @@
 //!
 //! A stored entry with a data descriptor is found by scanning for the next signature, as
 //! `readStoredEntry` does, without its 512-byte buffering. Entries are decoded as by
-//! [`super::file`], but for one with a data descriptor compressed otherwise than deflated. Names
-//! come from the Unicode path extra field where its CRC matches, as `useUnicodeExtraFields`
-//! asks.
+//! [`super::file`], but for one with a data descriptor, which is decoded up to where its data
+//! ends, the descriptor read after it: deflated or Deflate64 data, as commons-compress reads
+//! them, and xz or Zstandard data, which commons-compress opens no decompressor for, so that
+//! reading it throws a `NullPointerException` ([`ZipEntry::streams_without_decompressor`]).
+//! Names come from the Unicode path extra field where its CRC matches, as
+//! `useUnicodeExtraFields` asks.
 
 use std::ops::Range;
 
 use super::extra::{self, ExtraFields, Times};
 use super::file::{entry_name, unicode_text, NameSource, ZipEntry};
 use super::{
-    decode_into, decode_name, decompresses, inflate_into, u16_at, u32_at, Content, Decoded,
-    Spooled, CFH_SIG, DEFLATE64, DEFLATED, LFH_SIG, STORED, XZ, ZSTD,
+    decode_into, decode_name, decoded, decompresses, inflate64_into, inflate_into, u16_at, u32_at,
+    Content, Decoded, Spooled, CFH_SIG, DEFLATE64, DEFLATED, LFH_SIG, STORED, XZ, ZSTD,
 };
-use crate::compress::{Decoding, Held, Undecoded};
+use crate::compress::{xz, zstd, Decoding, Held, Undecoded};
 use crate::input::Pages;
 
 const SPLIT_MARKER: [u8; 4] = *b"PK00";
@@ -35,11 +38,46 @@ pub enum Failure {
     /// decompressor for, whose data the stream refuses with an `UnsupportedZipFeatureException`,
     /// as it refuses an archive that starts as a split one goes on.
     Unsupported,
-    /// An entry with a data descriptor compressed with this method, which commons-compress
-    /// decompresses up to the descriptor, and the port finds the end of only for deflated data.
+    /// An entry with a data descriptor compressed with this method, whose end the port does not
+    /// find. The stream no longer fails so: it decodes data of every method commons-compress
+    /// takes before a data descriptor to its end.
     Method(u16),
     /// Anything else the stream throws.
     Io,
+}
+
+/// The methods of data a data descriptor may follow, besides deflated data, decoded up to
+/// their own end, where the descriptor starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Described {
+    Deflate64,
+    Xz,
+    Zstd,
+}
+
+impl Described {
+    fn of(method: u16) -> Option<Self> {
+        match method {
+            DEFLATE64 => Some(Described::Deflate64),
+            XZ => Some(Described::Xz),
+            method if ZSTD.contains(&method) => Some(Described::Zstd),
+            _ => None,
+        }
+    }
+
+    /// Decodes into `decoding` the data at the start of `raw`: where it ends, none where it
+    /// does not decode whole.
+    fn decode<W: Held>(
+        self,
+        raw: &[u8],
+        decoding: &mut Decoding<W>,
+    ) -> Result<Option<usize>, Undecoded> {
+        match self {
+            Described::Deflate64 => inflate64_into(raw, decoding),
+            Described::Xz => xz::decode_stream_into(raw, decoding),
+            Described::Zstd => zstd::decode_frames_into(raw, decoding),
+        }
+    }
 }
 
 /// The local header of the entry the stream is in.
@@ -311,9 +349,22 @@ impl<'a> ZipStream<'a> {
                 let size = u64::try_from(current.size).map_err(|_| Failure::Io)?;
                 let raw = &raw[..length.min(raw.len())];
                 decode_into(method, current.flags, raw, size, decoding(raw.len()))
-                    .ok_or_else(|| unread(method))
+                    .ok_or(Failure::Unsupported)
             }
-            method => Err(unread(method)),
+            method => {
+                let described = Described::of(method).ok_or(Failure::Unsupported)?;
+                let raw = self.data.get(current.data_start..).unwrap_or_default();
+                let mut decoding = decoding(raw.len());
+                let end = match described.decode(raw, &mut decoding) {
+                    Ok(end) => end,
+                    Err(undecoded @ Undecoded::Unspooled(_)) => return Ok(Err(undecoded)),
+                    Err(_) => None,
+                };
+                if end.is_some() {
+                    self.end(current)?;
+                }
+                Ok(decoded(decoding, end.is_some()))
+            }
         }
     }
 
@@ -349,7 +400,14 @@ impl<'a> ZipStream<'a> {
                     None => Ok(TRUNCATED),
                 }
             }
-            method => Err(unread(method)),
+            method => {
+                let described = Described::of(method).ok_or(Failure::Unsupported)?;
+                let raw = self.data.get(current.data_start..).unwrap_or_default();
+                match described.decode(raw, &mut Decoding::discarded(raw.len())) {
+                    Ok(Some(length)) => self.data_descriptor_end(current.data_start + length),
+                    Ok(None) | Err(_) => Ok(TRUNCATED),
+                }
+            }
         }
     }
 
@@ -432,17 +490,6 @@ impl<'a> ZipStream<'a> {
     }
 }
 
-/// Why the data of an entry compressed with `method`, neither stored nor deflated, is not
-/// read: the port does not find where data of the methods commons-compress decompresses ends
-/// before a data descriptor, and commons-compress refuses the other methods.
-fn unread(method: u16) -> Failure {
-    if decompresses(method) {
-        Failure::Method(method)
-    } else {
-        Failure::Unsupported
-    }
-}
-
 /// The length of the deflate stream at the start of `raw`, if it ends there.
 fn deflate_length(raw: &[u8]) -> Option<usize> {
     let mut inflater = flate2::Decompress::new(false);
@@ -464,5 +511,109 @@ fn deflate_length(raw: &[u8]) -> Option<usize> {
             }
             Ok(_) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::*;
+    use crate::compress::crc32;
+
+    /// A local header of `name`, compressed with `method`, and its `data`, followed by a data
+    /// descriptor of `content`'s CRC and sizes where `described`.
+    fn local_entry(
+        name: &str,
+        method: u16,
+        data: &[u8],
+        content: &[u8],
+        described: bool,
+    ) -> Vec<u8> {
+        let mut entry = LFH_SIG.to_vec();
+        entry.extend_from_slice(&20u16.to_le_bytes());
+        entry.extend_from_slice(&(if described { 0x0008u16 } else { 0 }).to_le_bytes());
+        entry.extend_from_slice(&method.to_le_bytes());
+        entry.extend_from_slice(&[0, 0, 0x21, 0]);
+        let sizes = [crc32(content), data.len() as u32, content.len() as u32];
+        for value in sizes {
+            entry.extend_from_slice(&(if described { 0 } else { value }).to_le_bytes());
+        }
+        entry.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        entry.extend_from_slice(&0u16.to_le_bytes());
+        entry.extend_from_slice(name.as_bytes());
+        entry.extend_from_slice(data);
+        if described {
+            entry.extend_from_slice(&DD_SIG);
+            for value in sizes {
+                entry.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        entry
+    }
+
+    /// `content` deflated at `level`, which, using no match of 258 bytes, is Deflate64 data too.
+    fn deflated(content: &[u8], level: flate2::Compression) -> Vec<u8> {
+        let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), level);
+        encoder.write_all(content).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn reads_past_data_descriptors_after_deflate64_xz_and_zstandard_data() {
+        let content = b"the same text in every entry, decoded whole";
+        let entries: [(&str, u16, Vec<u8>); 4] = [
+            (
+                "stored-blocks.txt",
+                DEFLATE64,
+                deflated(content, flate2::Compression::none()),
+            ),
+            (
+                "huffman.txt",
+                DEFLATE64,
+                deflated(content, flate2::Compression::fast()),
+            ),
+            ("xz.txt", XZ, crate::compress::xz::tests::xz(content)),
+            (
+                "zstd.txt",
+                ZSTD[0],
+                crate::compress::zstd::tests::zstd(content),
+            ),
+        ];
+        let mut archive = Vec::new();
+        for (name, method, data) in &entries {
+            archive.extend(local_entry(name, *method, data, content, true));
+        }
+        archive.extend(local_entry("last.txt", STORED, b"last", b"last", false));
+        archive.extend_from_slice(&CFH_SIG);
+        archive.resize(archive.len() + 30, 0);
+        let mut stream = ZipStream::new(&archive, false);
+        for (name, ..) in &entries {
+            let entry = stream.next_entry().unwrap().unwrap();
+            assert_eq!(entry.name, *name);
+            let Ok(Decoded::Complete(data)) = stream.content() else {
+                panic!("{name} is not read whole");
+            };
+            assert_eq!(*data, *content, "{name}");
+        }
+        assert_eq!(stream.next_entry().unwrap().unwrap().name, "last.txt");
+        assert!(matches!(stream.content(), Ok(Decoded::Complete(data)) if *data == *b"last"));
+        assert!(matches!(stream.next_entry(), Ok(None)));
+    }
+
+    #[test]
+    fn finds_where_deflate64_data_ends_to_the_byte() {
+        let content = b"bytes after the data are not read";
+        let mut data = deflated(content, flate2::Compression::best());
+        let length = data.len();
+        data.extend_from_slice(&DD_SIG);
+        assert_eq!(
+            inflate64_into(&data, &mut Decoding::in_memory()),
+            Ok(Some(length))
+        );
+        assert_eq!(
+            inflate64_into(&data[..length - 1], &mut Decoding::in_memory()),
+            Ok(None)
+        );
     }
 }

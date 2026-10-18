@@ -81,6 +81,44 @@ fn decoded<'a, W: Held>(
     })
 }
 
+/// Inflates into `decoding`, up to its limit, the Deflate64 data at the start of `raw`, reading
+/// no byte past the one its last bit is in, as `Deflate64CompressorInputStream` reads its bits a
+/// byte at a time, and returns how many bytes the data takes; none where `raw` ends before the
+/// data does, the data is corrupt, or the decoding is cut at its limit. The inflater is handed a
+/// byte only when it stops for want of input, so that it never loads one it does not need.
+pub(crate) fn inflate64_into(
+    raw: &[u8],
+    decoding: &mut Decoding<impl Held>,
+) -> Result<Option<usize>, Undecoded> {
+    let mut inflater = deflate64::InflaterManaged::new();
+    let mut out = vec![0; CHUNK];
+    let mut read = 0;
+    let mut wants_input = true;
+    loop {
+        let input = if wants_input {
+            match raw.get(read..read + 1) {
+                Some(byte) => byte,
+                None => return Ok(None),
+            }
+        } else {
+            &[]
+        };
+        let result = inflater.inflate(input, &mut out);
+        read += result.bytes_consumed;
+        decoding.write(&out[..result.bytes_written])?;
+        if result.data_error || decoding.is_cut() {
+            return Ok(None);
+        }
+        if inflater.finished() {
+            return Ok(Some(read));
+        }
+        if wants_input && result.bytes_consumed == 0 && result.bytes_written == 0 {
+            return Ok(None);
+        }
+        wants_input = result.bytes_written < out.len();
+    }
+}
+
 /// Bytes decoded as UTF-8, a malformed sequence replaced by `?`, as commons-compress decodes
 /// entry names and comments.
 pub(crate) fn decode_name(bytes: &[u8]) -> String {

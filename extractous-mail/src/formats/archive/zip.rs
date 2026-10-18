@@ -17,7 +17,7 @@ use super::{record_unreadable, too_large, write_entry_div, Cut, DEFERS};
 use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::salvage::{salvage, Unsalvaged};
-use crate::compress::zip::stream::{self, ZipStream};
+use crate::compress::zip::stream::ZipStream;
 use crate::compress::zip::{Content, Decoded};
 use crate::compress::Undecoded;
 use crate::config::ParserConfigs;
@@ -486,6 +486,17 @@ impl Streamed {
                 continue;
             }
             difference = difference.or(entry_name(&entry).1);
+            if entry.streams_without_decompressor() {
+                difference = difference.or_else(|| {
+                    Some(Difference::new(format!(
+                        "the entry {} has a data descriptor after data compressed with method \
+                         {}, for which commons-compress's stream opens no decompressor, so that \
+                         Tika's path fails the archive with a NullPointerException, where the \
+                         native parser reads the data to its end",
+                        entry.name, entry.method
+                    )))
+                });
+            }
             let verified = if DEFERS {
                 match stream.content() {
                     Ok(content) => Ok(scanned(&mut scan, content)?),
@@ -500,17 +511,6 @@ impl Streamed {
                     return Err(too_large(&the_entry(&entry.name)))
                 }
                 Ok(Decoded::Oversized(())) => break,
-                Err(stream::Failure::Method(method)) => {
-                    difference = difference.or_else(|| {
-                        Some(Difference::new(format!(
-                            "the entry {} has a data descriptor after data compressed with \
-                             method {method}, whose end the native parser does not find: it \
-                             stops at the entry, where commons-compress reads on",
-                            entry.name
-                        )))
-                    });
-                    break;
-                }
                 Ok(Decoded::Truncated(())) => break,
                 Err(_) => continue,
             }
