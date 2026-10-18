@@ -5,7 +5,7 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::{Thrown, Unread};
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::{Decline, Footprint, Parser, Prepared};
 use crate::ole2::{Ole2, Unreadable};
 
 /// Tika's `DGN8Parser`.
@@ -21,6 +21,12 @@ impl Parser for Dgn8Parser {
 
     fn media_types(&self) -> &'static [&'static str] {
         &["image/vnd.dgn; version=8"]
+    }
+
+    /// It reads only the directory of the compound document and its summary information, in
+    /// place.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     /// Fails a drawing POI does not open.
