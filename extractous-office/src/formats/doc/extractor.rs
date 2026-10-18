@@ -27,7 +27,7 @@ use crate::formats::metadata::office::{
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::formats::poi::{Halt, Read, Thrown};
-use crate::formats::{Difference, Unported};
+use crate::formats::Difference;
 use crate::java::parse_int;
 use crate::ole2::{EntryId, EntryKind, Node, Ole2};
 use crate::unicode::is_whitespace;
@@ -283,17 +283,13 @@ pub(super) fn extract<'s, 'd, E>(
     configs: &'s ParserConfigs,
     sink: &'s mut Sink<'s, E>,
 ) -> Step<Option<Difference>, E> {
-    let save_locations = match &document.save_locations {
-        None => Vec::new(),
-        Some(locations) => locations
-            .iter()
-            .map(|location| {
-                location.clone().ok_or_else(|| {
-                    Unported("a save location POI reads as null, which Tika adds".to_owned())
-                })
-            })
-            .collect::<Result<_, _>>()?,
-    };
+    let save_locations: Vec<String> = document
+        .save_locations
+        .iter()
+        .flatten()
+        .flatten()
+        .cloned()
+        .collect();
     let pictures = Pictures::read(document)?;
     let mut extractor = Extractor {
         document,
@@ -311,7 +307,7 @@ pub(super) fn extract<'s, 'd, E>(
     let has_comments = extractor.body()?;
     let difference = extractor.object_pool()?;
     let (has_hidden_text, has_track_changes) = features(document)?;
-    let revision_authors = revision_authors(document)?;
+    let revision_authors = revision_authors(document);
     if has_comments {
         extractor.emit(Out::Set(HAS_COMMENTS, "true".to_owned()))?;
     }
@@ -329,20 +325,15 @@ pub(super) fn extract<'s, 'd, E>(
 
 /// `extractFeatures`' authors: the distinct authors of the revisions, in the order the
 /// document lists them, where Tika gives them in the order of Java's `HashSet` of them (#111).
-fn revision_authors(document: &Document) -> Result<Vec<String>, Unported> {
-    let Some(authors) = &document.revision_authors else {
-        return Ok(Vec::new());
-    };
+/// An author POI reads as null Tika adds as `Metadata.add` adds null: as nothing.
+fn revision_authors(document: &Document) -> Vec<String> {
     let mut distinct: Vec<String> = Vec::new();
-    for author in authors {
-        let author = author.as_deref().ok_or_else(|| {
-            Unported("a revision author POI reads as null, which Tika adds".to_owned())
-        })?;
+    for author in document.revision_authors.iter().flatten().flatten() {
         if !distinct.iter().any(|known| known == author) {
-            distinct.push(author.to_owned());
+            distinct.push(author.clone());
         }
     }
-    Ok(distinct)
+    distinct
 }
 
 /// `extractFeatures`' runs: whether any run of the main text is hidden, and whether any is a
