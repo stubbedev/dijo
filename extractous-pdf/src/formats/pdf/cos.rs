@@ -597,14 +597,15 @@ impl<'d> Pdf<'d> {
     ) -> Result<Vec<u8>, Unported> {
         let filters = self.get(&stream.dict, b"Filter");
         let parameters = self.get(&stream.dict, b"DecodeParms");
-        self.decode_data(self.raw(stream)?, filters, parameters, stop)
+        self.decode_data(self.raw(stream)?, &stream.dict, filters, parameters, stop)
     }
 
-    /// `content` with the filters `filters` names applied in order up to the first that `stop`
-    /// names, each with its own parameters of `parameters`.
+    /// `content` of the stream of `dictionary` with the filters `filters` names applied in
+    /// order up to the first that `stop` names, each with its own parameters of `parameters`.
     pub(super) fn decode_data(
         &self,
         content: Cow<'_, [u8]>,
+        dictionary: &Dictionary,
         filters: Option<&Object>,
         parameters: Option<&Object>,
         stop: &[&[u8]],
@@ -634,9 +635,30 @@ impl<'d> Pdf<'d> {
                 Some(other) => (index == 0).then(|| as_dict(other)).flatten(),
                 None => None,
             };
+            if *filter == b"Crypt" {
+                if let Some(name) = self.unsupported_crypt_filter(dictionary) {
+                    return Err(Unported(format!(
+                        "a stream through the crypt filter {}, which PDFBox does not support",
+                        name_string(name)
+                    )));
+                }
+                continue;
+            }
             data = decode_filter(filter, params, data)?;
         }
         Ok(data)
+    }
+
+    /// The crypt filter `CryptFilter.decode` fails on for the stream of `dictionary`, if any:
+    /// it passes data through by the identity crypt filter, the only one it has, and takes the
+    /// crypt filter's name from the stream's own dictionary, where PDFBox hands it that
+    /// dictionary rather than its decode parameters.
+    pub(super) fn unsupported_crypt_filter<'a>(
+        &'a self,
+        dictionary: &'a Dictionary,
+    ) -> Option<&'a [u8]> {
+        self.name(dictionary, b"Name")
+            .filter(|name| *name != b"Identity")
     }
 
     /// Searches the document for the first of the objects `ids` the table does not list that

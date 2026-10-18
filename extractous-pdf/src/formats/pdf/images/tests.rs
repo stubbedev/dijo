@@ -875,6 +875,80 @@ fn extracts_images_under_the_ocr_strategies_as_tikas_path_does() {
     }
 }
 
+/// The JBIG2 text image of the fixtures, a file of sequential organization.
+const JBIG2_TEXT: &[u8] = include_bytes!("../../../../tests/fixtures/pdf/jbig2-text.jb2");
+
+/// Images whose data PDFBox decodes through its JBIG2 plugin or its crypt filter: masked JBIG2
+/// images, whose segments the stream holds (`Im0`) or splits mid-segment with a `JBIG2Globals`
+/// stream, which PDFBox reads before the stream as one (`Im1`), images through the identity
+/// crypt filter (`Im2`) and through one their own `Name`
+/// names (`Im3`), which PDFBox takes for the crypt filter's, an inline JBIG2 image, which
+/// PDFBox writes as PNG, and an inline JPEG 2000 image, which Java has no reader for.
+fn decoded_images() -> Vec<u8> {
+    let embedded = &JBIG2_TEXT[13..];
+    let (head, rest) = embedded.split_at(30);
+    let jbig2 = "/Width 328 /Height 78 /ColorSpace /DeviceGray /BitsPerComponent 1 /SMask 10 0 R";
+    let gray = "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8";
+    let images = vec![
+        image(jbig2, "/JBIG2Decode", embedded),
+        image(
+            &format!("{jbig2} /DecodeParms [null << /JBIG2Globals 11 0 R >>]"),
+            "/JBIG2Decode",
+            rest,
+        ),
+        image(gray, "/Crypt", &samples(4, 1)),
+        image(&format!("{gray} /Name /Im3"), "/Crypt", &samples(4, 2)),
+        image(
+            "/Width 328 /Height 78 /ColorSpace /DeviceGray /BitsPerComponent 8",
+            "",
+            &samples(328 * 78, 3),
+        ),
+        stream("", "", head),
+    ];
+    let content = format!(
+        "{} q 20 0 0 20 0 300 cm BI /W 328 /H 78 /CS /G /BPC 1 /F [/AHx /JBIG2Decode] ID {}> EI \
+         Q q 20 0 0 20 0 200 cm BI /W 2 /H 2 /CS /G /BPC 8 /F [/AHx /JPXDecode] ID {}> EI Q",
+        draw_each(4),
+        hex(embedded),
+        hex(&samples(16, 5)),
+    );
+    drawing(&content, &xobjects(4), &images)
+}
+
+#[test]
+fn decodes_jbig2_and_crypt_filtered_images() {
+    let configs = without_page_ocr(false);
+    let input = decoded_images();
+    assert_eq!(deferral(&input, &configs), None);
+    let (xml, metadata) = extracting(&input, &configs);
+    assert_eq!(
+        image_names(&xml),
+        [
+            "image-0.png",
+            "image-1.png",
+            "image-2.png",
+            "image-3.png",
+            "image-0.png",
+            "image-4.png"
+        ],
+        "{xml}"
+    );
+    let failures = metadata.get(super::EMBEDDED_STREAM_EXCEPTION).unwrap();
+    assert!(
+        failures.len() == 1
+            && failures[0].starts_with("java.io.IOException: Unsupported crypt filter Im3"),
+        "{failures:?}"
+    );
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn decodes_jbig2_and_crypt_filtered_images_as_tikas_path_does() {
+    let scratch = Scratch::new("pdf-decoded-images");
+    let path = scratch.write("decoded.pdf", &decoded_images());
+    assert_same(&[path], &without_page_ocr(false));
+}
+
 #[cfg(feature = "tika")]
 #[test]
 fn records_failures_to_read_images_as_tikas_path_does() {

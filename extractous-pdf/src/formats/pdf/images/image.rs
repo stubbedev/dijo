@@ -63,7 +63,8 @@ impl<'p> PdImage<'p> {
 
     /// `new PDInlineImage(parameters, data, resources)`, which decodes the data at once, or
     /// none for an image `BeginInlineImage` skips: one without data, or whose data decodes to
-    /// nothing.
+    /// nothing, or one whose data Java has no reader for, whose `MissingImageReaderException`
+    /// `PDFStreamEngine.operatorException` logs and goes past.
     pub(super) fn inline(
         pdf: &'p Pdf<'p>,
         image: InlineImage,
@@ -81,11 +82,13 @@ impl<'p> PdImage<'p> {
         let decoded = match filters::decoded(
             pdf,
             Cow::Borrowed(&raw),
+            &parameters,
             &filters,
             decode_parameters,
             height,
         ) {
             Ok(decoded) => decoded,
+            Err(Unwritten::MissingReader(_)) => return Ok(None),
             Err(Unwritten::Unported(unported)) => return Err(unported),
             Err(failed) => {
                 return Err(Unported(format!(
@@ -311,6 +314,7 @@ impl<'p> PdImage<'p> {
                 parameters, raw, ..
             } => self.pdf.decode_data(
                 Cow::Borrowed(raw),
+                parameters,
                 get2(self.pdf, parameters, b"F", b"Filter"),
                 get2(self.pdf, parameters, b"DP", b"DecodeParms"),
                 stop,
@@ -327,6 +331,7 @@ impl<'p> PdImage<'p> {
             Source::XObject(stream) => filters::decoded(
                 self.pdf,
                 self.pdf.raw(stream)?,
+                &stream.dict,
                 &self.filters(),
                 self.pdf.get(&stream.dict, b"DecodeParms"),
                 self.height(),
