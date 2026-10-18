@@ -13,6 +13,8 @@
 //! column's own values, currency amounts, numerics and dates as they are kept, and rich text
 //! whole, and reads no usage map but those that hold a table's rows.
 
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+mod as_tika;
 mod buffer;
 mod column;
 mod database;
@@ -27,6 +29,8 @@ mod usage_map;
 #[cfg(test)]
 mod tests;
 
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub use as_tika::as_tika_writes;
 use buffer::Thrown;
 use column::{DataType, Decimal, Value};
 use database::Database;

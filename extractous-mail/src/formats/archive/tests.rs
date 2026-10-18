@@ -214,12 +214,6 @@ const ENCRYPTED_ENTRY_AS_TEXT: &str = "Tika writes the name of an encrypted entr
 const PLIST_UIDS: &str = "holds keyed archives, whose UIDs the native property list parser \
                           names by value where Tika names them by their object (#104)";
 
-/// Why the native path extracts the first segment of a split ZIP archive where Tika's path
-/// fails on it: Tika's stream fails the document at the entry the segment cuts short, the
-/// native parser records that entry as unreadable and keeps the entries before it.
-#[cfg(feature = "tika")]
-const SPLIT_SEGMENT: &str = "Tika fails the document at the entry the segment cuts short";
-
 #[cfg(feature = "tika")]
 #[test]
 fn extracts_zip_archives_as_tikas_path_does() {
@@ -352,7 +346,7 @@ fn extracts_tikas_test_zip_archives_as_tikas_path_does() {
             ("testOpenOfficeInAZip.zip", FOREIGN_PARAGRAPHS),
             ("testZipEncrypted.zip", ENCRYPTED_ENTRY_AS_TEXT),
             ("testIPA.ipa", PLIST_UIDS),
-            ("test-documents-spanned.z01", SPLIT_SEGMENT),
+            TIKAS_SPLIT_SEGMENT,
         ],
         Some(as_tika_checks_zips),
     );
