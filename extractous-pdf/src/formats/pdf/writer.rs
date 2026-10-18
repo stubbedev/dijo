@@ -668,7 +668,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             .and_then(|catalog| pdf.dict(catalog, b"AcroForm"))
             .and_then(|form| pdf.get(form, b"XFA"));
         if let Some(xfa) = xfa {
-            match xfa::extract(&xfa::bytes(pdf, xfa)?)? {
+            match xfa::extract(&xfa::bytes(pdf, xfa)?) {
                 Extracted::Read(form) => return self.xfa(&form),
                 Extracted::Failed {
                     paragraphs,

@@ -77,7 +77,6 @@ impl Node {
 #[derive(Default)]
 struct Nodes {
     nodes: Vec<Node>,
-    document_type: bool,
 }
 
 impl SaxHandler for Nodes {
@@ -113,11 +112,6 @@ impl SaxHandler for Nodes {
         }
         Ok(())
     }
-
-    fn document_type(&mut self) -> Result<(), Failure> {
-        self.document_type = true;
-        Ok(())
-    }
 }
 
 /// What `XFAExtractor.extract` makes of a form's XML.
@@ -133,34 +127,29 @@ pub(super) enum Extracted {
     },
 }
 
-/// `XFAExtractor.extract` of the form's XML.
-pub(super) fn extract(input: &[u8]) -> Result<Extracted, Unported> {
+/// `XFAExtractor.extract` of the form's XML, read as the JDK's StAX reader reads it without DTD
+/// support: a document type declaration is read past, and an entity reference other than the
+/// predefined ones fails the XML.
+pub(super) fn extract(input: &[u8]) -> Extracted {
     let mut nodes = Nodes::default();
-    let parsed = xml::parse_sax(input, "the XFA form", &mut nodes);
-    if nodes.document_type {
-        return Err(Unported(
-            "an XFA form with a document type declaration, which Woodstox reads without DTD \
-             support"
-                .to_owned(),
-        ));
-    }
+    let parsed = xml::parse_without_dtd(input, "the XFA form", &mut nodes);
     let form = Reader {
         nodes: &nodes.nodes,
         next: 0,
     }
     .form();
-    Ok(match parsed {
-        Ok(()) => Extracted::Read(form),
-        Err(Failure::Malformed(reason)) => Extracted::Failed {
-            paragraphs: form.paragraphs,
-            failure: format!("javax.xml.stream.XMLStreamException: {reason}"),
-        },
-        Err(other) => {
-            return Err(Unported(format!(
-                "an XFA form whose XML fails otherwise than malformed: {other:?}"
-            )))
+    let reason = match parsed {
+        Ok(()) => return Extracted::Read(form),
+        Err(Failure::Malformed(reason)) => reason,
+        Err(Failure::Extraction(error)) => error.to_string(),
+        Err(failure @ (Failure::Stopped(_) | Failure::Embedded(_))) => {
+            unreachable!("the XFA form's events are only gathered: {failure:?}")
         }
-    })
+    };
+    Extracted::Failed {
+        paragraphs: form.paragraphs,
+        failure: format!("javax.xml.stream.XMLStreamException: {reason}"),
+    }
 }
 
 /// The pull parser over the form's events.
@@ -334,7 +323,7 @@ mod tests {
 
     #[test]
     fn keeps_the_paragraphs_written_before_the_xml_fails() {
-        let failed = |input: &[u8]| match extract(input).unwrap() {
+        let failed = |input: &[u8]| match extract(input) {
             Extracted::Failed { paragraphs, .. } => paragraphs,
             Extracted::Read(form) => panic!("{form:?}"),
         };
@@ -361,7 +350,7 @@ mod tests {
 </xfa:datasets>
 </xdp:xdp>"#;
         assert_eq!(
-            extract(form).unwrap(),
+            extract(form),
             Extracted::Read(Form {
                 paragraphs: vec!["Ansøgning".to_owned()],
                 fields: vec![

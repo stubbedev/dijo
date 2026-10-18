@@ -9,8 +9,8 @@
 //! rendered and read with tesseract ([`ocr`]). An encrypted document opens with the password
 //! the extraction gives, or the empty one, as PDFBox opens it ([`security`]), and fails as
 //! Tika's path fails it where that password does not open it. Documents with a page Tika would
-//! OCR with no tesseract to run, and documents with what the port does not do (XFA forms with a
-//! document type declaration and fonts it cannot measure, among others), are left to Tika.
+//! OCR with no tesseract to run, and documents with what the port does not do (fonts it cannot
+//! measure, among others), are left to Tika.
 
 mod afm;
 mod attachment;
@@ -87,7 +87,7 @@ pub(super) use crate::formats::Unported;
 use crate::ocr::{tesseract_runs as ocr_runs, OcrSettings};
 
 /// For the parity tests: the failure of an XFA form's XML, which Tika records as the stack trace
-/// of Woodstox's exception and the native parser as the failure its own XML parser reports
+/// of the JDK StAX reader's exception and the native parser as the failure its own XML parser reports
 /// (#125).
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
 pub const XFA_FAILURE: crate::formats::parity::Departures =
@@ -1457,6 +1457,103 @@ mod tests {
         let malformed = scratch.write("malformed.pdf", &xfa_form(MALFORMED_XFA_DATA, &ACRO_FIELDS));
         assert_same_as_tika_delegating_departing_with(
             &[&malformed],
+            tika_name(),
+            &DELEGATES,
+            XFA_FAILURE,
+            &ParserConfigs::default(),
+        );
+    }
+
+    /// Documents of an XFA form of one stream that declares its document type, with a text
+    /// and a field whose text `text` and value `value` follow the declaration `doctype`.
+    fn xfa_document_types() -> Vec<(&'static str, Vec<u8>)> {
+        let form = |doctype: &str, text: &str, value: &str| {
+            let xml = format!(
+                "{doctype}\n<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\">\n\
+                 <template xmlns=\"http://www.xfa.org/schema/xfa-template/3.0/\">\n\
+                 <subform><draw><value><text>Ans&#248;gning {text}</text></value></draw>\n\
+                 <field name=\"navn\"><assist><toolTip>Dit navn</toolTip></assist></field>\
+                 </subform>\n</template>\n\
+                 <xfa:datasets xmlns:xfa=\"http://www.xfa.org/schema/xfa-data/1.0/\">\n\
+                 <xfa:data><form1><navn>Kari {value}</navn></form1></xfa:data></xfa:datasets>\n\
+                 </xdp:xdp>"
+            );
+            let mut objects = page_objects(TEXT);
+            objects[0] = "<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>".to_owned();
+            objects.push("<< /Fields [] /XFA 7 0 R >>".to_owned());
+            objects.push(format!(
+                "<< /Length {} >>\nstream\n{xml}\nendstream",
+                xml.len()
+            ));
+            document(&objects, b"", &[])
+        };
+        let entity = "<!DOCTYPE xdp:xdp [ <!ENTITY e \"Entitet\"> ]>";
+        vec![
+            ("bare.pdf", form("<!DOCTYPE xdp:xdp>", "om", "Nordmann")),
+            (
+                "system.pdf",
+                form(
+                    "<!DOCTYPE xdp:xdp SYSTEM \"http://example.invalid/xfa.dtd\">",
+                    "om",
+                    "Nordmann",
+                ),
+            ),
+            ("entity-unused.pdf", form(entity, "om", "Nordmann")),
+            (
+                "attribute-default.pdf",
+                form(
+                    "<!DOCTYPE xdp:xdp [ <!ATTLIST draw name CDATA \"tegning\"> ]>",
+                    "om",
+                    "Nordmann",
+                ),
+            ),
+            (
+                "malformed-subset.pdf",
+                form("<!DOCTYPE xdp:xdp [ <!ENTITY e > ]>", "om", "Nordmann"),
+            ),
+            ("entity-in-text.pdf", form(entity, "&e;", "Nordmann")),
+            ("entity-in-data.pdf", form(entity, "om", "&e;")),
+            (
+                "undeclared-entity.pdf",
+                form("<!DOCTYPE xdp:xdp>", "om &amp; &e;", "Nordmann"),
+            ),
+        ]
+    }
+
+    #[test]
+    fn reads_an_xfa_form_past_its_document_type_declaration_without_its_entities() {
+        let configs = ParserConfigs {
+            ocr: TesseractOcrConfig::new().set_skip_ocr(true),
+            ..ParserConfigs::default()
+        };
+        for (name, input) in xfa_document_types() {
+            assert_eq!(
+                PdfParser.defers(&input, &TikaMetadata::new(), &configs),
+                None,
+                "{name}"
+            );
+            let (xml, metadata) = native_xml(&input);
+            let failed = name.contains("entity-in") || name.starts_with("undeclared");
+            assert_eq!(
+                xml.contains("<li fieldName=\"navn\">Dit navn: Kari Nordmann</li>"),
+                !failed,
+                "{name}: {xml}"
+            );
+            assert!(!xml.contains("Entitet"), "{name}: {xml}");
+            assert_eq!(metadata.contains_key(EXCEPTION_WARNING), failed, "{name}");
+        }
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn reads_an_xfa_form_past_its_document_type_declaration_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-xfa-document-types");
+        let paths: Vec<PathBuf> = xfa_document_types()
+            .into_iter()
+            .map(|(name, input)| scratch.write(name, &input))
+            .collect();
+        assert_same_as_tika_delegating_departing_with(
+            &as_paths(&paths),
             tika_name(),
             &DELEGATES,
             XFA_FAILURE,
