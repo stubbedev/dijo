@@ -287,6 +287,18 @@ mod tests {
     }
 
     #[test]
+    fn takes_every_orientation_back() {
+        let image = numbered(3, 2);
+        for value in 2..=8 {
+            let orientation = Orientation::of(value).unwrap();
+            let back = image.oriented(orientation).oriented(orientation.undone());
+            assert_eq!(rows(&back), rows(&image), "{value}");
+        }
+        assert_eq!(Orientation::of(1), None);
+        assert_eq!(Orientation::of(9), None);
+    }
+
+    #[test]
     fn draws_colours_in_grey_as_java2d_does() {
         assert_eq!(luma(255, 255, 255), 255);
         assert_eq!(luma(0, 0, 0), 0);

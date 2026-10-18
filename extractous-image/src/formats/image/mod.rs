@@ -12,6 +12,7 @@ mod extractor;
 mod icns;
 mod image_xmp;
 mod imageio;
+mod jxl;
 mod metadata_extractor;
 mod motion_photo;
 mod psd;
@@ -41,10 +42,11 @@ pub const PREPARING_OCR_PARSER: &str = "extractous::PreparingOcrParser";
 /// The OCR enricher's names, the port's paired with Tika's.
 const TIKA_DELEGATES: [(&str, &str); 1] = [(PREPARING_OCR_PARSER, "ai.yobix.PreparingOcrParser")];
 
-/// The types `PreparingOcrParser` reads, for which Tika's image parsers run it as their enricher:
-/// those of `TesseractParser`, of `RecognizedImageParser`, the ones decoded for tesseract and the
-/// ones libheif decodes.
-const OCR_TYPES: [&str; 21] = [
+/// The types the OCR enricher reads: those `PreparingOcrParser` reads, for which Tika's image
+/// parsers run it as their enricher, of `TesseractParser`, of `RecognizedImageParser`, the ones
+/// decoded for tesseract and the ones libheif decodes; and JPEG XL, which Tika does not read
+/// (#132).
+const OCR_TYPES: [&str; 22] = [
     "image/png",
     "image/jpeg",
     "image/tiff",
@@ -66,6 +68,7 @@ const OCR_TYPES: [&str; 21] = [
     "image/heif",
     "image/heif-sequence",
     "image/avif",
+    "image/jxl",
 ];
 
 /// `ContentEnrichers.MIN_PIXELS`: an image narrower or lower than this gets no enricher.
@@ -95,6 +98,8 @@ enum Format {
     ImageIo,
     Heif,
     Bpg,
+    /// JPEG XL, which Tika does not read (#132).
+    Jxl,
 }
 
 /// Tika's `JpegParser`.
@@ -187,7 +192,9 @@ impl Parser for HeifParser {
     }
 }
 
-/// Tika's `JXLParser`, which scans a JPEG XL image for an XMP packet and writes no document.
+/// JPEG XL images, in place of Tika's `JXLParser`, which scans one for an XMP packet and writes
+/// no document (#132): the image's document, with its header's and boxes' metadata, which the
+/// OCR enricher reads.
 pub struct JxlParser;
 
 impl Parser for JxlParser {
@@ -196,6 +203,9 @@ impl Parser for JxlParser {
     }
     fn tika_name(&self) -> &'static str {
         "org.apache.tika.parser.image.JXLParser"
+    }
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &TIKA_DELEGATES
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -206,11 +216,9 @@ impl Parser for JxlParser {
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
-        _: &'a ParserConfigs,
+        configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        let mut metadata = metadata.clone();
-        image_xmp::scan_and_extract(input, &mut metadata)?;
-        Err(Declined::Unwritten(metadata))
+        prepare(Format::Jxl, input, metadata, configs)
     }
 }
 
@@ -545,6 +553,7 @@ fn extract_metadata(
         }
         Format::ImageIo => return image_io(input, metadata),
         Format::Bpg => return bpg::extract_metadata(input, metadata),
+        Format::Jxl => return jxl::extract_metadata(input, metadata),
         Format::Heif => {
             // Tika scans the whole file for a packet where the image has no XMP item (#114).
             image_xmp::extract_heif(input, &mut metadata)?;
