@@ -29,6 +29,11 @@ pub enum Departure<'a> {
     /// paragraph written inside the element they sit in ([`ANCHORED_BLOCKS`]). The text output
     /// is compared in full.
     Elements(&'a str),
+    /// Links: the HTML parser resolves links as the WHATWG URL standard does, where Tika's path
+    /// resolves them as `java.net.URL` does. Each value of an XHTML attribute that holds a
+    /// resolved link, and each `Content-Location`, is compared as Tika's as the standard
+    /// resolves it against the native `Content-Location`, where that is the native one.
+    Links(&'a str),
     /// The PNG files of the embedded documents a spool holds: compared by the image each holds,
     /// its size, colour type, depth, resolution and pixels, not by how it is compressed.
     PngImages(&'a str),

@@ -22,14 +22,21 @@ use super::JSoupParser;
 use crate::formats::data_uri;
 use crate::formats::embedded::{ResourceType, Wrapping, PARSER_OVERRIDE};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::thrown::Thrown;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Difference, Failure, Parser};
 use crate::java;
 use crate::java::is_blank;
 use crate::mime::MediaType;
 
-const URI_ATTRIBUTES: [&str; 4] = ["src", "href", "longdesc", "cite"];
+/// The attributes whose links `HtmlHandler` resolves against the base.
+pub(super) const URI_ATTRIBUTES: [&str; 4] = ["src", "href", "longdesc", "cite"];
+
+/// The attribute of an `object` whose link `HtmlHandler` resolves against the base, and which
+/// [`OBJECT_LINKS`] resolve against.
+pub(super) const CODEBASE: &str = "codebase";
+
+/// The attributes of an `object` whose links `HtmlHandler` resolves against its [`CODEBASE`].
+pub(super) const OBJECT_LINKS: [&str; 2] = ["data", "classid"];
 
 /// The elements the default mapper keeps, by their upper case names (`SAFE_ELEMENTS`).
 fn safe_element(name: &str) -> Option<&'static str> {
@@ -158,7 +165,8 @@ pub(super) enum Base {
     Unknown,
     /// The `Content-Location` of the metadata it is given.
     Located(String),
-    /// Its resource name, trimmed, a URL, which it records as the `Content-Location`.
+    /// Its resource name, trimmed, a URL links resolve against, which it records as the
+    /// `Content-Location`.
     Named(String),
 }
 
@@ -169,7 +177,7 @@ impl Base {
             return Self::Located(location.to_owned());
         }
         match metadata.get("tk:resource-name").map(java::trim) {
-            Some(name) if url::is_url(name) => Self::Named(name.to_owned()),
+            Some(name) if url::is_base(name) => Self::Named(name.to_owned()),
             Some(_) | None => Self::Unknown,
         }
     }
@@ -269,7 +277,7 @@ impl HtmlHandler<'_, '_> {
                 if let Some(href) = value(attributes, "href") {
                     self.start_element_with_mapped_attributes("base", attributes)?;
                     self.xhtml.end_element("base")?;
-                    let location = self.resolve(href)?;
+                    let location = self.resolve(href);
                     self.xhtml
                         .metadata_mut()
                         .set("Content-Location", location.as_str());
@@ -309,8 +317,8 @@ impl HtmlHandler<'_, '_> {
     }
 
     /// `resolve(url)`: `url` against the `Content-Location`.
-    fn resolve(&self, url: &str) -> Result<String, Failure> {
-        failing(url::resolve(self.location.as_deref(), url))
+    fn resolve(&self, url: &str) -> String {
+        url::resolve(self.location.as_deref(), url)
     }
 
     fn add_html_metadata(&mut self, name: &str, value: &str) {
@@ -361,8 +369,8 @@ impl HtmlHandler<'_, '_> {
             return Ok(self.xhtml.start_element(name)?);
         }
         let codebase = if name == "object" {
-            match value(attributes, "codebase") {
-                Some(codebase) => Some(self.resolve(codebase)?),
+            match value(attributes, CODEBASE) {
+                Some(codebase) => Some(self.resolve(codebase)),
                 None => self.location.clone(),
             }
         } else {
@@ -379,11 +387,11 @@ impl HtmlHandler<'_, '_> {
                 } else {
                     &attribute.value
                 };
-                self.resolve(value)?
-            } else if name == "object" && attribute.key == "codebase" {
+                self.resolve(value)
+            } else if name == "object" && attribute.key == CODEBASE {
                 codebase.clone().expect("an object with a codebase has one")
-            } else if name == "object" && matches!(attribute.key.as_str(), "data" | "classid") {
-                failing(url::resolve(codebase.as_deref(), &attribute.value))?
+            } else if name == "object" && OBJECT_LINKS.contains(&attribute.key.as_str()) {
+                url::resolve(codebase.as_deref(), &attribute.value)
             } else {
                 attribute.value.clone()
             };
@@ -476,13 +484,6 @@ fn icbm(value: &str) -> Option<(&str, &str)> {
     Some((latitude, &rest[..second_end]))
 }
 
-/// What a URL handler throws, as `JSoupParser` fails with it.
-fn failing<T>(thrown: Result<T, Thrown>) -> Result<T, Failure> {
-    thrown.map_err(|thrown| {
-        Failure::Malformed(thrown.into_error(JSoupParser.tika_name()).to_string())
-    })
-}
-
 /// The data URI of an element's `src`, which `HtmlHandler` hands to the embedded document
 /// extractor outside a script.
 fn embedded_data_uri(attributes: &[&Attribute]) -> Option<data_uri::DataUri> {
@@ -560,6 +561,36 @@ mod tests {
         );
         assert!(!xhtml.contains("Skjult"), "{xhtml}");
         assert_eq!(xhtml.matches("package-entry").count(), 2, "{xhtml}");
+    }
+
+    /// Links are resolved as the WHATWG URL standard resolves them, where `java.net.URL`, and so
+    /// Tika's path, departs from it (#162).
+    #[test]
+    fn resolves_links_by_the_url_standard() {
+        let page = |base: &str, links: &[&str]| {
+            let anchors: String = links
+                .iter()
+                .map(|link| format!("<a href=\"{link}\">l</a>"))
+                .collect();
+            xhtml_of(
+                format!("<html><head><base href=\"{base}\"></head><body>{anchors}</body></html>")
+                    .as_bytes(),
+            )
+            .0
+        };
+        let cases = [
+            (page("http://u:p@h/a/b", &["?q"]), "http://u:p@h/a/b?q"),
+            (page("http://h/a/", &["../../z"]), "http://h/z"),
+            (page("http://h", &["a/../../b"]), "http://h/b"),
+            (page("ftp://h/d/", &["x"]), "ftp://h/d/x"),
+            (page("url:jar:#x", &["?q"]), "?q"),
+        ];
+        for (xhtml, link) in cases {
+            assert!(
+                xhtml.contains(&format!("<a href=\"{link}\">")),
+                "{link}: {xhtml}"
+            );
+        }
     }
 
     /// Links are resolved against the `base`, which becomes the `Content-Location`, an object's
