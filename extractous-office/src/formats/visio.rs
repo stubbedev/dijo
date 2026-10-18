@@ -8,8 +8,8 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
-use crate::formats::poi::{i16_at, i32_at, safely_clone, thrown, u8_at, Lzw, Read, Thrown};
-use crate::formats::{Decline, Parser, Prepared, Unported};
+use crate::formats::poi::{i16_at, i32_at, safely_clone, thrown, u8_at, Lzw, Read, Thrown, Unread};
+use crate::formats::{Decline, Parser, Prepared};
 use crate::ole2::{EntryId, EntryKind, Ole2};
 
 const MEDIA_TYPE: &str = "application/vnd.visio";
@@ -62,14 +62,14 @@ impl Parser for VisioParser {
         &[MEDIA_TYPE]
     }
 
-    /// Defers drawings POI throws on and macros extracted when asked to.
+    /// Defers macros extracted when asked to, and fails drawings POI throws on.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let (summaries, texts) = read(input, configs)?;
+        let (summaries, texts) = read(input, configs).map_err(Unread::declined)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
             xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
@@ -82,12 +82,11 @@ impl Parser for VisioParser {
 }
 
 /// The summary information and the texts `VisioTextExtractor.getAllText` gives.
-fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<String>), Unported> {
+fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<String>), Unread> {
     let file = office::open(input, configs, MEDIA_TYPE, "Visio drawing")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
-    let texts = texts(&file, root)
-        .map_err(|Thrown(reason)| Unported(format!("POI throws reading the drawing: {reason}")))?;
+    let texts = texts(&file, root)?;
     Ok((summaries, texts))
 }
 
@@ -642,6 +641,33 @@ mod tests {
         assert!(
             text.contains("Havnen i \u{c5}lborg") && text.contains("Fjorden"),
             "{text}"
+        );
+    }
+
+    /// A drawing POI throws on fails without Tika, as it fails Tika's parse, though with the
+    /// port's account of the exception, which a build with Tika leaves to Tika's path.
+    #[test]
+    fn fails_drawings_poi_throws_on() {
+        let damaged = crate::ole2::tests::compound(&["VisioDocument"], b"no Visio header");
+        let configs = ParserConfigs::default();
+        let declined = VisioParser.prepare(&damaged, &TikaMetadata::new(), &configs);
+        let Err(Decline::Differs { difference, .. }) = declined else {
+            panic!("the damaged drawing is not read as one that differs");
+        };
+        assert!(
+            difference.0.contains("Wasn't a valid visio document"),
+            "{difference:?}"
+        );
+        let error = crate::Extractor::new()
+            .extract_bytes_to_string(&damaged)
+            .unwrap_err();
+        assert!(matches!(error, crate::Error::ParseError(_)), "{error:?}");
+        #[cfg(not(feature = "tika"))]
+        assert!(
+            error
+                .to_string()
+                .contains("POI throws reading the document: Wasn't a valid visio document"),
+            "{error}"
         );
     }
 

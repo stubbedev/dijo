@@ -8,7 +8,8 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
-use crate::formats::{Decline, Parser, Prepared, Unported};
+use crate::formats::poi::Unread;
+use crate::formats::{Decline, Parser, Prepared};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::Ole2;
 use crate::Error;
@@ -50,6 +51,12 @@ const DRM_UNSUPPORTED: &str = "Parse error occurred : \
     org.apache.tika.exception.EncryptedDocumentException: DRM encrypted document is not yet \
     supported by Apache POI";
 
+/// What Tika's path fails a document of a kind `OfficeParser` reads nothing of but its summary
+/// with, where it has an encrypted package.
+const UNRECOGNIZED_PACKAGE: &str = "Parse error occurred : \
+    org.apache.tika.exception.EncryptedDocumentException: OLE2 file with an unrecognized \
+    EncryptedPackage entry";
+
 /// Tika's `OfficeParser` of the compound documents it reads the summary information of only.
 pub struct CompoundDocumentParser;
 
@@ -81,9 +88,8 @@ impl Parser for CompoundDocumentParser {
         &[UNKNOWN_COMPOUND]
     }
 
-    /// Defers documents POI does not open as this port does, macros extracted when asked to and
-    /// an encrypted package Tika throws on, and fails a DRM encrypted document as `OfficeParser`
-    /// does.
+    /// Defers macros extracted when asked to, and fails a document POI does not open, a DRM
+    /// encrypted document and an encrypted package as `OfficeParser` does.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -91,9 +97,6 @@ impl Parser for CompoundDocumentParser {
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let (summaries, document_type) = read(input, configs)?;
-        if document_type == Some(DRM_ENCRYPTED) {
-            return Err(Decline::Fails(Error::Encrypted(DRM_UNSUPPORTED.to_owned())));
-        }
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             summaries.write(metadata);
@@ -123,13 +126,14 @@ pub(crate) fn reads_only_the_summary(input: &[u8]) -> bool {
 }
 
 /// The summary information of a compound document, the content type `OfficeParser` sets for
-/// it, if any.
+/// it, if any, or why it does not read it as Tika's parser does.
 fn read(
     input: &[u8],
     configs: &ParserConfigs,
-) -> Result<(Summaries, Option<&'static str>), Unported> {
-    let file = office::open_file(input, configs)?;
+) -> Result<(Summaries, Option<&'static str>), Decline<'static>> {
+    let file = office::open_file(input, configs).map_err(Unread::declined)?;
     let root = file.root();
+    let summaries = Summaries::read(&file, root)?;
     let detected = ole_directory_type(&file, root);
     let document_type = DOCUMENT_TYPES
         .into_iter()
@@ -138,12 +142,15 @@ fn read(
         document_type,
         Some("application/vnd.ms-project" | "application/sldworks" | DRM_ENCRYPTED)
     );
-    if !silent_kind && file.child(root, ENCRYPTED_PACKAGE).is_some() {
-        return Err(Unported(
-            "an encrypted package, on which Tika throws an EncryptedDocumentException".to_owned(),
-        ));
+    if document_type == Some(DRM_ENCRYPTED) {
+        return Err(Decline::Fails(Error::Encrypted(DRM_UNSUPPORTED.to_owned())));
     }
-    Ok((Summaries::read(&file, root)?, document_type))
+    if !silent_kind && file.child(root, ENCRYPTED_PACKAGE).is_some() {
+        return Err(Decline::Fails(Error::Encrypted(
+            UNRECOGNIZED_PACKAGE.to_owned(),
+        )));
+    }
+    Ok((summaries, document_type))
 }
 
 #[cfg(all(test, feature = "tika"))]
@@ -152,7 +159,7 @@ mod tests {
 
     use super::*;
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, errors, Scratch,
     };
     use crate::ole2::tests::compound;
 
@@ -178,14 +185,17 @@ mod tests {
             ),
             scratch.write("native.bin", &compound(&["\u{1}Ole10Native"], b"native")),
         ];
-        let deferred_one = scratch.write(
+        let encrypted = scratch.write(
             "encrypted.wps",
             &compound(&["MatOST", ENCRYPTED_PACKAGE], b"x"),
         );
         let (parsed, deferred) = documents(&CompoundDocumentParser, &[scratch.directory()]);
-        assert_eq!(deferred, [deferred_one], "{deferred:?}");
-        assert_eq!(parsed.len(), read.len(), "{parsed:?}");
+        assert!(deferred.is_empty(), "{deferred:?}");
+        assert_eq!(parsed.len(), read.len() + 1, "{parsed:?}");
         assert_same_as_tika(&paths(&read), CompoundDocumentParser.tika_name());
+        let (native, tika) = errors(&encrypted, &ParserConfigs::default());
+        assert_eq!(native, tika);
+        assert_eq!(native, format!("Encrypted({UNRECOGNIZED_PACKAGE:?})"));
     }
 
     #[test]

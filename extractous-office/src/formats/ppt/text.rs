@@ -3,7 +3,7 @@
 //! paragraph styles and indents of their style atoms, the hyperlinks of their interactive
 //! records, and whether a paragraph is a bullet by its own flags or its master's styles.
 
-use crate::formats::poi::{i16_at, i32_at, u16_at, Read, Thrown};
+use crate::formats::poi::{i16_at, i32_at, u16_at, Read, Thrown, Unread};
 use crate::formats::Unported;
 
 use super::records::{kind, Record};
@@ -390,7 +390,7 @@ pub(super) fn find_paragraphs<'a>(
     parent: &'a [Record],
     range: std::ops::Range<usize>,
     in_slide_list: bool,
-) -> Result<Vec<Vec<Paragraph<'a>>>, Unported> {
+) -> Result<Vec<Vec<Paragraph<'a>>>, Unread> {
     let records = &parent[range.clone()];
     let mut collection = Vec::new();
     let mut position = 0usize;
@@ -449,10 +449,8 @@ pub(super) fn find_paragraphs<'a>(
     Ok(collection)
 }
 
-fn thrown(Thrown(reason): Thrown) -> Unported {
-    Unported(format!(
-        "POI throws reading the presentation's text, which fails Tika's parse: {reason}"
-    ))
+fn thrown(Thrown(reason): Thrown) -> Unread {
+    Thrown(format!("reading the presentation's text: {reason}")).into()
 }
 
 /// `findStyleAtomPresent`: the styles of the last style atom after the header before the next
@@ -461,7 +459,7 @@ fn style_of(
     parent: &[Record],
     header: usize,
     size: i32,
-) -> Result<(Vec<Props>, Vec<Props>), Unported> {
+) -> Result<(Vec<Props>, Vec<Props>), Unread> {
     let style = parent[header + 1..]
         .iter()
         .take_while(|record| record.kind != kind::TEXT_HEADER_ATOM)
@@ -505,12 +503,12 @@ fn run_length(run: &Run) -> i32 {
     run.text.len() as i32
 }
 
-fn missing() -> Unported {
-    Unported("character styles that run past the paragraphs, which POI fails on".to_owned())
+fn missing() -> Unread {
+    Thrown::new("character styles that run past the paragraphs").into()
 }
 
 /// `applyCharacterStyles`: the runs split where the character styles change.
-fn apply_character_styles(paragraphs: &mut [Paragraph], styles: &[Props]) -> Result<(), Unported> {
+fn apply_character_styles(paragraphs: &mut [Paragraph], styles: &[Props]) -> Result<(), Unread> {
     let mut paragraph_index = 0usize;
     let mut run_index = 0usize;
     for (style_index, style) in styles.iter().enumerate() {
@@ -518,7 +516,8 @@ fn apply_character_styles(paragraphs: &mut [Paragraph], styles: &[Props]) -> Res
         if covered > MAX_NUMBER_OF_STYLES {
             return Err(Unported(format!(
                 "a paragraph covered by {covered} styles, more than POI processes"
-            )));
+            ))
+            .into());
         }
         let mut run_covered = 0i32;
         while run_covered < covered {
@@ -602,7 +601,7 @@ struct TextLink {
 
 /// The links `HSLFHyperlink.find(records, exobj)` finds: each interactive record whose
 /// hyperlink the document lists, with the text run info that follows it.
-fn find_links(records: &[Record], objects: Option<&Record>) -> Result<Vec<TextLink>, Unported> {
+fn find_links(records: &[Record], objects: Option<&Record>) -> Result<Vec<TextLink>, Unread> {
     let Some(objects) = objects else {
         return Ok(Vec::new());
     };
@@ -679,7 +678,7 @@ pub(super) fn apply_hyperlinks(
     arena: &mut [Paragraph],
     list: &[usize],
     objects: Option<&Record>,
-) -> Result<(), Unported> {
+) -> Result<(), Unread> {
     let Some(&first) = list.first() else {
         return Ok(());
     };

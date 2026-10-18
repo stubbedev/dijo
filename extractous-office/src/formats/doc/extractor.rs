@@ -20,7 +20,7 @@ use crate::formats::embedded::{Wrapping, RESOURCE_NAME};
 use crate::formats::metadata::office::RESOURCE_NAME_EXTENSION_INFERRED;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{office_document, Embedded, Handed};
-use crate::formats::poi::{Read, Thrown};
+use crate::formats::poi::{Read, Thrown, Unread};
 use crate::formats::Unported;
 use crate::java::parse_int;
 use crate::ole2::{EntryId, EntryKind, Ole2};
@@ -285,7 +285,7 @@ pub(super) fn extract(
     file: &Ole2<'_>,
     root: EntryId,
     configs: &ParserConfigs,
-) -> Result<Extracted, Unported> {
+) -> Result<Extracted, Unread> {
     let config = &configs.office;
     let save_locations = match &document.save_locations {
         None => Vec::new(),
@@ -298,7 +298,7 @@ pub(super) fn extract(
             })
             .collect::<Result<_, _>>()?,
     };
-    let pictures = Pictures::read(document).map_err(super::document::unported)?;
+    let pictures = Pictures::read(document)?;
     let mut extractor = Extractor {
         document,
         file,
@@ -309,10 +309,9 @@ pub(super) fn extract(
         formatting: Vec::new(),
         out: Vec::new(),
     };
-    let has_comments = extractor.body().map_err(super::document::unported)?;
+    let has_comments = extractor.body()?;
     extractor.object_pool()?;
-    let (has_hidden_text, has_track_changes) =
-        features(document).map_err(super::document::unported)?;
+    let (has_hidden_text, has_track_changes) = features(document)?;
     Ok(Extracted {
         save_locations,
         out: extractor.out,
@@ -866,14 +865,16 @@ impl Extractor<'_> {
 
     /// The object pool's storages of embedded objects, each handed on as
     /// `handleEmbeddedOfficeDoc` hands it on.
-    fn object_pool(&mut self) -> Result<(), Unported> {
+    fn object_pool(&mut self) -> Result<(), Unread> {
         let Some(pool) = self.file.child(self.root, OBJECT_POOL) else {
             return Ok(());
         };
         if self.file.kind(pool) == EntryKind::Document {
-            return Err(Unported(
-                "the object pool is a document, which Tika fails to cast".to_owned(),
-            ));
+            return Err(Thrown::new(
+                "java.lang.ClassCastException: the object pool is a document, which Tika casts to \
+                 a directory",
+            )
+            .into());
         }
         for entry in self.file.children(pool) {
             if !self.file.name(entry).starts_with('_')

@@ -6,12 +6,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::config::ParserConfigs;
+use crate::formats::poi::{Thrown, Unread};
 use crate::formats::{Decline, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
 use super::drawing::{textbox_records, Drawing, Wrapper};
 use super::encryption::Encryption;
-use super::records::{build_at, kind, persist_pointers, Depth, Fault, Record};
+use super::records::{build_at, kind, persist_pointers, Depth, Record};
 use super::text::{apply_hyperlinks, find_paragraphs, placeholder, MasterStyles, Paragraph};
 
 pub(super) const POWERPOINT_DOCUMENT: &str = "PowerPoint Document";
@@ -32,14 +33,12 @@ const NOTES: i32 = 2;
 /// The text types a master's styles are kept for.
 const MASTER_TEXT_TYPES: usize = 9;
 
-fn unported(reason: impl Into<String>) -> Unported {
-    Unported(reason.into())
+fn unported(reason: impl Into<String>) -> Unread {
+    Unported(reason.into()).into()
 }
 
-fn poi_throws(reason: &str) -> Unported {
-    Unported(format!(
-        "POI throws reading the presentation, which fails Tika's parse: {reason}"
-    ))
+fn poi_throws(reason: impl Into<String>) -> Unread {
+    Thrown(reason.into()).into()
 }
 
 /// A record of the document stream at the top level.
@@ -53,7 +52,7 @@ pub(super) struct Top {
 }
 
 /// The directory POI reads the presentation from: the dual storage's where there is one.
-pub(super) fn presentation_directory(file: &Ole2<'_>, root: EntryId) -> Result<EntryId, Unported> {
+pub(super) fn presentation_directory(file: &Ole2<'_>, root: EntryId) -> Result<EntryId, Unread> {
     match file.child_ignoring_case(root, DUAL_STORAGE) {
         None => Ok(root),
         Some(entry) if file.kind(entry) != EntryKind::Document => Ok(entry),
@@ -62,7 +61,7 @@ pub(super) fn presentation_directory(file: &Ole2<'_>, root: EntryId) -> Result<E
 }
 
 /// `CurrentUserAtom`'s offset of the current edit, as `readCurrentUserStream` reads it.
-fn current_edit_offset(file: &Ole2<'_>, directory: EntryId) -> Result<i64, Unported> {
+fn current_edit_offset(file: &Ole2<'_>, directory: EntryId) -> Result<i64, Unread> {
     let Some(entry) = file.child(directory, CURRENT_USER) else {
         return Ok(0);
     };
@@ -106,8 +105,9 @@ pub(super) fn read_records(
         Some(entry) if file.kind(entry) == EntryKind::Document => entry,
         Some(_) | None => {
             if file.child_ignoring_case(directory, POWERPOINT_95).is_some() {
-                return Err(unported(
-                    "a PowerPoint 95 presentation, which POI refuses and Tika fails on",
+                return Err(poi_throws(
+                    "Based on the Current User stream, you seem to have supplied a PowerPoint95 \
+                     file, which isn't supported",
                 )
                 .into());
             }
@@ -115,7 +115,7 @@ pub(super) fn read_records(
         }
     };
     let mut document = file.read(stream).map_err(|Unreadable(reason)| {
-        unported(format!("POI cannot read the document stream: {reason}"))
+        poi_throws(format!("cannot read the document stream: {reason}"))
     })?;
     if document.len() > MAX_DOCUMENT {
         return Err(poi_throws("the document stream is longer than POI reads").into());
@@ -155,7 +155,7 @@ fn build_records(
                         persist_id.expect("a persist pointer gives each pending record's offset");
                     encryption.decrypt_record(document, persist_id, offset)?;
                 }
-                build_at(document, i64::from(offset), Depth::TOP).map_err(Fault::unported)?
+                build_at(document, i64::from(offset), Depth::TOP)?
             }
         };
         records.push(Top {
@@ -175,7 +175,7 @@ fn build_records(
 type Chain = (BTreeMap<i32, Chained>, HashMap<i32, i32>);
 
 /// `initRecordOffsets`.
-fn chain(document: &[u8], edit: i32) -> Result<Chain, Unported> {
+fn chain(document: &[u8], edit: i32) -> Result<Chain, Unread> {
     let mut map: BTreeMap<i32, Chained> = BTreeMap::new();
     let mut persist_ids: HashMap<i32, i32> = HashMap::new();
     let mut offset = edit;
@@ -187,15 +187,14 @@ fn chain(document: &[u8], edit: i32) -> Result<Chain, Unported> {
                 "user edits POI follows in a loop, which never ends Tika's parse",
             ));
         }
-        let built = build_at(document, i64::from(offset), Depth::TOP).map_err(Fault::unported)?;
+        let built = build_at(document, i64::from(offset), Depth::TOP)?;
         let Some(user) = built.filter(|record| record.kind == kind::USER_EDIT_ATOM) else {
             return Err(poi_throws("Did not have a user edit atom"));
         };
         let pointers_offset = user.int(12).map_err(|_| poi_throws("a short user edit"))?;
         let mut previous = user.int(8).map_err(|_| poi_throws("a short user edit"))?;
         map.insert(offset, Chained::Edit(user));
-        let pointers = build_at(document, i64::from(pointers_offset), Depth::TOP)
-            .map_err(Fault::unported)?
+        let pointers = build_at(document, i64::from(pointers_offset), Depth::TOP)?
             .filter(|record| {
                 record.kind == kind::PERSIST_PTR_FULL_BLOCK
                     || record.kind == kind::PERSIST_PTR_INCREMENTAL_BLOCK
@@ -248,7 +247,7 @@ fn chain(document: &[u8], edit: i32) -> Result<Chain, Unported> {
 }
 
 /// `PersistPtrHolder.getSlideLocationsLookup`: each persist id's offset, the last a holder gives.
-pub(super) fn slide_locations(holder: &Record) -> Result<BTreeMap<i32, i32>, Unported> {
+pub(super) fn slide_locations(holder: &Record) -> Result<BTreeMap<i32, i32>, Unread> {
     let pointers = persist_pointers(holder.data())
         .map_err(|_| poi_throws("persist pointers run past their record"))?;
     Ok(pointers.into_iter().collect())
@@ -288,8 +287,7 @@ fn encryption(
     if !matches!(map.get(&location), None | Some(Chained::Pending)) {
         return Err(poi_throws("Did not have a DocumentEncryptionAtom").into());
     }
-    let atom = build_at(document, i64::from(location), Depth::TOP)
-        .map_err(Fault::unported)?
+    let atom = build_at(document, i64::from(location), Depth::TOP)?
         .filter(|record| record.kind == kind::DOCUMENT_ENCRYPTION_ATOM)
         .ok_or_else(|| poi_throws("Did not have a DocumentEncryptionAtom"))?;
     let info = atom
@@ -323,7 +321,7 @@ pub(super) struct Sheet<'a> {
 }
 
 impl<'a> Sheet<'a> {
-    fn new(kind: SheetKind, container: &'a Record, number: i32) -> Result<Sheet<'a>, Unported> {
+    fn new(kind: SheetKind, container: &'a Record, number: i32) -> Result<Sheet<'a>, Unread> {
         let drawing = container
             .last(kind::PP_DRAWING)
             .and_then(Record::drawing)
@@ -346,7 +344,7 @@ impl<'a> Sheet<'a> {
 
     /// The constructor's `findTextParagraphs(getPPDrawing(), this)`: the lists of the drawing's
     /// text box wrappers this sheet does not hold yet.
-    fn add_drawing_lists(&mut self) -> Result<(), Unported> {
+    fn add_drawing_lists(&mut self) -> Result<(), Unread> {
         for &wrapper in &self.drawing.wrappers {
             let Some(list) = self.wrapper_list(wrapper)? else {
                 continue;
@@ -360,7 +358,7 @@ impl<'a> Sheet<'a> {
 
     /// `findTextParagraphs(wrapper, sheet)` for one of the drawing's wrappers, the paragraphs it
     /// creates added to the sheet's.
-    fn wrapper_list(&mut self, wrapper: Wrapper) -> Result<Option<Vec<usize>>, Unported> {
+    fn wrapper_list(&mut self, wrapper: Wrapper) -> Result<Option<Vec<usize>>, Unread> {
         let shape = self.drawing.wrapped(wrapper);
         let found = self.find_in_sheet(shape)?;
         Ok(match found {
@@ -375,10 +373,10 @@ impl<'a> Sheet<'a> {
     pub(super) fn find_in_sheet(
         &self,
         shape: &'a super::drawing::Node,
-    ) -> Result<Found<'a>, Unported> {
+    ) -> Result<Found<'a>, Unread> {
         let records = match textbox_records(shape) {
             Some(Ok(records)) => records,
-            Some(Err(fault)) => return Err(fault.unported()),
+            Some(Err(unread)) => return Err(unread),
             None => return Ok(Found::Nothing),
         };
         if let Some(reference) = records
@@ -456,7 +454,7 @@ pub(super) struct SlideMaster<'a> {
 impl SlideMaster<'_> {
     /// `getPropCollection(txtype, level, "paragraph_flags", false)`'s collection's bullet flag,
     /// or `None` where it finds no collection with paragraph flags.
-    pub(super) fn bullet(&self, text_type: i32, level: i32) -> Result<Option<bool>, Unported> {
+    pub(super) fn bullet(&self, text_type: i32, level: i32) -> Result<Option<bool>, Unread> {
         if let Some(found) = self.flags_of(text_type, level)? {
             return Ok(Some(found));
         }
@@ -469,7 +467,7 @@ impl SlideMaster<'_> {
     }
 
     /// `getPropHelper`.
-    fn flags_of(&self, text_type: i32, level: i32) -> Result<Option<bool>, Unported> {
+    fn flags_of(&self, text_type: i32, level: i32) -> Result<Option<bool>, Unread> {
         if text_type >= MASTER_TEXT_TYPES as i32 {
             return Ok(None);
         }
@@ -514,7 +512,7 @@ pub(super) struct Show<'a> {
 
 impl<'a> Show<'a> {
     /// `new HSLFSlideShow(impl)`: the most recent records, then the masters, notes and slides.
-    pub(super) fn new(records: &'a [Top]) -> Result<Show<'a>, Unported> {
+    pub(super) fn new(records: &'a [Top]) -> Result<Show<'a>, Unread> {
         let core = most_recent(records)?;
         let document = core
             .values()
@@ -569,7 +567,7 @@ impl<'a> Show<'a> {
         &mut self,
         list: &'a Record,
         core: &BTreeMap<i32, Option<&'a Record>>,
-    ) -> Result<(), Unported> {
+    ) -> Result<(), Unread> {
         for set in atom_sets(list) {
             let persist = &list.children()[set.start];
             let record = core_record(core, persist)?;
@@ -602,7 +600,7 @@ impl<'a> Show<'a> {
 
     /// `HSLFSlideMaster.setSlideShow`'s styles: the document's for its text type, then the
     /// master's own for the types not set yet.
-    fn master_styles(&self, master: &Record) -> Result<Vec<Option<MasterStyles>>, Unported> {
+    fn master_styles(&self, master: &Record) -> Result<Vec<Option<MasterStyles>>, Unread> {
         let mut styles: Vec<Option<MasterStyles>> = vec![None; MASTER_TEXT_TYPES];
         let environment = self
             .document
@@ -647,7 +645,7 @@ impl<'a> Show<'a> {
         list: &'a Record,
         core: &BTreeMap<i32, Option<&'a Record>>,
         notes_of_slides: &mut HashMap<i32, usize>,
-    ) -> Result<(), Unported> {
+    ) -> Result<(), Unread> {
         for (index, set) in atom_sets(list).into_iter().enumerate() {
             let persist = &list.children()[set.start];
             let Some(record) = core_record(core, persist)? else {
@@ -677,7 +675,7 @@ impl<'a> Show<'a> {
         list: &'a Record,
         core: &BTreeMap<i32, Option<&'a Record>>,
         notes_of_slides: &HashMap<i32, usize>,
-    ) -> Result<(), Unported> {
+    ) -> Result<(), Unread> {
         for (index, set) in atom_sets(list).into_iter().enumerate() {
             let persist = &list.children()[set.start];
             let Some(record) =
@@ -723,7 +721,7 @@ impl<'a> Show<'a> {
     }
 
     /// `HSLFSheet.setSlideShow`: the hyperlinks of each list of the sheet applied.
-    fn supply(&self, sheet: &mut Sheet<'a>) -> Result<(), Unported> {
+    fn supply(&self, sheet: &mut Sheet<'a>) -> Result<(), Unread> {
         let objects = self.objects();
         for list in sheet.lists.clone() {
             apply_hyperlinks(&mut sheet.paragraphs, &list, objects)?;
@@ -745,7 +743,7 @@ impl<'a> Show<'a> {
 
     /// Whether a paragraph of `sheet` is a bullet (`isBullet`): by its own flags, else by its
     /// master's styles.
-    pub(super) fn is_bullet(&self, paragraph: &Paragraph, sheet: &Sheet) -> Result<bool, Unported> {
+    pub(super) fn is_bullet(&self, paragraph: &Paragraph, sheet: &Sheet) -> Result<bool, Unread> {
         if let Some(bullet) = paragraph.own_bullet() {
             return Ok(bullet);
         }
@@ -790,7 +788,7 @@ impl<'s, 'a> MasterRef<'s, 'a> {
 }
 
 /// A master's styles' slot for a text type, failing where Java's array index does.
-fn slot(text_type: i32) -> Result<usize, Unported> {
+fn slot(text_type: i32) -> Result<usize, Unread> {
     usize::try_from(text_type)
         .ok()
         .filter(|&slot| slot < MASTER_TEXT_TYPES)
@@ -798,7 +796,7 @@ fn slot(text_type: i32) -> Result<usize, Unported> {
 }
 
 /// `HSLFSlideMaster.setSlideShow`'s check that the styles cover each paragraph of the master.
-fn master_styles_cover(master: &SlideMaster) -> Result<(), Unported> {
+fn master_styles_cover(master: &SlideMaster) -> Result<(), Unread> {
     for paragraph in &master.sheet.paragraphs {
         let styles = usize::try_from(paragraph.run_type)
             .ok()
@@ -842,7 +840,7 @@ pub(super) fn atom_sets(list: &Record) -> Vec<std::ops::Range<usize>> {
 fn core_record<'a>(
     core: &BTreeMap<i32, Option<&'a Record>>,
     persist: &Record,
-) -> Result<Option<&'a Record>, Unported> {
+) -> Result<Option<&'a Record>, Unread> {
     let reference = persist
         .int(0)
         .map_err(|_| poi_throws("a short slide persist"))?;
@@ -851,7 +849,7 @@ fn core_record<'a>(
 
 /// `findMostRecentCoreRecords`: for each persist id, the record at the offset the last persist
 /// pointer holder by offset gives it, where one of the records that know their offset is there.
-fn most_recent(records: &[Top]) -> Result<BTreeMap<i32, Option<&Record>>, Unported> {
+fn most_recent(records: &[Top]) -> Result<BTreeMap<i32, Option<&Record>>, Unread> {
     let mut latest: HashMap<i32, i32> = HashMap::new();
     for top in records {
         let Some(record) = &top.record else {

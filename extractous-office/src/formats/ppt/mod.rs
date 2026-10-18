@@ -57,8 +57,8 @@ impl Parser for PptParser {
         &[MEDIA_TYPE]
     }
 
-    /// Fails encrypted presentations the password does not open, and defers those POI or Tika
-    /// throws on, those before PowerPoint 97 and macros extracted when asked to. Pictures or
+    /// Fails encrypted presentations the password does not open and those POI throws on, those
+    /// before PowerPoint 97 among them, and defers macros extracted when asked to. Pictures or
     /// objects Tika records failing on, which the native reading leaves out, differ from Tika's.
     fn prepare<'a>(
         &self,

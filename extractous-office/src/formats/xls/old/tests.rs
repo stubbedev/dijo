@@ -48,9 +48,15 @@ fn reads_an_excel_2_label_short_of_its_length_as_far_as_it_goes() {
 }
 
 #[test]
-fn leaves_what_poi_throws_on_to_tika() {
-    assert!(text(&record(sid::EOF, &[])).is_err());
+fn fails_where_poi_throws() {
+    assert!(matches!(
+        text(&record(sid::EOF, &[])),
+        Err(Unread::Thrown(_))
+    ));
     let mut encrypted = bof(sid::BOF);
     encrypted.extend(record(sid::FILE_PASS, &[0; 4]));
-    assert!(text(&encrypted).is_err_and(|Unported(reason)| reason.contains("encrypted")));
+    assert!(matches!(
+        text(&encrypted),
+        Err(Unread::Thrown(Thrown(reason))) if reason.contains("encrypted")
+    ));
 }

@@ -5,7 +5,7 @@
 
 use crate::formats::crypt::{EncryptionInfo, Mode};
 use crate::formats::escher::{self, Escher, Factory};
-use crate::formats::poi::{i16_at, i32_at, safely_clone, u16_at, u8_at, Read, Thrown};
+use crate::formats::poi::{i16_at, i32_at, safely_clone, u16_at, u8_at, Read, Thrown, Unread};
 use crate::formats::Unported;
 
 use super::drawing::Drawing;
@@ -98,42 +98,7 @@ const MAX_FONT: i64 = 5_000_000;
 /// The longest a `SlidePersistAtom`'s reserved fields may be.
 const MAX_PERSIST_RESERVED: i64 = 32;
 
-/// Why a record could not be built.
-#[derive(Debug, Clone)]
-pub(super) enum Fault {
-    /// A Java runtime exception POI throws building it, which `createRecordForType` passes
-    /// over for a record that claims more bytes than its source holds.
-    Thrown(Thrown),
-    /// What this port leaves to Tika.
-    Unported(Unported),
-}
-
-impl From<Thrown> for Fault {
-    fn from(thrown: Thrown) -> Self {
-        Fault::Thrown(thrown)
-    }
-}
-
-impl From<Unported> for Fault {
-    fn from(unported: Unported) -> Self {
-        Fault::Unported(unported)
-    }
-}
-
-impl Fault {
-    /// The fault as the reason Tika's path should read the document: POI throws, which fails
-    /// Tika's parse, or this port does not reproduce it.
-    pub(super) fn unported(self) -> Unported {
-        match self {
-            Fault::Thrown(Thrown(reason)) => Unported(format!(
-                "POI throws reading the presentation, which fails Tika's parse: {reason}"
-            )),
-            Fault::Unported(unported) => unported,
-        }
-    }
-}
-
-pub(super) type Built<T> = Result<T, Fault>;
+pub(super) type Built<T> = Result<T, Unread>;
 
 /// How deep a record lies among the records, the Escher records and the client data holding
 /// it, which this port follows only so far, where Java's stack would end first.
@@ -381,7 +346,7 @@ fn create(
                 body,
             }))
         }
-        Err(Fault::Thrown(_)) if start + length > source.len() as i64 => Ok(None),
+        Err(Unread::Thrown(_)) if start + length > source.len() as i64 => Ok(None),
         Err(fault) => Err(fault),
     }
 }
@@ -795,7 +760,7 @@ pub(super) mod tests {
         let outer = record(0x0F, kind::INTERACTIVE_INFO, &[atom, vec![0; 16]].concat());
         assert!(matches!(
             build_at(&outer, 0, Depth::TOP),
-            Err(Fault::Thrown(_))
+            Err(Unread::Thrown(_))
         ));
     }
 
@@ -807,7 +772,7 @@ pub(super) mod tests {
         }
         assert!(matches!(
             build_at(&nested, 0, Depth::TOP),
-            Err(Fault::Unported(_))
+            Err(Unread::Unported(_))
         ));
     }
 
