@@ -19,8 +19,10 @@ use crate::errors::Error;
 use crate::formats::handlers::parse_inline;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{
-    decision, html, reading, unless_different, Decline, Difference, Failure, Parser, Prepared,
+    decision, html, reading, unless_different, Decline, Difference, Failure, Footprint, Parser,
+    Prepared,
 };
+use crate::input::{Pages, Paging};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-htmlhelp";
 
@@ -63,18 +65,33 @@ impl Parser for ChmParser {
         &[MEDIA_TYPE, "application/chm", "application/x-chm"]
     }
 
+    /// A page at a time, and the frames of one reset interval of the content.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
     /// Extracts and prepares every page before writing any, so a page the HTML parser leaves to
     /// Tika defers the file; a page that cannot be extracted fails the parse after the pages
     /// before it, as Tika's extraction of it throws there. Each page is prepared again as it is
     /// written: holding every page's document at once would hold a help file's whole content
     /// parsed, where writing holds one page at a time.
-    fn prepare<'a>(
+    fn prepare_paged<'a>(
         &self,
         input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let extractor = Extractor::new(input)
+        let extractor = Extractor::new(input, pages)
             .map_err(|thrown| Decline::Fails(Error::ParseError(thrown.reason().to_owned())))?;
         let mut difference = None;
         for page in extractor.pages() {
@@ -109,9 +126,11 @@ impl Parser for ChmParser {
     }
 }
 
-/// `ChmExtractor`: the file's structures, and the frames of the content decoded so far.
+/// `ChmExtractor`: the file's structures, and the frames of the content decoded last.
 struct Extractor<'a> {
     data: &'a [u8],
+    /// The pages of `data`, released as the content is decoded.
+    paging: Paging<'a>,
     itsf: ItsfHeader,
     listing: Listing,
     control: ControlData,
@@ -121,16 +140,18 @@ struct Extractor<'a> {
     frames: RefCell<Frames>,
 }
 
-/// The decoded frames of the content, by block number, and the decoder of the reset interval
-/// decoded last, with the block it decodes next.
+/// The decoder of the reset interval decoded last, and the frames it decoded, from the block of
+/// its reset point on: a page in another interval is decoded again from that interval's reset
+/// point, so that only one interval's frames are held, however long the content.
 struct Frames {
-    decoded: Vec<Option<Vec<u8>>>,
-    decoder: Option<(lzxd::Lzxd, usize)>,
+    decoder: Option<lzxd::Lzxd>,
+    reset: usize,
+    decoded: Vec<Vec<u8>>,
 }
 
 impl<'a> Extractor<'a> {
     /// `new ChmExtractor(stream)`.
-    fn new(data: &'a [u8]) -> Result<Self, Thrown> {
+    fn new(data: &'a [u8], pages: Pages<'a>) -> Result<Self, Thrown> {
         let itsf = ItsfHeader::read(data)?;
         let itsp = ItspHeader::read(data, &itsf)?;
         let listing = Listing::read(data, &itsf, &itsp)?;
@@ -170,17 +191,18 @@ impl<'a> Extractor<'a> {
             i64::from(content.offset) + itsf.data_offset,
             i64::from(content.length),
         );
-        let blocks = reset_table.addresses.len();
         Ok(Self {
             data,
+            paging: Paging::new(pages),
             itsf,
             listing,
             control,
             reset_table,
             content,
             frames: RefCell::new(Frames {
-                decoded: vec![None; blocks],
                 decoder: None,
+                reset: 0,
+                decoded: Vec::new(),
             }),
         })
     }
@@ -264,37 +286,37 @@ impl<'a> Extractor<'a> {
 
     /// The decoded frame of `block`, decoded from the reset point before it as needed.
     fn frame(&self, block: usize) -> Result<Vec<u8>, Thrown> {
-        let mut frames = self.frames.borrow_mut();
-        if let Some(Some(frame)) = frames.decoded.get(block) {
-            return Ok(frame.clone());
-        }
-        if block >= frames.decoded.len() {
+        if block >= self.reset_table.addresses.len() {
             return Err(Thrown::Runtime(format!(
                 "ArrayIndexOutOfBoundsException: the reset table has no block {block}"
             )));
         }
         let interval = self.control.reset_interval as usize;
         let reset = block - block % interval;
-        let resumes = matches!(&frames.decoder, Some((_, next)) if *next > reset && *next <= block);
-        if !resumes {
-            frames.decoder = Some((lzxd::Lzxd::new(self.window()?), reset));
+        let mut frames = self.frames.borrow_mut();
+        let Frames {
+            decoder,
+            reset: decoded_from,
+            decoded,
+        } = &mut *frames;
+        if decoder.is_none() || *decoded_from != reset {
+            *decoder = Some(lzxd::Lzxd::new(self.window()?));
+            *decoded_from = reset;
+            decoded.clear();
         }
-        loop {
-            let (decoder, next) = frames.decoder.as_mut().expect("a decoder was set");
-            let current = *next;
+        let decoder = decoder.as_mut().expect("a decoder was set");
+        while reset + decoded.len() <= block {
+            let current = reset + decoded.len();
             let segment = self.segment(current)?;
             let length = self.frame_length(current);
             let frame = decoder
                 .decompress_next(segment, length)
                 .map_err(|error| Thrown::Tika(format!("LZX block {current}: {error}")))?
                 .to_vec();
-            *next += 1;
-            if current == block {
-                frames.decoded[current] = Some(frame.clone());
-                return Ok(frame);
-            }
-            frames.decoded[current] = Some(frame);
+            self.paging.read(segment.len());
+            decoded.push(frame);
         }
+        Ok(decoded[block - reset].clone())
     }
 
     /// The uncompressed length of the frame of `block`: a whole block, but for the last.
