@@ -5,13 +5,14 @@
 //! Tika's path does; one a password does not decrypt stays with Tika's path, whose decoders
 //! fail on its garbled data otherwise than sevenz-rust2's.
 
-use std::collections::HashMap;
+use std::convert::Infallible;
 use std::io::{Cursor, Read};
+use std::mem::size_of;
 
 use sevenz_rust2::{ArchiveEntry, ArchiveReader, EncoderMethod, NtTime, Password};
 
-use super::{throws, ArchiveFile, Decoding, Limited, Undecoded, CHUNK, MEMORY_LIMIT_KIB};
-use crate::input::Input;
+use super::{throws, ArchiveFile, Decoding, Held, Limited, Undecoded, CHUNK, MEMORY_LIMIT_KIB};
+use crate::input::{Input, Pages};
 
 /// The milliseconds from 1601, where NTFS times start, to 1970.
 const NTFS_EPOCH_MILLIS: i64 = 11_644_473_600_000;
@@ -82,44 +83,21 @@ fn entry_name(file: &ArchiveEntry) -> String {
     }
 }
 
-/// The files of the 7z archive `data`, decrypted with `password` where it is encrypted, each
-/// decoded to a spool up to the [`decode_limit`](super::decode_limit) of the archive, or why
-/// they are not read natively. The files end at one that decodes into more, which is cut there.
-pub fn files(
-    data: &[u8],
-    password: Option<&str>,
-) -> Result<Limited<Vec<ArchiveFile<'static>>>, Undecoded> {
-    let password = password.map_or_else(Password::empty, Password::new);
-    let mut reader = ArchiveReader::new(Cursor::new(data), password).map_err(fail)?;
-    if over_memory_limit(&reader)? {
-        return Err(throws("a coder needs more memory than Tika allows"));
-    }
-    let mut contents: HashMap<*const ArchiveEntry, Limited<Input<'static>>> = HashMap::new();
-    let mut unspooled = None;
-    reader
-        .for_each_entries(|entry, read| {
-            let decoded = decode(read, data.len())?;
-            let content = match decoded.and_then(Decoding::finish) {
-                Ok(content) => content,
-                Err(undecoded) => {
-                    unspooled = Some(undecoded);
-                    return Ok(false);
-                }
-            };
-            let whole = matches!(content, Limited::Whole(_));
-            contents.insert(entry, content);
-            Ok(whole)
-        })
-        .map_err(fail)?;
-    if let Some(undecoded) = unspooled {
-        return Err(undecoded);
-    }
-    let mut files = Vec::new();
-    for file in &reader.archive().files {
-        let content = contents
-            .remove(&(file as *const ArchiveEntry))
-            .unwrap_or(Limited::Whole(Input::Borrowed(&[])));
-        let file = content.map(|content| ArchiveFile {
+/// A file the archive lists, as its data is handed on.
+#[derive(Debug, Clone)]
+pub struct Listed {
+    name: String,
+    size: u64,
+    modified_millis: Option<i64>,
+    created_millis: Option<i64>,
+    directory: bool,
+    /// Whether it has data, which the archive's blocks hold.
+    has_data: bool,
+}
+
+impl Listed {
+    fn of(file: &ArchiveEntry) -> Self {
+        Self {
             name: entry_name(file),
             size: file.size,
             modified_millis: file
@@ -127,22 +105,127 @@ pub fn files(
                 .then(|| millis(file.last_modified_date)),
             created_millis: file.has_creation_date.then(|| millis(file.creation_date)),
             directory: file.is_directory,
-            content,
-        });
-        if let Some(cut) = file.add_to(&mut files) {
-            return Ok(cut);
+            has_data: file.has_stream && file.size > 0,
         }
     }
-    Ok(Limited::Whole(files))
+
+    /// The file, holding `content`.
+    pub fn file<'a>(&self, content: Input<'a>) -> ArchiveFile<'a> {
+        ArchiveFile {
+            name: self.name.clone(),
+            size: self.size,
+            modified_millis: self.modified_millis,
+            created_millis: self.created_millis,
+            directory: self.directory,
+            content,
+        }
+    }
 }
 
-/// What `read`, an entry of an archive of `archive` bytes, decodes into, or why it is not
-/// spooled. Its decoder's failures are the reader's, which sevenz-rust2 tells a bad password by.
-fn decode(
+/// How handing on the files of an archive stopped before its end.
+enum Stopped<E> {
+    /// At a file that decodes past the limit.
+    Cut,
+    /// Where the file's data cannot be held, for this reason.
+    Unheld(Undecoded),
+    /// Where `each` failed, with this.
+    Failed(E),
+}
+
+/// Hands `each` the files of the 7z archive `data`, decrypted with `password` where it is
+/// encrypted, in the order the archive lists them, each decoded into what `decoding` makes of
+/// the archive's length as its data is read, so that one file's data is held at a time: whether
+/// all of them were handed on whole, `false` where they end at one that decodes past the limit,
+/// which `each` is handed cut; the failure of `each`, which ends them; or why they are not read
+/// natively.
+pub fn visit<W: Held, E>(
+    data: &[u8],
+    password: Option<&str>,
+    decoding: impl Fn(usize) -> Decoding<W>,
+    mut each: impl FnMut(&Listed, Limited<W::Bytes<'static>>) -> Result<(), E>,
+) -> Result<Result<bool, E>, Undecoded> {
+    let password = password.map_or_else(Password::empty, Password::new);
+    let mut reader = ArchiveReader::new(Cursor::new(data), password).map_err(fail)?;
+    if over_memory_limit(&reader)? {
+        return Err(throws("a coder needs more memory than Tika allows"));
+    }
+    let files = &reader.archive().files;
+    let listed: Vec<Listed> = files.iter().map(Listed::of).collect();
+    let first = files.as_ptr() as usize;
+    let empty = || Limited::Whole(W::stored(&[], Pages::IN_MEMORY));
+    let mut next = 0;
+    let mut stopped = None;
+    reader
+        .for_each_entries(|entry, read| {
+            let index = (entry as *const ArchiveEntry as usize - first) / size_of::<ArchiveEntry>();
+            if index < next || !listed[index].has_data {
+                return Ok(true);
+            }
+            for skipped in &listed[next..index] {
+                if let Err(failure) = each(skipped, empty()) {
+                    stopped = Some(Stopped::Failed(failure));
+                    return Ok(false);
+                }
+            }
+            next = index + 1;
+            let content = match decode(read, decoding(data.len()))?.and_then(Decoding::finish) {
+                Ok(content) => content,
+                Err(undecoded) => {
+                    stopped = Some(Stopped::Unheld(undecoded));
+                    return Ok(false);
+                }
+            };
+            let cut = matches!(content, Limited::Cut(_));
+            if let Err(failure) = each(&listed[index], content) {
+                stopped = Some(Stopped::Failed(failure));
+                return Ok(false);
+            }
+            if cut {
+                stopped = Some(Stopped::Cut);
+            }
+            Ok(!cut)
+        })
+        .map_err(fail)?;
+    match stopped {
+        Some(Stopped::Cut) => return Ok(Ok(false)),
+        Some(Stopped::Unheld(undecoded)) => return Err(undecoded),
+        Some(Stopped::Failed(failure)) => return Ok(Err(failure)),
+        None => {}
+    }
+    for rest in &listed[next..] {
+        if let Err(failure) = each(rest, empty()) {
+            return Ok(Err(failure));
+        }
+    }
+    Ok(Ok(true))
+}
+
+/// The files of the 7z archive `data`, decrypted with `password` where it is encrypted, each
+/// decoded to a spool up to the [`decode_limit`](super::decode_limit) of the archive, or why
+/// they are not read natively. The files end at one that decodes into more, which is cut there.
+pub fn files(
+    data: &[u8],
+    password: Option<&str>,
+) -> Result<Limited<Vec<ArchiveFile<'static>>>, Undecoded> {
+    let mut files = Vec::new();
+    let whole = visit(data, password, Decoding::spooled, |listed, content| {
+        let (Limited::Whole(content) | Limited::Cut(content)) = content;
+        files.push(listed.file(content));
+        Ok::<(), Infallible>(())
+    })?;
+    Ok(match whole {
+        Ok(true) => Limited::Whole(files),
+        Ok(false) => Limited::Cut(files),
+        Err(never) => match never {},
+    })
+}
+
+/// What `read`, an entry's data, decodes into in `decoding`, or why it is not held. Its
+/// decoder's failures are the reader's, which sevenz-rust2 tells a bad password by.
+fn decode<W: Held>(
     read: &mut dyn Read,
-    archive: usize,
-) -> Result<Result<Decoding<crate::input::Spool>, Undecoded>, sevenz_rust2::Error> {
-    let mut decoding = Decoding::spooled(archive);
+    mut decoding: Decoding<W>,
+) -> Result<Result<Decoding<W>, Undecoded>, sevenz_rust2::Error> {
     let mut chunk = vec![0; CHUNK];
     loop {
         let length = read.read(&mut chunk)?;
@@ -164,6 +247,17 @@ pub mod tests {
 
     /// A 7z archive of `entries`, LZMA2-compressed; a name ending in a slash is a directory's.
     pub fn seven_z(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut readers: Vec<(&str, &[u8])> = entries.to_vec();
+        let mut streamed: Vec<(&str, &mut dyn Read)> = readers
+            .iter_mut()
+            .map(|(name, content)| (*name, content as &mut dyn Read))
+            .collect();
+        seven_z_streamed(&mut streamed)
+    }
+
+    /// A 7z archive of `entries`, LZMA2-compressed, each file's data read from its reader as it
+    /// is compressed; a name ending in a slash is a directory's.
+    pub fn seven_z_streamed(entries: &mut [(&str, &mut dyn Read)]) -> Vec<u8> {
         let mut writer = sevenz_rust2::ArchiveWriter::new(Cursor::new(Vec::new())).unwrap();
         for (name, content) in entries {
             match name.strip_suffix('/') {
@@ -174,7 +268,7 @@ pub mod tests {
                 }
                 None => {
                     writer
-                        .push_archive_entry(ArchiveEntry::new_file(name), Some(*content))
+                        .push_archive_entry(ArchiveEntry::new_file(name), Some(&mut **content))
                         .unwrap();
                 }
             }

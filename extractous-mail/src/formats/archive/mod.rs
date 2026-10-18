@@ -204,11 +204,16 @@ fn within_limit<T>(
 /// its files are read.
 fn write_files(files: &[ArchiveFile], xhtml: &mut Xhtml, paging: &Paging) -> Result<(), Failure> {
     for file in files.iter().filter(|file| !file.directory) {
-        let metadata = entry_metadata(file, xhtml)?;
-        xhtml.parse_embedded_input(&file.content, &metadata, Wrapping::PackageEntry)?;
+        write_file(file, xhtml)?;
         paging.read(file.content.len());
     }
     Ok(())
+}
+
+/// Hands `file`, which is no directory, to the embedded document extractor, with its metadata.
+fn write_file(file: &ArchiveFile, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let metadata = entry_metadata(file, xhtml)?;
+    xhtml.parse_embedded_input(&file.content, &metadata, Wrapping::PackageEntry)
 }
 
 #[cfg(test)]

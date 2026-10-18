@@ -134,3 +134,17 @@ fn spools_a_deflated_zip_entry_past_the_memory_limit() {
     let (text, _) = file.extract_with(&extractor, SPOOLING_BUDGET, "extractous::ZipParser");
     assert!(text.contains(END), "{text}");
 }
+
+#[test]
+fn spools_a_7z_entry_past_the_memory_limit_one_entry_at_a_time() {
+    let file = LargeFile::written("large.7z", |out| {
+        let archive = crate::compress::seven_z::tests::seven_z_streamed(&mut [
+            ("large.bin", &mut Binary::new(LARGE)),
+            ("end.txt", &mut END.as_bytes()),
+        ]);
+        out.write_all(&archive)
+    });
+    let extractor = extractous_core::Extractor::new();
+    let (text, _) = file.extract_with(&extractor, SPOOLING_BUDGET, "extractous::SevenZParser");
+    assert!(text.contains(END), "{text}");
+}
