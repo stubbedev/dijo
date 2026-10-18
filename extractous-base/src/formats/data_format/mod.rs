@@ -570,9 +570,7 @@ impl DataFormatter {
             })?;
             return match chosen {
                 Chosen::Text(text) => Ok(text),
-                Chosen::None => Err(FormatError::Unported(
-                    "a date in the default format, which writes its time zone's name",
-                )),
+                Chosen::None => cell_format::date_to_string(instant, &self.zone),
                 Chosen::General => General::format(Input::Date(instant)),
                 Chosen::Cached(key) => {
                     let format = self.cached(&key)?;
@@ -832,9 +830,11 @@ fn create_fraction_format(format: &str) -> Result<Format, FormatError> {
     FractionFormat::new(DEFAULT_FRACTION_WHOLE_PART, DEFAULT_FRACTION_PART).map(Format::Fraction)
 }
 
-/// `createNumberFormat`, the general format where the pattern does not compile.
+/// `createNumberFormat`, the general format where the pattern does not compile. An alternate
+/// grouping separator is the whole character, where POI takes only the first half of one outside
+/// the Basic Multilingual Plane and leaves the other in the format (#186).
 fn create_number_format(format: &str) -> Result<Created, FormatError> {
-    let mut format = clean_format_for_number(format)?;
+    let mut format = clean_format_for_number(format);
     let mut grouping = ',';
     if let Some(found) = ALTERNATE_GROUPING.captures(&format) {
         let separator = found
@@ -842,11 +842,6 @@ fn create_number_format(format: &str) -> Result<Created, FormatError> {
             .and_then(|m| m.as_str().chars().next())
             .ok_or_else(|| FormatError::Thrown("The grouping has no separator".to_owned()))?;
         if separator != ',' {
-            if separator.len_utf16() != 1 {
-                return Err(FormatError::Unported(
-                    "a grouping separator outside the Basic Multilingual Plane",
-                ));
-            }
             grouping = separator;
             let old_part = found.get(1).map_or("", |m| m.as_str()).to_owned();
             let new_part = old_part.replace(separator, ",");
@@ -863,36 +858,34 @@ fn create_number_format(format: &str) -> Result<Created, FormatError> {
 }
 
 /// `cleanFormatForNumber`: without the `_` and `*` spacing, quotes and backslashes, and the sign
-/// of an exponent.
-fn clean_format_for_number(format: &str) -> Result<String, FormatError> {
-    let mut units: Vec<u16> = format.replace("\\%", "'%'").encode_utf16().collect();
-    let backslash = u16::from(b'\\');
+/// of an exponent. The character a `_` or `*` spaces by is taken out whole, where POI takes out
+/// only the first half of one outside the Basic Multilingual Plane and leaves the other in the
+/// format (#186).
+fn clean_format_for_number(format: &str) -> String {
+    let mut chars: Vec<char> = format.replace("\\%", "'%'").chars().collect();
     let mut i = 0;
-    while i < units.len() {
-        let c = units[i];
-        if (c == u16::from(b'_') || c == u16::from(b'*')) && !(i > 0 && units[i - 1] == backslash) {
-            if i + 1 < units.len() {
-                units.remove(i + 1);
+    while i < chars.len() {
+        let c = chars[i];
+        if (c == '_' || c == '*') && !(i > 0 && chars[i - 1] == '\\') {
+            if i + 1 < chars.len() {
+                chars.remove(i + 1);
             }
-            units.remove(i);
+            chars.remove(i);
             continue;
         }
         i += 1;
     }
     let mut i = 0;
-    while i < units.len() {
-        let c = units[i];
-        let sign = (c == u16::from(b'+') || c == u16::from(b'-'))
-            && i > 0
-            && units[i - 1] == u16::from(b'E');
-        if c == backslash || c == u16::from(b'"') || sign {
-            units.remove(i);
+    while i < chars.len() {
+        let c = chars[i];
+        let sign = (c == '+' || c == '-') && i > 0 && chars[i - 1] == 'E';
+        if c == '\\' || c == '"' || sign {
+            chars.remove(i);
             continue;
         }
         i += 1;
     }
-    String::from_utf16(&units)
-        .map_err(|_| FormatError::Unported("a number format left with half a surrogate pair"))
+    chars.into_iter().collect()
 }
 
 /// The text of an error code, as POI's `FormulaError` names it; `None` for a code it lacks.
@@ -1044,6 +1037,42 @@ mod tests {
         assert_eq!(
             formatter.format_raw(45000.0, 164, "yyyy-mm-dd").unwrap(),
             "2027-03-16"
+        );
+    }
+
+    /// A date a section of a format writes without a date format of its own is written as
+    /// `Date.toString` writes it, in UTC (#186).
+    #[test]
+    fn writes_dates_without_a_date_format_as_date_to_string_does() {
+        assert_eq!(
+            cell_format::date_to_string(1_678_838_400_000, &TimeZone::fixed(0)).unwrap(),
+            "Wed Mar 15 00:00:00 UTC 2023"
+        );
+        let mut formatter = DataFormatter::new(false);
+        assert_eq!(
+            formatter
+                .format_raw(45000.0, 14, "General;General;General")
+                .unwrap(),
+            "Wed Mar 15 00:00:00 UTC 2023"
+        );
+    }
+
+    /// A character outside the Basic Multilingual Plane is spaced by and grouped with whole
+    /// (#186).
+    #[test]
+    fn spaces_and_groups_by_characters_outside_the_basic_multilingual_plane() {
+        let mut formatter = DataFormatter::new(false);
+        assert_eq!(
+            formatter
+                .format_raw(1234.0, 164, "#,##0_\u{1F600}")
+                .unwrap(),
+            "1,234"
+        );
+        assert_eq!(
+            formatter
+                .format_raw(1_234_567.0, 165, "#\u{1F600}##0")
+                .unwrap(),
+            "1\u{1F600}234\u{1F600}567"
         );
     }
 
