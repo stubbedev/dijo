@@ -187,7 +187,8 @@ mod tests {
         metadata.set("Content-Type", "application/x-compress");
         let configs = ParserConfigs::default();
         let declined = CompressorParser.prepare(&[0x1F, 0x9D, 0x99, 0, 0], &metadata, &configs);
-        let Err(Declined::Fails(crate::Error::LimitExceeded(reason))) = declined else {
+        let Err(crate::formats::Decline::Fails(crate::Error::LimitExceeded(reason))) = declined
+        else {
             panic!("a stream beyond the memory limit is not failed as a limit");
         };
         assert!(reason.contains("KiB of memory"), "{reason}");
