@@ -7,7 +7,8 @@
 #[cfg(feature = "tika")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Departure<'a> {
-    /// The values of a metadata name, not compared, in the metadata nor in the XHTML head.
+    /// The values of a metadata name, not compared, in the metadata nor in the XHTML head, nor
+    /// in the metadata how many there are.
     Values(&'a str, &'a str),
     /// A metadata name Tika's path sets wrongly and the native parser does not set: left out of
     /// both results, in the metadata and as each `meta` element of the XHTML head.
@@ -23,6 +24,15 @@ pub enum Departure<'a> {
     /// The PNG files of the embedded documents a spool holds: compared by the image each holds,
     /// its size, colour type, depth, resolution and pixels, not by how it is compressed.
     PngImages(&'a str),
+    /// Paragraph order: the text is compared as the set of its lines, each of Tika's one that the
+    /// native text has too, but for the paragraphs the second field names, which Tika's path
+    /// writes from earlier revisions of the document. The native parser writes each paragraph
+    /// once, in the order of the document, and those Tika's path misses as well. A string the
+    /// length limit cuts holds other paragraphs, so its text is not compared, nor the metadata
+    /// only one of the two has where the limit stopped one before the end of the document. What
+    /// OCR read of the embedded images is compared in any order too: each read of the native
+    /// parser is one of Tika's path's, which also reads the images of earlier revisions.
+    Paragraphs(&'a str, &'a [&'a str]),
 }
 
 /// What a native parser does otherwise than Tika's path on purpose.
