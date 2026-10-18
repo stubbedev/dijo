@@ -273,7 +273,7 @@ pub(super) fn table_cell_count(grpprl: &[u8]) -> Read<i16> {
         None => 1,
     };
     if columns < 0 {
-        return Err(Thrown(format!("a table of {columns} columns")));
+        return Err(Thrown::new(format!("a table of {columns} columns")));
     }
     let mut cell_count = columns;
     let mut descriptors = vec![true; columns as usize];
@@ -292,7 +292,7 @@ pub(super) fn table_cell_count(grpprl: &[u8]) -> Read<i16> {
                 };
                 let count = i16::from(count as i8);
                 if count < 0 {
-                    return Err(Thrown(format!("a table definition of {count} cells")));
+                    return Err(Thrown::new(format!("a table definition of {count} cells")));
                 }
                 cell_count = count;
                 descriptors = vec![false; count as usize];

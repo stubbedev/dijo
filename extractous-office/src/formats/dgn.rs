@@ -37,7 +37,7 @@ impl Parser for Dgn8Parser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let file = Ole2::open(input).map_err(|Unreadable(reason)| {
-            Unread::from(Thrown(format!(
+            Unread::from(Thrown::new(format!(
                 "POIFSFileSystem cannot open the compound document: {reason}"
             )))
             .declined()

@@ -6,7 +6,9 @@
 use std::borrow::Cow;
 
 use super::factory::Decrypting;
-use crate::formats::poi::{thrown, Read, Thrown};
+use crate::formats::poi::{
+    record_format, safely_allocate_check, thrown, Read, Thrown, ILLEGAL_ARGUMENT, ILLEGAL_STATE,
+};
 use crate::ole2::Content;
 
 /// The type of a `CONTINUE` record.
@@ -15,6 +17,12 @@ pub(super) const CONTINUE: u16 = 0x003C;
 const MAX_RECORD_DATA_SIZE: i64 = 8224;
 /// `HSSFWorkbook`'s largest record.
 pub(super) const MAX_RECORD_LENGTH: i64 = 100_000;
+/// What `LittleEndianInputStream` throws reading past the end of its stream.
+const UNEXPECTED_END: &str = "Unexpected end-of-file";
+
+fn illegal_state(message: &str) -> Thrown {
+    Thrown::runtime(ILLEGAL_STATE, message)
+}
 /// `StringUtil`'s largest record.
 pub(super) const MAX_STRING_LENGTH: i64 = 10_000_000;
 
@@ -154,22 +162,25 @@ impl<'a> RecordStream<'a> {
     /// `nextRecord`: moves to the next record, whose type `has_next_record` read.
     pub(super) fn next_record(&mut self) -> Read<()> {
         let Some(sid) = self.next_sid else {
-            return thrown("EOF - next record not available");
+            return Err(illegal_state("EOF - next record not available"));
         };
         if self.length.is_some() {
-            return thrown("Cannot call nextRecord() without checking hasNextRecord() first");
+            return Err(illegal_state(
+                "Cannot call nextRecord() without checking hasNextRecord() first",
+            ));
         }
         self.sid = sid;
         self.offset = 0;
         let length = i64::from(
             self.u16_at(self.position)
-                .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))?,
+                .ok_or_else(|| illegal_state(UNEXPECTED_END))?,
         );
         self.position += 2;
         self.length = Some(length);
         if length > MAX_RECORD_DATA_SIZE {
-            return thrown(format!(
-                "The content of an excel record cannot exceed 8224 bytes, but had: {length}"
+            return record_format(format!(
+                "The content of an excel record cannot exceed {MAX_RECORD_DATA_SIZE} bytes, but \
+                 had: {length} for record with sid: {sid}"
             ));
         }
         let held = (self.content.len() - self.position).min(length as usize);
@@ -204,7 +215,7 @@ impl<'a> RecordStream<'a> {
         self.data
             .get(self.offset as usize)
             .copied()
-            .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))
+            .ok_or_else(|| illegal_state(UNEXPECTED_END))
     }
 
     /// `remaining`.
@@ -214,7 +225,9 @@ impl<'a> RecordStream<'a> {
 
     fn is_continue_next(&mut self) -> Read<bool> {
         if self.length.is_some_and(|length| length != self.offset) {
-            return thrown("Should never be called before end of current record");
+            return Err(illegal_state(
+                "Should never be called before end of current record",
+            ));
         }
         Ok(self.has_next_record()? && self.next_sid == Some(CONTINUE))
     }
@@ -227,7 +240,7 @@ impl<'a> RecordStream<'a> {
         if available == 0 && self.is_continue_next()? {
             return self.next_record();
         }
-        thrown(format!(
+        record_format(format!(
             "Not enough data ({available}) to read requested ({required}) bytes"
         ))
     }
@@ -240,7 +253,7 @@ impl<'a> RecordStream<'a> {
         self.position += length;
         self.data
             .get(at..at + length)
-            .ok_or_else(|| Thrown("Unexpected end-of-file".to_owned()))
+            .ok_or_else(|| illegal_state(UNEXPECTED_END))
     }
 
     fn read<const N: usize>(&mut self) -> Read<[u8; N]> {
@@ -280,7 +293,7 @@ impl<'a> RecordStream<'a> {
             let mut chunk = self.remaining().min(left);
             if chunk == 0 {
                 if !self.has_next_record()? {
-                    return thrown(format!(
+                    return record_format(format!(
                         "Can't read the remaining {left} bytes of the requested {length} bytes. \
                          No further record exists."
                     ));
@@ -288,7 +301,11 @@ impl<'a> RecordStream<'a> {
                 self.next_record()?;
                 chunk = self.remaining().min(left);
                 if chunk <= 0 {
-                    return thrown(format!("Need to have a valid next chunk, but had: {chunk}"));
+                    return record_format(format!(
+                        "Need to have a valid next chunk, but had: {chunk} with len: {left} and \
+                         available: {}",
+                        self.remaining()
+                    ));
                 }
             }
             self.check_record_position(chunk)?;
@@ -312,7 +329,10 @@ impl<'a> RecordStream<'a> {
     /// starts with a byte saying whether its characters are compressed.
     fn read_string(&mut self, length: i32, compressed: bool) -> Read<Vec<u16>> {
         if !(0..=0x10_0000).contains(&length) {
-            return thrown(format!("Bad requested string length ({length})"));
+            return Err(Thrown::runtime(
+                ILLEGAL_ARGUMENT,
+                format!("Bad requested string length ({length})"),
+            ));
         }
         let length = length as usize;
         let mut units = Vec::with_capacity(length);
@@ -336,14 +356,14 @@ impl<'a> RecordStream<'a> {
                 return Ok(units);
             }
             if !self.is_continue_next()? {
-                return thrown(format!(
+                return record_format(format!(
                     "Expected to find a ContinueRecord in order to read remaining {} of {length} \
                      chars",
                     length - units.len()
                 ));
             }
             if self.remaining() != 0 {
-                return thrown(format!(
+                return record_format(format!(
                     "Odd number of bytes({}) left behind",
                     self.remaining()
                 ));
@@ -351,7 +371,7 @@ impl<'a> RecordStream<'a> {
             self.next_record()?;
             let flag = self.read_u8()? as i8;
             if flag != 0 && flag != 1 {
-                return thrown(format!("Invalid compressFlag: {flag}"));
+                return record_format(format!("Invalid compressFlag: {flag}"));
             }
             compressed = flag == 0;
         }
@@ -371,9 +391,7 @@ impl<'a> RecordStream<'a> {
         if size == 0 {
             return Ok(Vec::new());
         }
-        if !(0..=MAX_RECORD_LENGTH).contains(&size) {
-            return thrown(format!("Tried to allocate an array of length {size}"));
-        }
+        safely_allocate_check(size, MAX_RECORD_LENGTH)?;
         self.read_fully(size as usize)
     }
 }

@@ -153,7 +153,7 @@ impl Fib {
                 continue;
             }
             if end < 0 || offset < 0 {
-                return Err(Thrown(format!(
+                return Err(Thrown::new(format!(
                     "the FIB's structure {index} lies outside the table stream"
                 )));
             }
@@ -180,7 +180,7 @@ impl Fib {
         self.fields
             .get(field)
             .map(|&(offset, _)| offset)
-            .ok_or_else(|| Thrown(format!("the FIB has no field {field}")))
+            .ok_or_else(|| Thrown::new(format!("the FIB has no field {field}")))
     }
 
     /// The size of a structure.
@@ -188,6 +188,6 @@ impl Fib {
         self.fields
             .get(field)
             .map(|&(_, size)| size)
-            .ok_or_else(|| Thrown(format!("the FIB has no field {field}")))
+            .ok_or_else(|| Thrown::new(format!("the FIB has no field {field}")))
     }
 }

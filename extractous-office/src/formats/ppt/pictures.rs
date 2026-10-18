@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 
 use crate::formats::escher::{kind as escher_kind, Content as EscherContent, Escher};
-use crate::formats::poi::{i32_at, inflate, narrowed, Thrown, Unread};
+use crate::formats::poi::{i32_at, inflate, narrowed, Thrown, Unread, INDEX_OUT_OF_BOUNDS};
 use crate::formats::{wmf_placeable, Unported};
 use crate::ole2::{Content, EntryId, EntryKind, Ole2, Unreadable};
 
@@ -23,14 +23,7 @@ const CHECKSUM: usize = 16;
 const BSTORE_CONTAINER: u16 = 0xF001;
 
 fn poi_throws(reason: &str) -> Unread {
-    Thrown(format!("reading the presentation's pictures: {reason}")).into()
-}
-
-pub(super) fn recorded(reason: &str) -> Unported {
-    Unported(format!(
-        "a picture or object whose data POI fails to read, which Tika records with Java's stack \
-         trace: {reason}"
-    ))
+    Thrown::new(format!("reading the presentation's pictures: {reason}")).into()
 }
 
 /// Why the data of a picture or an object is not read as POI reads it.
@@ -49,16 +42,6 @@ pub(super) enum UnreadData {
 impl From<Unported> for UnreadData {
     fn from(unported: Unported) -> Self {
         Self::Unported(unported)
-    }
-}
-
-impl From<UnreadData> for Unread {
-    fn from(unread: UnreadData) -> Self {
-        match unread {
-            UnreadData::Recorded(reason) => recorded(reason).into(),
-            UnreadData::Thrown(exception) => recorded(&exception).into(),
-            UnreadData::Unported(unported) => unported.into(),
-        }
     }
 }
 
@@ -167,7 +150,7 @@ impl<'p> Pictures<'p> {
         &self,
         store: Option<&[StoreEntry]>,
         index: i32,
-    ) -> Result<Option<&Picture>, Unread> {
+    ) -> Result<Option<&Picture>, Thrown> {
         let Some(store) = store else {
             return Ok(None);
         };
@@ -177,7 +160,16 @@ impl<'p> Pictures<'p> {
         let entry = usize::try_from(index - 1)
             .ok()
             .and_then(|at| store.get(at))
-            .ok_or_else(|| recorded("a picture shape names a blip store entry past the store's"))?;
+            .ok_or_else(|| {
+                Thrown::runtime(
+                    INDEX_OUT_OF_BOUNDS,
+                    format!(
+                        "Index {} out of bounds for length {}",
+                        i64::from(index) - 1,
+                        store.len()
+                    ),
+                )
+            })?;
         let mine = self.store.as_deref().unwrap_or_default();
         Ok(self
             .pictures
@@ -685,7 +677,7 @@ fn inflated(data: &[u8]) -> Result<Cow<'static, [u8]>, UnreadData> {
         .map_err(|_| UnreadData::Recorded("a compressed object of a negative length"))?;
     inflate(&data[4..], Some(size))
         .map(Cow::Owned)
-        .map_err(|Thrown(exception)| UnreadData::Thrown(exception))
+        .map_err(|thrown| UnreadData::Thrown(thrown.to_string()))
 }
 
 /// `getEmbeddedObjects`: the storages of embedded objects among the stream's records.

@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 
 use crate::config::ParserConfigs;
+use crate::formats::compound::detected_otherwise;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
@@ -59,7 +60,7 @@ impl Parser for VisioParser {
         "extractous::OfficeParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.microsoft.OfficeParser"
+        crate::formats::poi::OFFICE_PARSER
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -77,9 +78,12 @@ impl Parser for VisioParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
+        if let Some(parser) = detected_otherwise(input, &[MEDIA_TYPE]) {
+            return parser.prepare(input, metadata, configs);
+        }
         let (summaries, texts) = read(input, configs).map_err(Unread::declined)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
@@ -112,7 +116,7 @@ fn texts(file: &Ole2<'_>, root: EntryId) -> Read<Vec<String>> {
     }
     let document = file
         .content(entry)
-        .map_err(|reason| Thrown(format!("cannot read {DOCUMENT_STREAM}: {}", reason.0)))?
+        .map_err(|reason| Thrown::new(format!("cannot read {DOCUMENT_STREAM}: {}", reason.0)))?
         .bytes();
     if document.get(..VISIO_HEADER.len()) != Some(VISIO_HEADER.as_slice()) {
         return thrown("Wasn't a valid visio document");
@@ -349,7 +353,7 @@ impl<'d> Reader<'d> {
         let mut pointers = Vec::with_capacity(count as usize);
         for _ in 0..count {
             let at = usize::try_from(position)
-                .map_err(|_| Thrown(format!("Index {position} out of bounds")))?;
+                .map_err(|_| Thrown::new(format!("Index {position} out of bounds")))?;
             let pointer = self.version.pointer(data, at)?;
             position += pointer.size() as i64;
             pointers.push(pointer);
@@ -523,13 +527,15 @@ impl ChunkHeader {
 
 /// `LittleEndian.getShort` at a position Java holds as an `int`.
 fn short_at(data: &[u8], at: i32) -> Read<i16> {
-    let index = usize::try_from(at).map_err(|_| Thrown(format!("Index {at} out of bounds")))?;
+    let index =
+        usize::try_from(at).map_err(|_| Thrown::new(format!("Index {at} out of bounds")))?;
     i16_at(data, index)
 }
 
 /// `LittleEndian.getUInt` at a position Java holds as an `int`.
 fn int_at(data: &[u8], at: i32) -> Read<i32> {
-    let index = usize::try_from(at).map_err(|_| Thrown(format!("Index {at} out of bounds")))?;
+    let index =
+        usize::try_from(at).map_err(|_| Thrown::new(format!("Index {at} out of bounds")))?;
     i32_at(data, index)
 }
 

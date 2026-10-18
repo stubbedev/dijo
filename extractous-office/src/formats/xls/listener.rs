@@ -24,8 +24,9 @@ use crate::formats::data_format::header_footer;
 use crate::formats::data_format::{
     builtin_format, default_number_format, error_text, DataFormatter, FormatError,
 };
-use crate::formats::poi::Thrown;
+use crate::formats::poi::{Thrown, INDEX_OUT_OF_BOUNDS};
 use crate::formats::xhtml::{Stop, Xhtml};
+use crate::formats::Unported;
 use crate::java::is_blank;
 use crate::java::trim;
 
@@ -237,6 +238,8 @@ pub(super) struct Listener<'a, 'p> {
 pub(super) enum Interrupted {
     /// POI or Tika threw.
     Thrown(Thrown),
+    /// The record holds what the port does not write.
+    Unported(Unported),
     /// The output took no more.
     Stopped(Stop),
 }
@@ -332,6 +335,7 @@ impl<'a, 'p> Listener<'a, 'p> {
                 Ok(())
             }
             Err(Uncaught::Thrown(thrown)) => Err(Interrupted::Thrown(thrown)),
+            Err(Uncaught::Unported(unported)) => Err(Interrupted::Unported(unported)),
             Err(Uncaught::Stopped(stop)) => Err(Interrupted::Stopped(stop)),
             Ok(()) => Ok(()),
         }
@@ -493,19 +497,14 @@ impl<'a, 'p> Listener<'a, 'p> {
     fn shared_string(&mut self, index: i32) -> Result<String, Uncaught> {
         let plans = self.plans();
         let Some(strings) = &mut self.shared_strings else {
-            return Err(Uncaught::Stored(Thrown(
-                "sstRecord should have been initialized before a ref to the shared string table"
-                    .to_owned(),
+            return Err(Uncaught::Stored(Thrown::tika(
+                "sstRecord should have been initialized before a ref to the shared string table",
             )));
         };
         let index = usize::try_from(index)
             .ok()
             .filter(|&index| index < strings.len())
-            .ok_or_else(|| {
-                Uncaught::Thrown(Thrown(format!(
-                    "the shared string {index} is beyond the table"
-                )))
-            })?;
+            .ok_or_else(|| Uncaught::Thrown(index_out_of_bounds(index, strings.len())))?;
         if plans {
             return Ok(String::new());
         }
@@ -669,10 +668,10 @@ impl<'a, 'p> Listener<'a, 'p> {
             .cloned()
             .map(Some)
             .ok_or_else(|| {
-                Uncaught::Thrown(Thrown(format!(
-                    "the sheet index {} is negative",
-                    self.sheet_index
-                )))
+                Uncaught::Thrown(index_out_of_bounds(
+                    self.sheet_index,
+                    self.sheet_names.len(),
+                ))
             })
     }
 
@@ -710,13 +709,13 @@ impl<'a, 'p> Listener<'a, 'p> {
             Some(format) => self.formatter.format_raw(value, index, &format),
             None => Ok(default_number_format(value)),
         };
-        formatted.map_err(|error| {
-            Uncaught::Thrown(Thrown(match error {
-                FormatError::Thrown(reason) => format!("the cell format throws: {reason}"),
-                FormatError::Unported(what) => {
-                    format!("a cell holds {what}, which this port does not write")
-                }
-            }))
+        formatted.map_err(|error| match error {
+            FormatError::Thrown(reason) => {
+                Uncaught::Thrown(Thrown::new(format!("the cell format throws: {reason}")))
+            }
+            FormatError::Unported(what) => Uncaught::Unported(Unported(format!(
+                "a cell holds {what}, which this port does not write"
+            ))),
         })
     }
 
@@ -727,10 +726,7 @@ impl<'a, 'p> Listener<'a, 'p> {
             .and_then(|xf| self.extended_formats.get(xf))
             .map(|&index| i32::from(index))
             .ok_or_else(|| {
-                Uncaught::Thrown(Thrown(format!(
-                    "the cell style {} is beyond the workbook's",
-                    cell.xf
-                )))
+                Uncaught::Thrown(index_out_of_bounds(cell.xf, self.extended_formats.len()))
             })
     }
 
@@ -744,11 +740,20 @@ impl<'a, 'p> Listener<'a, 'p> {
     }
 }
 
-/// A failure of a record: one Tika's listener stores, one it lets through, or the output
-/// taking no more.
+/// `ArrayList.get(index)` of a list of `length` elements, past its end.
+fn index_out_of_bounds(index: impl std::fmt::Display, length: usize) -> Thrown {
+    Thrown::runtime(
+        INDEX_OUT_OF_BOUNDS,
+        format!("Index {index} out of bounds for length {length}"),
+    )
+}
+
+/// A failure of a record: one Tika's listener stores, one it lets through, what the port does
+/// not write, or the output taking no more.
 enum Uncaught {
     Stored(Thrown),
     Thrown(Thrown),
+    Unported(Unported),
     Stopped(Stop),
 }
 

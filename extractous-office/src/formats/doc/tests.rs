@@ -234,7 +234,7 @@ fn decrypts_an_encrypted_document_with_its_password_only() {
         ParserConfigs::default().with_password(Some(&crate::config::Password::new(password)))
     };
     let opened = configs("tika");
-    let (file, _) = plan(&input, &opened).unwrap();
+    let (file, _, _) = plan(&input, &opened).unwrap();
     let mut text = String::new();
     planned(read(&file, &opened, &mut |out| {
         if let Out::Text(units) = out {
@@ -372,4 +372,48 @@ fn extracts_documents_too_large_to_read_whole_in_bounded_memory() {
     });
     assert!(first_seen && last_seen);
     assert_eq!(metadata["Content-Type"], ["application/msword"]);
+}
+
+/// A million short paragraphs are held in about four bytes each, where their runs end in the
+/// order they are read: a document of them, made too large to read whole by long paragraphs
+/// after them, is extracted under the 16 MiB budget.
+#[test]
+fn extracts_a_million_short_paragraphs_in_bounded_memory() {
+    use crate::input::MAX_READ_WHOLE;
+    use extractous_core::large::LargeFile;
+    use std::io::Write as _;
+
+    const SHORT: u64 = 1_000_000;
+    let mut text = Vec::new();
+    for paragraph in 0..SHORT {
+        write!(text, "Afsnit {paragraph}\r").unwrap();
+    }
+    let mut paragraph_start = text.len();
+    let mut line = 0u64;
+    while text.len() as u64 <= MAX_READ_WHOLE {
+        write!(text, "Linje {line} i logbogen").unwrap();
+        line += 1;
+        if text.len() - paragraph_start > 1 << 16 {
+            text.push(b'\r');
+            paragraph_start = text.len();
+        } else {
+            text.push(0x0B);
+        }
+    }
+    *text.last_mut().unwrap() = b'\r';
+    let document = word97(&text);
+    drop(text);
+    let file = LargeFile::new("paragraphs.doc", &document, 0, |_| Vec::new(), b"");
+    drop(document);
+    let last_short = format!("Afsnit {}", SHORT - 1);
+    let (mut short, mut last_seen) = (0u64, false);
+    file.extract_lines("extractous::OfficeParser", |line| {
+        let line = line.trim();
+        if line.starts_with("Afsnit ") {
+            short += 1;
+            last_seen |= line == last_short;
+        }
+    });
+    assert_eq!(short, SHORT);
+    assert!(last_seen);
 }

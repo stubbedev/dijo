@@ -44,7 +44,7 @@ fn unported(reason: impl Into<String>) -> Unread {
 }
 
 fn poi_throws(reason: impl Into<String>) -> Unread {
-    Thrown(reason.into()).into()
+    Thrown::new(reason.into()).into()
 }
 
 /// A record of the document stream at the top level, as the index keeps it.
@@ -247,7 +247,7 @@ fn chain(document: &[u8], edit: i32) -> Result<Chain, Unread> {
     while offset != 0 {
         followed += 1;
         if followed > MAX_USER_EDITS {
-            return Err(unported(
+            return Err(poi_throws(
                 "user edits POI follows in a loop, which never ends Tika's parse",
             ));
         }

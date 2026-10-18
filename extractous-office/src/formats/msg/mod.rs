@@ -9,8 +9,10 @@
 //! with POI reading its properties as those of an embedded message, is read alike: see
 //! [`EmbeddedMessage`].
 //!
-//! A message POI or Tika throws on is left to Tika, as is one whose 7-bit strings read
-//! otherwise in a charset Tika may guess for them, one whose body the native parsers leave to
+//! A message POI or Tika throws on fails, as Tika's parse fails; a stored message POI throws on
+//! is written with its summary information and its failure recorded, as Tika's embedded
+//! document extractor records it. What the port does not read is left to Tika: strings and
+//! headers in charsets the native decoders do not decode, a body the native parsers leave to
 //! Tika, and macros extracted when asked to.
 
 mod chunks;
@@ -24,10 +26,11 @@ use chunks::Message;
 use extractor::{extract, Extracted};
 
 use crate::config::ParserConfigs;
+use crate::formats::compound::detected_otherwise;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
-use crate::formats::poi::Unread;
+use crate::formats::poi::{Thrown, Unread};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{
     unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared, Unported,
@@ -44,7 +47,7 @@ impl Parser for MsgParser {
         "extractous::OfficeParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.microsoft.OfficeParser"
+        crate::formats::poi::OFFICE_PARSER
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -60,15 +63,18 @@ impl Parser for MsgParser {
         Footprint::Bounded
     }
 
-    /// Defers messages POI or Tika throws on and those it leaves to Tika's parsers. Tika writes
-    /// the named properties and times of a message in the order of hash maps keyed by identity,
-    /// which its head shows; the native head lists them sorted by name (#64).
+    /// Fails messages POI or Tika throws on, and defers those it leaves to Tika's parsers. Tika
+    /// writes the named properties and times of a message in the order of hash maps keyed by
+    /// identity, which its head shows; the native head lists them sorted by name (#64).
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
+        if let Some(parser) = detected_otherwise(input, &[MEDIA_TYPE]) {
+            return parser.prepare(input, metadata, configs);
+        }
         let (summaries, extracted, difference) = read(input, configs)?;
         unless_different(
             Box::new(move |xhtml| {
@@ -90,8 +96,7 @@ fn read<'a>(
     let file = office::open(input, configs, MEDIA_TYPE, "message")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
-    let message = Message::read(&file, root, false)
-        .map_err(|thrown| Unported(format!("POI throws reading the message: {}", thrown.0)))?;
+    let message = Message::read(&file, root, false)?;
     let (extracted, read_otherwise) = extract(&file, message, configs)?;
     Ok((summaries, extracted, read_otherwise))
 }
@@ -101,11 +106,11 @@ const MAX_STORED_MESSAGES: usize = 16;
 
 /// A message stored in another document as Tika's `OfficeParser` reads it from the storage
 /// handed on as an open container: the storage's summary information, then the message, its
-/// properties read as those of an embedded message; and the message as a document of its own,
-/// its streams in place.
+/// properties read as those of an embedded message, or what POI throws reading it; and the
+/// message as a document of its own, its streams in place.
 pub(crate) struct EmbeddedMessage<'a> {
     summaries: Summaries,
-    extracted: Extracted<'a>,
+    extracted: Result<Extracted<'a>, Thrown>,
     standalone: Storage<'a>,
 }
 
@@ -122,18 +127,18 @@ impl<'a> EmbeddedMessage<'a> {
             ));
         }
         let summaries = Summaries::read(file, directory)?;
-        let message = Message::read(file, directory, true).map_err(|thrown| {
-            Unported(format!(
-                "POI throws reading a stored message, whose failure Tika records: {}",
-                thrown.0
-            ))
-        })?;
-        let (extracted, difference) = extract(file, message, configs)?;
-        if let Some(Difference(reason)) = difference {
-            return Err(Unported(format!(
-                "a stored message this port reads differently from Tika: {reason}"
-            )));
-        }
+        let extracted = match Message::read(file, directory, true)
+            .and_then(|message| extract(file, message, configs))
+        {
+            Ok((_, Some(Difference(reason)))) => {
+                return Err(Unported(format!(
+                    "a stored message this port reads differently from Tika: {reason}"
+                )))
+            }
+            Ok((extracted, None)) => Ok(extracted),
+            Err(Unread::Thrown(thrown)) => Err(thrown),
+            Err(Unread::Unported(unported)) => return Err(unported),
+        };
         let standalone = standalone(file, directory).map_err(|Unreadable(reason)| {
             Unported(format!(
                 "a stored message POI cannot read, whose failure Tika records: {reason}"
@@ -155,17 +160,21 @@ impl<'a> EmbeddedMessage<'a> {
     pub(crate) fn into_owned(self) -> EmbeddedMessage<'static> {
         EmbeddedMessage {
             summaries: self.summaries,
-            extracted: self.extracted.into_owned(),
+            extracted: self.extracted.map(Extracted::into_owned),
             standalone: self.standalone.into_owned(),
         }
     }
 
     /// Writes the message as `OfficeParser` does: its summary information and type as metadata,
-    /// then what its `OutlookExtractor` writes.
+    /// then what its `OutlookExtractor` writes, or the failure of the message POI throws on,
+    /// which the document it is stored in records.
     pub(crate) fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         self.summaries.write(xhtml.metadata_mut());
         xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-        self.extracted.write(xhtml)
+        match self.extracted {
+            Ok(extracted) => extracted.write(xhtml),
+            Err(thrown) => Err(Failure::Malformed(thrown.to_string())),
+        }
     }
 }
 

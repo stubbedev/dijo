@@ -12,8 +12,7 @@
 
 use super::bins::PARAGRAPH_MARKS;
 use super::bins::{
-    bin_pages, character_runs, paragraph_runs, rebuild_character_runs, rebuild_paragraph_runs,
-    PageNumber, PropertyRun,
+    bin_pages, character_runs, read_paragraphs, rebuild_character_runs, PageNumber, Paragraphs,
 };
 use super::bytes::{index, safely_clone};
 use super::extractor::{clean, strip_fields};
@@ -39,7 +38,7 @@ pub(super) struct OldDocument {
     /// The text of each piece, in the order of their ends.
     piece_texts: Vec<Vec<u16>>,
     text: Vec<u16>,
-    paragraphs: Vec<PropertyRun>,
+    paragraphs: Paragraphs,
     /// `fcMac - fcMin`: the end of the range `getRange` gives.
     length: i32,
 }
@@ -109,10 +108,10 @@ impl OldDocument {
         let range = subrange(0, self.length, None)?;
         let (first, last) = find_range(&self.paragraphs, range)?;
         let mut paragraphs = Vec::with_capacity(last - first);
-        for run in &self.paragraphs[first..last] {
+        for index in first..last {
             let span = subrange(
-                range.start.max(run.start),
-                range.end.min(run.end),
+                range.start.max(self.paragraphs.start(index)),
+                range.end.min(self.paragraphs.end(index)),
                 Some(length),
             )?;
             let text = &self.text[span.start as usize..span.end as usize];
@@ -143,20 +142,21 @@ fn runs(
     characters: (i32, i32),
     paragraphs: (i32, i32),
     sections: (i32, i32),
-) -> Read<(Vec<u16>, Vec<PropertyRun>)> {
+) -> Read<(Vec<u16>, Paragraphs)> {
     let text = Text::of(pieces)?;
     let character_pages = bin_pages(main, characters.0, characters.1, PageNumber::Short)?;
     let mut characters = character_runs(main, &character_pages, pieces)?;
     characters.sort_by_key(|run| run.start);
     let paragraph_pages = bin_pages(main, paragraphs.0, paragraphs.1, PageNumber::Short)?;
-    let paragraphs = paragraph_runs(main, main, &paragraph_pages, pieces)?;
-    read_sections(main, sections.0, sections.1)?;
-    rebuild_character_runs(characters, pieces)?;
-    let paragraphs = rebuild_paragraph_runs(
-        paragraphs,
-        &text.positions_of(main, &PARAGRAPH_MARKS),
+    let paragraphs = read_paragraphs(
+        main,
+        main,
+        &paragraph_pages,
+        text.positions_of(main, &PARAGRAPH_MARKS),
         pieces,
     )?;
+    read_sections(main, sections.0, sections.1)?;
+    rebuild_character_runs(characters, pieces)?;
     let text = text
         .read(main, 0..text.len())
         .expect("the text lies within itself");
@@ -326,7 +326,7 @@ fn guess_charset(main: &[u8], offset: i32, length: i32) -> Result<Charset, Unrea
 fn font_character_sets(main: &[u8], offset: i32, length: i32) -> Read<Vec<u8>> {
     let byte = |at: i32| -> Read<u8> {
         main.get(index(at)?).copied().ok_or_else(|| {
-            Thrown(format!(
+            Thrown::new(format!(
                 "Index {at} out of bounds for length {}",
                 main.len()
             ))

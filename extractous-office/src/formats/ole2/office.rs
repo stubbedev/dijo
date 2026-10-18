@@ -28,7 +28,7 @@ pub fn open_file<'a>(input: &'a [u8], configs: &ParserConfigs) -> Result<Ole2<'a
         );
     }
     opened_as_detected(input).map_err(|Unreadable(reason)| {
-        Thrown(format!(
+        Thrown::new(format!(
             "POIFSFileSystem cannot open the compound document: {reason}"
         ))
         .into()

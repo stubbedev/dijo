@@ -5,9 +5,9 @@
 //! not decompress, unread. Encrypted and multi-volume archives are refused when the stream is
 //! opened.
 //!
-//! The stream looks for a header's magic until either of its two bytes is in place, its `&&`
-//! where `||` was meant, and the port does as it does. A DOS time is read as a wall-clock time
-//! in UTC, where commons-compress reads it in the JVM's time zone.
+//! A header is looked for until both bytes of its magic are in place, where the stream stops at
+//! either, its `&&` where `||` was meant (#184). A DOS time is read as a wall-clock time in UTC,
+//! where commons-compress reads it in the JVM's time zone.
 
 use super::{crc32, dos_millis, throws, Undecoded};
 
@@ -171,7 +171,7 @@ impl<'a> Stream<'a> {
             loop {
                 let first = second;
                 second = self.read8()?;
-                if first == MAGIC[0] || second == MAGIC[1] {
+                if [first, second] == MAGIC {
                     break;
                 }
             }
@@ -303,6 +303,36 @@ pub mod tests {
         archive.extend_from_slice(&MAGIC);
         archive.extend_from_slice(&0u16.to_le_bytes());
         archive
+    }
+
+    /// `archive` with `stray` before its first local header, then the size of the largest basic
+    /// header, which runs past the archive's end.
+    pub fn with_stray_bytes(archive: &[u8], stray: [u8; 2]) -> Vec<u8> {
+        let local = 4 + usize::from(u16_le(archive, 2)) + 4 + 2;
+        let size = u16::try_from(MAX_BASIC_HEADER).expect("a basic header's size fits 16 bits");
+        [
+            &archive[..local],
+            &stray,
+            &size.to_le_bytes(),
+            &archive[local..],
+        ]
+        .concat()
+    }
+
+    /// The search for a header goes on past a stray byte of its magic until both are in place,
+    /// where commons-compress stops at either and fails on the size it reads after it (#184).
+    #[test]
+    fn finds_a_header_past_a_stray_byte_of_its_magic() {
+        let archive = arj(&[(b"A.TXT", METHOD_STORED, 0, b"stored text")]);
+        for stray in [[MAGIC[0], 0], [0, MAGIC[1]]] {
+            let strayed = with_stray_bytes(&archive, stray);
+            let entries = entries(&strayed).unwrap();
+            let read: Vec<(&str, &ArjData)> = entries
+                .iter()
+                .map(|entry| (entry.name.as_str(), &entry.data))
+                .collect();
+            assert_eq!(read, [("A.TXT", &ArjData::Stored(b"stored text"))]);
+        }
     }
 
     #[test]

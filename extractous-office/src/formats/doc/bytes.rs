@@ -4,7 +4,7 @@ use crate::formats::poi::{self, Read, Thrown};
 
 /// A Java `int` offset as an index, failing where it is negative.
 pub(super) fn index(value: i32) -> Read<usize> {
-    usize::try_from(value).map_err(|_| Thrown(format!("Index {value} out of bounds")))
+    usize::try_from(value).map_err(|_| Thrown::new(format!("Index {value} out of bounds")))
 }
 
 /// `IOUtils.safelyClone(data, offset, length, max)` at Java `int` offsets.
@@ -19,7 +19,7 @@ pub(super) fn utf16_units(data: &[u8], at: usize, count: usize) -> Read<Vec<u16>
         .and_then(|length| at.checked_add(length))
         .and_then(|end| data.get(at..end))
         .ok_or_else(|| {
-            Thrown(format!(
+            Thrown::new(format!(
                 "Index {at} out of bounds for length {}",
                 data.len()
             ))

@@ -1,13 +1,16 @@
 //! A presentation's encryption as POI's `HSLFSlideShowEncrypted` opens it: the
-//! `DocumentEncryptionAtom` the most recent encrypting user edit names, its CryptoAPI verifier
-//! checked against the password, and the records and pictures its key decrypts in place.
+//! `DocumentEncryptionAtom` the most recent encrypting user edit names, its CryptoAPI or
+//! Office 97 binary RC4 verifier checked against the password, and the records and pictures its
+//! key decrypts in place. POI streams either alike: `decryptRecord` sets the decryptor's chunk
+//! size to none, which binary RC4's decryptor takes too, so that a record is decrypted with the
+//! key of its persist id and a picture with block 0's.
 
 use rc4::StreamCipher;
 
 use crate::config::ParserConfigs;
 use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Rc4Keys};
 use crate::formats::poi::{Thrown, Unread};
-use crate::formats::{Decline, Unported};
+use crate::formats::Decline;
 
 /// `BLIB_STORE_ENTRY_PARTS`: the fields of a blip store entry, each encrypted on its own.
 const STORE_ENTRY_PARTS: [usize; 11] = [1, 1, 16, 2, 4, 4, 4, 1, 1, 1, 1];
@@ -22,7 +25,7 @@ const WRONG_PASSWORD: &str = "org.apache.poi.hslf.exceptions.EncryptedPowerPoint
                               via Biff8EncryptionKey.setCurrentUserPassword()";
 
 fn poi_throws(reason: &str) -> Unread {
-    Thrown(format!("decrypting the presentation: {reason}")).into()
+    Thrown::new(format!("decrypting the presentation: {reason}")).into()
 }
 
 /// The encryption of a presentation, opened.
@@ -42,13 +45,6 @@ impl Encryption {
         info: &EncryptionInfo,
         configs: &ParserConfigs,
     ) -> Result<Encryption, Decline<'static>> {
-        if !matches!(info, EncryptionInfo::CryptoApi(_)) {
-            return Err(Unported(
-                "a presentation encrypted with binary RC4, which this port does not decrypt"
-                    .to_owned(),
-            )
-            .into());
-        }
         let key = info
             .verify(crypt::password(configs))
             .ok_or_else(|| Decline::Fails(crypt::encrypted(Some(WRONG_PASSWORD))))?;

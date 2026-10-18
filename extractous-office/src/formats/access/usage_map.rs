@@ -8,13 +8,15 @@ use super::table::{row_end, row_start};
 const MAP_TYPE_INLINE: u8 = 0x0;
 const MAP_TYPE_REFERENCE: u8 = 0x1;
 
-/// A usage map: the pages from `start_page` whose bits are set.
+/// A usage map: the pages from `start_page` whose bits are set, a bit a page, so that the map
+/// of a table of any size holds an eighth of a byte for each page it may own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct UsageMap {
     start_page: i32,
     end_page: i32,
-    /// The set bits, ascending: pages counted from `start_page`.
-    bits: Vec<i32>,
+    /// Its bitmaps, ascending, each with the page its first bit stands for, counted from
+    /// `start_page`: an inline map's one, or one for each usage map page.
+    bitmaps: Vec<(i32, Vec<u8>)>,
 }
 
 impl UsageMap {
@@ -49,7 +51,7 @@ impl UsageMap {
                 let mut map = Self {
                     start_page,
                     end_page: start_page.wrapping_add(max_inline_pages),
-                    bits: Vec::new(),
+                    bitmaps: Vec::new(),
                 };
                 let data = &buffer.bytes()[buffer.position()..buffer.limit()];
                 map.process(data, 0)?;
@@ -62,7 +64,7 @@ impl UsageMap {
                 let mut map = Self {
                     start_page: 0,
                     end_page: usage_pages.wrapping_mul(max_per_page),
-                    bits: Vec::new(),
+                    bitmaps: Vec::new(),
                 };
                 for i in 0..usage_pages {
                     let pointer =
@@ -93,53 +95,76 @@ impl UsageMap {
         }
     }
 
-    /// `processMap`: the set bits of `data`, the first counted from `first`.
+    /// `processMap`: the bitmap `data`, its first bit counted from `first`, failing on a set bit
+    /// outside the map's range as Jackcess does.
     fn process(&mut self, data: &[u8], first: i32) -> Result<(), Thrown> {
-        for (index, &byte) in data.iter().enumerate() {
-            if byte == 0 {
-                continue;
-            }
-            for bit in 0..8 {
-                if byte & (1 << bit) == 0 {
-                    continue;
-                }
-                let offset = (index as i32)
-                    .wrapping_mul(8)
-                    .wrapping_add(bit)
-                    .wrapping_add(first);
-                let page = if offset >= 0 {
-                    self.start_page.wrapping_add(offset)
-                } else {
-                    -1
-                };
-                if page < self.start_page || page >= self.end_page {
-                    return Err(Thrown::illegal_state(format!(
-                        "found page number {page} in usage map outside of expected range {} to {}",
-                        self.start_page, self.end_page
-                    )));
-                }
-                self.bits.push(offset);
+        for offset in set_bits(data, first) {
+            let page = if offset >= 0 {
+                self.start_page.wrapping_add(offset)
+            } else {
+                -1
+            };
+            if page < self.start_page || page >= self.end_page {
+                return Err(Thrown::illegal_state(format!(
+                    "found page number {page} in usage map outside of expected range {} to {}",
+                    self.start_page, self.end_page
+                )));
             }
         }
-        self.bits.sort_unstable();
-        self.bits.dedup();
+        if data.iter().any(|&byte| byte != 0) {
+            let at = self.bitmaps.partition_point(|(known, _)| *known < first);
+            self.bitmaps.insert(at, (first, data.to_vec()));
+        }
         Ok(())
     }
 
     /// `containsPageNumber`.
     pub(super) fn contains(&self, page: i32) -> bool {
-        page >= self.start_page
-            && page < self.end_page
-            && self
-                .bits
-                .binary_search(&page.wrapping_sub(self.start_page))
-                .is_ok()
+        if page < self.start_page || page >= self.end_page {
+            return false;
+        }
+        let offset = i64::from(page.wrapping_sub(self.start_page));
+        self.bitmaps.iter().any(|(first, bitmap)| {
+            let bit = offset - i64::from(*first);
+            usize::try_from(bit).is_ok_and(|bit| {
+                bitmap
+                    .get(bit / 8)
+                    .is_some_and(|&byte| byte & (1 << (bit % 8)) != 0)
+            })
+        })
     }
 
-    /// The pages a forward `PageCursor` gives, in order.
+    /// The pages a forward `PageCursor` gives, in order, each once.
     pub(super) fn pages(&self) -> impl Iterator<Item = i32> + '_ {
-        self.bits
+        let mut last = None;
+        self.bitmaps
             .iter()
-            .map(|&offset| self.start_page.wrapping_add(offset))
+            .flat_map(|(first, bitmap)| set_bits(bitmap, *first))
+            .filter(move |&offset| {
+                let new = last.is_none_or(|last| offset > last);
+                if new {
+                    last = Some(offset);
+                }
+                new
+            })
+            .map(|offset| self.start_page.wrapping_add(offset))
     }
+}
+
+/// The offsets of the set bits of `bitmap`, the first counted from `first`, ascending.
+fn set_bits(bitmap: &[u8], first: i32) -> impl Iterator<Item = i32> + '_ {
+    bitmap
+        .iter()
+        .enumerate()
+        .filter(|(_, &byte)| byte != 0)
+        .flat_map(move |(index, &byte)| {
+            (0..8)
+                .filter(move |bit| byte & (1 << bit) != 0)
+                .map(move |bit| {
+                    (index as i32)
+                        .wrapping_mul(8)
+                        .wrapping_add(bit)
+                        .wrapping_add(first)
+                })
+        })
 }

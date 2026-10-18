@@ -2,11 +2,12 @@ use std::path::Path;
 #[cfg(feature = "tika")]
 use std::path::PathBuf;
 
+use super::buffer::Buffer;
 use super::format;
 #[cfg(feature = "tika")]
-use super::format::Detected;
-#[cfg(feature = "tika")]
 use super::pages::rc4;
+use super::pages::PAGE_TYPE_DATA;
+use super::table::{row_end, row_start};
 use super::*;
 use crate::config::Password;
 use crate::formats::crypt::Hash;
@@ -135,7 +136,7 @@ type PageKey = Box<dyn Fn(&[u8]) -> Vec<u8>>;
 fn encrypted(mut file: Vec<u8>, provider: Provider, password: &str) -> Vec<u8> {
     use aes::cipher::{BlockCipherEncrypt, KeyInit};
     use rc4::{Rc4, StreamCipher};
-    let Ok(format::Detected::Format(format)) = format::detect(&file) else {
+    let Ok(format) = format::detect(&file) else {
         panic!("an ACE database");
     };
     let encoding_key = [0x5A, 0x17, 0xC3, 0x08];
@@ -384,7 +385,7 @@ fn spools_embedded_objects_as_tikas_path_does() {
 /// after the first RC4 under the key XORed with the page's number.
 #[cfg(feature = "tika")]
 fn encoded(mut file: Vec<u8>, key: [u8; 4]) -> Vec<u8> {
-    let Ok(Detected::Format(format)) = format::detect(&file) else {
+    let Ok(format) = format::detect(&file) else {
         panic!("a Jet database");
     };
     for (number, page) in file.chunks_mut(format.page_size).enumerate().skip(1) {
@@ -429,7 +430,7 @@ const JET4_HEADER_DATE: usize = 114;
 /// A Jet 4 database given the database password `password`, masked as Access masks it: by the
 /// header mask and by the integer part of the database's creation date.
 fn with_password(mut file: Vec<u8>, password: &str) -> Vec<u8> {
-    let Ok(format::Detected::Format(format)) = format::detect(&file) else {
+    let Ok(format) = format::detect(&file) else {
         panic!("a Jet database");
     };
     let mask = |at: usize| format.header_mask[at - format.offset_masked_header];
@@ -599,7 +600,7 @@ fn reads_jet3_text_in_the_code_page_of_the_database() {
     assert!(xml.contains("[Træerø].[col2]"), "{xml}");
 
     let mut header = original;
-    let Ok(format::Detected::Format(format)) = format::detect(&header) else {
+    let Ok(format) = format::detect(&header) else {
         panic!("a Jet database");
     };
     let at = JET3_CODE_PAGE;
@@ -616,6 +617,28 @@ fn reads_jet3_text_in_the_code_page_of_the_database() {
         .extract_file_to_string(cyrillic.to_str().unwrap())
         .unwrap();
     assert!(xml.contains("<table name=\"Таблиц\">"), "{xml}");
+}
+
+/// A Jet 3 database in a code page the port has no charset of is decoded as Jackcess decodes
+/// every Jet 3 database, in the JVM's default charset, UTF-8.
+#[test]
+fn reads_jet3_text_of_an_unknown_code_page_as_jackcess_does() {
+    let scratch = Scratch::new("access-jet3-unknown-code-page");
+    let mut header = fixture("jet3-queries.mdb");
+    let Ok(format) = format::detect(&header) else {
+        panic!("a Jet database");
+    };
+    let at = JET3_CODE_PAGE;
+    let mask = &format.header_mask[at - format.offset_masked_header..];
+    for (i, byte) in 9u16.to_le_bytes().into_iter().enumerate() {
+        header[at + i] = byte ^ mask[i];
+    }
+    let unknown = scratch.write("unknown.mdb", &replaced(header, b"Table2", b"T\xc3\xa6ble"));
+    let (xml, _) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_file_to_string(unknown.to_str().unwrap())
+        .unwrap();
+    assert!(xml.contains("<table name=\"Tæble\">"), "{xml}");
 }
 
 #[cfg(feature = "tika")]
@@ -795,4 +818,74 @@ fn reads_ole_objects_with_empty_names() {
         ole::read(&value, &ParserConfigs::default()),
         Ok(Ole::Nothing)
     ));
+}
+
+/// A database too large to read whole is read a page at a time and written a row at a time, in
+/// memory that does not grow with it: a table of a data page repeated past `MAX_READ_WHOLE`,
+/// which a reference usage map gives it.
+#[test]
+fn extracts_databases_too_large_to_read_whole_in_bounded_memory() {
+    use crate::input::MAX_READ_WHOLE;
+    use extractous_core::large::LargeFile;
+
+    let mut file = fixture("jet4-turkish.mdb");
+    let format = format::detect(&file).unwrap();
+    let size = format.page_size;
+    let database = Database::open(Database::pages(&file, "").unwrap()).unwrap();
+    let table = database
+        .tables()
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("a table");
+    drop(database);
+    let definition = usize::try_from(table.page).unwrap();
+    let data_page = file
+        .chunks(size)
+        .position(|page| {
+            page[0] == PAGE_TYPE_DATA
+                && i32::from_le_bytes(page[4..8].try_into().unwrap()) == table.page
+        })
+        .expect("a data page of the table");
+    let data = file[data_page * size..(data_page + 1) * size].to_vec();
+    let owned_at = definition * size + format.offset_owned_pages;
+    let map_row = i32::from(file[owned_at] as i8);
+    let map_page = usize::from(file[owned_at + 1])
+        | usize::from(file[owned_at + 2]) << 8
+        | usize::from(file[owned_at + 3]) << 16;
+    let (start, end) = {
+        let page = Buffer::new(&file[map_page * size..(map_page + 1) * size]);
+        (
+            usize::try_from(row_start(&page, map_row, format).unwrap()).unwrap(),
+            usize::try_from(row_end(&page, map_row, format).unwrap()).unwrap(),
+        )
+    };
+    let first_copy = file.len() / size;
+    let copies = usize::try_from(MAX_READ_WHOLE).unwrap() / size + 1;
+    let usage_page = first_copy + copies;
+    let data_start = format.offset_usage_map_page_data;
+    assert!(
+        usage_page < (size - data_start) * 8,
+        "one usage map page maps them all"
+    );
+    let mut usage = vec![0u8; size];
+    usage[0] = 0x05;
+    usage[1] = 0x01;
+    for page in std::iter::once(data_page).chain(first_copy..usage_page) {
+        usage[data_start + page / 8] |= 1 << (page % 8);
+    }
+    let row = &mut file[map_page * size + start..map_page * size + end];
+    row.fill(0);
+    row[0] = 0x01;
+    let pointer = format.offset_reference_map_page_numbers;
+    row[pointer..pointer + 4].copy_from_slice(&i32::try_from(usage_page).unwrap().to_le_bytes());
+    let large = LargeFile::new("large.mdb", &file, copies as u64, |_| data.clone(), &usage);
+    drop(file);
+    let mut lines = 0u64;
+    let metadata = large.extract_lines("extractous::JackcessParser", |_| lines += 1);
+    assert!(
+        lines > copies as u64,
+        "{lines} lines of {copies} pages of rows"
+    );
+    assert_eq!(metadata["Content-Type"], ["application/x-msaccess"]);
 }

@@ -449,8 +449,8 @@ pub(super) fn find_paragraphs<'a>(
     Ok(collection)
 }
 
-fn thrown(Thrown(reason): Thrown) -> Unread {
-    Thrown(format!("reading the presentation's text: {reason}")).into()
+fn thrown(thrown: Thrown) -> Unread {
+    thrown.within("reading the presentation's text").into()
 }
 
 /// `findStyleAtomPresent`: the styles of the last style atom after the header before the next

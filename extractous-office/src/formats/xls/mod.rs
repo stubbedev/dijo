@@ -15,8 +15,9 @@
 //! `OldExcelExtractor` reads it for Tika's `OldExcelParser`: a paragraph per line of its text.
 //!
 //! An encrypted workbook is decrypted with the password, or failed as Tika's path fails it where
-//! the password does not open it. One POI throws on and macros extracted when asked to are left
-//! to Tika: see [`XlsParser::defers`].
+//! the password does not open it. One POI or Tika's listener throws on fails as Tika's path
+//! fails it. A cell of a format the port does not write and macros extracted when asked to are
+//! left to Tika.
 
 mod factory;
 mod listener;
@@ -34,16 +35,19 @@ use stream::{Mark, RecordStream};
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::lines;
-use crate::formats::compound::{reads_only_the_summary, CompoundDocumentParser};
+use crate::formats::compound::detected_otherwise;
 use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Escher};
 use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
-use crate::formats::ole2::{office_document, Summaries};
-use crate::formats::poi::{Thrown, Unread};
+use crate::formats::ole2::{office_document, Handed, Summaries};
+use crate::formats::poi::{written, Halt, Thrown, Unread, ILLEGAL_ARGUMENT, OFFICE_PARSER};
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared, Unported, PASSWORD_USED};
+use crate::formats::{
+    unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared, Unported,
+    PASSWORD_USED,
+};
 use crate::input::{self, Pages, Paging, Spool};
 use crate::ole2::{Content, EntryId, EntryKind, Ole2, Unreadable};
 
@@ -54,6 +58,10 @@ const WORKS_SPREADSHEET: &str = "application/x-tika-msworks-spreadsheet";
 const MEDIA_TYPES: [&str; 2] = [MEDIA_TYPE, WORKS_SPREADSHEET];
 /// `InternalWorkbook.WORKBOOK_DIR_ENTRY_NAMES`, in the order POI looks for them.
 const WORKBOOK_ENTRY_NAMES: [&str; 4] = ["Workbook", "WORKBOOK", "BOOK", "WorkBook"];
+/// Tika's parser of the workbooks of Excel 2 to 4 stored bare.
+const OLD_EXCEL_PARSER: &str = "org.apache.tika.parser.microsoft.OldExcelParser";
+/// The stream `OldExcelExtractor` reads of a compound document without a "Book" stream.
+const OLD_WORKBOOK_ENTRY: &str = "Workbook";
 /// The entry of a workbook before BIFF8, which Tika reads with its `OldExcelExtractor`.
 const OLD_BOOK_ENTRY: &str = "Book";
 /// The start of the names of the storages documents are embedded in.
@@ -82,7 +90,7 @@ impl Parser for OldExcelParser {
         "extractous::OldExcelParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.microsoft.OldExcelParser"
+        OLD_EXCEL_PARSER
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -102,23 +110,63 @@ impl Parser for OldExcelParser {
         Footprint::Bounded
     }
 
-    /// Fails workbooks POI throws on, encrypted ones among them, which POI refuses.
+    /// Fails workbooks POI throws on, encrypted ones among them, which POI refuses. A compound
+    /// document is read as `OldExcelExtractor` opens one: its "Book" stream, else its
+    /// "Workbook" stream.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        if crate::ole2::is_ole(input) {
-            return Err(Unported(
-                "a compound document typed as a bare old workbook, which POI opens as one"
-                    .to_owned(),
-            )
-            .into());
+        let declined = |unread: Unread| unread.declined_by(OLD_EXCEL_PARSER);
+        if !crate::ole2::is_ole(input) {
+            plan_old(input, OLD_EXCEL_PARSER)?;
+            return Ok(Box::new(move |xhtml| write_old(input, xhtml)));
         }
-        plan_old(input)?;
-        Ok(Box::new(move |xhtml| write_old(input, xhtml)))
+        let stream = old_book(input).map_err(declined)?;
+        plan_old(&stream, OLD_EXCEL_PARSER)?;
+        Ok(Box::new(move |xhtml| write_old(&stream, xhtml)))
     }
+}
+
+/// `OldExcelExtractor.open(directory)` of a compound document: its "Book" stream, else its
+/// "Workbook" stream, each looked for ignoring case, in place where it lies in one run.
+fn old_book(input: &[u8]) -> Result<Cow<'_, [u8]>, Unread> {
+    let file = Ole2::open_stream(input).map_err(|Unreadable(reason)| {
+        Thrown::new(format!(
+            "POIFSFileSystem cannot open the compound document: {reason}"
+        ))
+    })?;
+    let root = file.root();
+    let stream = |name: &str| {
+        file.child_ignoring_case(root, name)
+            .filter(|&entry| file.kind(entry) == EntryKind::Document)
+    };
+    let book = match stream(OLD_BOOK_ENTRY) {
+        Some(book) => book,
+        None => match file.child_ignoring_case(root, OLD_WORKBOOK_ENTRY) {
+            Some(entry) if file.kind(entry) == EntryKind::Document => entry,
+            Some(_) => {
+                return Err(Thrown::runtime(
+                    ILLEGAL_ARGUMENT,
+                    "Did not have an Excel 5/95 Book stream: the Workbook entry, a directory",
+                )
+                .into())
+            }
+            None => {
+                return Err(
+                    Thrown::new("the compound document has no Book or Workbook stream").into(),
+                )
+            }
+        },
+    };
+    Ok(file
+        .content(book)
+        .map_err(|Unreadable(reason)| {
+            Thrown::new(format!("cannot read the old workbook stream: {reason}"))
+        })?
+        .bytes())
 }
 
 impl Parser for XlsParser {
@@ -126,7 +174,7 @@ impl Parser for XlsParser {
         "extractous::OfficeParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.microsoft.OfficeParser"
+        OFFICE_PARSER
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -144,8 +192,8 @@ impl Parser for XlsParser {
         Footprint::Bounded
     }
 
-    /// Fails encrypted workbooks the password does not open, and defers workbooks POI or Tika
-    /// throws on and macros extracted when asked to. A compound document typed a workbook that
+    /// Fails encrypted workbooks the password does not open and workbooks POI or Tika throws on,
+    /// and defers macros extracted when asked to. A compound document typed a workbook that
     /// POI's container detection names a kind of no content, such as an MS Graph chart, is read
     /// as `OfficeParser` reads it once it has detected that kind: its summary information only.
     fn prepare<'a>(
@@ -164,11 +212,12 @@ impl Parser for XlsParser {
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        if reads_only_the_summary(input) {
-            return CompoundDocumentParser.prepare(input, metadata, configs);
+        if let Some(parser) = detected_otherwise(input, &MEDIA_TYPES) {
+            return parser.prepare_paged(input, pages, metadata, configs);
         }
-        let workbook = Workbook::read(input, pages, configs)?;
-        Ok(Box::new(move |xhtml| workbook.write(xhtml)))
+        let mut workbook = Workbook::read(input, pages, configs)?;
+        let difference = workbook.difference.take();
+        unless_different(Box::new(move |xhtml| workbook.write(xhtml)), difference)
     }
 }
 
@@ -185,10 +234,12 @@ pub(super) fn poi_throws(reason: &str) -> Decline<'static> {
     Unread::from(Thrown::new(reason)).declined()
 }
 
-/// A workbook read: the summary information, the type `OfficeParser` sets, and its content.
+/// A workbook read: the summary information, the type `OfficeParser` sets, its content, and
+/// where the native reading of it differs from Tika's, if it does.
 struct Workbook<'a> {
     summaries: Summaries,
     media_type: &'static str,
+    difference: Option<Difference>,
     content: WorkbookContent<'a>,
 }
 
@@ -261,10 +312,11 @@ impl<'a> Workbook<'a> {
                     poi_throws(&format!("cannot read the old workbook stream: {reason}"))
                 })?
                 .bytes();
-            plan_old(&stream)?;
+            plan_old(&stream, OFFICE_PARSER)?;
             return Ok(Workbook {
                 summaries,
                 media_type,
+                difference: None,
                 content: WorkbookContent::Old(stream),
             });
         };
@@ -279,17 +331,20 @@ impl<'a> Workbook<'a> {
         })?;
         let planned = plan(stream.clone(), pages, configs)?;
         let mut storages = Vec::new();
+        let mut difference = None;
         for child in file.children(root) {
             if file.name(child).starts_with(EMBEDDED_STORAGE_PREFIX)
                 && file.kind(child) != EntryKind::Document
             {
-                office_document(&file, child, TikaMetadata::new(), None, configs)?;
+                let handed = office_document(&file, child, TikaMetadata::new(), None, configs)?;
+                difference = difference.or_else(|| handed.as_ref().and_then(Handed::difference));
                 storages.push(child);
             }
         }
         Ok(Workbook {
             summaries,
             media_type,
+            difference,
             content: WorkbookContent::Biff8(Box::new(Biff8 {
                 file,
                 stream,
@@ -314,9 +369,10 @@ impl<'a> Workbook<'a> {
 
 /// `OldExcelExtractor.getText` of an old workbook stream read as far as its end, its text let
 /// go, as reading it decides whether it is extracted.
-fn plan_old(stream: &[u8]) -> Result<(), Decline<'static>> {
-    let mut texts = old::Texts::new(stream).map_err(Unread::declined)?;
-    while texts.next().map_err(Unread::declined)?.is_some() {}
+fn plan_old(stream: &[u8], tika_name: &'static str) -> Result<(), Decline<'static>> {
+    let declined = |unread: Unread| unread.declined_by(tika_name);
+    let mut texts = old::Texts::new(stream).map_err(declined)?;
+    while texts.next().map_err(declined)?.is_some() {}
     Ok(())
 }
 
@@ -355,7 +411,7 @@ impl Biff8<'_> {
         if self.asks_password {
             xhtml.metadata_mut().set(PASSWORD_USED, "true");
         }
-        let thrown = |Thrown(reason)| unplanned(&reason);
+        let thrown = |thrown: Thrown| unplanned(&thrown.to_string());
         let mut records = Records::new(self.stream.clone()).map_err(thrown)?;
         records
             .decrypt(self.configs)
@@ -385,7 +441,8 @@ impl Biff8<'_> {
                     stopped = Some(stop);
                     break;
                 }
-                Err(Interrupted::Thrown(Thrown(reason))) => return Err(unplanned(&reason)),
+                Err(Interrupted::Thrown(thrown)) => return Err(unplanned(&thrown.to_string())),
+                Err(Interrupted::Unported(Unported(reason))) => return Err(unplanned(&reason)),
             }
         }
         if stopped.is_none() {
@@ -394,7 +451,10 @@ impl Biff8<'_> {
         }
         let mut stored = 0;
         for &index in &planned.found.drawing_groups {
-            let group = spool_drawing_group(records.stream(), &planned.drawing_groups[index])?;
+            let group = written(spool_drawing_group(
+                records.stream(),
+                &planned.drawing_groups[index],
+            ))?;
             let escher = escher::decode(&group).map_err(thrown)?;
             find_pictures(
                 &escher,
@@ -477,21 +537,21 @@ fn plan(
     pages: Pages<'_>,
     configs: &ParserConfigs,
 ) -> Result<Planned, Decline<'static>> {
-    let throws = |Thrown(reason)| Unported(format!("POI or Tika throws on the workbook: {reason}"));
     let settings = settings(configs);
-    let mut records = Records::new(stream).map_err(throws)?;
+    let mut records = Records::new(stream)?;
     records.decrypt(configs)?;
     let mut listener = Listener::new(settings, Pass::Plan);
     let paging = Paging::new(pages);
     let mut read = 0;
-    while let Some(event) = records.next().map_err(throws)? {
+    while let Some(event) = records.next()? {
         count_read(&paging, &records, &mut read);
         match event {
             Event::Record { sid, record } => {
                 if is_listened(sid, &settings) {
                     match listener.process(sid, &record, records.stream(), &mut Nowhere) {
                         Ok(()) => {}
-                        Err(Interrupted::Thrown(thrown)) => return Err(throws(thrown).into()),
+                        Err(Interrupted::Thrown(thrown)) => return Err(thrown.into()),
+                        Err(Interrupted::Unported(unported)) => return Err(unported.into()),
                         Err(Interrupted::Stopped(stop)) => {
                             unreachable!("planning writes nowhere, which stops nothing: {stop:?}")
                         }
@@ -501,19 +561,20 @@ fn plan(
             Event::DrawingGroup(index) => listener.drawing_group(index),
         }
     }
-    let (found, _) = listener.finish().map_err(throws)?;
+    let (found, _) = listener.finish()?;
     let sheets_of_pictures = sheets_of_pictures(&found.sheet_drawings);
     let stream = records.stream().clone();
     let drawing_groups = records.into_drawing_groups();
     for &index in &found.drawing_groups {
         let group =
-            spool_drawing_group(&stream, &drawing_groups[index]).map_err(
-                |failure| match failure {
-                    Failure::Extraction(error) => Decline::Fails(error),
-                    failure => Unported(format!("{failure:?}")).into(),
-                },
-            )?;
-        escher::decode(&group).map_err(throws)?;
+            spool_drawing_group(&stream, &drawing_groups[index]).map_err(|halt| match halt {
+                Halt::Declined(declined) => declined,
+                Halt::Written(Failure::Extraction(error)) => Decline::Fails(error),
+                Halt::Written(failure) => {
+                    unreachable!("spooling a drawing group fails only to write: {failure:?}")
+                }
+            })?;
+        escher::decode(&group)?;
     }
     Ok(Planned {
         found,
@@ -527,11 +588,11 @@ fn plan(
 fn spool_drawing_group(
     stream: &RecordStream<'_>,
     starts: &[Mark],
-) -> Result<input::Input<'static>, Failure> {
+) -> Result<input::Input<'static>, Halt<Failure>> {
     let failed = |error: std::io::Error| {
-        Failure::Extraction(crate::Error::IoError(format!(
+        Halt::Written(Failure::Extraction(crate::Error::IoError(format!(
             "Could not spool a drawing group of the workbook: {error}"
-        )))
+        ))))
     };
     let mut spool = BufWriter::new(Spool::new(None));
     write_drawing_group(stream, starts, &mut spool)?;

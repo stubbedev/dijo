@@ -74,7 +74,7 @@ impl<'s> Texts<'s> {
         let (stream, biff, codepage) = (&mut self.stream, self.biff, self.codepage);
         Ok(match stream.sid() {
             sid::FILE_PASS => {
-                return Err(Thrown(
+                return Err(Thrown::new(
                     "Encryption not supported for Old Excel files: an encrypted old workbook"
                         .to_owned(),
                 )
@@ -193,7 +193,7 @@ fn read_string(stream: &mut RecordStream<'_>, biff2: bool) -> Read<Vec<u8>> {
         i32::from(stream.read_i16()?)
     };
     let length = usize::try_from(length)
-        .map_err(|_| Thrown(format!("Can't allocate an array of length {length}")))?;
+        .map_err(|_| Thrown::new(format!("Can't allocate an array of length {length}")))?;
     stream.read_up_to(length)
 }
 

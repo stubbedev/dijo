@@ -27,7 +27,7 @@ use crate::formats::metadata::office::{
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::formats::poi::{Halt, Read, Thrown};
-use crate::formats::Unported;
+use crate::formats::Difference;
 use crate::java::parse_int;
 use crate::ole2::{EntryId, EntryKind, Node, Ole2};
 use crate::unicode::is_whitespace;
@@ -228,7 +228,7 @@ pub(super) fn strip_fields(text: &[u16]) -> Read<Vec<u16>> {
         }
         if let Some(first14) = first14.filter(|&first14| next13.is_none_or(|next| first14 < next)) {
             if first14 + 1 > last15 {
-                return Err(Thrown(format!(
+                return Err(Thrown::new(format!(
                     "begin {}, end {last15}, length {}",
                     first14 + 1,
                     text.len()
@@ -274,25 +274,22 @@ struct Extractor<'s, 'd, E> {
 }
 
 /// `WordExtractor.parse(root, xhtml)`: its events handed to `sink` as they are made, the
-/// metadata of the document's features after them.
+/// metadata of the document's features after them; and where they differ from Tika's, if
+/// they do.
 pub(super) fn extract<'s, 'd, E>(
     document: &'s Document<'d>,
     file: &'s Ole2<'d>,
     root: EntryId,
     configs: &'s ParserConfigs,
     sink: &'s mut Sink<'s, E>,
-) -> Step<(), E> {
-    let save_locations = match &document.save_locations {
-        None => Vec::new(),
-        Some(locations) => locations
-            .iter()
-            .map(|location| {
-                location.clone().ok_or_else(|| {
-                    Unported("a save location POI reads as null, which Tika adds".to_owned())
-                })
-            })
-            .collect::<Result<_, _>>()?,
-    };
+) -> Step<Option<Difference>, E> {
+    let save_locations: Vec<String> = document
+        .save_locations
+        .iter()
+        .flatten()
+        .flatten()
+        .cloned()
+        .collect();
     let pictures = Pictures::read(document)?;
     let mut extractor = Extractor {
         document,
@@ -308,9 +305,9 @@ pub(super) fn extract<'s, 'd, E>(
         extractor.emit(Out::Add(ORIGINAL_RESOURCE_NAME, location))?;
     }
     let has_comments = extractor.body()?;
-    extractor.object_pool()?;
+    let difference = extractor.object_pool()?;
     let (has_hidden_text, has_track_changes) = features(document)?;
-    let revision_authors = revision_authors(document)?;
+    let revision_authors = revision_authors(document);
     if has_comments {
         extractor.emit(Out::Set(HAS_COMMENTS, "true".to_owned()))?;
     }
@@ -323,25 +320,20 @@ pub(super) fn extract<'s, 'd, E>(
     if has_track_changes {
         extractor.emit(Out::Set(HAS_TRACK_CHANGES, "true".to_owned()))?;
     }
-    Ok(())
+    Ok(difference)
 }
 
 /// `extractFeatures`' authors: the distinct authors of the revisions, in the order the
 /// document lists them, where Tika gives them in the order of Java's `HashSet` of them (#111).
-fn revision_authors(document: &Document) -> Result<Vec<String>, Unported> {
-    let Some(authors) = &document.revision_authors else {
-        return Ok(Vec::new());
-    };
+/// An author POI reads as null Tika adds as `Metadata.add` adds null: as nothing.
+fn revision_authors(document: &Document) -> Vec<String> {
     let mut distinct: Vec<String> = Vec::new();
-    for author in authors {
-        let author = author.as_deref().ok_or_else(|| {
-            Unported("a revision author POI reads as null, which Tika adds".to_owned())
-        })?;
+    for author in document.revision_authors.iter().flatten().flatten() {
         if !distinct.iter().any(|known| known == author) {
-            distinct.push(author.to_owned());
+            distinct.push(author.clone());
         }
     }
-    Ok(distinct)
+    distinct
 }
 
 /// `extractFeatures`' runs: whether any run of the main text is hidden, and whether any is a
@@ -544,7 +536,7 @@ impl<'d, E> Extractor<'_, 'd, E> {
             .iter()
             .map(|&index| {
                 let (start, end, _) = plex.entries.get(index).ok_or_else(|| {
-                    Thrown(format!(
+                    Thrown::new(format!(
                         "Index {index} out of bounds for length {}",
                         plex.entries.len()
                     ))
@@ -905,12 +897,14 @@ impl<'d, E> Extractor<'_, 'd, E> {
     }
 
     /// The object pool's storages of embedded objects, each handed on as
-    /// `handleEmbeddedOfficeDoc` hands it on, its streams in place.
-    fn object_pool(&mut self) -> Step<(), E> {
+    /// `handleEmbeddedOfficeDoc` hands it on, its streams in place; and where they differ from
+    /// Tika's, if they do.
+    fn object_pool(&mut self) -> Step<Option<Difference>, E> {
         let file = self.file;
         let Some(pool) = file.child(self.root, OBJECT_POOL) else {
-            return Ok(());
+            return Ok(None);
         };
+        let mut difference = None;
         if file.kind(pool) == EntryKind::Document {
             return Err(Thrown::new(
                 "java.lang.ClassCastException: the object pool is a document, which Tika casts to \
@@ -925,10 +919,11 @@ impl<'d, E> Extractor<'_, 'd, E> {
             if let Some(embedded) =
                 office_document(file, entry, TikaMetadata::new(), None, self.configs)?
             {
+                difference = difference.or_else(|| embedded.difference());
                 self.emit(Out::Embedded(embedded, Wrapping::PackageEntry))?;
             }
         }
-        Ok(())
+        Ok(difference)
     }
 }
 

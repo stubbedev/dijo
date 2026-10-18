@@ -12,6 +12,7 @@
 use std::borrow::Cow;
 
 use crate::config::ParserConfigs;
+use crate::formats::compound::detected_otherwise;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
@@ -42,7 +43,7 @@ impl Parser for PublisherParser {
         "extractous::OfficeParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.microsoft.OfficeParser"
+        crate::formats::poi::OFFICE_PARSER
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -59,9 +60,12 @@ impl Parser for PublisherParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
+        if let Some(parser) = detected_otherwise(input, &[MEDIA_TYPE]) {
+            return parser.prepare(input, metadata, configs);
+        }
         let (summaries, text) = read(input, configs).map_err(Unread::declined)?;
         Ok(Box::new(move |xhtml| {
             summaries.write(xhtml.metadata_mut());
@@ -131,7 +135,7 @@ fn part<'a>(file: &Ole2<'a>, root: EntryId, path: &[&str]) -> Read<Cow<'a, [u8]>
     }
     file.content(entry)
         .map(|content| content.bytes())
-        .map_err(|reason| Thrown(format!("cannot read the stream {name}: {}", reason.0)))
+        .map_err(|reason| Thrown::new(format!("cannot read the stream {name}: {}", reason.0)))
 }
 
 /// A bit of the Quill contents, as far as the text needs it, its data in place.
@@ -152,7 +156,7 @@ fn quill_bits(data: &[u8]) -> Read<Vec<Bit<'_>>> {
             continue;
         }
         let entry = data.get(offset + 2..offset + INDEX_ENTRY).ok_or_else(|| {
-            Thrown(format!(
+            Thrown::new(format!(
                 "Index {} out of bounds for length {}",
                 data.len(),
                 data.len()
@@ -196,18 +200,18 @@ fn plc_bit_read(data: &[u8]) -> Result<(), Plc> {
     let ushort = |at: usize| bounds(u16_at(data, at).map(i64::from));
     let plc_type = uint(4)? as i32;
     if !matches!(plc_type, 0 | 4 | 8 | 12) {
-        return Err(Plc::Thrown(Thrown(format!(
+        return Err(Plc::Thrown(Thrown::new(format!(
             "Sorry, I don't know how to deal with PLCs of type {plc_type}"
         ))));
     }
     let count = uint(0)? as i32;
     if count < 0 {
-        return Err(Plc::Thrown(Thrown(format!(
+        return Err(Plc::Thrown(Thrown::new(format!(
             "Invalid number of PLCs: {count}"
         ))));
     }
     if i64::from(count) > MAX_PLCS {
-        return Err(Plc::Thrown(Thrown(format!(
+        return Err(Plc::Thrown(Thrown::new(format!(
             "Tried to allocate an array of length {count}, but the maximum length for this \
              record type is {MAX_PLCS}."
         ))));
@@ -280,7 +284,7 @@ fn hyperlinks(data: &[u8], count: usize) -> Result<(), Plc> {
             return Err(Plc::OutOfBounds);
         }
         if (data.len() - offset) / 2 < length {
-            return Err(Plc::Thrown(Thrown(format!("Illegal length {length}"))));
+            return Err(Plc::Thrown(Thrown::new(format!("Illegal length {length}"))));
         }
         at += 2 + 2 * length;
     }

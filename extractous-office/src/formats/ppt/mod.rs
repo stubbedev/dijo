@@ -29,7 +29,8 @@ use extractor::{extract, Flush, Out};
 use crate::config::ParserConfigs;
 use crate::formats::poi::{planned, written, Halt};
 
-use crate::formats::embedded::{record_exception, Wrapping};
+use crate::formats::compound::detected_otherwise;
+use crate::formats::embedded::{record_exception, record_stream_exception, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
@@ -58,7 +59,7 @@ impl Parser for PptParser {
         "extractous::OfficeParser"
     }
     fn tika_name(&self) -> &'static str {
-        "org.apache.tika.parser.microsoft.OfficeParser"
+        crate::formats::poi::OFFICE_PARSER
     }
 
     fn media_types(&self) -> &'static [&'static str] {
@@ -82,9 +83,12 @@ impl Parser for PptParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
+        if let Some(parser) = detected_otherwise(input, &[MEDIA_TYPE]) {
+            return parser.prepare(input, metadata, configs);
+        }
         let (file, summaries, difference) = plan(input, configs)?;
         unless_different(
             Box::new(move |xhtml| {
@@ -161,6 +165,9 @@ fn write(out: Vec<Out<'_>>, xhtml: &mut Xhtml) -> Result<(), Failure> {
             Out::Add(name, value) => xhtml.metadata_mut().add(name, value),
             Out::Set(name, value) => xhtml.metadata_mut().set(name, value),
             Out::Warning(exception) => record_exception(xhtml.metadata_mut(), &exception),
+            Out::StreamException(exception) => {
+                record_stream_exception(xhtml.metadata_mut(), &exception)
+            }
         }
     }
     Ok(())

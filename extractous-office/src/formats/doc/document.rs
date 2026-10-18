@@ -10,8 +10,8 @@
 use std::borrow::Cow;
 
 use super::bins::{
-    bin_pages, character_runs, paragraph_runs, rebuild_character_runs, rebuild_paragraph_runs,
-    PageNumber, PropertyRun, PARAGRAPH_MARKS,
+    bin_pages, character_runs, read_paragraphs, rebuild_character_runs, PageNumber, Paragraphs,
+    PropertyRun, PARAGRAPH_MARKS,
 };
 use super::bytes::{index, safely_clone, utf16_units};
 use super::fib::{
@@ -97,7 +97,7 @@ pub(super) struct Document<'d> {
     /// The text, which the pieces of the main stream give, as POI indexes it.
     pub(super) text: Text,
     pub(super) characters: Vec<PropertyRun>,
-    pub(super) paragraphs: Vec<PropertyRun>,
+    pub(super) paragraphs: Paragraphs,
     /// The character ranges of the sections, in the order of their starts.
     pub(super) sections: Vec<(i32, i32)>,
     pub(super) styles: StyleSheet,
@@ -142,7 +142,7 @@ impl<'a> Word<'a> {
             TABLE_ZERO
         };
         if file.child_ignoring_case(root, table_name).is_none() {
-            return Err(Unread::from(Thrown(format!(
+            return Err(Unread::from(Thrown::new(format!(
                 "the document has no table stream {table_name}"
             )))
             .into());
@@ -195,11 +195,15 @@ impl<'d> Document<'d> {
             fib.size(field::PLCFBTEPAPX)?,
             PageNumber::Int,
         )?;
-        let paragraphs = paragraph_runs(main, data, &paragraph_pages, &clx)?;
         let text = Text::of(&clx)?;
+        let paragraphs = read_paragraphs(
+            main,
+            data,
+            &paragraph_pages,
+            text.positions_of(main, &PARAGRAPH_MARKS),
+            &clx,
+        )?;
         let characters = rebuild_character_runs(characters, &clx)?;
-        let paragraphs =
-            rebuild_paragraph_runs(paragraphs, &text.positions_of(main, &PARAGRAPH_MARKS), &clx)?;
         for part in [field::PLCSPAHDR, field::PLCSPAMOM] {
             Plex::read(table, fib.offset(part)?, fib.size(part)?, FSPA_SIZE)?;
         }
@@ -382,7 +386,7 @@ fn encryption(
     let header = &table[..header_length.min(table.len())];
     let info = EncryptionInfo::read(header, Mode::Unset).map_err(|unopened| match unopened {
         Unopened::Disallowed(_) => Decline::Fails(crypt::encrypted(Some(UNCHUNKED_DECRYPTOR))),
-        Unopened::Thrown(reason) => Unread::from(Thrown(reason)).into(),
+        Unopened::Thrown(reason) => Unread::from(Thrown::new(reason)).into(),
         unopened => unopened.unported().into(),
     })?;
     info.verify(password)
@@ -400,7 +404,7 @@ fn encryption(
 fn encryption_header_length(main: &[u8]) -> Result<usize, Unread> {
     let length = i32_at(main, ENCRYPTION_KEY_LENGTH)?;
     usize::try_from(length)
-        .map_err(|_| Thrown(format!("a negative encryption header length {length}")).into())
+        .map_err(|_| Thrown::new(format!("a negative encryption header length {length}")).into())
 }
 
 /// `getDocumentEntryBytes`: the stream named in any case, in place where it lies in one run of
@@ -409,9 +413,9 @@ fn document_bytes<'a>(file: &Ole2<'a>, root: EntryId, name: &str) -> Result<Cow<
     let entry = file
         .child_ignoring_case(root, name)
         .filter(|&entry| file.kind(entry) == EntryKind::Document)
-        .ok_or_else(|| Thrown(format!("the document has no stream {name}")))?;
+        .ok_or_else(|| Thrown::new(format!("the document has no stream {name}")))?;
     let content = file.content(entry).map_err(|Unreadable(reason)| {
-        Unread::from(Thrown(format!(
+        Unread::from(Thrown::new(format!(
             "cannot read the document's stream {name}: {reason}"
         )))
     })?;
@@ -446,7 +450,7 @@ fn read_office_art(table: &[u8], offset: i32, size: i32) -> Read<Option<Escher<'
     while (position as i64) < end {
         let label = u8_at(table, position)?;
         if label > 1 {
-            return Err(Thrown(format!(
+            return Err(Thrown::new(format!(
                 "Invalid dgglbl when filling Escher records: {}",
                 label as i8
             )));
@@ -455,14 +459,14 @@ fn read_office_art(table: &[u8], offset: i32, size: i32) -> Read<Option<Escher<'
         let (drawing, length) = escher::container_at(table, position)?;
         position = advance(position, length)?;
         if drawing.record_id != DG_CONTAINER {
-            return Err(Thrown(format!(
+            return Err(Thrown::new(format!(
                 "Did have an invalid record-type: {} when filling Escher records",
                 drawing.record_id as i16
             )));
         }
     }
     if position as i64 != end {
-        return Err(Thrown(format!(
+        return Err(Thrown::new(format!(
             "Did not read all data when filling Escher records: pos: {position}, offset: \
              {offset}, size: {size}"
         )));
@@ -508,7 +512,9 @@ fn check_font_table(table: &[u8], offset: i32) -> Read<()> {
     let count = i32::from(i16_at(table, at)?);
     i16_at(table, at + 2)?;
     if count < 0 {
-        return Err(Thrown(format!("Cannot create an array of {count} fonts")));
+        return Err(Thrown::new(format!(
+            "Cannot create an array of {count} fonts"
+        )));
     }
     let mut position = at + 4;
     for _ in 0..count {
@@ -524,7 +530,7 @@ fn check_font_table(table: &[u8], offset: i32) -> Read<()> {
         }
         let name_length = (size - FIXED_SIZE) / 2;
         if name_length < 0 {
-            return Err(Thrown(format!(
+            return Err(Thrown::new(format!(
                 "Had invalid computed size: {name_length} with size {size} and offsetTmp: 40"
             )));
         }
@@ -562,7 +568,7 @@ fn read_sttb(table: &[u8], offset: i32) -> Read<Vec<Option<String>>> {
             continue;
         };
         if position >= table.len() {
-            return Err(Thrown(format!(
+            return Err(Thrown::new(format!(
                 "Illegal offset {position} (String data is of length {})",
                 table.len()
             )));
@@ -571,7 +577,7 @@ fn read_sttb(table: &[u8], offset: i32) -> Read<Vec<Option<String>>> {
         strings.push(Some(String::from_utf16_lossy(&units)));
         position += length * 2;
         if position > table.len() {
-            return Err(Thrown(format!(
+            return Err(Thrown::new(format!(
                 "Index {position} out of bounds for length {}",
                 table.len()
             )));

@@ -32,6 +32,8 @@ pub(super) enum CodecType {
     Jet,
     /// Office encryption, which needs a password, where the encoding key is not blank.
     Office,
+    /// MSISAM's RC4 of the pages 1 to 14, whatever the encoding key.
+    Msisam,
 }
 
 /// How a format encodes its text.
@@ -52,6 +54,13 @@ pub(super) enum Charset {
 }
 
 impl Charset {
+    /// Jackcess's charset of every Jet 3 database, `Charset.defaultCharset()`: UTF-8, as the
+    /// JVM Tika runs in has it. The port decodes a Jet 3 database in its own code page, except
+    /// one it has no charset of, which it decodes as Jackcess does (#122).
+    pub(super) fn jackcess_default() -> Charset {
+        Charset::CodePage(JdkCharset::named("UTF-8"))
+    }
+
     /// The charset of the Windows code page `code_page`, where it names one the port decodes.
     pub(super) fn of_code_page(code_page: u16) -> Option<Charset> {
         let charset =
@@ -237,22 +246,21 @@ const fn ace(default_sort_order: SortOrder) -> Format {
 const ACE12: Format = ace(SortOrder::GENERAL_LEGACY);
 const ACE14: Format = ace(SortOrder::GENERAL);
 
-/// What `JetFormat.getFormat` makes of a file: its format, or why it throws, or that it is an
-/// MSISAM (Microsoft Money) database, which the port does not read.
-pub(super) enum Detected {
-    Format(&'static Format),
-    Msisam,
-}
+/// The MSISAM (Microsoft Money) format: Jet 4's, with its own codec.
+const MSISAM: Format = Format {
+    codec: CodecType::Msisam,
+    ..JET4
+};
 
-/// `JetFormat.getFormat`.
-pub(super) fn detect(file: &[u8]) -> Result<Detected, Thrown> {
+/// `JetFormat.getFormat`: a file's format, or why it throws.
+pub(super) fn detect(file: &[u8]) -> Result<&'static Format, Thrown> {
     if file.len() < HEADER_LENGTH {
         return Err(Thrown::io("Empty database file"));
     }
     let version = file[OFFSET_VERSION] as i8;
-    Ok(Detected::Format(match version {
+    Ok(match version {
         0 => &JET3,
-        1 if file[OFFSET_ENGINE_NAME..].starts_with(MSISAM_ENGINE) => return Ok(Detected::Msisam),
+        1 if file[OFFSET_ENGINE_NAME..].starts_with(MSISAM_ENGINE) => &MSISAM,
         1 => &JET4,
         2 => &ACE12,
         3 | 5 | 6 => &ACE14,
@@ -262,5 +270,5 @@ pub(super) fn detect(file: &[u8]) -> Result<Detected, Thrown> {
                 if version < 0 { "older" } else { "newer" }
             )))
         }
-    }))
+    })
 }
