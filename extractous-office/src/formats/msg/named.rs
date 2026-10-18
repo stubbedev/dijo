@@ -304,11 +304,6 @@ pub(super) fn extract(message: &Message, metadata: &mut TikaMetadata) -> Read<()
                 ));
             }
             Value::Boolean(value) => value.to_string(),
-            Value::Float(_) => {
-                return Err(Thrown::new(
-                    "a named float property, whose Float.toString this port does not write",
-                ))
-            }
             value => {
                 let text = value_string(value);
                 if is_blank(&text) {
@@ -330,7 +325,7 @@ fn value_string(value: &Value) -> String {
         Value::Short(value) => value.to_string(),
         Value::Long(value) => value.to_string(),
         Value::LongLong(value) => value.to_string(),
-        Value::Float(_) => unreachable!("a float is left to Tika"),
+        Value::Float(value) => crate::java::dtoa::java_float_to_string(*value),
         Value::Double(value) => crate::java::dtoa::java_double_to_string(*value),
         Value::Currency(value) => value.to_string(),
         Value::Time(_) => unreachable!("a time is written as an instant"),
