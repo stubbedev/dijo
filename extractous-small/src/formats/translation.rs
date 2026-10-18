@@ -441,7 +441,7 @@ impl Parser for XlzParser {
         Ok(Box::new(move |xhtml| {
             let context = xhtml.context();
             for document in documents {
-                let document = archive.take(document)?;
+                let document = archive.read(&document)?;
                 let prepared = Xliff12Parser
                     .prepare_paged(&document, document.pages(), &start, configs)
                     .map_err(|_| {

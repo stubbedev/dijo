@@ -379,9 +379,9 @@ impl Parser for HwpxParser {
                 }
             }
             for section in sections {
-                let section = package
-                    .archive
-                    .take(section.map_err(|refusal| Failure::Malformed(format!("{refusal:?}")))?)?;
+                let section = package.archive.read(
+                    &section.map_err(|refusal| Failure::Malformed(format!("{refusal:?}")))?,
+                )?;
                 let mut handler = Section {
                     xhtml,
                     paragraphs: Vec::new(),

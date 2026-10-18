@@ -46,13 +46,31 @@ pub(crate) fn bytes(bytes: &[u8]) -> EntryData<'_> {
 /// Writes to `out` a ZIP archive of `entries`, each with its name and what writes its data, the
 /// first stored, as a package's `mimetype` is, the others deflated.
 pub(crate) fn package(out: &mut dyn Write, entries: Vec<(&str, EntryData<'_>)>) -> io::Result<()> {
+    zip_archive(
+        out,
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, data))| {
+                let method = if index == 0 {
+                    zip::CompressionMethod::Stored
+                } else {
+                    zip::CompressionMethod::Deflated
+                };
+                (name, method, data)
+            })
+            .collect(),
+    )
+}
+
+/// Writes to `out` a ZIP archive of `entries`, each with its name, how it is compressed and
+/// what writes its data.
+pub(crate) fn zip_archive(
+    out: &mut dyn Write,
+    entries: Vec<(&str, zip::CompressionMethod, EntryData<'_>)>,
+) -> io::Result<()> {
     let mut zip = zip::ZipWriter::new_stream(out);
-    for (index, (name, data)) in entries.into_iter().enumerate() {
-        let method = if index == 0 {
-            zip::CompressionMethod::Stored
-        } else {
-            zip::CompressionMethod::Deflated
-        };
+    for (name, method, data) in entries {
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(method)
             .compression_level(Some(1));

@@ -139,7 +139,7 @@ fn write(archive: &Archive<'_>, entries: Vec<Entry>, xhtml: &mut Xhtml) -> Resul
                     .set("Content-Type", media_type.as_str());
             }
             Entry::Metadata(xml) => {
-                xmp::extract(&archive.take(xml)?, xhtml.metadata_mut(), xmp::as_is)
+                xmp::extract(&archive.read(&xml)?, xhtml.metadata_mut(), xmp::as_is)
                     .map_err(|unported| Failure::Malformed(unported.0))?;
             }
             Entry::Part { kind, xml } => {
@@ -149,7 +149,7 @@ fn write(archive: &Archive<'_>, entries: Vec<Entry>, xhtml: &mut Xhtml) -> Resul
                     spread: false,
                     pages: 0,
                 };
-                xml::parse_part(&archive.take(xml)?, "the IDML part", &mut handler)?;
+                xml::parse_part(&archive.read(&xml)?, "the IDML part", &mut handler)?;
                 let spread = handler.spread.then_some(handler.pages);
                 let count = || {
                     spread.ok_or_else(|| {

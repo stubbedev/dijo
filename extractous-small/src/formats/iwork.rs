@@ -8,16 +8,24 @@
 //! The Java parser opens the package with the JDK's `ZipFile` and an `Index.zip` with its
 //! `ZipInputStream`, which the port reads as [`jdk_zip`] does. Snappy blocks the snap crate
 //! rejects, which commons-compress may still read, stay on Tika's path.
+//!
+//! The package is read twice, an archive at a time, each spooled: once before anything is
+//! written, to tell whether the port reads it and where its text ends, keeping only where each
+//! archive is read from, and again as it is written. Each archive's stream is decompressed to a
+//! spool of its own.
 
 use std::collections::BTreeMap;
+use std::convert::Infallible;
+use std::io::Write;
 
-use crate::compress::zip::file::{ZipEntry, ZipFile};
-use crate::compress::zip::Content;
+use crate::compress::zip::file::ZipEntry;
+use crate::compress::zip::Decoded;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{self, Wrapping};
-use crate::formats::jdk_zip::{self, failed, Refusal};
+use crate::formats::jdk_zip::{self, failed, Archive, Checked, LocalEntry, Refusal};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Input, Pages, Spool};
 use crate::java::is_blank;
 use crate::java::strip;
 use crate::java::{is_line_terminator, JavaString};
@@ -46,98 +54,190 @@ const ARCHIVE: &str = ".iwa";
 const INDEX: &str = "Index.zip";
 const DATA: &str = "Data/";
 
-/// What `IworkArchiveParser.parse` writes: the paragraphs, then the failure that ends it or
-/// the `Data` files it hands the extractor.
-struct Extraction<'a> {
-    paragraphs: Vec<String>,
-    end: End<'a>,
+/// Where an archive is read from: an entry of the package, read ahead, or an entry of the
+/// `Index.zip` of that index among those of the package.
+enum Source {
+    Entry(Checked),
+    Indexed { index: usize, entry: LocalEntry },
 }
 
-enum End<'a> {
+/// What `IworkArchiveParser.parse` reads of a package before it writes, keeping what it reads
+/// again as it writes: the `Index.zip` entries read ahead, the archives whose text it writes in
+/// their reading order, with where each is read from, the budget their indexing leaves, and what
+/// follows their text.
+struct Plan {
+    indexes: Vec<Checked>,
+    archives: Vec<(String, Source)>,
+    budget: Budget,
+    end: End,
+}
+
+/// What follows the paragraphs.
+enum End {
+    /// The failure that ends the parse, at the archive after those written.
     Failed(String),
-    /// The package and the indexes of its `Data` files among its entries.
-    Embedded {
-        zip: ZipFile<'a>,
-        files: Vec<usize>,
-    },
+    /// The `Data` files read ahead, to hand the extractor.
+    Embedded(Vec<Checked>),
 }
 
-/// The extraction of `input`, or why it is left to Tika's path.
-fn extract(input: &[u8]) -> Result<Extraction<'_>, &'static str> {
-    let mut paragraphs = Vec::new();
-    let end = match read_package(input, &mut paragraphs) {
-        Ok(end) => end,
-        Err(Refusal::Failed(reason) | Refusal::Unspooled(reason)) => End::Failed(reason),
-        Err(Refusal::Unread(why)) => return Err(why),
-    };
-    Ok(Extraction { paragraphs, end })
+/// Why a reading of an archive stops: a refusal, or a failure of what writes its paragraphs.
+enum Halt<E> {
+    Refused(Refusal),
+    Written(E),
 }
 
-/// The package's paragraphs, added to `paragraphs` archive by archive, then its `Data` files.
-fn read_package<'a>(input: &'a [u8], paragraphs: &mut Vec<String>) -> Result<End<'a>, Refusal> {
-    let zip = jdk_zip::open(input)?;
-    let mut budget = Budget(MAX_DECOMPRESSED_BYTES);
-    let archives = archives(&zip, &mut budget)?;
-    for (name, archive) in in_reading_order(archives) {
-        if file_name(&name).starts_with("MasterSlide") {
-            continue;
-        }
-        let stream = decompress(&archive, &mut budget)?;
-        paragraphs.extend(text(&stream)?);
+impl<E> From<Refusal> for Halt<E> {
+    fn from(refusal: Refusal) -> Self {
+        Halt::Refused(refusal)
     }
-    let files = data_files(&zip)?;
-    Ok(End::Embedded { zip, files })
+}
+
+/// The plan of the package `archive` opened, or why it is left to Tika's path or not read.
+fn plan(archive: &Archive<'_>) -> Result<Plan, Decline<'static>> {
+    let mut budget = Budget(MAX_DECOMPRESSED_BYTES);
+    let mut indexes = Vec::new();
+    let archives = match index(archive, &mut budget, &mut indexes) {
+        Ok(archives) => in_reading_order(archives),
+        Err(Refusal::Failed(reason)) => {
+            return Ok(Plan {
+                indexes: Vec::new(),
+                archives: Vec::new(),
+                budget,
+                end: End::Failed(reason),
+            })
+        }
+        Err(refusal) => return Err(refusal.into()),
+    };
+    let data: Vec<&Input<'_>> = indexes.iter().map(|(_, data)| data).collect();
+    let mut spent = budget;
+    let mut failure = None;
+    for (index, (_, source)) in archives.iter().enumerate() {
+        match archive_text(archive, &data, source, &mut spent, &mut |_| {
+            Ok::<_, Infallible>(())
+        }) {
+            Ok(()) => {}
+            Err(Halt::Refused(Refusal::Failed(reason))) => {
+                failure = Some((index, reason));
+                break;
+            }
+            Err(Halt::Refused(refusal)) => return Err(refusal.into()),
+            Err(Halt::Written(never)) => match never {},
+        }
+    }
+    let (archives, end) = match failure {
+        Some((written, reason)) => {
+            let mut archives = archives;
+            archives.truncate(written);
+            (archives, End::Failed(reason))
+        }
+        None => match data_files(archive) {
+            Ok(files) => (archives, End::Embedded(files)),
+            Err(Refusal::Failed(reason)) => (archives, End::Failed(reason)),
+            Err(refusal) => return Err(refusal.into()),
+        },
+    };
+    Ok(Plan {
+        indexes: indexes
+            .into_iter()
+            .map(|(entry, data)| Archive::keep(entry, data))
+            .collect(),
+        archives,
+        budget,
+        end,
+    })
 }
 
 /// Caps how much the archives may decompress to, against decompression bombs.
+#[derive(Debug, Clone, Copy)]
 struct Budget(i64);
 
 impl Budget {
     fn spend(&mut self, bytes: usize) -> Result<(), Refusal> {
         self.0 -= i64::try_from(bytes).unwrap_or(i64::MAX);
         if self.0 < 0 {
-            return Err(failed(format!(
-                "The iWork archives decompress to more than {MAX_DECOMPRESSED_BYTES} bytes"
-            )));
+            return Err(over_budget());
         }
         Ok(())
     }
 }
 
+fn over_budget() -> Refusal {
+    failed(format!(
+        "The iWork archives decompress to more than {MAX_DECOMPRESSED_BYTES} bytes"
+    ))
+}
+
 /// `zip.getInputStream(entry)` read to its end, an entry past the budget failing as it does.
-fn content(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Vec<u8>, Refusal> {
-    match jdk_zip::read(zip, entry)? {
-        Content::Complete(bytes) => Ok(bytes.into_owned()),
-        _ => Err(failed(format!(
-            "The iWork archives decompress to more than {MAX_DECOMPRESSED_BYTES} bytes"
-        ))),
+fn content<'a>(archive: &Archive<'a>, entry: &ZipEntry) -> Result<Input<'a>, Refusal> {
+    match archive.decode(entry)? {
+        Decoded::Complete(data) => Ok(data),
+        Decoded::Truncated(_) => Err(Refusal::Unread("a damaged entry")),
+        Decoded::Oversized(_) => Err(over_budget()),
     }
 }
 
-/// `archives`: the `.iwa` archives of the package, stored directly or in an `Index.zip`, by
-/// name in Java's order, a later one of a name replacing an earlier.
-fn archives(
-    zip: &ZipFile<'_>,
+/// `archives`: where the `.iwa` archives of the package are, stored directly or in an
+/// `Index.zip`, by name in Java's order, a later one of a name replacing an earlier, each read
+/// to spend the budget on it; the `Index.zip` entries added to `indexes` with their data.
+fn index<'z, 'a>(
+    archive: &'z Archive<'a>,
     budget: &mut Budget,
-) -> Result<BTreeMap<JavaString, Vec<u8>>, Refusal> {
+    indexes: &mut Vec<(&'z ZipEntry, Input<'a>)>,
+) -> Result<BTreeMap<JavaString, Source>, Refusal> {
     let mut archives = BTreeMap::new();
-    for entry in zip.entries() {
+    for entry in archive.zip().entries() {
         if entry.name.ends_with(ARCHIVE) {
-            let archive = content(zip, entry)?;
-            budget.spend(archive.len())?;
-            archives.insert(JavaString(entry.name.clone()), archive);
+            let data = content(archive, entry)?;
+            budget.spend(data.len())?;
+            archives.insert(
+                JavaString(entry.name.clone()),
+                Source::Entry(Archive::keep(entry, data)),
+            );
         } else if entry.name.ends_with(INDEX) {
-            let index = jdk_zip::local_entries(&content(zip, entry)?)?;
-            for (name, archive) in index
-                .into_iter()
-                .filter(|(name, _)| name.ends_with(ARCHIVE))
-            {
-                budget.spend(archive.len())?;
-                archives.insert(JavaString(format!("{}/{name}", entry.name)), archive);
+            let data = content(archive, entry)?;
+            let mut indexed = Vec::new();
+            for local in jdk_zip::local_entries(&data)? {
+                let length = jdk_zip::local_content(&data, data.pages(), &local)?.len();
+                if local.name.ends_with(ARCHIVE) {
+                    indexed.push((local, length));
+                }
             }
+            for (local, length) in indexed {
+                budget.spend(length)?;
+                archives.insert(
+                    JavaString(format!("{}/{}", entry.name, local.name)),
+                    Source::Indexed {
+                        index: indexes.len(),
+                        entry: local,
+                    },
+                );
+            }
+            indexes.push((entry, data));
         }
     }
     Ok(archives)
+}
+
+/// The paragraphs of the archive `source` names, handed to `paragraph`: read from `archive`, or
+/// from the data of the `Index.zip` entries `indexes`, spending `budget`. The Java parser writes
+/// none of an archive whose reading fails, which the plan leaves out.
+fn archive_text<E>(
+    archive: &Archive<'_>,
+    indexes: &[&Input<'_>],
+    source: &Source,
+    budget: &mut Budget,
+    paragraph: &mut impl FnMut(&str) -> Result<(), E>,
+) -> Result<(), Halt<E>> {
+    let data = match source {
+        Source::Entry(checked) => archive.read(checked)?,
+        Source::Indexed { index, entry } => {
+            let index = indexes[*index];
+            jdk_zip::local_content(index, index.pages(), entry)?
+        }
+    };
+    let stream = decompress(&data, budget)?;
+    drop(data);
+    text(&stream, paragraph)
 }
 
 fn file_name(path: &str) -> &str {
@@ -192,23 +292,31 @@ fn numbered(name: &str) -> Option<(&str, &str)> {
     numbered.then_some((prefix, digits))
 }
 
-/// The archives sorted by their reading order, stably, as `List.sort` sorts them.
-fn in_reading_order(archives: BTreeMap<JavaString, Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-    let mut keyed: Vec<(ReadingOrder, String, Vec<u8>)> = archives
+/// The archives sorted by their reading order, stably, as `List.sort` sorts them, without the
+/// master slides, which are not read.
+fn in_reading_order(archives: BTreeMap<JavaString, Source>) -> Vec<(String, Source)> {
+    let mut keyed: Vec<(ReadingOrder, String, Source)> = archives
         .into_iter()
-        .map(|(JavaString(name), archive)| (reading_order(file_name(&name)), name, archive))
+        .filter(|(JavaString(name), _)| !file_name(name).starts_with("MasterSlide"))
+        .map(|(JavaString(name), source)| (reading_order(file_name(&name)), name, source))
         .collect();
     keyed.sort_by(|a, b| a.0.cmp(&b.0));
     keyed
         .into_iter()
-        .map(|(_, name, archive)| (name, archive))
+        .map(|(_, name, source)| (name, source))
         .collect()
 }
 
 /// `decompress`: an archive's protobuf stream, chunks of a zero byte, a three-byte
-/// little-endian length and a raw Snappy block.
-fn decompress(archive: &[u8], budget: &mut Budget) -> Result<Vec<u8>, Refusal> {
-    let mut stream = Vec::new();
+/// little-endian length and a raw Snappy block, spooled.
+fn decompress(archive: &[u8], budget: &mut Budget) -> Result<Input<'static>, Refusal> {
+    let unspooled = |error: std::io::Error| {
+        Refusal::Unspooled(format!(
+            "spooling the stream of an iWork archive fails: {error}"
+        ))
+    };
+    let mut stream = Spool::new(None);
+    let mut decoded = Vec::new();
     let mut offset = 0;
     while offset < archive.len() {
         if archive[offset] != 0 || offset + CHUNK_HEADER_BYTES > archive.len() {
@@ -226,18 +334,22 @@ fn decompress(archive: &[u8], budget: &mut Budget) -> Result<Vec<u8>, Refusal> {
         let declared = snap::raw::decompress_len(block)
             .map_err(|_| Refusal::Unread("a Snappy block the snap crate rejects"))?;
         budget.spend(declared)?;
-        let decoded = snap::raw::Decoder::new()
-            .decompress_vec(block)
+        decoded.resize(declared, 0);
+        let written = snap::raw::Decoder::new()
+            .decompress(block, &mut decoded)
             .map_err(|_| Refusal::Unread("a Snappy block the snap crate rejects"))?;
-        stream.extend_from_slice(&decoded);
+        stream.write_all(&decoded[..written]).map_err(unspooled)?;
         offset += length;
     }
-    Ok(stream)
+    stream.finish().map_err(unspooled)
 }
 
-/// `text`: the paragraphs of the text storages and string tables in an archive's messages.
-fn text(stream: &[u8]) -> Result<Vec<String>, Refusal> {
-    let mut paragraphs = Vec::new();
+/// `text`: the paragraphs of the text storages and string tables in an archive's messages,
+/// each handed to `paragraph`.
+fn text<E>(
+    stream: &[u8],
+    paragraph: &mut impl FnMut(&str) -> Result<(), E>,
+) -> Result<(), Halt<E>> {
     let mut reader = Protobuf::new(stream);
     while reader.has_more() {
         let length = reader.varint()?;
@@ -263,34 +375,38 @@ fn text(stream: &[u8]) -> Result<Vec<String>, Refusal> {
         for (kind, length) in messages {
             let payload = reader.message(length)?;
             match kind {
-                STORAGE => storage(payload, &mut paragraphs)?,
-                TABLE_DATA_LIST => strings(payload, &mut paragraphs)?,
+                STORAGE => storage(payload, paragraph)?,
+                TABLE_DATA_LIST => strings(payload, paragraph)?,
                 _ => {}
             }
         }
     }
-    Ok(paragraphs)
+    Ok(())
 }
 
 /// `storage`: the lines of a text storage, without attachment characters.
-fn storage(mut storage: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), Refusal> {
+fn storage<E>(
+    mut storage: Protobuf,
+    paragraph: &mut impl FnMut(&str) -> Result<(), E>,
+) -> Result<(), Halt<E>> {
     while storage.has_more() {
         if storage.field()? != 3 || storage.wire_type != LENGTH_DELIMITED {
             storage.skip()?;
             continue;
         }
         let text = storage.string()?.replace(ATTACHMENT, "");
-        paragraphs.extend(
-            text.split(LINE_BREAKS)
-                .filter(|line| !is_blank(line))
-                .map(|line| strip(line).to_owned()),
-        );
+        for line in text.split(LINE_BREAKS).filter(|line| !is_blank(line)) {
+            paragraph(strip(line)).map_err(Halt::Written)?;
+        }
     }
     Ok(())
 }
 
 /// `strings`: the strings of a table's string list, in the order of their keys.
-fn strings(mut list: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), Refusal> {
+fn strings<E>(
+    mut list: Protobuf,
+    paragraph: &mut impl FnMut(&str) -> Result<(), E>,
+) -> Result<(), Halt<E>> {
     let mut list_type = -1;
     let mut strings = BTreeMap::new();
     while list.has_more() {
@@ -317,23 +433,23 @@ fn strings(mut list: Protobuf, paragraphs: &mut Vec<String>) -> Result<(), Refus
         }
     }
     if list_type == STRING_LIST {
-        paragraphs.extend(strings.into_values());
+        for string in strings.values() {
+            paragraph(string).map_err(Halt::Written)?;
+        }
     }
     Ok(())
 }
 
 /// `embedded`'s entries: the files of the package's `Data` folders, in the order of the central
-/// directory, each read whole.
-fn data_files(zip: &ZipFile<'_>) -> Result<Vec<usize>, Refusal> {
-    let mut files = Vec::new();
-    for (index, entry) in zip.entries().iter().enumerate() {
-        if entry.is_directory() || !entry.name.contains(DATA) {
-            continue;
-        }
-        jdk_zip::read_whole(zip, entry)?;
-        files.push(index);
-    }
-    Ok(files)
+/// directory, each read ahead.
+fn data_files(archive: &Archive<'_>) -> Result<Vec<Checked>, Refusal> {
+    archive
+        .zip()
+        .entries()
+        .iter()
+        .filter(|entry| !entry.is_directory() && entry.name.contains(DATA))
+        .map(|entry| archive.check(entry))
+        .collect()
 }
 
 /// The wire type of a varint.
@@ -466,29 +582,64 @@ impl Parser for IworkArchiveParser {
         &TYPES
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let extraction = extract(input).map_err(|why| Decline::Deferred(why.to_owned()))?;
-        Ok(Box::new(move |xhtml| {
-            for paragraph in &extraction.paragraphs {
-                xhtml.element("p", paragraph)?;
+        let archive = match Archive::open(input, pages) {
+            Ok(archive) => archive,
+            Err(Refusal::Failed(reason)) => {
+                return Ok(Box::new(move |_| Err(Failure::Malformed(reason))))
             }
-            let (zip, files) = match extraction.end {
+            Err(refusal) => return Err(refusal.into()),
+        };
+        let plan = plan(&archive)?;
+        Ok(Box::new(move |xhtml| {
+            let indexes = plan
+                .indexes
+                .iter()
+                .map(|index| archive.read(index))
+                .collect::<Result<Vec<_>, _>>()?;
+            let data: Vec<&Input<'_>> = indexes.iter().collect();
+            let mut budget = plan.budget;
+            for (_, source) in &plan.archives {
+                archive_text(&archive, &data, source, &mut budget, &mut |paragraph| {
+                    xhtml.element("p", paragraph)
+                })
+                .map_err(|halt| match halt {
+                    Halt::Refused(refusal) => Failure::from(refusal),
+                    Halt::Written(stop) => Failure::from(stop),
+                })?;
+            }
+            drop(data);
+            drop(indexes);
+            let files = match plan.end {
                 End::Failed(reason) => return Err(Failure::Malformed(reason)),
-                End::Embedded { zip, files } => (zip, files),
+                End::Embedded(files) => files,
             };
-            for entry in files.into_iter().map(|index| &zip.entries()[index]) {
+            for file in &files {
+                let entry = file.entry();
                 let mut metadata = TikaMetadata::new();
                 metadata.set(embedded::RESOURCE_NAME, file_name(&entry.name));
                 metadata.set(embedded::RELATIONSHIP_ID, entry.name.as_str());
-                let data = jdk_zip::read_whole(&zip, entry).map_err(|_| {
-                    Failure::Malformed(format!("{} cannot be read again", entry.name))
-                })?;
-                xhtml.parse_embedded(&data, &metadata, Wrapping::PackageEntry)?;
+                let data = archive.read(file)?;
+                xhtml.parse_embedded_input(&data, &metadata, Wrapping::PackageEntry)?;
             }
             Ok(())
         }))
@@ -634,7 +785,67 @@ mod tests {
             &mut Budget(MAX_DECOMPRESSED_BYTES),
         )
         .unwrap();
-        assert_eq!(text(&stream).unwrap(), ["Kept"]);
+        let mut paragraphs = Vec::new();
+        let read = text(&stream, &mut |paragraph: &str| {
+            paragraphs.push(paragraph.to_owned());
+            Ok::<_, Infallible>(())
+        });
+        assert!(read.is_ok());
+        assert_eq!(paragraphs, ["Kept"]);
+    }
+
+    /// A package too large to read whole, a `Data` file stored in it past what is read whole and
+    /// one deflated past what a spool holds in memory, after the document's archive: the archive
+    /// is read twice, an archive at a time, and each file spooled as it is handed on, under a
+    /// budget far below them.
+    #[test]
+    fn reads_a_package_too_large_to_read_whole_a_file_at_a_time() {
+        use extractous_core::large::{Binary, LargeFile, SPOOLING_BUDGET};
+        use zip::CompressionMethod::{Deflated, Stored};
+
+        use crate::formats::large::{bytes, zip_archive, END, LARGE};
+        use crate::input::MAX_READ_WHOLE;
+
+        let document = archive(&[record(
+            2001,
+            &[varint_field(1, 1), bytes_field(3, END.as_bytes())].concat(),
+        )]);
+        let file = LargeFile::written("large.pages", |out| {
+            zip_archive(
+                out,
+                vec![
+                    (
+                        "Metadata/BuildVersionHistory.plist",
+                        Stored,
+                        bytes(b"<plist version=\"1.0\"><array/></plist>"),
+                    ),
+                    ("Index/Document.iwa", Deflated, bytes(&document)),
+                    (
+                        "Data/stored.bin",
+                        Stored,
+                        Box::new(|out| {
+                            std::io::copy(&mut Binary::new(MAX_READ_WHOLE + (8 << 20)), out)
+                                .map(drop)
+                        }),
+                    ),
+                    (
+                        "Data/deflated.bin",
+                        Deflated,
+                        Box::new(|out| std::io::copy(&mut Binary::new(LARGE), out).map(drop)),
+                    ),
+                ],
+            )
+        });
+        assert!(std::fs::metadata(file.path()).unwrap().len() > MAX_READ_WHOLE);
+        let (text, _) = file.extract_with(
+            &crate::Extractor::new(),
+            SPOOLING_BUDGET,
+            IworkArchiveParser.name(),
+        );
+        assert!(text.contains(END), "{text}");
+        for name in ["stored.bin", "deflated.bin"] {
+            assert!(text.contains(name), "{text}");
+        }
     }
 
     #[cfg(feature = "tika")]
