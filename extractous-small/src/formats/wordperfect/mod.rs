@@ -16,7 +16,8 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::java;
 
 /// `WPPrefixArea.WP5_MAJOR_VERSION`.
@@ -30,6 +31,9 @@ const CHUNK: usize = 4096;
 struct Stream<'a> {
     data: &'a [u8],
     at: usize,
+    /// The pages of `data`, released as it is read on, and where it was last counted read.
+    paging: Paging<'a>,
+    counted: usize,
 }
 
 /// The `EOFException` `WPInputStream` throws where the input ends.
@@ -54,7 +58,23 @@ impl From<EndOfFile> for Decline<'_> {
 
 impl<'a> Stream<'a> {
     fn new(data: &'a [u8]) -> Self {
-        Self { data, at: 0 }
+        Self::paged(data, Pages::IN_MEMORY)
+    }
+
+    /// The stream of `data`, whose `pages` it releases as it reads on.
+    fn paged(data: &'a [u8], pages: Pages<'a>) -> Self {
+        Self {
+            data,
+            at: 0,
+            paging: Paging::new(pages),
+            counted: 0,
+        }
+    }
+
+    /// Counts what was read since it was last counted.
+    fn count_read(&mut self) {
+        self.paging.read(self.at - self.counted);
+        self.counted = self.at;
     }
 
     /// `read`: the next byte, if any.
@@ -97,10 +117,12 @@ impl<'a> Stream<'a> {
 
     /// `skipUntilChar`: past the next `target`, or to the end.
     fn skip_until(&mut self, target: u8) {
-        match self.data[self.at..].iter().position(|&byte| byte == target) {
+        self.count_read();
+        match self.paging.find(&self.data[self.at..], &[target]) {
             Some(offset) => self.at += offset + 1,
             None => self.at = self.data.len(),
         }
+        self.counted = self.at;
     }
 
     /// `readWPString`: `length` bytes as characters.
@@ -188,9 +210,23 @@ impl Parser for WordPerfectParser {
         ]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -220,7 +256,7 @@ impl Parser for WordPerfectParser {
                 out: String::with_capacity(CHUNK),
                 out_units: 0,
             }
-            .extract(Stream::new(area), version)
+            .extract(Stream::paged(area, pages), version)
         }))
     }
 }
@@ -254,6 +290,7 @@ impl DocumentArea<'_, '_> {
                 Version::Five => self.wp5(c, &mut stream)?,
                 Version::Six => self.wp6(c, &mut stream)?,
             }
+            stream.count_read();
             if self.out_units >= CHUNK {
                 self.flush()?;
             }
