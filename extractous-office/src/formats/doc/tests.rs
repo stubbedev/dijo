@@ -159,9 +159,16 @@ fn without_textboxes() -> ParserConfigs {
 
 #[cfg(feature = "tika")]
 /// Compares `documents` with Tika's path, those with anchored text boxes without the text
-/// boxes, and checks that `textboxes` of them have such text boxes.
+/// boxes, those with paragraphs past every paragraph run but for their tags (#185), and checks
+/// that `textboxes` of them have such text boxes.
 fn assert_same_as_tika(documents: &[PathBuf], textboxes: usize) {
-    let anchored = with_anchored_textboxes(documents);
+    let (past_runs, documents): (Vec<PathBuf>, Vec<PathBuf>) = documents
+        .iter()
+        .cloned()
+        .partition(|document| has_paragraphs_past_runs(document));
+    let past_runs: Vec<&Path> = past_runs.iter().map(PathBuf::as_path).collect();
+    parity::assert_same_as_tika_departing(&past_runs, TIKA_PARSER, PARAGRAPHS_PAST_RUNS);
+    let anchored = with_anchored_textboxes(&documents);
     assert_eq!(anchored.len(), textboxes, "{anchored:?}");
     let others: Vec<PathBuf> = documents
         .iter()
@@ -277,8 +284,15 @@ fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
 }
 
 /// A Word 97 document whose text is `text` in code page 1252, of one piece, one character run
-/// and one paragraph run, with no styles and no fonts.
+/// and one paragraph run of style 0 over all of it, with no styles and no fonts.
 fn word97(text: &[u8]) -> Vec<u8> {
+    word97_with_paragraph_run(text, text.len(), 0)
+}
+
+/// A Word 97 document whose text is `text` in code page 1252, of one piece, one character run
+/// over all of it and one paragraph run of the style `istd` over its first `run` bytes, with no
+/// styles and no fonts.
+fn word97_with_paragraph_run(text: &[u8], run: usize, istd: u8) -> Vec<u8> {
     use crate::ole2::{write, Node, Storage};
     const TEXT_AT: usize = 1024;
     let put = |bytes: &mut Vec<u8>, at: usize, value: i32| {
@@ -306,13 +320,14 @@ fn word97(text: &[u8]) -> Vec<u8> {
     let character_page = main.len();
     main.resize(character_page + 1024, 0);
     let paragraph_page = character_page + 512;
-    for page in [character_page, paragraph_page] {
+    for (page, end) in [(character_page, length), (paragraph_page, run as i32)] {
         put(&mut main, page, TEXT_AT as i32);
-        put(&mut main, page + 4, TEXT_AT as i32 + length);
+        put(&mut main, page + 4, TEXT_AT as i32 + end);
         main[page + 511] = 1;
     }
     main[paragraph_page + 8] = 0x40;
     main[paragraph_page + 0x81] = 1;
+    main[paragraph_page + 0x82] = istd;
 
     let mut table = vec![0; 568];
     table[500..506].copy_from_slice(&[4, 0, 0, 0, 10, 0]);
@@ -416,4 +431,32 @@ fn extracts_a_million_short_paragraphs_in_bounded_memory() {
     });
     assert_eq!(short, SHORT);
     assert!(last_seen);
+}
+
+/// A paragraph whose mark lies past every paragraph run has no properties, as Word lays it
+/// out, where POI's `PAPBinTable.rebuild` gives it the last run's again (#185).
+#[test]
+fn gives_paragraphs_past_every_run_no_properties() {
+    let text = b"F\xf8rste afsnit\rAndet afsnit\rTredje afsnit\r";
+    let first = text.iter().position(|&byte| byte == b'\r').unwrap() + 1;
+    let input = word97_with_paragraph_run(text, first, 1);
+    let configs = ParserConfigs::default();
+    let file = office::open(&input, &configs, MEDIA_TYPE, "Word document").unwrap();
+    let Ok(Word::Modern(streams)) = Word::read(&file, file.root(), &configs) else {
+        panic!("a Word 97 document");
+    };
+    let paragraphs = streams.document().unwrap().paragraphs;
+    assert_eq!(paragraphs.len(), 3);
+    assert_eq!(paragraphs.past_runs, Some(1));
+    let styles: Vec<i16> = (0..3)
+        .map(|index| paragraphs.istd(index).unwrap())
+        .collect();
+    assert_eq!(styles, [1, 0, 0]);
+    for index in [1, 2] {
+        assert_eq!(
+            paragraphs.sprms(index),
+            Some(&bins::SprmBuffer::empty(2)),
+            "{index}"
+        );
+    }
 }

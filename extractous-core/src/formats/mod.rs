@@ -1428,6 +1428,11 @@ mod tests {
                 if parser.media_types() == ppt::PptParser.media_types() {
                     departures.extend_from_slice(ppt::DEPARTURES);
                 }
+                if parser.media_types() == doc::DocParser.media_types()
+                    && doc::has_paragraphs_past_runs(&path)
+                {
+                    departures.extend_from_slice(doc::PARAGRAPHS_PAST_RUNS);
+                }
                 if parser.media_types() == protected::ProtectedParser.media_types() {
                     departures.extend_from_slice(protected::DEPARTURES);
                 }
