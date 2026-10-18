@@ -72,7 +72,7 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Deferral, Failure, Footprint, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
 use crate::mime::MediaType;
 
@@ -119,7 +119,7 @@ impl Parser for TextAndCsvParser {
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        prepare(input, pages, metadata).map_err(Decline::Deferred)
+        prepare(input, pages, metadata)
     }
 }
 
@@ -129,25 +129,23 @@ pub(crate) fn prepare<'a>(
     input: &'a [u8],
     pages: Pages<'a>,
     metadata: &TikaMetadata,
-) -> Result<Prepared<'a>, Deferral> {
-    if let Some(reason) = AutoDetectReader::defers(input) {
-        return Err(reason.to_owned());
-    }
+) -> Result<Prepared<'a>, Decline<'a>> {
     let content_type = metadata.get("Content-Type").map(str::to_owned);
-    Ok(Box::new(move |xhtml| {
-        write(input, pages, content_type.as_deref(), Sniff::Table, xhtml)
-    }))
+    let difference = AutoDetectReader::difference(input, content_type.as_deref());
+    unless_different(
+        Box::new(move |xhtml| write(input, pages, content_type.as_deref(), Sniff::Table, xhtml)),
+        difference,
+    )
 }
 
 /// What [`prepare`] prepares of a `text/plain` part of an email: plain text, never a table.
 /// Tika sniffs such a part for a table, and makes it `text/csv` when it looks like one (#82).
-pub fn prepare_plain(input: Vec<u8>) -> Result<Prepared<'static>, Deferral> {
-    if let Some(reason) = AutoDetectReader::defers(&input) {
-        return Err(reason.to_owned());
-    }
-    Ok(Box::new(move |xhtml| {
-        write(&input, Pages::IN_MEMORY, None, Sniff::Never, xhtml)
-    }))
+pub fn prepare_plain(input: Vec<u8>) -> Result<Prepared<'static>, Decline<'static>> {
+    let difference = AutoDetectReader::difference(&input, None);
+    unless_different(
+        Box::new(move |xhtml| write(&input, Pages::IN_MEMORY, None, Sniff::Never, xhtml)),
+        difference,
+    )
 }
 
 /// Whether text without a content type, or of a type a table may be, is sniffed for a table.
@@ -182,7 +180,7 @@ fn write(
             })
         })
         .transpose()?;
-    let (detection, mut text) = AutoDetectReader::stream(input, content_type, pages)?;
+    let (detection, mut text) = AutoDetectReader::stream(input, content_type, pages);
     let sniffable = |given: &MediaType| {
         [text_type("csv"), text_type("tsv"), text_type("plain")].contains(&given.base_type())
     };
@@ -294,6 +292,7 @@ mod tests {
     use super::*;
     #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
+    use crate::formats::{noted, Difference};
 
     #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.csv.TextAndCSVParser";
@@ -327,18 +326,26 @@ mod tests {
     }
 
     #[test]
-    fn defers_charsets_it_cannot_decode() {
-        let reason = |input: &[u8]| {
-            TextAndCsvParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
+    fn reads_every_charset_natively() {
+        let reading = |input: &[u8]| {
+            let metadata = TikaMetadata::new();
+            let configs = ParserConfigs::default();
+            let prepared = noted(TextAndCsvParser.prepare(input, &metadata, &configs));
+            match prepared {
+                Ok((_, difference)) => difference.map(|Difference(reason)| reason),
+                Err(decline) => panic!("{input:?} is declined: {decline}"),
+            }
         };
-        assert_eq!(reason(b"plain text, nothing declared"), None);
-        assert_eq!(reason(b"<meta charset=\"utf-8\"> text"), None);
-        assert!(reason(b"<meta charset=\"x-IBM930\"> text").is_some());
-        assert!(reason(b"\x1b$)C\x0e\x21\x21\x0f korean").is_some());
+        assert_eq!(reading(b"plain text, nothing declared"), None);
+        assert_eq!(reading(b"<meta charset=\"utf-8\"> text"), None);
+        assert_eq!(reading(b"\x1b$)C\x0e\x21\x21\x0f korean"), None);
+        assert_eq!(reading(b"\x1b$)A\x0e\x30\x21\x0f chinese"), None);
         assert_eq!(
-            reason(b"\x1b$B$3$s$K$A$O\x1b(B world, \x1b$B@$3&\x1b(B"),
+            reading(b"\x1b$B$3$s$K$A$O\x1b(B world, \x1b$B@$3&\x1b(B"),
             None
         );
+        assert!(reading(b"<meta charset=\"x-IBM930\"> text")
+            .is_some_and(|reason| reason.contains("x-IBM930")));
     }
 
     #[test]

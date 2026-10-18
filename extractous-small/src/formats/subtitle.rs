@@ -9,7 +9,7 @@ use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, lines, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Failure, Parser, Prepared};
 use crate::java::is_blank;
 use crate::java::strip;
 use crate::mime::MediaType;
@@ -34,13 +34,13 @@ impl Parser for SubtitleParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        if let Some(reason) = AutoDetectReader::defers(input) {
-            return Err(Decline::Deferred(reason.to_owned()));
-        }
-        Ok(Box::new(move |xhtml| write(input, xhtml)))
+        unless_different(
+            Box::new(move |xhtml| write(input, xhtml)),
+            AutoDetectReader::difference(input, metadata.get("Content-Type")),
+        )
     }
 }
 
@@ -53,7 +53,7 @@ fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
         .to_owned();
     let substation = MediaType::parse(&content_type)
         .is_some_and(|media_type| media_type.base_type() == MediaType::named("text/x-ssa"));
-    let reader = AutoDetectReader::read(input, Some(&content_type))?;
+    let reader = AutoDetectReader::read(input, Some(&content_type));
     let metadata = xhtml.metadata_mut();
     auto_detect_reader::set_metadata(&reader.detection, metadata);
     metadata.set("Content-Encoding", reader.detection.decode_as.name());

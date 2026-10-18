@@ -170,23 +170,57 @@ fn java_two_decimals(confidence: f32) -> String {
 
 /// Detects the charset of text in `input`, as Tika does when told its content type.
 pub fn detect(input: &[u8], content_type: Option<&str>) -> Detection {
-    detect_declared(input, content_type, None)
+    detect_declared(input, content_type, None, Declarations::All)
+}
+
+/// Detects the charset of text in `input` as [`detect`] does, but passing over a declaration
+/// [`undecodable_declaration`] finds, which Tika's detection weighs and may decode with: a
+/// detection whose charset the port always decodes.
+pub fn detect_decodable(input: &[u8], content_type: Option<&str>) -> Detection {
+    detect_declared(input, content_type, None, Declarations::Decodable)
 }
 
 /// Detects the charset of text in `input` as Tika does without a content type but with a
 /// content-type hint (`tk:content-type-hint`), a source's claim about the bytes, whose charset
 /// `MetadataCharsetDetector` declares.
 pub fn detect_hinted(input: &[u8], hint: &str) -> Detection {
-    detect_declared(input, None, Some(hint))
+    detect_declared(input, None, Some(hint), Declarations::All)
+}
+
+/// The declarations of an HTML page and a content type a detection weighs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Declarations {
+    All,
+    /// Only those naming a charset the port decodes.
+    Decodable,
+}
+
+impl Declarations {
+    fn keeps(self, charset: Charset) -> bool {
+        match self {
+            Declarations::All => true,
+            Declarations::Decodable => decodes(charset),
+        }
+    }
+}
+
+/// Whether the port decodes text detected as `charset`, with its vendor superset.
+fn decodes(charset: Charset) -> bool {
+    mojibuster::superset(charset).decodes()
 }
 
 /// The detection, `MetadataCharsetDetector` declaring the charset of the content type, else of
 /// the hint.
-fn detect_declared(input: &[u8], content_type: Option<&str>, hint: Option<&str>) -> Detection {
+fn detect_declared(
+    input: &[u8],
+    content_type: Option<&str>,
+    hint: Option<&str>,
+    declarations: Declarations,
+) -> Detection {
     let declared = |charset| vec![Candidate::new(charset, 1.0, Kind::Declarative)];
     let probe = probe::probe(input, probe::CONTENT_TARGET, probe::RAW_CAP);
     let mut reports = Vec::with_capacity(4);
-    if let Some(charset) = html::detect(input) {
+    if let Some(charset) = html::detect(input).filter(|&charset| declarations.keeps(charset)) {
         reports.push(Report {
             detector: Detector::Html,
             candidates: declared(charset),
@@ -204,7 +238,8 @@ fn detect_declared(input: &[u8], content_type: Option<&str>, hint: Option<&str>)
     }
     let metadata_charset = content_type
         .and_then(content_type_charset)
-        .or_else(|| hint.and_then(content_type_charset));
+        .or_else(|| hint.and_then(content_type_charset))
+        .filter(|&charset| declarations.keeps(charset));
     if let Some(charset) = metadata_charset {
         reports.push(Report {
             detector: Detector::ContentType,
@@ -247,23 +282,17 @@ fn detect_declared(input: &[u8], content_type: Option<&str>, hint: Option<&str>)
     }
 }
 
-/// A charset that a detector may report for `input` and that this port does not decode, which
-/// leaves what Tika makes of the input unknown: one an HTML declaration names, or an ISO-2022
-/// charset other than ISO-2022-JP that a 7-bit input's escapes designate. Every charset the
-/// statistical models name decodes.
-pub fn undecodable(input: &[u8]) -> Option<Charset> {
-    let declared = html::detect(input);
-    let probe = probe::probe(input, probe::CONTENT_TARGET, probe::RAW_CAP);
-    let seven_bit = probe.iter().all(|&b| b != 0 && b < 0x80);
-    let designated = seven_bit
-        .then(|| structural::iso2022(probe))
-        .flatten()
-        .map(Charset::named);
-    [declared, designated]
-        .into_iter()
-        .flatten()
-        .map(mojibuster::superset)
-        .find(|charset| charset.decode(b"").is_none())
+/// A charset that an HTML declaration in `input` or `content_type` names and that the port
+/// does not decode, such as an IBM EBCDIC double-byte one, which leaves what Tika makes of the
+/// input unknown. Every charset the other detectors name decodes.
+pub fn undecodable_declaration(input: &[u8], content_type: Option<&str>) -> Option<Charset> {
+    [
+        html::detect(input),
+        content_type.and_then(content_type_charset),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|&charset| !decodes(charset))
 }
 
 /// The Unicode charset a byte order mark starts the input with.
@@ -348,6 +377,27 @@ pub mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn passes_over_declarations_it_does_not_decode() {
+        let page = b"<meta charset=\"x-IBM930\"> plain text";
+        assert_eq!(detect(page, None).charset.name(), "x-IBM930");
+        assert_eq!(
+            undecodable_declaration(page, None).map(Charset::name),
+            Some("x-IBM930")
+        );
+        assert!(detect_decodable(page, None).decode_as.decodes());
+        let text = b"plain text";
+        let declared = Some("text/plain; charset=x-IBM933");
+        assert_eq!(
+            undecodable_declaration(text, declared).map(Charset::name),
+            Some("x-IBM933")
+        );
+        assert!(detect_decodable(text, declared).decode_as.decodes());
+        let korean = b"\x1b$)C\x0e\x30\x21\x0f plain text";
+        assert_eq!(undecodable_declaration(korean, None), None);
+        assert_eq!(detect_decodable(korean, None), detect(korean, None));
     }
 
     #[test]

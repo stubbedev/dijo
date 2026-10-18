@@ -17,7 +17,7 @@ use crate::formats::embedded::RESOURCE_NAME;
 use crate::formats::html::{ParsedDocument, ParsedNode};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Failure, Parser, Prepared};
 use crate::java;
 use crate::mime::MediaType;
 
@@ -61,11 +61,8 @@ impl Parser for SourceCodeParser {
         metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        if let Some(reason) = AutoDetectReader::defers(input) {
-            return Err(Decline::Deferred(reason.to_owned()));
-        }
-        let reader = AutoDetectReader::read(input, metadata.get("Content-Type"))
-            .map_err(|_| Decline::Deferred("the text cannot be decoded natively".to_owned()))?;
+        let difference = AutoDetectReader::difference(input, metadata.get("Content-Type"));
+        let reader = AutoDetectReader::read(input, metadata.get("Content-Type"));
         let name = metadata.get(RESOURCE_NAME).unwrap_or_default().to_owned();
         let unicode = reader.detection.decode_as.name().starts_with("UTF-");
         if !unicode && name.chars().any(|c| !c.is_ascii() && !is_entity(c)) {
@@ -75,7 +72,7 @@ impl Parser for SourceCodeParser {
                     .to_owned(),
             ));
         }
-        Ok(Box::new(move |xhtml| {
+        let reading: Prepared<'a> = Box::new(move |xhtml| {
             let content_type = xhtml
                 .metadata_mut()
                 .get("Content-Type")
@@ -116,7 +113,8 @@ impl Parser for SourceCodeParser {
             let walked = walk(&document, document.root(), xhtml, &mut true);
             xhtml.end_document()?;
             walked
-        }))
+        });
+        unless_different(reading, difference)
     }
 }
 
