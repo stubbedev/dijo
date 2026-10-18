@@ -1,6 +1,6 @@
 //! Jackcess's `PageChannel` over a database read whole: pages by number, the first unmasked,
-//! the others decoded by the codec of `jackcess-encrypt`'s `CryptCodecProvider`: the Jet codec, or
-//! Office encryption.
+//! the others decoded by the codec of `jackcess-encrypt`'s `CryptCodecProvider`: the Jet codec,
+//! Office encryption, or MSISAM's.
 
 use std::borrow::Cow;
 
@@ -9,6 +9,7 @@ use rc4::{KeyInit, Rc4, StreamCipher};
 use super::buffer::Thrown;
 use super::crypt::Decryption;
 use super::format::{Charset, CodecType, Encoding, Format};
+use super::msisam::Msisam;
 use crate::formats::Difference;
 
 pub(super) const PAGE_TYPE_DATA: u8 = 0x01;
@@ -35,6 +36,8 @@ enum Codec {
     Jet([u8; ENCODING_KEY_LENGTH]),
     /// Office encryption, opened with the password.
     Office(Box<Decryption>),
+    /// MSISAM's RC4 of the first pages.
+    Msisam(Msisam),
 }
 
 impl<'a> Pages<'a> {
@@ -58,22 +61,19 @@ impl<'a> Pages<'a> {
                     .try_into()
                     .expect("two bytes"),
             );
-            pages.charset = Charset::of_code_page(code_page).ok_or_else(|| {
-                Thrown::unported(format!(
-                    "a Jet 3 database in code page {code_page}, a charset the port does not have"
-                ))
-            })?;
+            pages.charset =
+                Charset::of_code_page(code_page).unwrap_or_else(Charset::jackcess_default);
         }
         let start = format.offset_encoding_key;
         let key: [u8; ENCODING_KEY_LENGTH] = root[start..start + ENCODING_KEY_LENGTH]
             .try_into()
             .expect("four bytes");
-        if key == [0; ENCODING_KEY_LENGTH] {
-            return Ok(pages);
-        }
+        let blank = key == [0; ENCODING_KEY_LENGTH];
         pages.codec = match format.codec {
+            CodecType::Jet | CodecType::Office if blank => Codec::None,
             CodecType::Jet => Codec::Jet(key),
             CodecType::Office => Codec::Office(Box::new(Decryption::open(&root, key, password)?)),
+            CodecType::Msisam => Codec::Msisam(Msisam::open(&root, password)?),
         };
         Ok(pages)
     }
@@ -82,7 +82,7 @@ impl<'a> Pages<'a> {
     pub(super) fn refused(&self) -> Option<Difference> {
         match &self.codec {
             Codec::Office(decryption) => decryption.refused.clone(),
-            Codec::None | Codec::Jet(_) => None,
+            Codec::None | Codec::Jet(_) | Codec::Msisam(_) => None,
         }
     }
 
@@ -136,6 +136,12 @@ impl<'a> Pages<'a> {
                 Ok(Cow::Owned(decoded))
             }
             Codec::Office(decryption) => decryption.decrypt(number, page).map(Cow::Owned),
+            Codec::Msisam(_) if !Msisam::encodes(number) => Ok(Cow::Borrowed(page)),
+            Codec::Msisam(msisam) => {
+                let mut decoded = page.to_vec();
+                msisam.decode(number, &mut decoded);
+                Ok(Cow::Owned(decoded))
+            }
         }
     }
 }

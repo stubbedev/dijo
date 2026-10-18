@@ -8,7 +8,8 @@
 //! password given, and fails as encrypted without the right one. A damaged database fails as
 //! Tika's path fails on it, rethrown as `JackcessParser` rethrows what Jackcess throws; where
 //! Jackcess throws reading pages past the first, the failure is a reading that may differ from
-//! Tika's. The port leaves to Tika an MSISAM database.
+//! Tika's. An MSISAM (Microsoft Money) database is read as Jackcess reads it, its pages
+//! decoded as `jackcess-encrypt` decodes them.
 //!
 //! Where Tika is wrong, the port departs from it (#122): it keeps the database password out of
 //! the metadata, decodes Jet 3 text in the database's code page, writes every table with each
@@ -22,6 +23,7 @@ mod column;
 mod crypt;
 mod database;
 mod format;
+mod msisam;
 mod ole;
 mod pages;
 mod properties;

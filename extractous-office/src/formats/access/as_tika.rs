@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use super::column::Decimal;
-use super::format::{self, Detected};
+use super::format;
 use crate::formats::parity::{ComparedMetadata, NativeRewrite, Normalisation};
 
 /// The rewrite of the native result of the database at `path` as Tika's path decodes it, and
@@ -26,7 +26,7 @@ pub(super) fn is_jet3(path: &Path) -> bool {
         std::fs::read(path).unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
     matches!(
         format::detect(&database),
-        Ok(Detected::Format(format)) if format.encoding == format::Encoding::CodePage
+        Ok(format) if format.encoding == format::Encoding::CodePage
     )
 }
 

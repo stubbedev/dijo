@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use super::format;
 #[cfg(feature = "tika")]
-use super::format::Detected;
 #[cfg(feature = "tika")]
 use super::pages::rc4;
 use super::*;
@@ -135,7 +134,7 @@ type PageKey = Box<dyn Fn(&[u8]) -> Vec<u8>>;
 fn encrypted(mut file: Vec<u8>, provider: Provider, password: &str) -> Vec<u8> {
     use aes::cipher::{BlockCipherEncrypt, KeyInit};
     use rc4::{Rc4, StreamCipher};
-    let Ok(format::Detected::Format(format)) = format::detect(&file) else {
+    let Ok(format) = format::detect(&file) else {
         panic!("an ACE database");
     };
     let encoding_key = [0x5A, 0x17, 0xC3, 0x08];
@@ -384,7 +383,7 @@ fn spools_embedded_objects_as_tikas_path_does() {
 /// after the first RC4 under the key XORed with the page's number.
 #[cfg(feature = "tika")]
 fn encoded(mut file: Vec<u8>, key: [u8; 4]) -> Vec<u8> {
-    let Ok(Detected::Format(format)) = format::detect(&file) else {
+    let Ok(format) = format::detect(&file) else {
         panic!("a Jet database");
     };
     for (number, page) in file.chunks_mut(format.page_size).enumerate().skip(1) {
@@ -429,7 +428,7 @@ const JET4_HEADER_DATE: usize = 114;
 /// A Jet 4 database given the database password `password`, masked as Access masks it: by the
 /// header mask and by the integer part of the database's creation date.
 fn with_password(mut file: Vec<u8>, password: &str) -> Vec<u8> {
-    let Ok(format::Detected::Format(format)) = format::detect(&file) else {
+    let Ok(format) = format::detect(&file) else {
         panic!("a Jet database");
     };
     let mask = |at: usize| format.header_mask[at - format.offset_masked_header];
@@ -599,7 +598,7 @@ fn reads_jet3_text_in_the_code_page_of_the_database() {
     assert!(xml.contains("[Træerø].[col2]"), "{xml}");
 
     let mut header = original;
-    let Ok(format::Detected::Format(format)) = format::detect(&header) else {
+    let Ok(format) = format::detect(&header) else {
         panic!("a Jet database");
     };
     let at = JET3_CODE_PAGE;
@@ -616,6 +615,28 @@ fn reads_jet3_text_in_the_code_page_of_the_database() {
         .extract_file_to_string(cyrillic.to_str().unwrap())
         .unwrap();
     assert!(xml.contains("<table name=\"Таблиц\">"), "{xml}");
+}
+
+/// A Jet 3 database in a code page the port has no charset of is decoded as Jackcess decodes
+/// every Jet 3 database, in the JVM's default charset, UTF-8.
+#[test]
+fn reads_jet3_text_of_an_unknown_code_page_as_jackcess_does() {
+    let scratch = Scratch::new("access-jet3-unknown-code-page");
+    let mut header = fixture("jet3-queries.mdb");
+    let Ok(format) = format::detect(&header) else {
+        panic!("a Jet database");
+    };
+    let at = JET3_CODE_PAGE;
+    let mask = &format.header_mask[at - format.offset_masked_header..];
+    for (i, byte) in 9u16.to_le_bytes().into_iter().enumerate() {
+        header[at + i] = byte ^ mask[i];
+    }
+    let unknown = scratch.write("unknown.mdb", &replaced(header, b"Table2", b"T\xc3\xa6ble"));
+    let (xml, _) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_file_to_string(unknown.to_str().unwrap())
+        .unwrap();
+    assert!(xml.contains("<table name=\"Tæble\">"), "{xml}");
 }
 
 #[cfg(feature = "tika")]

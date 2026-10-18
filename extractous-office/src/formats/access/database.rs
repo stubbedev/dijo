@@ -14,7 +14,7 @@ use super::buffer::{
     Context as ErrorContext, Thrown, CLASS_CAST, ILLEGAL_ARGUMENT, INDEX_OUT_OF_BOUNDS,
 };
 use super::column::{Column, Complex, DataType, Value};
-use super::format::{self, Detected};
+use super::format;
 use super::pages::Pages;
 use super::properties::PropertyMaps;
 use super::table::{Context, IndexMatch, Row, Table};
@@ -138,10 +138,7 @@ impl<'a> Database<'a> {
     /// The pages of `file`, as `DatabaseImpl.open` opens it read-only with a `CryptCodecProvider`
     /// of `password`: its format, and the codec of its pages.
     pub(super) fn pages(file: &'a [u8], password: &str) -> Result<Pages<'a>, Thrown> {
-        match format::detect(file)? {
-            Detected::Format(format) => Pages::open(file, format, password),
-            Detected::Msisam => Err(Thrown::unported("an MSISAM (Microsoft Money) database")),
-        }
+        Pages::open(file, format::detect(file)?, password)
     }
 
     /// The rest of `DatabaseImpl.open`: the system catalog of the database of `pages`.
