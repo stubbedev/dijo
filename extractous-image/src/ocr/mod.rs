@@ -21,6 +21,7 @@ mod script;
 mod tesseract;
 mod text;
 
+use std::fmt;
 use std::sync::OnceLock;
 
 use crate::bundle;
@@ -108,43 +109,103 @@ pub fn tesseract_version() -> ExtractResult<String> {
 /// and Tika's path both run.
 #[cfg(feature = "static")]
 fn linked_or_bundled_version() -> Result<String, String> {
-    tesseract().map(|tesseract| bundle::linked_version(&tesseract.version()))
+    tesseract()
+        .map(|tesseract| bundle::linked_version(&tesseract.version()))
+        .map_err(|none| none.to_string())
 }
 
 #[cfg(not(feature = "static"))]
 use bundle::tesseract_version as linked_or_bundled_version;
 
-/// Whether tesseract runs, found once per process as `TikaNativeMain` finds it once: the bundled
-/// one, or one on `PATH` that answers `--version`. With one, Tika reads images and PDF pages with
-/// our OCR parsers.
+/// Whether tesseract runs, found once per process as `TikaNativeMain` finds it once: the one the
+/// build carries, whether or not it can be set up, so that a reading fails with why it cannot
+/// rather than reading nothing, or else one on `PATH` that answers `--version`. With one, Tika
+/// reads images and PDF pages with our OCR parsers.
 pub fn tesseract_runs() -> bool {
     static RUNS: OnceLock<bool> = OnceLock::new();
-    *RUNS.get_or_init(|| tesseract_version().is_ok())
+    *RUNS.get_or_init(|| bundle::carries_tesseract() || tesseract_version().is_ok())
+}
+
+/// Why native readings have no tesseract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoTesseract {
+    /// The tesseract the build carries cannot be set up: OCR is configured, and every reading
+    /// fails with this.
+    Broken(OcrError),
+    /// The library of the `tesseract` on the `PATH` cannot be loaded, for this reason, where
+    /// Tika's path runs the program.
+    Unloadable(String),
+}
+
+impl fmt::Display for NoTesseract {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Broken(error) => write!(f, "{error}"),
+            Self::Unloadable(reason) => f.write_str(reason),
+        }
+    }
+}
+
+/// The tesseract readings run with: the one set up, or the error every reading fails with when
+/// the one the build carries cannot be set up.
+pub type Reader = Result<&'static Tesseract, OcrError>;
+
+/// The tesseract readings run with, or why only Tika's path reads: it runs the `tesseract` on the
+/// `PATH` whose library this process cannot load.
+pub fn reader() -> Result<Reader, String> {
+    match tesseract() {
+        Ok(tesseract) => Ok(Ok(tesseract)),
+        Err(NoTesseract::Broken(error)) => Ok(Err(error)),
+        Err(NoTesseract::Unloadable(reason)) => Err(reason),
+    }
 }
 
 /// The tesseract native readings run, set up once per process: the one linked into the static
 /// executable with the bundled language data, the bundled library with it, or the library of
 /// the `tesseract` on the `PATH`, which reads the language data that program reads. Why there is
-/// none otherwise, as for a bundled library built before it exported tesseract's C API.
-pub fn tesseract() -> Result<&'static Tesseract, String> {
-    static TESSERACT: OnceLock<Result<Tesseract, String>> = OnceLock::new();
+/// none otherwise, as for a bundled library that cannot be loaded.
+pub fn tesseract() -> Result<&'static Tesseract, NoTesseract> {
+    static TESSERACT: OnceLock<Result<Tesseract, NoTesseract>> = OnceLock::new();
     TESSERACT.get_or_init(set_up).as_ref().map_err(Clone::clone)
 }
 
+/// The tesseract the build carries could not be set up, for this reason.
+fn broken(reason: impl Into<String>) -> NoTesseract {
+    NoTesseract::Broken(OcrError::Unavailable {
+        reason: reason.into(),
+    })
+}
+
 #[cfg(feature = "static")]
-fn set_up() -> Result<Tesseract, String> {
-    let tessdata = bundle::bundled_tessdata()?
-        .ok_or("The static build links tesseract but bundled no language data")?;
-    Tesseract::linked(&tessdata)
+fn set_up() -> Result<Tesseract, NoTesseract> {
+    let tessdata = bundle::bundled_tessdata()
+        .map_err(broken)?
+        .ok_or_else(|| broken("The static build links tesseract but bundled no language data"))?;
+    Tesseract::linked(&tessdata).map_err(broken)
 }
 
 #[cfg(not(feature = "static"))]
-fn set_up() -> Result<Tesseract, String> {
-    if let Some(library) = bundle::bundled_tesseract_library()? {
-        let tessdata = bundle::bundled_tessdata()?
-            .ok_or("The build bundles a tesseract library but no language data")?;
-        return Tesseract::loaded(&library, Some(&tessdata));
+fn set_up() -> Result<Tesseract, NoTesseract> {
+    match bundle::bundled_tesseract_library().map_err(broken)? {
+        Some(library) => bundled(&library, bundle::bundled_tessdata().map_err(broken)?),
+        None => on_path().map_err(NoTesseract::Unloadable),
     }
+}
+
+/// The tesseract of the library the build bundled, with the language data it bundled.
+#[cfg(not(feature = "static"))]
+fn bundled(
+    library: &std::path::Path,
+    tessdata: Option<std::path::PathBuf>,
+) -> Result<Tesseract, NoTesseract> {
+    let tessdata = tessdata
+        .ok_or_else(|| broken("The build bundles a tesseract library but no language data"))?;
+    Tesseract::loaded(library, Some(&tessdata)).map_err(broken)
+}
+
+/// The library of the `tesseract` on the `PATH`, which reports the version the program does.
+#[cfg(not(feature = "static"))]
+fn on_path() -> Result<Tesseract, String> {
     let program = program_on_path().ok_or("no tesseract on the PATH")?;
     let program_version = bundle::tesseract_version()?;
     let mut failures = Vec::new();
@@ -226,6 +287,34 @@ mod tests {
     fn the_tesseract_ocr_runs_reports_its_version() {
         let version = tesseract_version().unwrap();
         assert!(version.starts_with("tesseract 5."), "{version}");
+    }
+
+    #[cfg(not(feature = "static"))]
+    #[test]
+    fn a_bundled_library_that_cannot_load_breaks_every_reading_with_the_loaders_message() {
+        let dir = std::env::temp_dir().join(format!(
+            "extractous-unloadable-tesseract-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let library = dir.join("libextractous_tesseract.so");
+        std::fs::write(&library, b"not a library").unwrap();
+        let loader = unsafe { libloading::Library::new(&library) }
+            .err()
+            .and_then(|e| std::error::Error::source(&e).map(ToString::to_string))
+            .unwrap();
+        let set_up = bundled(&library, Some(dir.clone()));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let Err(NoTesseract::Broken(error @ OcrError::Unavailable { .. })) = set_up else {
+            panic!("a library that cannot load set up a tesseract");
+        };
+        let message = error.to_string();
+        let attempt = format!(
+            "tesseract cannot run: Loading tesseract's library {} failed: ",
+            library.display()
+        );
+        assert!(message.starts_with(&attempt), "{message}");
+        assert!(message.ends_with(&loader), "{message} against {loader}");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::errors::Error;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Failure, Unported};
 use crate::ocr::{
-    self, Decoded, Format, ImageRead, OcrSettings, Orientation, ReadPages, Tesseract, Undecoded,
+    self, Decoded, Format, ImageRead, OcrSettings, Orientation, ReadPages, Undecoded,
 };
 
 use super::{extractor, MIN_PIXELS, PREPARING_OCR_PARSER};
@@ -35,14 +35,14 @@ pub(super) enum Enricher<'a> {
 /// What `PreparingOcrParser` reads images with in this process: tesseract, under an
 /// extraction's OCR settings.
 pub(crate) struct OcrReader {
-    tesseract: &'static Tesseract,
+    tesseract: ocr::Reader,
     settings: OcrSettings,
 }
 
 impl OcrReader {
     /// The reader under the OCR settings of `configs`, or why this process cannot read.
     pub(crate) fn of(configs: &ParserConfigs) -> Result<Self, Unported> {
-        let tesseract = ocr::tesseract().map_err(|reason| {
+        let tesseract = ocr::reader().map_err(|reason| {
             Unported::new(format!(
                 "OCR in this process, which needs tesseract's library: {reason}"
             ))
@@ -71,15 +71,20 @@ impl OcrReader {
             .auto()
             .then(|| context.assumed_ocr_script())
             .flatten();
-        let read = ocr::read_image(
-            self.tesseract,
-            &self.settings,
-            decoded,
-            file_size,
-            orientation,
-            assumed.as_deref(),
-        )
-        .map_err(|e| Failure::Extraction(Error::ParseError(e.to_string())))?;
+        let read = self
+            .tesseract
+            .clone()
+            .and_then(|tesseract| {
+                ocr::read_image(
+                    tesseract,
+                    &self.settings,
+                    decoded,
+                    file_size,
+                    orientation,
+                    assumed.as_deref(),
+                )
+            })
+            .map_err(|e| Failure::Extraction(Error::ParseError(e.to_string())))?;
         if let Some(learned) = &read.learned {
             context.learn_ocr_script(learned.clone());
         }

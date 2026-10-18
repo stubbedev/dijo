@@ -123,6 +123,16 @@ pub fn bundled_tessdata() -> Result<Option<PathBuf>, String> {
     Ok(Some(unpacked()?.join(OCR_MODELS)))
 }
 
+/// Whether the build carries its own tesseract: linked into the static executable, or bundled as
+/// a library. OCR is then configured, whether or not that tesseract can be set up.
+pub fn carries_tesseract() -> bool {
+    #[cfg(feature = "static")]
+    let carried = true;
+    #[cfg(not(feature = "static"))]
+    let carried = OCR_TESSERACT_LIBRARY.is_some();
+    carried
+}
+
 /// The tesseract library the build bundled, unpacked, if it bundled one.
 #[cfg(not(feature = "static"))]
 pub fn bundled_tesseract_library() -> Result<Option<PathBuf>, String> {
@@ -164,7 +174,13 @@ fn program_version(program: &Path) -> Result<String, String> {
 
 #[cfg(not(feature = "static"))]
 fn library_version(library: &Path) -> Result<String, String> {
-    let fail = |e: libloading::Error| format!("Failed to load {}: {e}", library.display());
+    let fail = |e: libloading::Error| {
+        format!(
+            "Failed to load {}: {}",
+            library.display(),
+            loader_message(&e)
+        )
+    };
     let loaded = unsafe { libloading::Library::new(library) }.map_err(fail)?;
     let version =
         unsafe { loaded.get::<unsafe extern "C" fn() -> *const std::ffi::c_char>(b"TessVersion") }
@@ -172,6 +188,20 @@ fn library_version(library: &Path) -> Result<String, String> {
     Ok(linked_version(
         &unsafe { std::ffi::CStr::from_ptr(version()) }.to_string_lossy(),
     ))
+}
+
+/// What the system's loader said of a library it could not load, or of a symbol it could not
+/// find: libloading's error followed by the loader's own message beneath it.
+#[cfg(not(feature = "static"))]
+pub fn loader_message(error: &libloading::Error) -> String {
+    let mut message = error.to_string();
+    let mut cause = std::error::Error::source(error);
+    while let Some(error) = cause {
+        message.push_str(": ");
+        message.push_str(&error.to_string());
+        cause = error.source();
+    }
+    message
 }
 
 pub fn linked_version(version: &str) -> String {

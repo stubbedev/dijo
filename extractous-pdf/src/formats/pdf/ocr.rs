@@ -22,7 +22,7 @@ use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
 use crate::ocr::{
     self, Attempt, Bitmap, FirstPage, Image, OcrError, OcrSettings, Outputs, PdfPages, Recognized,
-    Recognizer, Resolution, Tesseract,
+    Recognizer, Resolution,
 };
 
 /// Each page whose text layer was replaced by OCR text, as `page:fault`.
@@ -255,7 +255,7 @@ pub(super) enum Layer<'t> {
 /// How the pages to read are read: with tesseract, or with OCR skipped, reading nothing.
 enum Reader {
     Tesseract {
-        tesseract: &'static Tesseract,
+        tesseract: ocr::Reader,
         settings: OcrSettings,
     },
     Skipping,
@@ -298,7 +298,7 @@ impl PageOcr {
         let reader = if configs.ocr.skips_ocr() {
             Reader::Skipping
         } else {
-            let tesseract = ocr::tesseract().map_err(|reason| {
+            let tesseract = ocr::reader().map_err(|reason| {
                 Unported(format!(
                     "OCR of PDF pages in this process, which needs tesseract's library: {reason}"
                 ))
@@ -369,6 +369,10 @@ impl PageOcr {
         else {
             return (PageReading::Skipped, None);
         };
+        let tesseract = match tesseract {
+            Ok(tesseract) => *tesseract,
+            Err(failure) => return (PageReading::Failed(described(failure)), None),
+        };
         let rendered = pages
             .as_ref()
             .map_err(Clone::clone)
@@ -402,9 +406,10 @@ impl PageOcr {
 fn described(failure: &OcrError) -> String {
     let class = match failure {
         OcrError::TimedOut { .. } => "org.apache.tika.exception.TikaTimeoutException",
-        OcrError::Failed { .. } | OcrError::Model { .. } | OcrError::Models { .. } => {
-            "org.apache.tika.exception.TikaException"
-        }
+        OcrError::Failed { .. }
+        | OcrError::Model { .. }
+        | OcrError::Models { .. }
+        | OcrError::Unavailable { .. } => "org.apache.tika.exception.TikaException",
     };
     format!("{class}: {failure}")
 }

@@ -84,7 +84,11 @@ macro_rules! c_api {
                             concat!(stringify!($symbol), "\0").as_bytes(),
                         )
                     }
-                    .map_err(|e| format!("it has no {}: {e}", stringify!($symbol)))?,)*
+                    .map_err(|e| format!(
+                        "it has no {}: {}",
+                        stringify!($symbol),
+                        crate::bundle::loader_message(&e)
+                    ))?,)*
                 })
             }
         }
@@ -239,6 +243,8 @@ pub enum OcrError {
     Model { model: String },
     /// The models it reads with could not be listed.
     Models { dir: String, reason: String },
+    /// The tesseract the build carries could not be set up, for this reason.
+    Unavailable { reason: String },
 }
 
 impl fmt::Display for OcrError {
@@ -256,6 +262,7 @@ impl fmt::Display for OcrError {
             Self::Models { dir, reason } => {
                 write!(f, "Listing tesseract's models under {dir} failed: {reason}")
             }
+            Self::Unavailable { reason } => write!(f, "tesseract cannot run: {reason}"),
         }
     }
 }
@@ -308,8 +315,9 @@ impl Tesseract {
         let datapath = datapath.map(c_path).transpose()?;
         let loaded = unsafe { libloading::Library::new(library) }.map_err(|e| {
             format!(
-                "Loading tesseract's library {} failed: {e}",
-                library.display()
+                "Loading tesseract's library {} failed: {}",
+                library.display(),
+                crate::bundle::loader_message(&e)
             )
         })?;
         let api = Api::resolved(&loaded)
