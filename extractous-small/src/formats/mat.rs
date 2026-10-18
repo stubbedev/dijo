@@ -3,9 +3,10 @@
 //! for each variable with its size and class, the fields of a structure listed after it.
 //!
 //! The file is read element by element as `MatFileReader` reads it, compressed elements inflated,
-//! so that it fails where jmatio fails: on the classes jmatio does not read (`uint16`, function
-//! handles), on data that ends early or does not fill its element, and on a field of a structure
-//! that holds a Java object, which jmatio leaves unread and `MatParser` cannot describe.
+//! so that it fails where jmatio fails on data that ends early or does not fill its element. It
+//! reads what jmatio fails on (#156): `uint16` arrays, function handles, and Java objects, which
+//! it lists by their class where they are a field of a structure, where `MatParser` throws on
+//! them. A structure held in a field is named by its field, where jmatio names it "@".
 
 use std::collections::HashSet;
 
@@ -64,9 +65,6 @@ const MX_OPAQUE: i32 = 17;
 const FLAG_COMPLEX: i32 = 0x0800;
 const FLAG_LOGICAL: i32 = 0x0200;
 
-/// The name jmatio gives an array whose name is empty.
-const DEFAULT_NAME: &str = "@";
-
 /// Tika's `MatParser`.
 pub struct MatParser;
 
@@ -94,11 +92,6 @@ impl Parser for MatParser {
             Unread::TooLarge(reason) => too_large(reason),
         })?;
         let header = Header::of(&file.description, file.endian).map_err(fails)?;
-        if file.variables.iter().any(Array::lists_a_null_field) {
-            return Err(fails(Thrown::Runtime(Exception::bare(
-                "java.lang.NullPointerException",
-            ))));
-        }
         Ok(Box::new(move |xhtml| {
             header.write(xhtml.metadata_mut());
             write(&file.variables, xhtml)
@@ -197,15 +190,18 @@ fn write(variables: &[Array], xhtml: &mut Xhtml) -> Result<(), Failure> {
         };
         xhtml.start_element("ul")?;
         xhtml.newline()?;
-        for field in fields.all() {
-            let Field::Array(field) = field else {
-                unreachable!("a structure listing a null field fails before it is written");
-            };
+        for (name, field) in fields.all() {
             xhtml.start_element("li")?;
             xhtml.characters(&field.describe())?;
-            if let Some(nested) = &field.fields {
+            if let Field::Array(
+                array @ Array {
+                    fields: Some(nested),
+                    ..
+                },
+            ) = field
+            {
                 xhtml.start_element("ul")?;
-                xhtml.element("li", &nested.content(field))?;
+                xhtml.element("li", &nested.content(name, array))?;
                 xhtml.end_element("ul")?;
             }
             xhtml.end_element("li")?;
@@ -338,7 +334,7 @@ fn read_data(buffer: &mut Buffer, variables: &mut Variables) -> Result<(), Unrea
         }
         MI_MATRIX => {
             let start = to_i64(buffer.at);
-            match read_matrix(buffer)? {
+            match read_matrix(buffer, tag.size)? {
                 Field::Array(array) if !variables.names.contains(&array.name) => {
                     variables.names.insert(array.name.clone());
                     variables.arrays.push(array);
@@ -358,29 +354,30 @@ fn read_data(buffer: &mut Buffer, variables: &mut Variables) -> Result<(), Unrea
     }
 }
 
-/// `MatFileReader.readMatrix`: an array, or the null jmatio reads a Java object as, which it does
-/// not deserialize, reading no further than its name.
-fn read_matrix(buffer: &mut Buffer) -> Result<Field, Thrown> {
+/// `MatFileReader.readMatrix`: the array of the matrix element of `size` bytes the buffer is at,
+/// or a Java object, past which it goes to the element's end.
+fn read_matrix(buffer: &mut Buffer, size: i32) -> Result<Field, Thrown> {
+    let end = to_i64(buffer.at) + i64::from(size);
     let flags = Tag::read(buffer)?.ints(buffer)?;
     if flags.len() == 1 {
         return Err(out_of_bounds(1, 1));
     }
     let attributes = flags.first().copied().unwrap_or(0);
     let class = attributes & 0xff;
+    if class == MX_OPAQUE {
+        Tag::read(buffer)?.string(buffer)?;
+        Tag::read(buffer)?.string(buffer)?;
+        let class_name = Tag::read(buffer)?.string(buffer)?;
+        buffer.seek(end)?;
+        return Ok(Field::Object(class_name));
+    }
     let dims = Tag::read(buffer)?.ints(buffer)?;
     let name = Tag::read(buffer)?.string(buffer)?;
-    if class == MX_OPAQUE {
-        return Ok(Field::Null);
-    }
     if dims.len() < 2 {
         return Err(out_of_bounds(dims.len(), dims.len()));
     }
     let mut array = Array {
-        name: if name.is_empty() {
-            DEFAULT_NAME.to_owned()
-        } else {
-            name
-        },
+        name,
         dims,
         class,
         attributes,
@@ -399,8 +396,9 @@ fn read_matrix(buffer: &mut Buffer) -> Result<Field, Thrown> {
             let size = array.size();
             capacity(size)?;
             for _ in 0..size.max(0) {
-                if Tag::read(buffer)?.size > 0 {
-                    read_matrix(buffer)?;
+                let tag = Tag::read(buffer)?;
+                if tag.size > 0 {
+                    read_matrix(buffer, tag.size)?;
                 }
             }
         }
@@ -412,6 +410,7 @@ fn read_matrix(buffer: &mut Buffer) -> Result<Field, Thrown> {
             }
         }
         MX_SPARSE => read_sparse(buffer, &array)?,
+        MX_FUNCTION => buffer.seek(end)?,
         MX_OBJECT => {
             Tag::read(buffer)?.string(buffer)?;
             capacity(array.dims[0].wrapping_mul(array.dims[1]))?;
@@ -495,7 +494,7 @@ impl Array {
     /// `MLEmptyArray`, which jmatio puts where a field of a structure is empty.
     fn empty() -> Self {
         Self {
-            name: DEFAULT_NAME.to_owned(),
+            name: String::new(),
             dims: vec![0, 0],
             class: MX_DOUBLE,
             attributes: 0,
@@ -552,14 +551,6 @@ impl Array {
         };
         format!("[{dims}  {}{logical} array{flags}]", class_name(self.class))
     }
-
-    /// Whether this is a structure with a field that holds a Java object, which `MatParser`
-    /// lists as `null`, then throws on.
-    fn lists_a_null_field(&self) -> bool {
-        self.fields
-            .as_ref()
-            .is_some_and(|fields| fields.all().any(|field| matches!(field, Field::Null)))
-    }
 }
 
 /// `MLArray.typeToString`.
@@ -586,18 +577,21 @@ fn class_name(class: i32) -> &'static str {
     }
 }
 
-/// The value of a field of a structure: an array, or the null of a Java object.
+/// The value of a matrix element: an array, or a Java object, by its class name.
 enum Field {
     Array(Array),
-    Null,
+    Object(String),
 }
 
 impl Field {
-    /// `String.valueOf`.
+    /// `String.valueOf` of an array, and a Java object as one of class `opaque` with its class
+    /// name.
     fn describe(&self) -> String {
         match self {
             Self::Array(array) => array.describe(),
-            Self::Null => "null".to_owned(),
+            Self::Object(class) => {
+                format!("[1x1  {} array ({class})]", class_name(MX_OPAQUE))
+            }
         }
     }
 }
@@ -641,8 +635,9 @@ impl Fields {
     /// empty, or a Java object's null.
     fn read_element(&mut self, buffer: &mut Buffer, index: usize) -> Result<(), Thrown> {
         for at in 0..self.names.len() {
-            let value = if Tag::read(buffer)?.size > 0 {
-                read_matrix(buffer)?
+            let tag = Tag::read(buffer)?;
+            let value = if tag.size > 0 {
+                read_matrix(buffer, tag.size)?
             } else {
                 Field::Array(Array::empty())
             };
@@ -668,16 +663,19 @@ impl Fields {
         }
     }
 
-    /// `getAllFields`: every element's fields, element by element.
-    fn all(&self) -> impl Iterator<Item = &Field> {
-        self.elements.iter().flatten().map(|(_, field)| field)
+    /// `getAllFields`: every element's fields, element by element, with their names.
+    fn all(&self) -> impl Iterator<Item = (&str, &Field)> {
+        self.elements
+            .iter()
+            .flatten()
+            .map(|(name, field)| (name.as_str(), field))
     }
 
-    /// `MLStructure.contentToString` of the structure `array` these are the fields of: its name,
-    /// then each field described, where it is one element, or its size and the names of its
-    /// fields.
-    fn content(&self, array: &Array) -> String {
-        let mut content = format!("{} = \n", array.name);
+    /// `MLStructure.contentToString` of the structure `array` these are the fields of, held in
+    /// the field `name`: that name, then each field described, where it is one element, or its
+    /// size and the names of its fields.
+    fn content(&self, name: &str, array: &Array) -> String {
+        let mut content = format!("{name} = \n");
         if array.size() == 1 {
             for key in &self.keys {
                 let field = self.elements.get(self.current).and_then(|element| {
@@ -817,7 +815,7 @@ impl JavaType {
             MX_DOUBLE => Some(Self::Double),
             MX_SINGLE => Some(Self::Float),
             MX_INT8 | MX_UINT8 => Some(Self::Byte),
-            MX_INT16 => Some(Self::Short),
+            MX_INT16 | MX_UINT16 => Some(Self::Short),
             MX_INT32 | MX_UINT32 => Some(Self::Int),
             MX_INT64 | MX_UINT64 => Some(Self::Long),
             _ => None,
@@ -988,6 +986,27 @@ impl Tag {
     }
 }
 
+/// For the parity tests: a native result with each structure held in a field named "@", as
+/// jmatio names it, where the parser names it by its field (#156): each line that ends a name
+/// with " = ", the name after the tag or tab before it.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn as_jmatio_names(
+    text: &mut String,
+    _metadata: &mut crate::formats::parity::ComparedMetadata,
+    _tika: &crate::formats::parity::ComparedMetadata,
+) {
+    *text = text
+        .split_inclusive('\n')
+        .map(|line| match line.strip_suffix(" = \n") {
+            Some(named) => {
+                let start = named.rfind(['>', '\t']).map_or(0, |at| at + 1);
+                format!("{}@ = \n", &named[..start])
+            }
+            None => line.to_owned(),
+        })
+        .collect();
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "tika")]
@@ -997,7 +1016,8 @@ mod tests {
     use crate::compress::zlib::tests::zlib;
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+        assert_fails_as_tika, assert_read_where_tika_fails, assert_same_as_tika_rewriting,
+        conformance_corpus, documents, Scratch,
     };
 
     const DESCRIPTION: &str =
@@ -1062,6 +1082,44 @@ mod tests {
             bytes.extend_from_slice(element);
         }
         bytes
+    }
+
+    /// A Java object of `class` as MATLAB writes it: a matrix of class `opaque` holding its
+    /// name, type system and class name, then the matrix of its serialized bytes.
+    fn object(class: &str) -> Vec<u8> {
+        let mut content = element(MI_UINT32, &ints(&[MX_OPAQUE, 0]));
+        content.extend(element(MI_INT8, b""));
+        content.extend(element(MI_INT8, b"java"));
+        content.extend(element(MI_INT8, class.as_bytes()));
+        content.extend(matrix(
+            MX_UINT8,
+            0,
+            &[1, 3],
+            "",
+            &element(MI_UINT8, &[0xac, 0xed, 0]),
+        ));
+        element(MI_MATRIX, &content)
+    }
+
+    /// The variables jmatio fails on (#156): a `uint16` array, a function handle, and a
+    /// structure holding a Java object then an array.
+    fn unread_by_jmatio() -> Vec<Vec<u8>> {
+        vec![
+            matrix(
+                MX_UINT16,
+                0,
+                &[1, 2],
+                "u",
+                &element(MI_UINT16, &[1, 0, 2, 0]),
+            ),
+            matrix(MX_FUNCTION, 0, &[1, 1], "f", &doubles("", &[1, 1])),
+            structure(
+                "s",
+                &[1, 1],
+                &["o", "x"],
+                &[object("java.lang.Double"), doubles("", &[2, 2])],
+            ),
+        ]
     }
 
     fn compressed(element: &[u8]) -> Vec<u8> {
@@ -1153,7 +1211,7 @@ mod tests {
             "<p>s:[1x1  struct array]</p>",
             "<li>[3x4x2  double array]</li>",
             "<li>[1x1  struct array]<ul>",
-            "@ = \n\tx : [1x1  double array]\n\ty : [0x0  double array]\n</li>",
+            "<li>indre = \n\tx : [1x1  double array]\n\ty : [0x0  double array]\n</li>",
             "<li>[0x0  double array]</li>",
             "<p>pakket:[4D  double array]</p>",
         ] {
@@ -1167,6 +1225,20 @@ mod tests {
     }
 
     #[test]
+    fn reads_what_jmatio_fails_on() {
+        let (xml, _) = extract(&file(DESCRIPTION, &unread_by_jmatio()));
+        for described in [
+            "<p>u:[1x2  uint16 array]</p>",
+            "<p>f:[1x1  function_handle array]</p>",
+            "<p>s:[1x1  struct array]</p>",
+            "<li>[1x1  opaque array (java.lang.Double)]</li>",
+            "<li>[2x2  double array]</li>",
+        ] {
+            assert!(xml.contains(described), "{described:?} in {xml}");
+        }
+    }
+
+    #[test]
     fn fails_where_jmatio_or_mat_parser_throws() {
         let fails = |bytes: &[u8]| {
             crate::Extractor::new()
@@ -1174,13 +1246,8 @@ mod tests {
                 .unwrap_err()
                 .to_string()
         };
-        let uint16 = matrix(MX_UINT16, 0, &[1, 1], "u", &element(MI_UINT16, &[1, 0]));
-        assert!(
-            fails(&file(DESCRIPTION, &[uint16])).contains("Incorrect matlab array class: uint16")
-        );
-        let object = matrix(MX_OPAQUE, 0, &[1, 1], "", &[]);
-        let holding = structure("s", &[1, 1], &["o"], &[object]);
-        assert!(fails(&file(DESCRIPTION, &[holding])).contains("NullPointerException"));
+        let unknown = matrix(18, 0, &[1, 1], "u", &[]);
+        assert!(fails(&file(DESCRIPTION, &[unknown])).contains("Incorrect matlab array class"));
         let two_parts = "MATLAB 5.0 MAT-file, written by Octave";
         assert!(fails(&file(two_parts, &[doubles("x", &[1, 1])]))
             .contains("ArrayIndexOutOfBoundsException"));
@@ -1195,25 +1262,23 @@ mod tests {
         let scratch = Scratch::new("mat");
         let read = [scratch.write("variables.mat", &file(DESCRIPTION, &variables()))];
         let paths: Vec<&Path> = read.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, MatParser.tika_name());
-        let uint16 = matrix(MX_UINT16, 0, &[1, 1], "u", &element(MI_UINT16, &[1, 0]));
-        let object = structure(
-            "s",
-            &[1, 1],
-            &["o"],
-            &[matrix(MX_OPAQUE, 0, &[1, 1], "", &[])],
-        );
-        let failing = [
-            scratch.write("uint16.mat", &file(DESCRIPTION, &[uint16])),
-            scratch.write("object.mat", &file(DESCRIPTION, &[object])),
-            scratch.write(
-                "octave.mat",
-                &file(
-                    "MATLAB 5.0 MAT-file, written by Octave",
-                    &[doubles("x", &[1, 1])],
-                ),
+        assert_same_as_tika_rewriting(&paths, MatParser.tika_name(), as_jmatio_names);
+        let unread = unread_by_jmatio()
+            .into_iter()
+            .enumerate()
+            .map(|(at, variable)| {
+                scratch.write(&format!("unread-{at}.mat"), &file(DESCRIPTION, &[variable]))
+            })
+            .collect::<Vec<_>>();
+        let paths: Vec<&Path> = unread.iter().map(PathBuf::as_path).collect();
+        assert_read_where_tika_fails(&paths, "#156");
+        let failing = [scratch.write(
+            "octave.mat",
+            &file(
+                "MATLAB 5.0 MAT-file, written by Octave",
+                &[doubles("x", &[1, 1])],
             ),
-        ];
+        )];
         let paths: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
         assert_fails_as_tika(&paths);
     }
@@ -1226,6 +1291,6 @@ mod tests {
         assert!(deferred.is_empty(), "{deferred:?}");
         assert_eq!(parsed.len(), 2, "{parsed:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, MatParser.tika_name());
+        assert_same_as_tika_rewriting(&paths, MatParser.tika_name(), as_jmatio_names);
     }
 }
