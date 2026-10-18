@@ -23,6 +23,9 @@ pub(crate) const PACKAGE_ENTRY: &str = "package-entry";
 pub const RESOURCE_NAME: &str = "tk:resource-name";
 pub const INTERNAL_PATH: &str = "tk:internal-path";
 pub const RELATIONSHIP_ID: &str = "tk:embedded-relationship-id";
+/// `TikaCoreProperties.CONTENT_TYPE_PARSER_OVERRIDE`: the type whose parser parses a document,
+/// whatever it is detected as.
+pub const PARSER_OVERRIDE: &str = "tk:content-type-parser-override";
 const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";

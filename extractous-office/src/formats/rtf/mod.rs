@@ -1,7 +1,7 @@
 //! RTF documents, as Tika's `RTFParser` reads them: the text of the body in paragraphs, list
 //! items, bold and italic runs and hyperlinks, decoded with the code pages the document names,
-//! and the title, authors, dates and counts of its `\info` group as metadata. A document whose
-//! pictures or embedded objects Tika would parse as documents of their own is left to Tika.
+//! the title, authors, dates and counts of its `\info` group as metadata, and its pictures and
+//! embedded objects parsed as documents of their own.
 
 mod charsets;
 mod compressed;
@@ -14,16 +14,12 @@ pub(crate) use compressed::decompress;
 pub(crate) use html::decapsulate;
 
 use crate::config::ParserConfigs;
-use crate::formats::embedded::ParseContext;
-use crate::formats::handlers::Discard;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Declined, Deferral, Failure, Parser, Prepared};
+use crate::formats::{Declined, Failure, Parser, Prepared};
 use extractor::Interrupt;
 
 const MEDIA_TYPE: &str = "application/rtf";
-/// The control words that can defer a document, which is then read ahead to find out.
-const READ_AHEAD: [&[u8]; 3] = [b"pict", b"objdata", b"ansicpg57002"];
 
 pub struct RtfParser;
 
@@ -39,94 +35,48 @@ impl Parser for RtfParser {
         &[MEDIA_TYPE]
     }
 
-    /// Defers a document with a picture or an embedded object Tika would hand to its embedded
-    /// document extractor, or fail to read; with text in the one code page the JDK decodes and
-    /// this port does not, ISCII (`\ansicpg57002`). Only a document that names `\pict`,
-    /// `\objdata` or `\ansicpg57002` can, and only such a document is read ahead to find out,
-    /// which reads it twice.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
-        configs: &'a ParserConfigs,
+        _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
-        if let Some(reason) = deferral(input, configs) {
-            return Err(Declined::Deferred(reason));
-        }
         Ok(Box::new(move |xhtml| write(input, xhtml)))
     }
 }
 
-/// Why Tika's path should extract `input` rather than this parser, if it should.
-pub(crate) fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<Deferral> {
-    let read_ahead = input.iter().enumerate().any(|(at, &byte)| {
-        byte == b'\\'
-            && READ_AHEAD
-                .iter()
-                .any(|word| input[at + 1..].starts_with(word))
-    });
-    if !read_ahead {
-        return None;
-    }
-    let context = ParseContext::new(configs);
-    let (_, _, result) = Xhtml::write(&mut Discard, TikaMetadata::new(), &context, |xhtml| {
-        extractor::extract(input, xhtml)
-    });
-    match result {
-        Err(Interrupt::Deferred(deferral)) => Some(deferral.reason().to_owned()),
-        Ok(()) | Err(Interrupt::Failed(_) | Interrupt::Unchecked(_)) => None,
-    }
-}
-
-/// `RTFParser.parseInline` of `input`, which [`deferral`] passed, into another
-/// document's `xhtml`, its header's metadata into fresh metadata.
+/// `RTFParser.parseInline` of `input` into another document's `xhtml`, its header's metadata
+/// into fresh metadata.
 pub(crate) fn write_inline(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
-    match extractor::extract_inline(input, xhtml, TikaMetadata::new()) {
-        Ok(()) => Ok(()),
-        Err(Interrupt::Failed(failure) | Interrupt::Unchecked(failure)) => Err(failure),
-        Err(Interrupt::Deferred(deferral)) => Err(Failure::Malformed(format!(
-            "The RTF document has {}, which leaves it to Tika",
-            deferral.reason()
-        ))),
-    }
+    extractor::extract_inline(input, xhtml, TikaMetadata::new()).map_err(Interrupt::into_failure)
 }
 
 /// Parses as `RTFParser.parse`, which ends the document even when the parse fails.
 fn write(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
     xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-    let failure = match extractor::extract(input, xhtml) {
-        Ok(()) => return Ok(()),
-        Err(Interrupt::Failed(failure) | Interrupt::Unchecked(failure)) => failure,
-        Err(Interrupt::Deferred(deferral)) => Failure::Malformed(format!(
-            "The RTF document has {}, which leaves it to Tika",
-            deferral.reason()
-        )),
+    let Err(interrupt) = extractor::extract(input, xhtml) else {
+        return Ok(());
     };
     xhtml.end_document()?;
-    Err(failure)
+    Err(interrupt.into_failure())
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use super::*;
     #[cfg(feature = "tika")]
+    use crate::formats::html;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents,
+        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
+        conformance_corpus, documents, Scratch,
     };
     #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     #[cfg(feature = "tika")]
     const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.rtf.RTFParser";
-    /// The conformance documents with pictures or embedded objects Tika parses.
-    #[cfg(feature = "tika")]
-    const DEFERRED: [&str; 4] = [
-        "testBinControlWord.rtf",
-        "testRTFEmbeddedFiles.rtf",
-        "testRTFEmbeddedLink.rtf",
-        "testRTFRegularImages.rtf",
-    ];
-
     /// Small documents for the corners of `TextExtractor` the corpora do not reach.
     #[cfg(feature = "tika")]
     const SNIPPETS: &[&str] = &[
@@ -181,6 +131,7 @@ mod tests {
         r"{\rtf1\ansi\pard \plain\ltrch\rtlch x\sect\sectd y\par}",
         "{\\rtf1\\ansi\\pard a\r\nb\rc\nd\\\r\ne\\\nf\\par}",
         r"{\rtf1\ansi\pard\'e6{\*\generator x}\'f8 \u8364?\'80\par}",
+        r"{\rtf1\ansi\ansicpg57002\pard \'a4\'a6\'e9 \'b3\'e8\'e8\par}",
     ];
 
     /// Snippets Tika fails on.
@@ -191,14 +142,24 @@ mod tests {
         r"{\rtf1\ansi{\*\listtable{\list{\listlevel\levelnfc23}\listid7}}\pard\ls7\lslvl12 one\par}",
     ];
 
-    /// Snippets with a picture or object Tika parses.
-    const DEFERRED_SNIPPETS: &[&str] = &[
-        r"{\rtf1\ansi\pard x{\pict\pngblip 89504e47}\par}",
+    /// Snippets with pictures and objects, which Tika parses as documents of their own.
+    #[cfg(feature = "tika")]
+    const EMBEDDED_SNIPPETS: &[&str] = &[
+        r"{\rtf1\ansi\pard x{\pict\pngblip 89504e47}\par y\par}",
         r"{\rtf1\ansi\pard x{\*\shppict{\pict\wmetafile8 0102}}\par}",
+        r"{\rtf1\ansi\pard {\b x{\pict\wbitmap0 0102}y}\par}",
         r"{\rtf1\ansi\pard x{\object{\*\objdata 01050000 02000000 07000000 50427275736800 00000000 00000000 01000000 ff}}\par}",
+        r"{\rtf1\ansi\pard x{\object{\*\objdata 01050000 02000000 0f000000 576f72642e446f63756d656e742e3800 00000000 00000000 00000000}}\par}",
+        r"{\rtf1\ansi\pard x{\object{\*\objdata 01050000 02000000 0f000000 576f72642e446f63756d656e742e3800 00000000 00000000 01004001 00}{\pict 00}}z\par}",
+        r"{\rtf1\ansi\pard x{\object{\*\objdata 01050000 02000000 0f000000 576f72642e446f63756d656e742e3800 00000000 00000000 00}{\pict 00}}z\par}",
+        r"{\rtf1\ansi\pard x{\object\objemb{\*\objdata 01050000 02000000 0f000000 576f72642e446f63756d656e742e3800 00000000 00000000 05000000 68656c6c6f}{\result{\pict\pngblip 89504e470d0a1a0a}}}\par}",
+        r"{\rtf1\ansi\pard {\pict{\*\picprop{\sp{\sn wzDescription}{\sv C:\\pics\\a.txt}}{\sp{\sn wzName}{\sv \'e6\u248?}}}68656c6c6f}\par}",
+        r"{\rtf1\ansi\pard {\pict{\*\picprop{\sp{\sn wzDescription}{\sv }}}68656c6c6f}{\pict 68656c6c6f}\par}",
         r"{\rtf1\ansi\pard x{\pict\bin99999999 }\par}",
         r"{\rtf1\ansi\pard x{\pict\bin10 ab}\par}",
-        r"{\rtf1\ansi\ansicpg57002\pard \'a4\par}",
+        r"{\rtf1\ansi\pard x{\pict\bin3 abc}{\pict}\par}",
+        r"{\rtf1\ansi\pard x{\pict 0102\par y}z\par}",
+        r"{\rtf1\ansi x{\pict\pngblip 89504e47",
     ];
 
     /// Snippets written to files of their own, in a directory removed when they are dropped.
@@ -243,17 +204,6 @@ mod tests {
         paths.iter().map(PathBuf::as_path).collect()
     }
 
-    /// Asserts that the native parser reads each of `paths` rather than deferring it.
-    #[cfg(feature = "tika")]
-    fn assert_read_natively(paths: &[&Path]) {
-        for path in paths {
-            let input = std::fs::read(path).unwrap();
-            let deferral =
-                RtfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
-            assert_eq!(deferral, None, "{}", path.display());
-        }
-    }
-
     /// The XHTML the native path extracts from `rtf`.
     fn extract(rtf: &[u8]) -> String {
         crate::Extractor::new()
@@ -274,7 +224,6 @@ mod tests {
         assert!(prose.contains(ZERO_DATE));
         assert!(!extract(prose.as_bytes()).contains("dcterms:created"));
         let undated = SnippetFiles::new("prose", &[&prose.replace(ZERO_DATE, "")]);
-        assert_read_natively(&undated.paths());
         assert_same_as_tika(&undated.paths(), TIKA_PARSER);
     }
 
@@ -282,8 +231,94 @@ mod tests {
     #[test]
     fn extracts_snippets_as_tikas_path_does() {
         let snippets = SnippetFiles::new("same", SNIPPETS);
-        assert_read_natively(&snippets.paths());
         assert_same_as_tika(&snippets.paths(), TIKA_PARSER);
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn parses_pictures_and_objects_as_tikas_path_does() {
+        let snippets = SnippetFiles::new("embedded", EMBEDDED_SNIPPETS);
+        assert_same_as_tika(&snippets.paths(), TIKA_PARSER);
+    }
+
+    /// An RTF document embedding `data` as an object of `class`, written as hex.
+    #[cfg(feature = "tika")]
+    fn with_object(class: &str, data: &[u8]) -> Vec<u8> {
+        let mut object = Vec::new();
+        object.extend_from_slice(&0x0501u32.to_le_bytes());
+        object.extend_from_slice(&2u32.to_le_bytes());
+        let class = format!("{class}\0");
+        for part in [class.as_bytes(), b"", b"", data] {
+            object.extend_from_slice(&(part.len() as u32).to_le_bytes());
+            object.extend_from_slice(part);
+        }
+        let hex: String = object.iter().map(|byte| format!("{byte:02x}")).collect();
+        format!(r"{{\rtf1\ansi\pard before{{\object\objemb{{\*\objdata {hex}}}}}after\par}}")
+            .into_bytes()
+    }
+
+    /// An OLE package of the file `name` holding `data`.
+    #[cfg(feature = "tika")]
+    fn package(name: &str, data: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![2, 0];
+        for text in [name, "C:\\icon"] {
+            bytes.extend_from_slice(text.as_bytes());
+            bytes.push(0);
+        }
+        bytes.extend_from_slice(&[0, 0, 3, 0]);
+        let path = format!("C:\\{name}");
+        bytes.extend_from_slice(&(path.len() as u32 + 1).to_le_bytes());
+        bytes.extend_from_slice(path.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(data);
+        bytes
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn unwraps_objects_as_tikas_path_does() {
+        let compound = crate::ole2::tests::compound;
+        let scratch = Scratch::new("rtf-objects");
+        let documents = [
+            scratch.write(
+                "contents.rtf",
+                &with_object(
+                    "Paint.Picture",
+                    &compound(&["\u{1}CompObj", "CONTENTS", "\u{3}ObjInfo"], b"plain text"),
+                ),
+            ),
+            scratch.write(
+                "storage.rtf",
+                &with_object("Word.Document.8", &compound(&["WordDocument"], b"x")),
+            ),
+            scratch.write(
+                "unknown.rtf",
+                &with_object("Some.Thing", &compound(&["Stuff"], b"x")),
+            ),
+            scratch.write(
+                "package.rtf",
+                &with_object(
+                    "Package",
+                    &package(
+                        "a.html",
+                        b"<html>\n\t<body>\n\t\t<h1>Head</h1>\n\t\t<p>x</p>\n\t</body></html>",
+                    ),
+                ),
+            ),
+        ];
+        let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+        assert_same_as_tika(&documents, TIKA_PARSER);
+    }
+
+    #[test]
+    fn parses_pictures_as_embedded_documents() {
+        let xhtml = extract(br"{\rtf1\ansi\pard x{\pict\pngblip 89504e470d0a1a0a}y\par}");
+        assert!(
+            xhtml.contains(r#"<div class="package-entry"><h1>embedded-0.png</h1>"#),
+            "{xhtml}"
+        );
+        assert!(xhtml.contains("xy"), "{xhtml}");
     }
 
     #[test]
@@ -327,48 +362,23 @@ mod tests {
         assert_fails_as_tika(&SnippetFiles::new("failing", FAILING_SNIPPETS).paths());
     }
 
-    #[test]
-    fn defers_pictures_objects_and_iscii() {
-        for snippet in DEFERRED_SNIPPETS {
-            assert!(
-                RtfParser
-                    .defers(
-                        snippet.as_bytes(),
-                        &TikaMetadata::new(),
-                        &ParserConfigs::default()
-                    )
-                    .as_deref()
-                    .is_some(),
-                "{snippet}"
-            );
-        }
-        let unfinished = r"{\rtf1\ansi x{\pict\pngblip 89504e47";
-        assert_eq!(
-            RtfParser
-                .defers(
-                    unfinished.as_bytes(),
-                    &TikaMetadata::new(),
-                    &ParserConfigs::default()
-                )
-                .as_deref(),
-            None
-        );
-    }
-
     #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_the_conformance_documents_as_tikas_path_does() {
         let (parsed, deferred) = documents(&RtfParser, &[&conformance_corpus()]);
-        let mut deferred: Vec<&str> = deferred
-            .iter()
-            .map(|path| path.file_name().unwrap().to_str().unwrap())
-            .collect();
-        deferred.sort_unstable();
-        let mut expected = DEFERRED;
-        expected.sort_unstable();
-        assert_eq!(deferred, expected);
-        assert!(parsed.len() >= 39, "{} documents", parsed.len());
-        assert_same_as_tika(&as_paths(&parsed), TIKA_PARSER);
+        assert_eq!(deferred, Vec::<PathBuf>::new());
+        assert!(parsed.len() >= 43, "{} documents", parsed.len());
+        let (embedded_html, others): (Vec<&Path>, Vec<&Path>) = as_paths(&parsed)
+            .into_iter()
+            .partition(|path| path.ends_with(EMBEDDED_HTML));
+        assert_eq!(embedded_html.len(), 1);
+        assert_same_as_tika(&others, TIKA_PARSER);
+        assert_same_as_tika_departing(&embedded_html, TIKA_PARSER, html::DEPARTURES);
     }
+
+    /// The conformance document with HTML documents in its packages, whose white space after
+    /// `</body>` the native HTML parser puts in the body (#84).
+    #[cfg(feature = "tika")]
+    const EMBEDDED_HTML: &str = "testRTFEmbeddedFiles.rtf";
 }

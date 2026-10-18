@@ -6,6 +6,7 @@ mod cache;
 mod cli;
 mod inputs;
 mod language;
+mod limit;
 mod normalize;
 mod render;
 mod running;
@@ -176,6 +177,7 @@ fn render_options(args: &ExtractArgs) -> RenderOptions {
         metadata: args.metadata,
         raw_metadata: args.raw_metadata,
         normalization: Steps::selected(args.raw, &args.no_normalize),
+        max_chars: None,
     }
 }
 
@@ -539,17 +541,12 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
         Embedded::Separate => {
             let scratch = embedded_scratch(spool_dir, index);
             fs::create_dir(&scratch)?;
-            let limits = tree::Limits {
-                max_depth: args.max_depth,
-                max_documents: args.max_embedded,
-                max_expanded_bytes: args.max_expanded_bytes,
-            };
             let rendered = tree::render_tree(
                 extractor,
                 path,
                 &input.display,
                 options,
-                limits,
+                args.limits.limits(),
                 &scratch,
                 cache.map(|cache| (cache, output_settings(args))),
                 writer,

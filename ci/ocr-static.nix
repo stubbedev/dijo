@@ -1,6 +1,6 @@
-# The license files of the tesseract the static executable links (ci/tesseract.nix) and of the
-# static libraries it links, the C library and GCC's runtime: what ci/ocr-bundle.sh --linked
-# puts beside the language data.
+# The OCR bundle of the static executables, which link tesseract themselves: the language data
+# (ci/tessdata.nix) and its license, and the license files of the tesseract they link
+# (ci/tesseract.nix) and of the static libraries it links, the C library and GCC's runtime.
 { nixpkgs, system }:
 let
   pkgs = nixpkgs.legacyPackages.${system};
@@ -24,11 +24,14 @@ let
         package = p;
       }) (inputsOf item.package);
   };
+  tessdata = import ./tessdata.nix { inherit pkgs; };
   licenses = import ./licenses.nix "$out/licenses";
 in
-pkgs.runCommand "tesseract-static-licenses" { } (
+pkgs.runCommand "extractous-ocr-bundle-linked" { } (
   ''
-    mkdir -p $out/licenses
+    mkdir -p $out/tessdata $out/licenses/tessdata_fast
+    cp -rL ${tessdata}/. $out/tessdata/
+    cp ${tessdata.license} $out/licenses/tessdata_fast/LICENSE
   ''
   + lib.concatMapStrings licenses [
     tesseract

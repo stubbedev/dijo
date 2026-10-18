@@ -11,6 +11,7 @@ use crate::server::handlers::Files;
 use crate::server::metrics::Metrics;
 
 const DEFAULT_NAME: &str = "upload";
+const UNTYPED: &str = "application/octet-stream";
 const MAX_NAME_BYTES: usize = 255;
 const MAX_DISCARDED_BYTES: u64 = 16 << 20;
 
@@ -62,28 +63,59 @@ impl From<io::Error> for UploadError {
 }
 
 /// The last component of a client-supplied file name, if it is a usable file name on its own.
-pub fn file_name(hint: &str) -> Option<String> {
+fn file_name(hint: &str) -> Option<String> {
     let name = Path::new(hint).file_name()?.to_str()?;
     (!name.is_empty() && name.len() <= MAX_NAME_BYTES && !name.contains('\0'))
         .then(|| name.to_string())
+}
+
+/// What an upload is called: the name its file has, which detection takes as a hint, and the
+/// name it is reported under.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Name {
+    file: String,
+    display: String,
+}
+
+impl Name {
+    /// The client's file name hint, when usable; else a default name, given the extension of the
+    /// media type the client declared, when it has one and is more than any bytes at all.
+    pub fn from_hints(file_name_hint: Option<&str>, content_type: Option<&str>) -> Self {
+        if let Some(name) = file_name_hint.and_then(file_name) {
+            return Name {
+                file: name.clone(),
+                display: name,
+            };
+        }
+        let extension = content_type
+            .filter(|declared| {
+                let base = declared.split(';').next().unwrap_or_default().trim();
+                !base.eq_ignore_ascii_case(UNTYPED)
+            })
+            .and_then(extractous_core::media_type_extension)
+            .unwrap_or_default();
+        Name {
+            file: format!("{DEFAULT_NAME}{extension}"),
+            display: DEFAULT_NAME.to_string(),
+        }
+    }
 }
 
 pub async fn receive(
     mut body: Incoming,
     root: &Path,
     id: u64,
-    name: Option<String>,
+    name: Name,
     max_bytes: Option<u64>,
     idle_timeout: Duration,
     metrics: &Metrics,
 ) -> Result<Upload, UploadError> {
     let dir = root.join(format!("request-{id}"));
     tokio::fs::create_dir(&dir).await?;
-    let display = name.unwrap_or_else(|| DEFAULT_NAME.to_string());
     let upload = Upload {
-        path: dir.join(&display),
+        path: dir.join(&name.file),
         dir,
-        display,
+        display: name.display,
     };
     let mut file = tokio::fs::File::create_new(&upload.path).await?;
     let mut received: u64 = 0;
@@ -136,5 +168,35 @@ mod tests {
         assert_eq!(file_name("/abs/dir/a.docx"), Some("a.docx".to_string()));
         assert_eq!(file_name(".."), None);
         assert_eq!(file_name(""), None);
+    }
+
+    #[test]
+    fn a_declared_media_type_names_the_upload_unless_a_file_name_does() {
+        let name = |file: &str, display: &str| Name {
+            file: file.to_string(),
+            display: display.to_string(),
+        };
+        assert_eq!(
+            Name::from_hints(None, Some("application/pdf")),
+            name("upload.pdf", "upload")
+        );
+        assert_eq!(
+            Name::from_hints(None, Some("text/csv; charset=utf-8")),
+            name("upload.csv", "upload")
+        );
+        assert_eq!(
+            Name::from_hints(Some("a/report.docx"), Some("application/pdf")),
+            name("report.docx", "report.docx")
+        );
+        for unhelpful in [
+            None,
+            Some("application/octet-stream"),
+            Some("Application/Octet-Stream; x=y"),
+            Some("application/x-www-form-urlencoded"),
+            Some("not a type"),
+        ] {
+            assert_eq!(Name::from_hints(None, unhelpful), name("upload", "upload"));
+        }
+        assert_eq!(Name::from_hints(Some(".."), None), name("upload", "upload"));
     }
 }

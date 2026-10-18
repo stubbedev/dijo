@@ -505,3 +505,250 @@ fn clients_that_go_silent_are_cut_off() {
 
     assert_eq!(server.request("GET", "/readyz", &[], b"").status, 200);
 }
+
+/// The records of nested.zip's documents, extracted separately by a server started with `args`,
+/// and how many of them were skipped for a limit.
+fn separate_records(args: &[&str]) -> (Vec<serde_json::Value>, usize) {
+    let server = Server::start(args);
+    let response = server.post_file("/extract?format=json&embedded=separate", &[], "nested.zip");
+    assert_eq!(response.status, 200);
+    let records: Vec<serde_json::Value> = response
+        .text()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let skipped = records
+        .iter()
+        .filter(|record| record["errors"][0]["category"] == "limit-exceeded")
+        .inspect(|record| assert_eq!(record["status"], "failed", "{record}"))
+        .count();
+    (records, skipped)
+}
+
+#[test]
+fn embedded_document_limits_are_configurable() {
+    let (records, skipped) = separate_records(&[]);
+    assert_eq!((records.len(), skipped), (8, 0));
+
+    let (records, skipped) = separate_records(&["--max-embedded", "2"]);
+    assert_eq!((records.len(), skipped), (7, 4), "{records:?}");
+    let in_processes = ["--isolation", "process", "--workers", "1"];
+    let (records, skipped) =
+        separate_records(&[&in_processes[..], &["--max-embedded", "2"]].concat());
+    assert_eq!((records.len(), skipped), (7, 4), "{records:?}");
+
+    let (records, skipped) = separate_records(&["--max-depth", "1"]);
+    assert!(skipped > 0, "{records:?}");
+    for record in &records {
+        let depth = record["source"]["embedded_path"]
+            .as_str()
+            .map_or(0, |path| path.split('/').count());
+        assert_eq!(depth > 1, record["status"] == "failed", "{record}");
+    }
+
+    let (records, skipped) = separate_records(&["--max-expanded-bytes", "100"]);
+    assert!(skipped > 0, "{records:?}");
+}
+
+#[test]
+fn output_is_cut_short_at_the_character_limit() {
+    let unlimited = Server::start(&[]);
+    let full_text = unlimited
+        .post_file("/extract", &[], "2022_Q3_AAPL.pdf")
+        .text();
+    let full_xhtml = unlimited
+        .post_file("/extract?format=xhtml", &[], "2022_Q3_AAPL.pdf")
+        .text();
+    drop(unlimited);
+
+    let server = Server::start(&["--max-output-chars", "500"]);
+    let text = server.post_file("/extract", &[], "2022_Q3_AAPL.pdf");
+    assert_eq!(text.status, 200);
+    let text = text.text();
+    assert_eq!(text.trim_end().chars().count(), 500, "{text}");
+    assert!(full_text.starts_with(text.trim_end()));
+
+    let json = server
+        .post_file("/extract?format=json", &[], "2022_Q3_AAPL.pdf")
+        .json();
+    assert_eq!(json["status"], "partial");
+    assert_eq!(json["errors"][0]["category"], "limit-exceeded");
+    assert_eq!(
+        json["text"].as_str().unwrap().trim_end().chars().count(),
+        500
+    );
+
+    let pages = server.post_file("/extract?format=pages", &[], "2022_Q3_AAPL.pdf");
+    let records: Vec<serde_json::Value> = pages
+        .text()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let (document, pages) = records.split_last().unwrap();
+    let characters: usize = pages
+        .iter()
+        .map(|page| page["text"].as_str().unwrap().chars().count())
+        .sum();
+    assert!(characters <= 500, "{characters}");
+    assert!(pages.len() < 28);
+    assert_eq!(document["status"], "partial");
+    assert_eq!(document["errors"][0]["category"], "limit-exceeded");
+
+    let xhtml = server
+        .post_file("/extract?format=xhtml", &[], "2022_Q3_AAPL.pdf")
+        .text();
+    assert!(xhtml.len() < full_xhtml.len());
+    assert!(xhtml.ends_with("</body></html>"), "{xhtml}");
+    let cut = xhtml.rfind("</p>").unwrap();
+    assert!(full_xhtml.starts_with(&xhtml[..cut]));
+
+    let short = server
+        .post_file("/extract?format=json", &[], "simple.odt")
+        .json();
+    assert_eq!(short["status"], "complete");
+    drop(server);
+
+    let in_processes = Server::start(&[
+        "--isolation",
+        "process",
+        "--workers",
+        "1",
+        "--max-output-chars",
+        "500",
+    ]);
+    let json = in_processes
+        .post_file("/extract?format=json", &[], "2022_Q3_AAPL.pdf")
+        .json();
+    assert_eq!(json["status"], "partial");
+    assert_eq!(
+        json["text"].as_str().unwrap().trim_end().chars().count(),
+        500
+    );
+}
+
+#[test]
+fn a_declared_content_type_hints_at_the_type() {
+    let server = Server::start(&[]);
+    let csv = "table-multi-row-column-cells-actual.csv";
+    let untyped = server.post_file("/detect", &[], csv).text();
+    let typed = server
+        .post_file("/detect", &[("Content-Type", "text/csv")], csv)
+        .text();
+    assert_ne!(untyped, typed);
+    assert!(typed.starts_with("text/csv"), "{typed}");
+
+    let named = server
+        .post_file(
+            "/detect",
+            &[
+                ("Content-Type", "text/csv"),
+                ("X-Extractous-Filename", "t.txt"),
+            ],
+            csv,
+        )
+        .text();
+    assert_eq!(named, untyped);
+
+    let json = server
+        .post_file(
+            "/extract?format=json",
+            &[("Content-Type", "application/pdf")],
+            "2022_Q3_AAPL.pdf",
+        )
+        .json();
+    assert_eq!(json["status"], "complete");
+    assert_eq!(json["source"]["path"], "upload");
+}
+
+/// Every spooled upload is removed, however its request ends.
+#[test]
+fn no_request_leaves_files_behind() {
+    let scratch = Scratch::new("server-spool");
+    let server = Server::start(&[
+        "--spool-dir",
+        scratch.0.to_str().unwrap(),
+        "--max-input-bytes",
+        "200000",
+        "--timeout",
+        "2",
+    ]);
+    assert_eq!(server.post_file("/extract", &[], "simple.odt").status, 200);
+    assert_eq!(
+        server
+            .post_file("/extract", &[], "encrypted/password.docx")
+            .status,
+        422
+    );
+    assert_eq!(
+        server.post_file("/extract", &[], "2022_Q3_AAPL.pdf").status,
+        413
+    );
+    assert_eq!(
+        server
+            .post_file("/extract?format=json&embedded=separate", &[], "nested.zip")
+            .status,
+        200
+    );
+    assert_eq!(server.post_file("/detect", &[], "simple.doc").status, 200);
+    let mut slow_upload = server.connect();
+    write_head(&mut slow_upload, "POST", "/extract", &[], 10);
+    slow_upload.write_all(b"hello").unwrap();
+    assert_eq!(read_response(slow_upload).status, 408);
+    let mut abandoned = server.connect();
+    write_head(&mut abandoned, "POST", "/extract", &[], 10);
+    abandoned.write_all(b"hello").unwrap();
+    drop(abandoned);
+
+    let leftovers = || -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(&scratch.0)
+            .unwrap()
+            .flat_map(|spool| std::fs::read_dir(spool.unwrap().path()).unwrap())
+            .map(|entry| entry.unwrap().path())
+            .collect()
+    };
+    let started = Instant::now();
+    while !leftovers().is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            leftovers()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(server);
+}
+
+#[cfg(unix)]
+#[test]
+fn sigterm_lets_running_requests_finish() {
+    let mut server = Server::start(&[]);
+    let body = std::fs::read(common::document("simple.odt")).unwrap();
+    let mut running = server.connect();
+    write_head(&mut running, "POST", "/extract", &[], body.len());
+    running.write_all(&body[..100]).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    let killed = std::process::Command::new("kill")
+        .args(["-TERM", &server.child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(server.child.try_wait().unwrap().is_none());
+    assert!(TcpStream::connect(&server.address).is_err());
+
+    running.write_all(&body[100..]).unwrap();
+    let response = read_response(running);
+    assert_eq!(response.status, 200);
+    assert!(response
+        .text()
+        .contains("These are a few of my favorite things"));
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(started.elapsed() < Duration::from_secs(30));
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(status.success());
+}

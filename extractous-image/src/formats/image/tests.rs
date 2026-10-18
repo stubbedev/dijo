@@ -985,18 +985,103 @@ fn describes_an_image_read_from_memory_by_its_size_alone() {
     );
 }
 
-/// Tika's `JXLParser` writes no document of a JPEG XL image, only the XMP it finds.
+/// Tika's result of a JPEG XL image, from the native one: no document, and only the metadata
+/// Tika's scan for an XMP packet finds, without what the header and the boxes add (#132).
+#[cfg(feature = "tika")]
+fn as_tika_writes_no_jpeg_xl_document(
+    text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    tika: &crate::formats::parity::ComparedMetadata,
+) {
+    text.clear();
+    metadata.retain(|(name, _)| tika.iter().any(|(tika_name, _)| tika_name == name));
+}
+
+/// Tika's `JXLParser` writes no document of a JPEG XL image, only the XMP it finds; the native
+/// parser writes the image's document, with the XMP Tika finds, the same (#132).
 #[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
-fn reads_tikas_test_jpeg_xl_images_as_tika_does() {
+fn reads_tikas_test_jpeg_xl_images_beyond_tikas_xmp() {
     let roots = conformance_roots();
     let roots: Vec<&Path> = roots.iter().map(PathBuf::as_path).collect();
-    let (parsed, deferred) = documents_with(&JxlParser, &roots, &skipping_ocr());
+    let configs = skipping_ocr();
+    let (parsed, deferred) = documents_with(&JxlParser, &roots, &configs);
     assert_eq!(parsed.len(), 3, "{parsed:?}");
     assert!(deferred.is_empty(), "{deferred:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    crate::formats::parity::assert_same_as_tika(&paths, JxlParser.tika_name());
+    crate::formats::parity::assert_same_as_tika_adjusting_rewriting(
+        &paths,
+        JxlParser.tika_name(),
+        &configs,
+        crate::formats::parity::Adjustments::default(),
+        as_tika_writes_no_jpeg_xl_document,
+    );
+    let exif = parsed
+        .iter()
+        .find(|path| path.ends_with("testJXL_exif.jxl"))
+        .expect("Tika's JPEG XL image with Exif");
+    let (xhtml, metadata) = crate::Extractor::new()
+        .set_xml_output(true)
+        .extract_file_to_string(exif.to_str().unwrap())
+        .unwrap();
+    assert!(xhtml.contains("<body"), "{xhtml}");
+    assert!(
+        metadata.keys().any(|name| name.starts_with("exif:")),
+        "{metadata:?}"
+    );
+}
+
+/// The fixture of a JPEG XL image named `name`.
+fn jxl_fixture(name: &str) -> String {
+    format!("{}/tests/fixtures/jxl/{name}", env!("CARGO_MANIFEST_DIR"))
+}
+
+#[test]
+fn reads_the_header_and_boxes_of_jpeg_xl_images() {
+    let (xhtml, metadata) = crate::Extractor::new()
+        .set_xml_output(true)
+        .set_ocr_config(TesseractOcrConfig::new().set_skip_ocr(true))
+        .extract_file_to_string(&jxl_fixture("card.jxl"))
+        .unwrap();
+    let value = |name: &str| metadata.get(name).map(|values| values.join("|"));
+    for (name, expected) in [
+        ("Content-Type", "image/jxl"),
+        ("tiff:ImageWidth", "96"),
+        ("tiff:ImageLength", "80"),
+        ("tiff:BitsPerSample", "8"),
+        ("tiff:Make", "Extractous"),
+        ("tiff:Orientation", "6"),
+        ("dc:title", "Fyret"),
+        ("tk:parsed-by", "extractous::JXLParser"),
+    ] {
+        assert_eq!(
+            value(name).as_deref(),
+            Some(expected),
+            "{name}: {metadata:?}"
+        );
+    }
+    assert!(
+        xhtml.contains("<body />") || xhtml.contains("<body>"),
+        "{xhtml}"
+    );
+}
+
+#[test]
+fn reads_jpeg_xl_scans_as_the_same_png() {
+    assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
+    let text = |path: &str| {
+        crate::Extractor::new()
+            .extract_file_to_string(path)
+            .unwrap()
+            .0
+    };
+    let png = text(&format!(
+        "{}/../quality/corpus/danish-scan.png",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    assert!(png.contains("fyr"), "{png}");
+    assert_eq!(text(&jxl_fixture("scan.jxl")), png);
 }
 
 /// Tika's `ICNSParser` reads the icons an Apple icon file lists as the port does, where they

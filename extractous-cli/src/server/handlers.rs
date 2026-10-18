@@ -18,6 +18,7 @@ const BODY_CHUNK_SIZE: usize = 64 * 1024;
 pub struct ExtractRequest {
     pub deadline: Option<Instant>,
     pub embedded: Embedded,
+    pub limits: Limits,
     pub render: RenderOptions,
     pub ocr: Ocr,
     pub ocr_lang: Option<String>,
@@ -199,6 +200,7 @@ fn extract(
             metadata: false,
             raw_metadata: false,
             normalization: Steps::NONE,
+            max_chars: None,
         };
         if render::render_opened(Err(error.clone()), &source, options, &mut document).is_ok() {
             respond.report(Report::Failure(error.category));
@@ -282,7 +284,7 @@ fn extract_tree(
         &files.path,
         &files.display,
         request.render,
-        Limits::DEFAULT,
+        request.limits,
         &files.scratch,
         cache,
         &mut writer,

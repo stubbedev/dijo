@@ -7,8 +7,9 @@
 use std::collections::HashMap;
 
 use super::charsets;
-use super::embedded::{hex_value, Deferral, Embedded};
+use super::embedded::{hex_value, Embedded, Handed, Thrown};
 use super::input::Input;
+use crate::formats::embedded::{record_exception, record_stream_exception, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
@@ -36,8 +37,14 @@ pub(super) enum Interrupt {
     Failed(Failure),
     /// It failed as Tika's does with a runtime exception, which leaves the elements open.
     Unchecked(Failure),
-    /// It met something only Tika's path extracts.
-    Deferred(Deferral),
+}
+
+impl Interrupt {
+    pub(super) fn into_failure(self) -> Failure {
+        match self {
+            Interrupt::Failed(failure) | Interrupt::Unchecked(failure) => failure,
+        }
+    }
 }
 
 impl From<Failure> for Interrupt {
@@ -49,12 +56,6 @@ impl From<Failure> for Interrupt {
 impl From<Stop> for Interrupt {
     fn from(stop: Stop) -> Self {
         Self::Failed(Failure::Stopped(stop))
-    }
-}
-
-impl From<Deferral> for Interrupt {
-    fn from(deferral: Deferral) -> Self {
-        Self::Deferred(deferral)
     }
 }
 
@@ -93,6 +94,8 @@ struct GroupState {
     objdata: bool,
     /// How deep in a picture the group is: 1 for the `\pict` group itself.
     pict_depth: i32,
+    /// Whether the group is an `\object`.
+    object: bool,
     sp: bool,
     sn: bool,
     sv: bool,
@@ -112,6 +115,7 @@ impl GroupState {
             font_charset: None,
             objdata: false,
             pict_depth: 0,
+            object: false,
             sp: false,
             sn: false,
             sv: false,
@@ -129,6 +133,7 @@ impl GroupState {
                 0
             },
             objdata: false,
+            object: false,
             sp: false,
             sn: false,
             sv: false,
@@ -467,7 +472,9 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
         if !self.pending_chars.is_empty() {
             self.push_chars()?;
         }
-        if self.group.pict_depth == 0 {
+        if self.group.pict_depth > 0 {
+            self.embedded.write_property_unit(u16::from(byte));
+        } else {
             self.pending_bytes.push(byte);
         }
         Ok(())
@@ -479,7 +486,9 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
         }
         if self.in_header || self.field == Field::Instruction {
             self.pending_buffer.push(unit);
-        } else if !self.group.sn && !self.group.sv {
+        } else if self.group.sn || self.group.sv {
+            self.embedded.write_property_unit(unit);
+        } else {
             self.pending_chars.push(unit);
         }
         Ok(())
@@ -637,7 +646,7 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
             let charset = self.charset();
             let text = charset
                 .decode(&self.pending_bytes)
-                .ok_or(Deferral::Charset)?;
+                .expect("every charset an RTF document names decodes");
             let mut start = 0;
             let mut units = 0;
             for (index, character) in text.char_indices() {
@@ -709,6 +718,8 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
             self.group.list = param;
         } else if self.word(b"lslvl") {
             self.group.list_level = param;
+        } else if self.word(b"wbitmap") {
+            self.embedded.set_raw_bitmap();
         }
 
         if self.word(b"u") {
@@ -721,7 +732,10 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
         } else if self.word(b"bin") {
             if let Ok(length) = u32::try_from(param) {
                 if self.group.pict_depth == 1 {
-                    self.embedded.write_bytes(&mut self.input, length)?;
+                    if let Err(thrown) = self.embedded.write_bytes(&mut self.input, length) {
+                        record_stream_exception(self.metadata(), thrown.line());
+                        self.embedded.reset();
+                    }
                 } else {
                     self.input.skip(length as usize)?;
                 }
@@ -906,9 +920,19 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
             b"listtext" => self.group.ignore = true,
             b"cell" => self.end_paragraph(true)?,
             b"sp" => self.group.sp = true,
-            b"sn" => self.group.sn = true,
-            b"sv" => self.group.sv = true,
-            b"object" => self.push_text()?,
+            b"sn" => {
+                self.embedded.start_property_text();
+                self.group.sn = true;
+            }
+            b"sv" => {
+                self.embedded.start_property_text();
+                self.group.sv = true;
+            }
+            b"object" => {
+                self.push_text()?;
+                self.embedded.set_in_object(true);
+                self.group.object = true;
+            }
             b"objdata" => {
                 self.group.objdata = true;
                 self.embedded.start_object();
@@ -1076,13 +1100,34 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
             self.pending_buffer.clear();
         }
         self.ansi_skip = 0;
-        let picture_ends =
-            self.group.pict_depth == 1 && !self.group.sn && !self.group.sv && !self.group.sp;
-        if self.group.objdata || picture_ends {
-            self.embedded.complete()?;
+        if self.group.objdata {
+            match self.embedded.complete() {
+                Ok(handed) => self.hand_on(handed)?,
+                Err(thrown) => record_exception(self.metadata(), thrown.line()),
+            }
+        } else if self.group.pict_depth > 0 {
+            if self.group.sn {
+                self.embedded.end_property_name();
+            } else if self.group.sv {
+                self.embedded.end_property_value();
+            } else if self.group.sp {
+                self.embedded.end_property();
+            } else if self.group.pict_depth == 1 {
+                let handed = self.embedded.complete().map_err(|thrown| {
+                    let failure = Failure::Malformed(thrown.line().to_owned());
+                    match thrown {
+                        Thrown::Runtime(_) => Interrupt::Unchecked(failure),
+                        Thrown::Io(_) | Thrown::Tika(_) => Interrupt::Failed(failure),
+                    }
+                })?;
+                self.hand_on(handed)?;
+            }
         }
         if self.group.annotation {
             self.add_output_char(u16::from(b' '))?;
+        }
+        if self.group.object {
+            self.embedded.set_in_object(false);
         }
         if let Some(outer) = self.groups.pop() {
             if self.field == Field::Link
@@ -1122,6 +1167,23 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
             Field::None | Field::PendingLink(_) => {}
         }
         Ok(())
+    }
+
+    /// `extractObj`: parses the document a picture or object embeds, in a package entry. Where
+    /// the text reaches the limit of a string extraction there, Tika catches the
+    /// `WriteLimitReachedException`, recording it in the embedded document's metadata, and goes
+    /// on, the text it writes after it dropped.
+    fn hand_on(&mut self, handed: Option<Handed>) -> Step {
+        let Some(Handed { data, metadata }) = handed else {
+            return Ok(());
+        };
+        match self
+            .out
+            .parse_embedded(&data, &metadata, Wrapping::PackageEntry)
+        {
+            Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => Ok(()),
+            Err(failure) => Err(failure.into()),
+        }
     }
 
     /// Reads a field instruction once its group ends: a `HYPERLINK` makes its result a link to
