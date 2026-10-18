@@ -3,7 +3,7 @@
 //! languages and tools as metadata, and the units counted once the document has ended.
 
 use crate::config::ParserConfigs;
-use crate::formats::jdk_zip;
+use crate::formats::jdk_zip::Archive;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Nested, Xhtml};
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
@@ -376,7 +376,9 @@ impl SaxHandler for Xliff<'_, '_> {
 
 /// Tika's `XLZParser`: each entry of the archive named with `.xlf`, in the archive's order,
 /// parsed by the XLIFF 1.2 parser into the document's handler, shielded from its end, so each
-/// writes its own `html`, head and `body` into the document, with the metadata they share.
+/// writes its own `html`, head and `body` into the document, with the metadata they share. Each
+/// entry is spooled as it is read, ahead of the writing to tell whether the port reads it, and
+/// again as it is written, one at a time.
 pub struct XlzParser;
 
 impl Parser for XlzParser {
@@ -394,26 +396,41 @@ impl Parser for XlzParser {
         &["application/x-xliff+zip"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let zip = jdk_zip::open(input)?;
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        let archive = Archive::open(input, pages)?;
         let mut documents = Vec::new();
-        for entry in zip
+        for entry in archive
+            .zip()
             .entries()
             .iter()
             .filter(|entry| entry.name.contains(".xlf"))
         {
-            let document = jdk_zip::read_whole(&zip, entry)?;
+            let document = archive.spool(entry)?;
             if let Err(Decline::Deferred(reason)) =
-                Xliff12Parser.prepare(&document, metadata, configs)
+                Xliff12Parser.prepare_paged(&document, document.pages(), metadata, configs)
             {
                 return Err(Decline::Deferred(format!("{}: {reason}", entry.name)));
             }
-            documents.push(document);
+            documents.push(Archive::keep(entry, document));
         }
         if documents.is_empty() {
             return Err(Decline::Deferred(
@@ -423,9 +440,10 @@ impl Parser for XlzParser {
         let start = metadata.clone();
         Ok(Box::new(move |xhtml| {
             let context = xhtml.context();
-            for document in &documents {
+            for document in documents {
+                let document = archive.take(document)?;
                 let prepared = Xliff12Parser
-                    .prepare(document, &start, configs)
+                    .prepare_paged(&document, document.pages(), &start, configs)
                     .map_err(|_| {
                         Failure::Malformed("the XLIFF entry is not prepared".to_owned())
                     })?;
@@ -628,5 +646,40 @@ adminlang=\"en\" srclang=\"en\" datatype=\"plaintext\"/>\r\n<body>\r\n",
         assert_eq!(metadata["tu-count"], [count.to_string()]);
         assert_eq!(metadata["tuv-count"], [(2 * count).to_string()]);
         assert_eq!(metadata["target-language"], ["da"]);
+    }
+
+    /// An XLZ archive whose first XLIFF document decodes past what a spool holds in memory,
+    /// with noise outside its units, which is not written, and whose second ends the document:
+    /// each spools as it is read, to a file past the memory, under a budget far below them.
+    #[test]
+    fn reads_xlz_archives_too_large_to_read_whole_an_entry_at_a_time() {
+        use extractous_core::large::SPOOLING_BUDGET;
+
+        use crate::formats::large::{bytes, noise, package, END, LARGE};
+
+        const XLIFF: &str = r#"<?xml version="1.0" encoding="UTF-8"?><xliff version="1.2" xmlns="urn:oasis:names:tc:xliff:document:1.2">"#;
+        let last = format!(
+            r#"{XLIFF}<file original="b" source-language="da" datatype="plaintext"><body><trans-unit id="1"><source>{END}</source></trans-unit></body></file></xliff>"#
+        );
+        let file = LargeFile::written("large.xlz", |out| {
+            package(
+                out,
+                vec![
+                    ("notes.txt", bytes(b"not XLIFF")),
+                    (
+                        "a.xlf",
+                        Box::new(|out| {
+                            out.write_all(XLIFF.as_bytes())?;
+                            noise(out, "note", LARGE)?;
+                            out.write_all(b"</xliff>")
+                        }),
+                    ),
+                    ("b.xlf", bytes(last.as_bytes())),
+                ],
+            )
+        });
+        let (text, _) =
+            file.extract_with(&crate::Extractor::new(), SPOOLING_BUDGET, XlzParser.name());
+        assert!(text.contains(END), "{text}");
     }
 }
