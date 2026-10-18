@@ -1,7 +1,7 @@
 //! Compound documents whose content Tika's `OfficeParser` does not read: Works, Project and
-//! SolidWorks documents, StarOffice documents, Corel presentations and compound documents of no
-//! known kind. Tika writes their summary information as metadata and, where POI names their
-//! kind, sets it as the content type.
+//! SolidWorks documents, StarOffice documents, Corel presentations, Quattro Pro 7 and 8 workbooks
+//! and compound documents of no known kind. Tika writes their summary information as metadata
+//! and, where POI names their kind, sets it as the content type.
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
@@ -16,6 +16,10 @@ use crate::Error;
 const MS_GRAPH_CHART: &str = "application/vnd.ms-graph";
 /// What POI's container detection names a compound document of no kind it knows.
 const UNKNOWN_KIND: &str = "application/x-tika-msoffice";
+/// A Quattro Pro 7 or 8 workbook, a compound document no parser of Tika's reads by its type, so
+/// that Tika's composite parser hands it to `OfficeParser` by its supertype, which reads its
+/// summary information only.
+const QUATTRO_PRO_7_8: &str = "application/x-quattro-pro; version=7-8";
 
 /// The types `POIFSDocumentType` knows among those this parser reads, which `OfficeParser`
 /// sets as the content type.
@@ -62,6 +66,7 @@ impl Parser for CompoundDocumentParser {
             "application/vnd.stardivision.impress",
             "application/vnd.stardivision.writer",
             "application/x-corelpresentations",
+            QUATTRO_PRO_7_8,
             "application/x-tika-msoffice",
             DRM_ENCRYPTED,
         ]
@@ -177,7 +182,7 @@ mod tests {
         let (failing, read): (Vec<PathBuf>, Vec<PathBuf>) = parsed
             .into_iter()
             .partition(|path| path.ends_with("testWORD_protected_drm.doc"));
-        assert_eq!(read.len(), 21, "{read:?}");
+        assert_eq!(read.len(), 22, "{read:?}");
         assert_eq!(failing.len(), 1);
         assert_same_as_tika(&paths(&read), CompoundDocumentParser.tika_name());
         assert_fails_as_tika(&paths(&failing));
