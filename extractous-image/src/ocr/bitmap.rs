@@ -27,6 +27,13 @@ pub fn luma(red: u8, green: u8, blue: u8) -> u8 {
     ((77 * u32::from(red) + 150 * u32::from(green) + 29 * u32::from(blue) + 128) >> 8) as u8
 }
 
+/// The colour of cyan, magenta, yellow and black ink, each from 0, none, to 255, printed
+/// without a profile: the light each colour's ink and the black leave.
+pub(crate) fn cmyk_rgb([cyan, magenta, yellow, black]: [u8; 4]) -> [u8; 3] {
+    let left = |ink: u8| ((255 - u32::from(ink)) * (255 - u32::from(black)) / 255) as u8;
+    [left(cyan), left(magenta), left(yellow)]
+}
+
 /// `mul8table` of Java2D's AlphaMath: `a × b ÷ 255`, rounded as its table rounds it.
 pub(crate) fn mul8(a: u8, b: u8) -> u8 {
     if a == 0 || b == 0 {

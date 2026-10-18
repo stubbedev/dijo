@@ -25,9 +25,9 @@ const OCR_MODEL_EXTENSION: &str = "traineddata";
 const OCR_LICENSES: &str = "licenses";
 const STATIC_LICENSES_VARIABLE: &str = "EXTRACTOUS_STATIC_LICENSES";
 const STATIC_LIBS_VARIABLE: &str = "EXTRACTOUS_STATIC_LIBS";
-/// The C++ and OpenMP runtimes tesseract and libheif need, which `pkg-config` leaves out, and GCC's
-/// runtime, whose CPU detection (`__builtin_cpu_supports`) tesseract picks its kernels with.
-const STATIC_RUNTIME_LIBRARIES: [&str; 3] = ["stdc++", "gomp", "gcc"];
+/// The C++ runtime tesseract and libheif need, which `pkg-config` leaves out, and GCC's runtime,
+/// whose CPU detection (`__builtin_cpu_supports`) tesseract picks its kernels with.
+const STATIC_RUNTIME_LIBRARIES: [&str; 2] = ["stdc++", "gcc"];
 /// The libraries of the C library itself, which musl's `libc.a` holds.
 const STATIC_C_LIBRARIES: [&str; 4] = ["c", "m", "pthread", "dl"];
 /// The Visual C++ runtime the GraalVM library and the JDK's DLLs link, which Windows does not

@@ -1,4 +1,4 @@
-//! What Tika writes for a jsoup document: JSoupParser's traversal (`TikaNodeFilter`), which
+//! What Tika writes for a parsed document: JSoupParser's traversal (`TikaNodeFilter`), which
 //! reports every node, the document, comments and doctypes among them, as an element and every
 //! text or data node as characters; `XHTMLDowngradeHandler`, which names elements in upper case
 //! and drops `xmlns` attributes; and `HtmlHandler` with the `DefaultHtmlMapper`, which writes the
@@ -123,40 +123,30 @@ pub(super) fn has_scheme(text: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
-/// An attribute as the SAX events carry it: its jsoup key and value, "" for a boolean one.
-struct SaxAttribute {
-    name: String,
-    value: String,
-}
-
 /// A node's attributes as `XHTMLDowngradeHandler` passes them on: without `xmlns` and
 /// `xmlns:*` declarations.
-fn sax_attributes(attributes: &[Attribute]) -> Vec<SaxAttribute> {
+fn sax_attributes(attributes: &[Attribute]) -> Vec<&Attribute> {
     attributes
         .iter()
         .filter(|attribute| attribute.key != "xmlns" && !attribute.key.starts_with("xmlns:"))
-        .map(|attribute| SaxAttribute {
-            name: attribute.key.clone(),
-            value: attribute.value.clone().unwrap_or_default(),
-        })
         .collect()
 }
 
-fn value<'a>(attributes: &'a [SaxAttribute], name: &str) -> Option<&'a str> {
+fn value<'a>(attributes: &[&'a Attribute], name: &str) -> Option<&'a str> {
     attributes
         .iter()
-        .find(|attribute| attribute.name == name)
+        .find(|attribute| attribute.key == name)
         .map(|attribute| attribute.value.as_str())
 }
 
 /// The name a node takes in the SAX events, in upper case as `XHTMLDowngradeHandler` writes it.
 fn event_name(dom: &Dom, node: NodeId) -> Option<String> {
     let name = match &dom.node(node).data {
-        NodeData::Document { .. } => "#document",
-        NodeData::Element { .. } => &dom.tag(node).name,
+        NodeData::Document => "#document",
+        NodeData::Element { name, .. } => name,
         NodeData::Comment(_) => "#comment",
         NodeData::Doctype { .. } => "#doctype",
-        NodeData::Text(_) | NodeData::Data(_) | NodeData::CData(_) => return None,
+        NodeData::Text(_) => return None,
     };
     Some(name.to_uppercase())
 }
@@ -189,14 +179,11 @@ pub(super) fn write(dom: &Dom, xhtml: &mut Xhtml) -> Result<(), Stop> {
 
 impl HtmlHandler<'_, '_> {
     fn node(&mut self, dom: &Dom, node: NodeId) -> Result<(), Stop> {
-        match &dom.node(node).data {
-            NodeData::Text(text) | NodeData::Data(text) | NodeData::CData(text) => {
-                if !text.is_empty() {
-                    self.characters(text)?;
-                }
-                return Ok(());
+        if let NodeData::Text(text) = &dom.node(node).data {
+            if !text.is_empty() {
+                self.characters(text)?;
             }
-            _ => {}
+            return Ok(());
         }
         let name = event_name(dom, node).unwrap_or_else(|| panic!("node {node} has no name"));
         let attributes = sax_attributes(dom.attributes(node));
@@ -207,7 +194,7 @@ impl HtmlHandler<'_, '_> {
         self.end_element(&name)
     }
 
-    fn start_element(&mut self, name: &str, attributes: &[SaxAttribute]) -> Result<(), Stop> {
+    fn start_element(&mut self, name: &str, attributes: &[&Attribute]) -> Result<(), Stop> {
         if name == "HTML" {
             if let Some(lang) = value(attributes, "lang") {
                 self.xhtml.metadata_mut().set("Content-Language", lang);
@@ -264,7 +251,7 @@ impl HtmlHandler<'_, '_> {
             return;
         }
         let metadata = self.xhtml.metadata_mut();
-        if java_equals_ignore_case(name, "ICBM") {
+        if java::equals_ignore_case(name, "ICBM") {
             match icbm(value) {
                 Some((latitude, longitude)) => {
                     metadata.set("ICBM", format!("{latitude}, {longitude}"));
@@ -275,7 +262,7 @@ impl HtmlHandler<'_, '_> {
             }
             return;
         }
-        if java_equals_ignore_case(name, "Content-Type") {
+        if java::equals_ignore_case(name, "Content-Type") {
             let hint = MediaType::parse(value)
                 .map(|media_type| media_type.to_string())
                 .unwrap_or_else(|| value.to_string());
@@ -301,31 +288,31 @@ impl HtmlHandler<'_, '_> {
     fn start_element_with_mapped_attributes(
         &mut self,
         name: &str,
-        attributes: &[SaxAttribute],
+        attributes: &[&Attribute],
     ) -> Result<(), Stop> {
         if attributes.is_empty() {
             return self.xhtml.start_element(name);
         }
         let mut mapped: Vec<(String, String)> = Vec::with_capacity(attributes.len() + 1);
         for attribute in attributes {
-            if !safe_attribute(name, &attribute.name) {
+            if !safe_attribute(name, &attribute.key) {
                 continue;
             }
-            let value = if URI_ATTRIBUTES.contains(&attribute.name.as_str()) {
-                let value = if attribute.name == "src" && attribute.value.starts_with("data:") {
+            let value = if URI_ATTRIBUTES.contains(&attribute.key.as_str()) {
+                let value = if attribute.key == "src" && attribute.value.starts_with("data:") {
                     "data:"
                 } else {
                     &attribute.value
                 };
                 java::trim(value).to_string()
             } else if name == "object"
-                && matches!(attribute.name.as_str(), "codebase" | "data" | "classid")
+                && matches!(attribute.key.as_str(), "codebase" | "data" | "classid")
             {
                 java::trim(&attribute.value).to_string()
             } else {
                 attribute.value.clone()
             };
-            mapped.push((attribute.name.clone(), value));
+            mapped.push((attribute.key.clone(), value));
         }
         if name == "img" && !mapped.iter().any(|(key, _)| key == "alt") {
             mapped.push(("alt".to_string(), String::new()));
@@ -377,13 +364,6 @@ impl HtmlHandler<'_, '_> {
         }
         Ok(())
     }
-}
-
-/// Java's `String.equalsIgnoreCase`.
-fn java_equals_ignore_case(a: &str, b: &str) -> bool {
-    let a: Vec<u16> = a.encode_utf16().collect();
-    let b: Vec<u16> = b.encode_utf16().collect();
-    super::reader::equals_ignore_case(&a, &b)
 }
 
 /// The latitude and longitude `\s*(-?\d+\.\d+)[,\s]+(-?\d+\.\d+)\s*` reads from a whole value.

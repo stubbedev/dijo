@@ -18,7 +18,7 @@ use rav1d::src::lib::{
 };
 use rav1d::Dav1dResult;
 
-use super::recognize::MAX_PIXELS;
+use super::decode::MAX_DECODED_PIXELS;
 
 /// How the chroma planes are subsampled, as horizontal and vertical shifts, or none for a
 /// picture of luma alone.
@@ -49,7 +49,8 @@ pub(crate) struct Picture {
     pub(crate) depth: u8,
     pub(crate) chroma: Chroma,
     pub(crate) planes: Vec<Plane>,
-    /// The matrix coefficients, as ISO/IEC 23091-2 numbers them.
+    /// The colour primaries and the matrix coefficients, as ISO/IEC 23091-2 numbers them.
+    pub(crate) primaries: u16,
     pub(crate) matrix: u16,
     pub(crate) full_range: bool,
 }
@@ -81,7 +82,7 @@ fn checked(result: Dav1dResult, attempt: &str) -> Result<(), String> {
 
 /// The picture of an AV1 temporal unit, such as an AV1 image item: the last one it decodes to,
 /// which for an item of several layers is the whole image, with film grain applied. A frame of
-/// more than [`MAX_PIXELS`] pixels is not decoded.
+/// more than [`MAX_DECODED_PIXELS`] pixels is not decoded.
 pub(crate) fn decode(temporal_unit: &[u8]) -> Result<Picture, String> {
     let mut settings = MaybeUninit::<Dav1dSettings>::uninit();
     unsafe { dav1d_default_settings(NonNull::from(&mut settings).cast()) };
@@ -89,7 +90,7 @@ pub(crate) fn decode(temporal_unit: &[u8]) -> Result<Picture, String> {
     settings.n_threads = 1;
     settings.max_frame_delay = 1;
     settings.apply_grain = 1;
-    settings.frame_size_limit = MAX_PIXELS as u32;
+    settings.frame_size_limit = MAX_DECODED_PIXELS as u32;
     let mut context = Context(None);
     checked(
         unsafe {
@@ -203,6 +204,7 @@ fn copied(picture: &Dav1dPicture) -> Result<Picture, String> {
         depth: depth as u8,
         chroma,
         planes: copies,
+        primaries: u16::try_from(header.pri).map_err(|_| "colour primaries past 65535")?,
         matrix: u16::try_from(header.mtrx).map_err(|_| "matrix coefficients past 65535")?,
         full_range: header.color_range != 0,
     })

@@ -523,7 +523,8 @@ fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
 
 /// A string extraction's results with both texts cut where they part, when what follows in
 /// one of them is only end tags and white space: the native text was cut at the length limit
-/// before a [`NativeRewrite`] rewrote it, and what the rewrite undoes counts towards the limit,
+/// before a [`NativeRewrite`] rewrote it, or before a departure was left out, and what the
+/// rewrite undoes or the departure changes counts towards the limit,
 /// so the text ends earlier or later than Tika's, its open elements then ended.
 #[cfg(feature = "tika")]
 fn cut_texts(mut tika: Extracted, mut native: Extracted) -> (Extracted, Extracted) {
@@ -1140,7 +1141,8 @@ const DEPARTED: &str = "<departed>";
 /// An extraction, its text in `char_set`, without what `departures` leave uncompared: each
 /// value of a metadata name, in the metadata and as the content of each `meta` element of the
 /// XHTML head, up to the end of a string extraction the length limit cuts in it; and, for
-/// line breaks, every CRLF of the text an LF.
+/// line breaks, every CRLF of the text an LF; for blank lines, each run of white space that holds
+/// a line break an LF.
 #[cfg(feature = "tika")]
 fn without_departures(
     mut extracted: Extracted,
@@ -1154,7 +1156,10 @@ fn without_departures(
         .iter()
         .filter_map(|departure| match departure {
             Departure::Values(name, _) => Some(*name),
-            Departure::Unset(..) | Departure::LineBreaks(_) | Departure::PngImages(_) => None,
+            Departure::Unset(..)
+            | Departure::LineBreaks(_)
+            | Departure::BlankLines(_)
+            | Departure::PngImages(_) => None,
         })
         .collect();
     let unset: Vec<&str> = departures
@@ -1188,6 +1193,12 @@ fn without_departures(
             text.push('\n');
         }
     }
+    if departures
+        .iter()
+        .any(|departure| matches!(departure, Departure::BlankLines(_)))
+    {
+        text = without_blank_lines(&text);
+    }
     for name in names {
         let meta = format!("<meta name=\"{name}\" content=\"");
         let mut kept = String::with_capacity(text.len());
@@ -1206,6 +1217,35 @@ fn without_departures(
     formats::encode(&text, char_set, &mut encoded);
     extracted.text = encoded;
     extracted
+}
+
+/// `text` as a [`Departure::BlankLines`] compares it: without the white space that ends the
+/// body, before `</body>` or the end of the text, and with each other run of white space that
+/// holds a line break one LF.
+#[cfg(feature = "tika")]
+fn without_blank_lines(text: &str) -> String {
+    let body_end = text.find("</body>").unwrap_or(text.len());
+    let content_end = text[..body_end]
+        .trim_end_matches(|c: char| c.is_ascii_whitespace())
+        .len();
+    let text = format!("{}{}", &text[..content_end], &text[body_end..]);
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find(|c: char| c.is_ascii_whitespace()) {
+        kept.push_str(&rest[..start]);
+        let run = &rest[start..];
+        let end = run
+            .find(|c: char| !c.is_ascii_whitespace())
+            .unwrap_or(run.len());
+        if run[..end].contains(['\n', '\r']) {
+            kept.push('\n');
+        } else {
+            kept.push_str(&run[..end]);
+        }
+        rest = &run[end..];
+    }
+    kept.push_str(rest);
+    kept
 }
 
 /// Asserts that the native parser of each document, which Tika's path parses with
@@ -2124,11 +2164,10 @@ fn compare(
                             }
                             native.text = with_the_body_end_tika_leaks(native.text, &tika.text);
                             let (tika, native) = cut_alike(tika, native, naming.departures);
-                            let unset = naming
-                                .departures
-                                .iter()
-                                .any(|departure| matches!(departure, Departure::Unset(..)));
-                            if rewrite.is_some() || unset {
+                            let moves_the_cut = naming.departures.iter().any(|departure| {
+                                matches!(departure, Departure::Unset(..) | Departure::BlankLines(_))
+                            });
+                            if rewrite.is_some() || moves_the_cut {
                                 cut_texts(tika, native)
                             } else {
                                 (tika, native)
@@ -2819,6 +2858,17 @@ mod tests {
         assert_eq!(with_the_body_end_tika_leaks(native.clone(), closed), native);
         let more = b"<body><table><tr><td>Thank you</td></tr></table></body>";
         assert_eq!(with_the_body_end_tika_leaks(native.clone(), more), native);
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn compares_blank_lines_as_line_feeds_and_without_the_body_end() {
+        let tika = "<head>\r\n<title>a  b</title></head>\n<body>\n\n<p>x\ry</p>\n</body></html>";
+        let native = "<head>\n<title>a  b</title></head>\n<body>\n<p>x\ny</p>\n \n\n</body></html>";
+        let compared = "<head>\n<title>a  b</title></head>\n<body>\n<p>x\ny</p></body></html>";
+        assert_eq!(without_blank_lines(tika), compared);
+        assert_eq!(without_blank_lines(native), compared);
+        assert_eq!(without_blank_lines("text \t\n"), "text");
     }
 
     #[test]
