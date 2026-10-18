@@ -1,19 +1,22 @@
 //! The TAR header as commons-compress's `TarArchiveEntry` parses it, for
 //! `ArchiveStreamFactory.detect`, whose answer decides the media type Tika gives a document:
 //! the magic of a POSIX, AIX, GNU or Ant header, or else the COMPRESS-117 check of the first
-//! record read as an archive of its own. Numbers must be octal or base-256, names are decoded as
-//! UTF-8 with `?` for what is malformed.
+//! record read as an archive of its own; and for the archive's reader ([`super::tar`]). Numbers
+//! must be octal or base-256, names are decoded as UTF-8 with `?` for what is malformed.
 
 use std::ops::Range;
 
 use super::zip::decode_name;
 
-const RECORD: usize = 512;
+pub(super) const RECORD: usize = 512;
 const NAME: Range<usize> = 0..100;
 const MODE: Range<usize> = 100..108;
 const UID: Range<usize> = 108..116;
 const GID: Range<usize> = 116..124;
 const SIZE: Range<usize> = 124..136;
+/// The sparse structs of an old GNU header, offset and length twelve bytes each.
+const GNU_SPARSE_STRUCTS: usize = 4;
+const SPARSE_STRUCT: usize = 24;
 const MTIME: Range<usize> = 136..148;
 const CHECKSUM: Range<usize> = 148..156;
 const LINK_FLAG: usize = 156;
@@ -45,7 +48,8 @@ const LF_OLD_GNU_SPARSE: u8 = b'S';
 const LF_EXTENSIONS: [u8; 5] = *b"KLgxX";
 
 /// commons-compress rejects the header.
-struct Corrupt;
+#[derive(Debug)]
+pub(super) struct Corrupt;
 
 /// `TarArchiveInputStream.matches`: the magic and version of a POSIX, AIX, GNU or Ant header.
 pub(crate) fn matches(header: &[u8]) -> bool {
@@ -133,10 +137,14 @@ fn parse_name(field: &[u8]) -> String {
     decode_name(&field[..length])
 }
 
-/// `TarArchiveEntry.isXstar` of a header without global PAX headers before it.
-fn is_xstar(header: &[u8]) -> bool {
+/// `TarArchiveEntry.isXstar` of a header, after global PAX headers whose `SCHILY.archtype`
+/// says whether the archive is xstar's, if they give one.
+fn is_xstar(header: &[u8], archtype: Option<bool>) -> bool {
     if &header[XSTAR_MAGIC] == b"tar\0" {
         return true;
+    }
+    if let Some(xstar) = archtype {
+        return xstar;
     }
     let invalid_prefix = header[XSTAR_PREFIX.end - 1] != 0
         && (header[LINK_FLAG] != LF_MULTIVOLUME
@@ -165,29 +173,53 @@ pub(super) fn normalize(name: &str) -> String {
     name.trim_start_matches('/').to_owned()
 }
 
-/// What the check reads of a header that `TarArchiveEntry` parses.
-struct Header {
-    name: String,
+/// `TarUtils.readSparseStructs`: `count` sparse structs from the start of `bytes`, each an
+/// offset and a length, neither negative.
+pub(super) fn sparse_structs(bytes: &[u8], count: usize) -> Result<Vec<(i64, i64)>, Corrupt> {
+    (0..count)
+        .map(|index| {
+            let at = index * SPARSE_STRUCT;
+            let offset = parse_octal_or_binary(&bytes[at..at + 12])?;
+            let length = parse_octal_or_binary(&bytes[at + 12..at + SPARSE_STRUCT])?;
+            if offset < 0 || length < 0 {
+                return Err(Corrupt);
+            }
+            Ok((offset, length))
+        })
+        .collect()
+}
+
+/// What `TarArchiveEntry` reads of a header.
+pub(super) struct Header {
+    pub(super) name: String,
     user_name: String,
     group_name: String,
     checksum_ok: bool,
-    link_flag: u8,
-    /// An old GNU header's flag that sparse headers follow it.
-    extended: bool,
+    pub(super) link_flag: u8,
+    pub(super) size: i64,
+    /// The modification time, in seconds since the epoch.
+    pub(super) mtime: i64,
+    /// An old GNU header's sparse structs, offset and length, whether sparse headers follow
+    /// it, and the real size of its file.
+    pub(super) sparse: Vec<(i64, i64)>,
+    pub(super) extended: bool,
+    pub(super) real_size: i64,
 }
 
 impl Header {
-    /// `TarArchiveEntry(headerBuf, encoding, false)`, which fails on a number that is not octal
-    /// or base-256, or on a negative size or sparse struct.
-    fn parse(header: &[u8]) -> Result<Header, Corrupt> {
+    /// `TarArchiveEntry(globalPaxHeaders, headerBuf, encoding, false)`, after global PAX headers
+    /// whose `SCHILY.archtype` says whether the archive is xstar's, if they give one; it fails
+    /// on a number that is not octal or base-256, or on a negative size or sparse struct.
+    pub(super) fn parse(header: &[u8], archtype: Option<bool>) -> Result<Header, Corrupt> {
         let mut name = parse_name(&header[NAME]);
         for field in [MODE, UID, GID] {
             parse_octal_or_binary(&header[field])?;
         }
-        if parse_octal_or_binary(&header[SIZE])? < 0 {
+        let size = parse_octal_or_binary(&header[SIZE])?;
+        if size < 0 {
             return Err(Corrupt);
         }
-        parse_octal_or_binary(&header[MTIME])?;
+        let mtime = parse_octal_or_binary(&header[MTIME])?;
         let checksum_ok = checksum_ok(header)?;
         let link_flag = header[LINK_FLAG];
         let user_name = parse_name(&header[USER_NAME]);
@@ -196,22 +228,17 @@ impl Header {
             parse_octal_or_binary(&header[DEV_MAJOR])?;
             parse_octal_or_binary(&header[DEV_MINOR])?;
         }
+        let mut sparse = Vec::new();
         let mut extended = false;
+        let mut real_size = 0;
         let magic = &header[MAGIC];
         if magic == b"ustar " {
             parse_octal_or_binary(&header[GNU_ATIME])?;
             parse_octal_or_binary(&header[GNU_CTIME])?;
-            for sparse in 0..4 {
-                let at = GNU_SPARSE + sparse * 24;
-                if parse_octal_or_binary(&header[at..at + 12])? < 0
-                    || parse_octal_or_binary(&header[at + 12..at + 24])? < 0
-                {
-                    return Err(Corrupt);
-                }
-            }
+            sparse = sparse_structs(&header[GNU_SPARSE..], GNU_SPARSE_STRUCTS)?;
             extended = header[GNU_IS_EXTENDED] == 1;
-            parse_octal(&header[GNU_REAL_SIZE])?;
-        } else if magic == b"ustar\0" && is_xstar(header) {
+            real_size = parse_octal(&header[GNU_REAL_SIZE])?;
+        } else if magic == b"ustar\0" && is_xstar(header, archtype) {
             let prefix = parse_name(&header[XSTAR_PREFIX]);
             parse_octal_or_binary(&header[XSTAR_ATIME])?;
             parse_octal_or_binary(&header[XSTAR_CTIME])?;
@@ -233,7 +260,11 @@ impl Header {
             group_name,
             checksum_ok,
             link_flag,
+            size,
+            mtime,
+            sparse,
             extended,
+            real_size,
         })
     }
 
@@ -251,7 +282,7 @@ pub(crate) fn is_tar_by_entries(record: &[u8]) -> bool {
     if record.len() != RECORD || record.iter().all(|&b| b == 0) {
         return false;
     }
-    let Ok(header) = Header::parse(record) else {
+    let Ok(header) = Header::parse(record, None) else {
         return false;
     };
     if LF_EXTENSIONS.contains(&header.link_flag)

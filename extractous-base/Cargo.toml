@@ -43,7 +43,6 @@ sha2 = "0.11.1"
 snap = "1.1.2"
 strum = { version = "0.28.0" }
 strum_macros = { version = "0.28.0" }
-tar = { version = "0.4.46", default-features = false }
 thiserror = { version = "2.0.17" }
 unicode-general-category = "1.1.0"
 unicode-normalization = "0.1.25"

@@ -25,10 +25,10 @@ cpio = "0.4.1"
 flate2 = "1.1.5"
 regex = "1.13.1"
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "column_decltype", "serialize"] }
-tar = { version = "0.4.46", default-features = false }
 zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 extractous-base = { path = "../extractous-base", default-features = false, features = ["testing"] }
 extractous-core = { path = "../extractous-core", default-features = false, features = ["parity"] }
 extractous-small = { path = "../extractous-small", default-features = false, features = ["testing"] }
+tar = { version = "0.4.46", default-features = false }
