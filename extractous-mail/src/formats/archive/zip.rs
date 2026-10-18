@@ -187,6 +187,9 @@ impl Parser for ZipParser {
         }
         let salvaged = match salvage(input) {
             Ok(salvaged) => salvaged,
+            Err(Unsalvaged::Unspooled(reason)) => {
+                return Err(Decline::Fails(Error::IoError(reason)))
+            }
             Err(Unsalvaged::Thrown) => return streamed(input, pages, None),
             Err(Unsalvaged::Unported(reason)) => {
                 return streamed(
@@ -208,7 +211,8 @@ impl Parser for ZipParser {
         reading(
             Box::new(move |xhtml| {
                 let zip = ZipFile::open(&salvaged).expect("a salvaged archive opens");
-                write_archive(input, &zip, xhtml, Pages::IN_MEMORY, &in_memory)
+                let pages = salvaged.pages();
+                write_archive(input, &zip, xhtml, pages, &Paging::new(pages))
             }),
             difference,
         )
