@@ -6,7 +6,8 @@
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Pages, Paging};
 use crate::java;
 use crate::text::charset::Charset;
 
@@ -28,9 +29,23 @@ impl Parser for PrtParser {
         &["application/x-prt"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -38,6 +53,7 @@ impl Parser for PrtParser {
             let mut stream = Stream {
                 bytes: input,
                 at: 0,
+                paging: Paging::new(pages),
             };
             let parsed = parse(&mut stream, xhtml);
             xhtml.end_document()?;
@@ -46,10 +62,11 @@ impl Parser for PrtParser {
     }
 }
 
-/// The part file as Tika reads its stream.
+/// The part file as Tika reads its stream, whose pages it releases as it reads on.
 struct Stream<'a> {
     bytes: &'a [u8],
     at: usize,
+    paging: Paging<'a>,
 }
 
 impl<'a> Stream<'a> {
@@ -57,6 +74,7 @@ impl<'a> Stream<'a> {
     fn read(&mut self) -> Option<u8> {
         let byte = self.bytes.get(self.at).copied()?;
         self.at += 1;
+        self.paging.read(1);
         Some(byte)
     }
 
@@ -67,6 +85,7 @@ impl<'a> Stream<'a> {
             .get(self.at..self.at + length)
             .ok_or_else(|| Failure::Malformed("EOFException: the part file ends early".into()))?;
         self.at += length;
+        self.paging.read(length);
         Ok(read)
     }
 
@@ -204,11 +223,13 @@ fn paragraph(stream: &mut Stream<'_>, length: usize, xhtml: &mut Xhtml) -> Resul
     Ok(())
 }
 
-#[cfg(all(test, feature = "tika"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(feature = "tika")]
     use std::path::{Path, PathBuf};
 
     use super::*;
+    #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
         conformance_corpus, documents, Departure, Scratch,
@@ -236,6 +257,7 @@ mod tests {
         note
     }
 
+    #[cfg(feature = "tika")]
     fn view(text: &[u8]) -> Vec<u8> {
         let mut view = vec![0; 5];
         view.extend_from_slice(&[0xf0, 0xbf]);
@@ -245,6 +267,26 @@ mod tests {
         view
     }
 
+    /// A part file too large to read whole is read a byte at a time, each note written as it
+    /// is found.
+    #[test]
+    fn reads_part_files_too_large_to_read_whole() {
+        let body = |index: u64| note(format!("Note {index}").as_bytes());
+        let count = extractous_core::large::bodies_past_limit(body(1_000_000).len());
+        let head = part(b"200803201052", b"Bolt", &[]);
+        let file = extractous_core::large::LargeFile::new("long.prt", &head, count, body, b"");
+        let mut notes = 0;
+        let metadata = file.extract_lines(PrtParser.name(), |line| {
+            if !line.is_empty() {
+                assert_eq!(line, format!("Note {notes}"));
+                notes += 1;
+            }
+        });
+        assert_eq!(notes, count);
+        assert_eq!(metadata["dc:description"], ["Bolt"]);
+    }
+
+    #[cfg(feature = "tika")]
     #[test]
     fn extracts_part_files_as_tikas_path_does() {
         let scratch = Scratch::new("prt");
@@ -299,6 +341,7 @@ mod tests {
         assert_eq!(text.trim(), "Bolt");
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_tikas_test_part_files_as_tikas_path_does() {
