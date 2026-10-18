@@ -981,10 +981,9 @@ fn licenses_prints_the_licence_and_third_party_notices() {
     let text = stdout(&output);
     assert!(text.contains("Apache License"));
     assert!(text.contains("| `clap` |"));
-    assert_eq!(
-        text.contains("| `org.apache.tika:tika-core` |"),
-        cfg!(feature = "tika"),
-        "the Java libraries' licences are printed exactly by a build with Tika"
+    assert!(
+        !text.contains("| `org.apache.tika:tika-core` |"),
+        "no release holds Tika, so no Java library's licence is printed"
     );
 
     let with_input = extractous(&["--licenses", &document("simple.odt")]);

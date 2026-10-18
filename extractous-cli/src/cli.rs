@@ -12,8 +12,8 @@ use crate::tree::Limits;
 #[command(
     name = "extractous",
     version,
-    about = "Extract text and metadata from documents with Apache Tika compiled to native code",
-    long_about = "Extract text and metadata from documents with Apache Tika compiled to native code.\n\n\
+    about = "Extract text and metadata from documents",
+    long_about = "Extract text and metadata from documents.\n\n\
                   Every option can also be set through the environment variable shown with it.\n\n\
                   Exit status: 0 when text was extracted from every input, 1 when nothing could be \
                   extracted from at least one (or, with --strict, when any part of one failed), 2 \
@@ -35,8 +35,8 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Print the media type Apache Tika detects for each input: the type alone for a single
-    /// input, `PATH: TYPE` lines for several.
+    /// Print the media type detected for each input: the type alone for a single input,
+    /// `PATH: TYPE` lines for several.
     Detect(InputArgs),
     /// Run an HTTP server: POST a document to /extract or /detect.
     Serve(ServeArgs),
@@ -227,16 +227,13 @@ pub const PROCESSORS_VARIABLE: &str = "EXTRACTOUS_PROCESSORS";
 /// Where extraction keeps temporary files and how much memory it may use.
 #[derive(Debug, Args)]
 pub struct RuntimeArgs {
-    /// Directory for temporary files: spooled input and output, embedded documents, and Tika's
-    /// scratch files for large PDFs. The system temporary directory by default.
+    /// Directory for temporary files: spooled input and output, embedded documents and decoded
+    /// images. The system temporary directory by default.
     #[arg(long, value_name = "DIR", env = "EXTRACTOUS_SPOOL_DIR")]
     pub spool_dir: Option<PathBuf>,
 
-    /// The most memory an extraction may take: Tika's Java heap, and what a native parser
-    /// allocates. An extraction that needs more fails with a limit-exceeded error, and the next
-    /// one runs normally. GraalVM raises a cap below the least heap the runtime starts with, a
-    /// few tens of MiB. By default the heap may grow to a large share of physical memory, and is
-    /// sized to at least 512 MiB (or the cap, when lower) so that the collector runs less often.
+    /// The most memory an extraction may allocate. An extraction that needs more fails with a
+    /// limit-exceeded error, and the next one runs normally. No cap by default.
     #[arg(long, value_name = "BYTES", env = "EXTRACTOUS_MAX_HEAP_BYTES")]
     pub max_heap_bytes: Option<NonZeroU64>,
 
@@ -289,7 +286,7 @@ pub struct ExtractArgs {
     #[arg(long, env = "EXTRACTOUS_RAW_METADATA")]
     pub raw_metadata: bool,
 
-    /// Output the text exactly as Tika extracted it, with no normalisation step.
+    /// Output the text exactly as it was extracted, with no normalisation step.
     #[arg(long, env = "EXTRACTOUS_RAW", conflicts_with = "no_normalize")]
     pub raw: bool,
 
@@ -379,7 +376,7 @@ pub struct ExtractArgs {
 pub enum Format {
     /// Plain text.
     Text,
-    /// Apache Tika's XHTML.
+    /// XHTML, in Apache Tika's layout.
     Xhtml,
     /// One JSON object per input, one per line, following schema/output-v1.schema.json.
     Json,

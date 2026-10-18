@@ -49,23 +49,6 @@ const LICENSES: &str = concat!(
     include_str!("../../THIRD-PARTY-LICENSES.md")
 );
 
-/// Where THIRD-PARTY-LICENSES.md starts on the Java libraries compiled into Tika's native image,
-/// which a build without Tika holds none of.
-#[cfg(not(feature = "tika"))]
-const JAVA_LICENSES: &str = "\n## Java libraries compiled into libtika_native\n";
-
-/// The licences of what this build holds: without Tika, all but the Java libraries'.
-fn licenses() -> &'static str {
-    #[cfg(feature = "tika")]
-    let licenses = LICENSES;
-    #[cfg(not(feature = "tika"))]
-    let licenses = LICENSES
-        .find(JAVA_LICENSES)
-        .map(|java| &LICENSES[..=java])
-        .expect("THIRD-PARTY-LICENSES.md has a section on the Java libraries");
-    licenses
-}
-
 /// Runs the command line on the process's arguments.
 pub fn main() -> ExitCode {
     if run_program(std::env::args_os().collect()) {
@@ -217,7 +200,7 @@ fn print_licenses() -> bool {
         ),
     ];
     let mut stdout = io::stdout().lock();
-    let written = stdout.write_all(licenses().as_bytes()).and_then(|()| {
+    let written = stdout.write_all(LICENSES.as_bytes()).and_then(|()| {
         sections
             .iter()
             .filter_map(|(title, licenses)| licenses.map(|licenses| (title, licenses)))
