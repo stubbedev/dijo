@@ -35,6 +35,10 @@ const SIGNATURE: &str = "application/pkcs7-signature";
 const SIGNED: &str = "application/pkcs7-mime; smime-type=signed-data";
 const COMPRESSED: &str = "application/pkcs7-mime; smime-type=compressed-data";
 const DIGESTED: &str = "application/pkcs7-mime; smime-type=digested-data";
+const CERTS_ONLY: &str = "application/pkcs7-mime; smime-type=certs-only";
+/// The tag of the certificates of signed data, `[0] IMPLICIT`, and of its CRLs, `[1] IMPLICIT`.
+const CERTIFICATES: u8 = 0xA0;
+const CRLS: u8 = 0xA1;
 /// `Pkcs7Parser.MAX_DECOMPRESSED`.
 const MAX_DECOMPRESSED: usize = 100 * 1024 * 1024;
 /// 1.2.840.113549.1.7.2, `signedData`.
@@ -226,6 +230,44 @@ impl<'a> Ber<'a> {
         Some(())
     }
 
+    /// Reads the elements of a SET or tagged collection of `length`, returning how many of them
+    /// are SEQUENCEs.
+    fn sequences(&mut self, length: Length) -> Option<usize> {
+        let start = self.at;
+        let mut sequences = 0;
+        while self.has_more(start, length) {
+            let (tag, element) = self.header()?;
+            self.skip(element)?;
+            sequences += usize::from(tag == SEQUENCE);
+        }
+        Some(sequences)
+    }
+
+    /// `refinedSignedType` of signed data without encapsulated content, read on from after its
+    /// encapsulated content info: certificates and no signers make it certs-only, anything
+    /// else a detached signature. Only X.509 certificates, SEQUENCEs, count as certificates.
+    fn detached_type(&mut self) -> Option<&'static str> {
+        let (mut tag, mut length) = self.header()?;
+        let mut certificates = 0;
+        if tag == CERTIFICATES {
+            certificates = self.sequences(length)?;
+            (tag, length) = self.header()?;
+        }
+        if tag == CRLS {
+            self.sequences(length)?;
+            (tag, length) = self.header()?;
+        }
+        if tag != SET {
+            return None;
+        }
+        let signers = self.sequences(length)?;
+        Some(if certificates > 0 && signers == 0 {
+            CERTS_ONLY
+        } else {
+            SIGNATURE
+        })
+    }
+
     /// Reads an encapsulated content info: its content type, then the content of its OCTET
     /// STRING, if it has one.
     fn encapsulated_content(&mut self) -> Option<Option<Vec<u8>>> {
@@ -261,8 +303,11 @@ fn classify(input: &[u8]) -> Result<Option<&[u8]>, &'static str> {
 /// What `CMSSignedDataParser` makes of data it is given as signed data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Signed {
-    /// The encapsulated content, if there is any.
-    Read(Option<Vec<u8>>),
+    /// The encapsulated content.
+    Read(Vec<u8>),
+    /// No encapsulated content, and the type `refinedSignedType` gives the data, where the
+    /// port reads its certificates and signers.
+    Detached(Option<&'static str>),
     /// Bouncy Castle fails on it, with this exception.
     Fails(String),
 }
@@ -321,7 +366,10 @@ fn signed_content(input: &[u8]) -> Option<Signed> {
     while ber.has_more(start, algorithms) {
         ber.algorithm_identifier()?;
     }
-    ber.encapsulated_content().map(Signed::Read)
+    Some(match ber.encapsulated_content()? {
+        Some(content) => Signed::Read(content),
+        None => Signed::Detached(ber.detached_type()),
+    })
 }
 
 /// The failure of a document Bouncy Castle fails to read as signed data with `exception`.
@@ -377,17 +425,15 @@ fn prepare_unencrypted<'a>(
     let unread = || "CMS data the port does not read as Bouncy Castle does".to_owned();
     if typed_as_signature(metadata) {
         return match signed_content(input).ok_or_else(unread)? {
-            Signed::Read(None) => Ok(empty(None)),
-            Signed::Read(Some(signed)) => Ok(with_content(SIGNED, signed, configs)?),
+            Signed::Detached(_) => Ok(empty(None)),
+            Signed::Read(signed) => Ok(with_content(SIGNED, signed, configs)?),
             Signed::Fails(exception) => Err(unreadable_signed_data(exception)),
         };
     }
     match classify(input).map_err(str::to_owned)? {
         Some(SIGNED_DATA) => match signed_content(input).ok_or_else(unread)? {
-            Signed::Read(Some(signed)) => Ok(with_content(SIGNED, signed, configs)?),
-            Signed::Read(None) => Err(Decline::Deferred(
-                "signed data whose kind Bouncy Castle tells by its signers".to_owned(),
-            )),
+            Signed::Read(signed) => Ok(with_content(SIGNED, signed, configs)?),
+            Signed::Detached(refined) => Ok(empty(Some(refined.ok_or_else(unread)?))),
             Signed::Fails(exception) => Err(unreadable_signed_data(exception)),
         },
         Some(COMPRESSED_DATA) => Ok(with_content(
@@ -622,17 +668,31 @@ mod tests {
 
     /// Signed data of `content`, as `encapsulated` encodes it, without signers.
     fn signed(encapsulated: Vec<u8>) -> Vec<u8> {
+        signed_with(encapsulated, None, &[])
+    }
+
+    /// Signed data of `content`, as `encapsulated` encodes it, with `certificates`, if any, and
+    /// `signers`.
+    fn signed_with(
+        encapsulated: Vec<u8>,
+        certificates: Option<&[Vec<u8>]>,
+        signers: &[Vec<u8>],
+    ) -> Vec<u8> {
         let algorithm = der(
             SEQUENCE,
             &[der(OBJECT_IDENTIFIER, SHA256), der(0x05, &[])].concat(),
         );
+        let certificates = certificates.map_or_else(Vec::new, |certificates| {
+            der(CERTIFICATES, &certificates.concat())
+        });
         let signed_data = der(
             SEQUENCE,
             &[
                 der(INTEGER, &[1]),
                 der(SET, &algorithm),
                 encapsulated,
-                der(SET, &[]),
+                certificates,
+                der(SET, &signers.concat()),
             ]
             .concat(),
         );
@@ -762,6 +822,43 @@ mod tests {
         assert!(deferred.is_empty(), "{deferred:?}");
         let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
         assert_same_as_tika_reading(&paths);
+    }
+
+    #[test]
+    fn types_signed_data_without_content_by_its_certificates_and_signers() {
+        let without_content = || der(SEQUENCE, &der(OBJECT_IDENTIFIER, DATA));
+        let certificate = der(SEQUENCE, &der(INTEGER, &[7]));
+        let signer = der(SEQUENCE, &der(INTEGER, &[1]));
+        let typed = |data: Vec<u8>| match signed_content(&data) {
+            Some(Signed::Detached(refined)) => refined,
+            other => panic!("not detached: {other:?}"),
+        };
+        assert_eq!(typed(signed(without_content())), Some(SIGNATURE));
+        assert_eq!(
+            typed(signed_with(
+                without_content(),
+                Some(std::slice::from_ref(&certificate)),
+                &[]
+            )),
+            Some(CERTS_ONLY)
+        );
+        assert_eq!(
+            typed(signed_with(
+                without_content(),
+                Some(&[certificate]),
+                std::slice::from_ref(&signer)
+            )),
+            Some(SIGNATURE)
+        );
+        assert_eq!(
+            typed(signed_with(without_content(), Some(&[]), &[signer])),
+            Some(SIGNATURE)
+        );
+        let certs_only = signed_with(without_content(), Some(&[der(SEQUENCE, &[])]), &[]);
+        let mut metadata = TikaMetadata::new();
+        metadata.set("Content-Type", "application/pkcs7-mime");
+        let configs = ParserConfigs::default();
+        assert!(CmsParser.prepare(&certs_only, &metadata, &configs).is_ok());
     }
 
     #[test]
