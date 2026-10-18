@@ -82,7 +82,7 @@ impl<'a> From<std::borrow::Cow<'a, [u8]>> for Input<'a> {
     }
 }
 
-impl Input<'_> {
+impl<'a> Input<'a> {
     /// The same bytes, owned: the caller's copied, the others shared.
     pub fn to_static(&self) -> Input<'static> {
         match self {
@@ -91,6 +91,23 @@ impl Input<'_> {
             }
             Input::Read(bytes) => Input::Read(Arc::clone(bytes)),
             Input::Mapped(map) => Input::Mapped(Arc::clone(map)),
+        }
+    }
+
+    /// The bytes of `pieces` of other bytes, whose pages are `pages`, joined: one piece in
+    /// place, several spooled.
+    pub fn joined(pieces: &[&'a [u8]], pages: Pages<'a>) -> io::Result<Input<'a>> {
+        match pieces {
+            [] => Ok(Input::Borrowed(&[])),
+            [piece] => Ok(Input::Within(piece, pages)),
+            pieces => {
+                let length = pieces.iter().map(|piece| piece.len() as u64).sum();
+                let mut spool = Spool::new(Some(length));
+                for piece in pieces {
+                    spool.write_all(piece)?;
+                }
+                spool.finish()
+            }
         }
     }
 

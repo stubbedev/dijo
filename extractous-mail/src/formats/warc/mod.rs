@@ -33,10 +33,9 @@ use crate::formats::embedded::{record_exception, Wrapping, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use std::convert::Infallible;
-use std::io::Write;
 
 use crate::formats::{Decline, Deferral, Difference, Failure, Footprint, Opened, Parser, Prepared};
-use crate::input::{Input, Pages, Paging, Spool};
+use crate::input::{Input, Pages, Paging};
 use crate::java;
 
 const WARC_PREFIX: &str = "warc:";
@@ -118,25 +117,6 @@ struct Payload<'a> {
     metadata: TikaMetadata,
 }
 
-impl<'a> Payload<'a> {
-    /// The payload as a document: in place where it is one piece of the block, whose pages are
-    /// `pages`, else its pieces spooled.
-    fn document(&self, pages: Pages<'a>) -> std::io::Result<Input<'a>> {
-        match self.body.as_slice() {
-            [] => Ok(Input::Borrowed(&[])),
-            [piece] => Ok(Input::Within(piece, pages)),
-            pieces => {
-                let length = pieces.iter().map(|piece| piece.len() as u64).sum();
-                let mut spool = Spool::new(Some(length));
-                for piece in pieces {
-                    spool.write_all(piece)?;
-                }
-                spool.finish()
-            }
-        }
-    }
-}
-
 /// What `WARCParser` makes of a record it reads on past: a payload, or an exception it records.
 enum Item<'a> {
     Payload(Payload<'a>),
@@ -153,7 +133,7 @@ fn write(data: &Input<'_>, xhtml: &mut Xhtml<'_>) -> Result<(), Failure> {
     let visited = visit(data, &mut difference, |item| {
         match item {
             Item::Payload(payload) => {
-                let document = payload.document(pages).map_err(|error| {
+                let document = Input::joined(&payload.body, pages).map_err(|error| {
                     Failure::Extraction(Error::IoError(format!(
                         "spooling the payload of a WARC record fails: {error}"
                     )))

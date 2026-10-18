@@ -18,7 +18,8 @@ use crate::compress::{zlib, Limited};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{self, Decline, Deferral, Failure, Opened, Parser, Prepared};
+use crate::formats::{self, Decline, Deferral, Failure, Footprint, Opened, Parser, Prepared};
+use crate::input::{Input, Pages};
 use crate::mime::MediaType;
 
 /// The bytes `CmsParser` reads the content type from.
@@ -213,12 +214,11 @@ impl<'a> Ber<'a> {
         Some(())
     }
 
-    /// The content of an OCTET STRING, primitive or constructed of nested ones.
-    fn octet_string(&mut self, content: &mut Vec<u8>) -> Option<()> {
+    /// The content of an OCTET STRING, primitive or constructed of nested ones: the pieces of
+    /// the input it is made of.
+    fn octet_string(&mut self, content: &mut Vec<&'a [u8]>) -> Option<()> {
         match self.header()? {
-            (OCTET_STRING, Length::Definite(length)) => {
-                content.extend_from_slice(self.take(length))
-            }
+            (OCTET_STRING, Length::Definite(length)) => content.push(self.take(length)),
             (CONSTRUCTED_OCTET_STRING, length) => {
                 let start = self.at;
                 while self.has_more(start, length) {
@@ -270,7 +270,7 @@ impl<'a> Ber<'a> {
 
     /// Reads an encapsulated content info: its content type, then the content of its OCTET
     /// STRING, if it has one.
-    fn encapsulated_content(&mut self) -> Option<Option<Vec<u8>>> {
+    fn encapsulated_content(&mut self) -> Option<Option<Vec<&'a [u8]>>> {
         let encapsulated = self.expect(SEQUENCE)?;
         let start = self.at;
         self.object_identifier()?;
@@ -302,9 +302,9 @@ fn classify(input: &[u8]) -> Result<Option<&[u8]>, &'static str> {
 
 /// What `CMSSignedDataParser` makes of data it is given as signed data.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Signed {
-    /// The encapsulated content.
-    Read(Vec<u8>),
+enum Signed<'a> {
+    /// The encapsulated content: the pieces of the input it is made of.
+    Read(Vec<&'a [u8]>),
     /// No encapsulated content, and the type `refinedSignedType` gives the data, where the
     /// port reads its certificates and signers.
     Detached(Option<&'static str>),
@@ -335,7 +335,7 @@ fn unknown_object(input: &[u8]) -> Option<String> {
 /// Data read as signed data, as `CMSSignedDataParser.getSignedContent` reads it whatever its
 /// content type: the content info, the version and digest algorithms of the signed data, then
 /// its encapsulated content info; `None` where the port does not read it as Bouncy Castle does.
-fn signed_content(input: &[u8]) -> Option<Signed> {
+fn signed_content(input: &[u8]) -> Option<Signed<'_>> {
     if let Some(exception) = unknown_object(input) {
         return Some(Signed::Fails(exception));
     }
@@ -380,10 +380,28 @@ fn unreadable_signed_data(exception: String) -> Decline<'static> {
 }
 
 /// The content of compressed data, inflated as `CMSCompressedDataParser.getContent` with a
-/// `ZlibExpanderProvider` inflates it, within `Pkcs7Parser`'s bound; `None` where the port does
-/// not read it as Bouncy Castle does, the zlib stream does not end, or the content passes the
-/// bound, past which Tika drops the rest and records a warning.
-fn compressed_content(input: &[u8]) -> Option<Vec<u8>> {
+/// `ZlibExpanderProvider` inflates it, to a spool, within `Pkcs7Parser`'s bound; `None` where
+/// the port does not read it as Bouncy Castle does, the zlib stream does not end, or the content
+/// passes the bound, past which Tika drops the rest and records a warning; or why the
+/// compressed content, in pieces, cannot be spooled whole.
+fn compressed_content(input: &[u8]) -> Result<Option<Input<'static>>, Error> {
+    let Some(pieces) = compressed_pieces(input) else {
+        return Ok(None);
+    };
+    let compressed = Input::joined(&pieces, Pages::IN_MEMORY).map_err(|error| {
+        Error::IoError(format!(
+            "spooling the compressed CMS content fails: {error}"
+        ))
+    })?;
+    Ok(zlib::decode(&compressed)
+        .and_then(Limited::whole)
+        .ok()
+        .filter(|inflated| inflated.len() <= MAX_DECOMPRESSED))
+}
+
+/// The pieces of the input the compressed content of compressed data is made of; `None` where
+/// the port does not read it as Bouncy Castle does.
+fn compressed_pieces(input: &[u8]) -> Option<Vec<&[u8]>> {
     let mut ber = Ber {
         bytes: input,
         at: 0,
@@ -399,12 +417,7 @@ fn compressed_content(input: &[u8]) -> Option<Vec<u8>> {
     };
     ber.take(length);
     ber.algorithm_identifier()?;
-    let compressed = ber.encapsulated_content()??;
-    zlib::decode(&compressed)
-        .and_then(Limited::whole)
-        .ok()
-        .filter(|inflated| inflated.len() <= MAX_DECOMPRESSED)
-        .map(|inflated| inflated.to_vec())
+    ber.encapsulated_content()?
 }
 
 /// Whether `metadata` types the document `application/pkcs7-signature`.
@@ -419,27 +432,38 @@ fn typed_as_signature(metadata: &TikaMetadata) -> bool {
 /// `input`, typed by `metadata`, when it is not encrypted; how it fails, as Tika's path fails it;
 /// or why Tika's path is left to read it.
 fn prepare_unencrypted<'a>(
-    input: &[u8],
+    input: &'a [u8],
+    pages: Pages<'a>,
     metadata: &TikaMetadata,
     configs: &'a ParserConfigs,
-) -> Result<Prepared<'a>, Decline<'static>> {
+) -> Result<Prepared<'a>, Decline<'a>> {
     let unread = || "CMS data the port does not read as Bouncy Castle does".to_owned();
+    let signed = |pieces: Vec<&'a [u8]>| -> Result<Prepared<'a>, Decline<'a>> {
+        let content = Input::joined(&pieces, pages).map_err(|error| {
+            Decline::Fails(Error::IoError(format!(
+                "spooling the signed CMS content fails: {error}"
+            )))
+        })?;
+        Ok(with_content(SIGNED, content, configs)?)
+    };
     if typed_as_signature(metadata) {
         return match signed_content(input).ok_or_else(unread)? {
             Signed::Detached(_) => Ok(empty(None)),
-            Signed::Read(signed) => Ok(with_content(SIGNED, signed, configs)?),
+            Signed::Read(pieces) => signed(pieces),
             Signed::Fails(exception) => Err(unreadable_signed_data(exception)),
         };
     }
     match classify(input).map_err(str::to_owned)? {
         Some(SIGNED_DATA) => match signed_content(input).ok_or_else(unread)? {
-            Signed::Read(signed) => Ok(with_content(SIGNED, signed, configs)?),
+            Signed::Read(pieces) => signed(pieces),
             Signed::Detached(refined) => Ok(empty(Some(refined.ok_or_else(unread)?))),
             Signed::Fails(exception) => Err(unreadable_signed_data(exception)),
         },
         Some(COMPRESSED_DATA) => Ok(with_content(
             COMPRESSED,
-            compressed_content(input).ok_or_else(unread)?,
+            compressed_content(input)
+                .map_err(Decline::Fails)?
+                .ok_or_else(unread)?,
             configs,
         )?),
         Some(DIGESTED_DATA) => Ok(empty(Some(DIGESTED))),
@@ -461,28 +485,32 @@ fn empty<'a>(content_type: Option<&'static str>) -> Prepared<'a> {
 /// `AutoDetectParser` routes it to, from the metadata it starts from, into the same handler; or
 /// why Tika's path is left to read it, when that parser is not native or declines it. The parser
 /// prepares the content here, to tell whether it takes it, and again as the document is written,
-/// as what it prepares borrows the content, which the document owns.
+/// as what it prepares borrows the content, which the document owns: the input's bytes in
+/// place, or a spool.
 ///
 /// The content's metadata, which the head shows, starts with its `Content-Length`. Tika's
 /// `Pkcs7Parser` parses it from fresh metadata, as a stream opened alone, which never learns
 /// its length (#113).
 fn with_content<'a>(
     content_type: &'static str,
-    content: Vec<u8>,
+    content: Input<'a>,
     configs: &'a ParserConfigs,
 ) -> Result<Prepared<'a>, Deferral> {
     let mut given = TikaMetadata::new();
     given.set("Content-Length", content.len().to_string());
     let (parser, start) = formats::embedded_parser(&content, &given, Opened::Alone)
         .map_err(|unrouted| format!("content Tika's path parses: {unrouted:?}"))?;
-    if parser.prepare(&content, &start, configs).is_err() {
+    if parser
+        .prepare_paged(&content, content.pages(), &start, configs)
+        .is_err()
+    {
         return Err(format!("content {} declines", parser.name()));
     }
     Ok(Box::new(move |xhtml| {
         xhtml.metadata_mut().set("Content-Type", content_type);
         xhtml.record_parser(parser.name());
         let prepared = parser
-            .prepare(&content, &start, configs)
+            .prepare_paged(&content, content.pages(), &start, configs)
             .map_err(|declined| {
                 Failure::Extraction(Error::ParseError(format!(
                     "{} declined CMS content it had taken: {declined:?}",
@@ -508,19 +536,35 @@ impl Parser for CmsParser {
         &["application/pkcs7-mime", SIGNATURE]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
-    ) -> Result<Prepared<'a>, Decline<'static>> {
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Reads the content info in place: signed content of one OCTET STRING stays the input's
+    /// bytes, content in several is spooled, and compressed content is inflated to a spool.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
         header_content_type(input).map_err(str::to_owned)?;
         if let Some(name) = encryption(input) {
             return Err(Decline::Fails(Error::Encrypted(format!(
                 "S/MIME (CMS {name}) data; decrypting it needs the recipient's private key"
             ))));
         }
-        prepare_unencrypted(input, metadata, configs)
+        prepare_unencrypted(input, pages, metadata, configs)
     }
 }
 
@@ -647,8 +691,12 @@ mod tests {
         let mut element = vec![tag];
         match content.len() {
             length @ 0..=0x7F => element.push(length as u8),
-            length @ 0x80..=0xFF => element.extend([0x81, length as u8]),
-            length => element.extend([0x82, (length >> 8) as u8, length as u8]),
+            length => {
+                let bytes = (length as u64).to_be_bytes();
+                let first = bytes.iter().position(|&byte| byte != 0).unwrap_or(7);
+                element.push(0x80 | (8 - first) as u8);
+                element.extend_from_slice(&bytes[first..]);
+            }
         }
         element.extend_from_slice(content);
         element
@@ -923,5 +971,33 @@ mod tests {
             .extract_file_to_string(enveloped[0].to_str().unwrap())
             .unwrap_err();
         assert!(matches!(error, Error::Encrypted(_)), "{error:?}");
+    }
+
+    #[cfg(not(feature = "tika"))]
+    #[test]
+    fn reads_signed_content_too_large_to_read_whole_in_place() {
+        use std::io::Read;
+
+        use crate::formats::archive::large::Binary;
+        use crate::input::MAX_READ_WHOLE;
+        use extractous_core::large::{LargeFile, BUDGET};
+
+        let mut content = Vec::new();
+        Binary::new(MAX_READ_WHOLE + (16 << 20))
+            .read_to_end(&mut content)
+            .unwrap();
+        let data = signed(encapsulated(&content));
+        drop(content);
+        let file = LargeFile::written("large.p7m", |out| out.write_all(&data));
+        drop(data);
+        let (_, metadata) = file.extract_with(
+            &extractous_core::Extractor::new(),
+            BUDGET,
+            "extractous::CmsParser",
+        );
+        assert_eq!(
+            metadata["Content-Type"].first().map(String::as_str),
+            Some(SIGNED)
+        );
     }
 }
