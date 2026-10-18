@@ -4,19 +4,20 @@
 //! `ChunkedBody` decodes it leniently.
 
 use super::headers::Headers;
-use super::ragel::{Flow, ERROR};
+use super::ragel::{Flow, Signed, Unsigned, ERROR};
 use super::tables::{CHUNKED, HTTP, HTTP_EN_HTTP_RESPONSE_LENIENT};
 use super::text::TextBuffer;
 use crate::java;
 
 /// A parsed HTTP response.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct HttpResponse {
+pub(super) struct HttpResponse<'a> {
     pub(super) status: i32,
     pub(super) reason: Option<String>,
     pub(super) headers: Headers,
-    /// The payload as its stream reads it.
-    pub(super) body: Vec<u8>,
+    /// The payload as its stream reads it: the pieces of the block it is made of, in order, the
+    /// data of each chunk of a chunked one.
+    pub(super) body: Vec<&'a [u8]>,
     /// What `body().size()` gives: the length of a body read to the block's end, `-1` for a
     /// chunked one.
     pub(super) size: i64,
@@ -43,11 +44,10 @@ pub(super) enum Unread {
 /// The status line and headers of a response as jwarc's lenient `HttpParser` reads them from
 /// the start of `message`, and where they end in it; the error a `ParsingException` reports.
 pub(super) fn head(message: &[u8]) -> Result<(Head, usize), Unread> {
-    let keys: Vec<i32> = message.iter().map(|&byte| i32::from(byte)).collect();
     let mut state = Parsing::default();
     let mut cs = HTTP_EN_HTTP_RESPONSE_LENIENT;
     let end = HTTP
-        .exec(&mut cs, &keys, 0, true, &mut |action, p| {
+        .exec(&mut cs, &Unsigned(message), 0, true, &mut |action, p| {
             Ok::<_, ()>(state.act(action, message.get(p).copied()))
         })
         .expect("the HTTP actions never fail");
@@ -65,13 +65,13 @@ pub(super) fn head(message: &[u8]) -> Result<(Head, usize), Unread> {
 }
 
 /// `HttpResponse.parse` of `block`, the record's block, with a lenient parser.
-pub(super) fn parse(block: &[u8]) -> Result<HttpResponse, Unread> {
+pub(super) fn parse(block: &[u8]) -> Result<HttpResponse<'_>, Unread> {
     let (head, end) = head(block)?;
     let rest = &block[end..];
     let (body, size) = if head.headers.contains("Transfer-Encoding", "chunked") {
         (dechunk(rest)?, -1)
     } else {
-        (rest.to_vec(), rest.len() as i64)
+        (vec![rest], rest.len() as i64)
     };
     Ok(HttpResponse {
         status: head.status,
@@ -131,8 +131,8 @@ impl Parsing {
 
 /// What `ChunkedBody` reads of `rest`, leniently: the chunks' data up to the last chunk, or,
 /// from a chunk header the machine rejects on, the rest as it is.
-fn dechunk(rest: &[u8]) -> Result<Vec<u8>, Unread> {
-    let keys: Vec<i32> = rest.iter().map(|&byte| i32::from(byte as i8)).collect();
+fn dechunk(rest: &[u8]) -> Result<Vec<&[u8]>, Unread> {
+    let keys = Signed(rest);
     let mut body = Vec::new();
     let mut cs = super::tables::CHUNKED_START;
     let mut size: i64 = 0;
@@ -161,7 +161,7 @@ fn dechunk(rest: &[u8]) -> Result<Vec<u8>, Unread> {
             })
             .expect("the chunked actions never fail");
         if cs == ERROR {
-            body.extend_from_slice(&rest[header_start..]);
+            body.push(&rest[header_start..]);
             return Ok(body);
         }
         at = end;
@@ -173,7 +173,7 @@ fn dechunk(rest: &[u8]) -> Result<Vec<u8>, Unread> {
                     return Err(Unread::CutChunks);
                 }
                 let length = length as usize;
-                body.extend_from_slice(&rest[at..at + length]);
+                body.push(&rest[at..at + length]);
                 at += length;
             }
             None => return Err(Unread::CutChunks),
@@ -195,12 +195,12 @@ mod tests {
         assert_eq!(response.reason.as_deref(), Some("OK"));
         assert_eq!(response.headers.first("content-type"), Some("text/html"));
         assert_eq!(response.headers.first("X-Folded"), Some("a b"));
-        assert_eq!(response.body, b"<html>");
+        assert_eq!(response.body.concat(), b"<html>");
         assert_eq!(response.size, 6);
         let lenient = parse(b"HTTP/1.0 404\nServer: x").unwrap();
         assert_eq!(lenient.status, 404);
         assert_eq!(lenient.headers.first("Server"), Some("x"));
-        assert!(lenient.body.is_empty());
+        assert!(lenient.body.concat().is_empty());
         assert_eq!(parse(b"\x00garbage"), Err(Unread::Header));
     }
 
@@ -210,9 +210,9 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;x=y\r\npedia\r\n0\r\n\r\n",
         )
         .unwrap();
-        assert_eq!(chunked.body, b"Wikipedia");
+        assert_eq!(chunked.body.concat(), b"Wikipedia");
         assert_eq!(chunked.size, -1);
         assert_eq!(dechunk(b"4\r\nWi"), Err(Unread::CutChunks));
-        assert_eq!(dechunk(b"zz\r\nraw").unwrap(), b"zz\r\nraw");
+        assert_eq!(dechunk(b"zz\r\nraw").unwrap().concat(), b"zz\r\nraw");
     }
 }
