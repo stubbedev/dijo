@@ -25,6 +25,17 @@ use crate::formats::{Declined, Failure};
 use crate::java::time::format_instant;
 use crate::Error;
 
+/// For the parity tests: why the native path extracts the first segment of a split ZIP archive
+/// where Tika's path fails on it: Tika's stream fails the document at the entry the segment cuts
+/// short, the native parser records that entry as unreadable and keeps the entries before it.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+const SPLIT_SEGMENT: &str = "Tika fails the document at the entry the segment cuts short";
+
+/// For the parity tests: the first segment of a split ZIP archive among Tika's test documents,
+/// by file name, with why it is not compared ([`SPLIT_SEGMENT`]).
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const TIKAS_SPLIT_SEGMENT: (&str, &str) = ("test-documents-spanned.z01", SPLIT_SEGMENT);
+
 /// The metadata of the ZIP integrity check.
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
 const INTEGRITY_CHECK: [&str; 4] = [

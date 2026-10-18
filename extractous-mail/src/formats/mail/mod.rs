@@ -283,7 +283,7 @@ fn prepare_message(
 /// What the port does otherwise than Tika on purpose: Tika names a message after its
 /// subject, and makes each line feed of a quoted-printable part a CRLF.
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub const DEPARTURES: crate::formats::parity::Departures = &[
+const DEPARTURES: crate::formats::parity::Departures = &[
     crate::formats::parity::Departure::Values("tk:resource-name", "#79"),
     crate::formats::parity::Departure::LineBreaks("#73"),
 ];
@@ -291,7 +291,39 @@ pub const DEPARTURES: crate::formats::parity::Departures = &[
 /// The documents whose sender's name Tika's regular expression takes otherwise than the
 /// port takes it from the parsed mailbox (#77), by file name.
 #[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
+const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
+
+/// What the port does otherwise than Tika on purpose with the message or mailbox at `path`:
+/// the [`DEPARTURES`] of every message, the sender's name of the [`OTHER_SENDER_NAMES`], and
+/// the white space of a part typed `text/html`, which the parser hands the native HTML parser
+/// (#84).
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn departures_of(path: &std::path::Path) -> Vec<crate::formats::parity::Departure<'static>> {
+    let mut departures = DEPARTURES.to_vec();
+    if path
+        .file_name()
+        .is_some_and(|file| OTHER_SENDER_NAMES.iter().any(|name| file == *name))
+    {
+        departures.push(crate::formats::parity::Departure::Values(
+            "message:from-name",
+            "#77",
+        ));
+    }
+    if holds_html(path) {
+        departures.extend_from_slice(crate::formats::html::DEPARTURES);
+    }
+    departures
+}
+
+/// Whether the message at `path` has a part typed `text/html`.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+fn holds_html(path: &std::path::Path) -> bool {
+    let message =
+        std::fs::read(path).unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+    message
+        .windows(b"text/html".len())
+        .any(|window| window.eq_ignore_ascii_case(b"text/html"))
+}
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -332,15 +364,9 @@ pub(crate) mod tests {
             parsed.into_iter().partition(|path| named(except, path));
         let mut groups: Vec<(Vec<Departure>, Vec<&Path>)> = Vec::new();
         for path in parsed.iter().map(PathBuf::as_path) {
-            let mut departures = DEPARTURES.to_vec();
-            if named(&OTHER_SENDER_NAMES, path) {
-                departures.push(Departure::Values("message:from-name", "#77"));
-            }
+            let mut departures = departures_of(path);
             if named(&crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS, path) {
                 departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
-            }
-            if holds_html(path) {
-                departures.extend_from_slice(crate::formats::html::DEPARTURES);
             }
             match groups.iter_mut().find(|(group, _)| *group == departures) {
                 Some((_, paths)) => paths.push(path),
@@ -351,17 +377,6 @@ pub(crate) mod tests {
             assert_same_as_tika_departing(paths, tika_name, departures);
         }
         excepted
-    }
-
-    /// Whether the message at `path` has a part typed `text/html`, which the parser hands the
-    /// native HTML parser, whose white space departs from Tika's jsoup (#84).
-    #[cfg(feature = "tika")]
-    fn holds_html(path: &Path) -> bool {
-        let message = std::fs::read(path)
-            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
-        message
-            .windows(b"text/html".len())
-            .any(|window| window.eq_ignore_ascii_case(b"text/html"))
     }
 
     #[test]
