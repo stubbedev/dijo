@@ -50,6 +50,8 @@ mod formats;
 /// crates of the formats.
 #[cfg(any(test, feature = "parity"))]
 pub use formats::parity;
+#[cfg(any(test, feature = "parity"))]
+pub mod large;
 /// The tests count allocations as the command line does, so that budgets are enforced in them.
 #[cfg(test)]
 #[global_allocator]

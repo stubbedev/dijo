@@ -1,16 +1,22 @@
-//! Files too large to read whole, which the tests write and extract under a memory budget far
-//! below their size, so that a parser that declares its memory bounded is held to it: to what
-//! it holds where the extraction checks its budget, and to the most it holds at any moment.
+//! Files too large to read whole, which the tests of the crates of the formats write and extract
+//! under a memory budget far below their size, so that a parser that declares its memory bounded
+//! is held to it: to what it holds where the extraction checks its budget, and to the most it
+//! holds at any moment.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Write as _};
 use std::path::PathBuf;
 
-use extractous_core::Extractor;
+use extractous_base::config::ParserConfigs;
+use extractous_base::formats::handlers::Write;
+use extractous_base::formats::xhtml::Stop;
+use extractous_base::formats::{Chain, Output};
+use extractous_base::input::MAX_READ_WHOLE;
+use extractous_base::isolate::temp_dir;
 
-use crate::input::MAX_READ_WHOLE;
+use crate::formats::{parse_through, route_file};
 use crate::{memory, Metadata};
 
 /// The memory an extraction of a large file may take: a fraction of the file.
@@ -26,7 +32,7 @@ thread_local! {
 /// An allocator that counts the bytes each thread holds, and the most it held, around the
 /// allocator `A` that allocates: the tests' measure of an extraction's peak, which a budget,
 /// checked only where the extraction checks it, does not see.
-pub(crate) struct Peak<A>(pub(crate) A);
+pub struct Peak<A>(pub A);
 
 /// Adds `change` bytes, negative for a free, to what this thread holds.
 fn hold(change: i64) {
@@ -85,12 +91,12 @@ fn peak_of<R>(work: impl FnOnce() -> R) -> (R, u64) {
 }
 
 /// How many bodies of `length` bytes make a file too large to read whole.
-pub(super) fn bodies_past_limit(length: usize) -> u64 {
+pub fn bodies_past_limit(length: usize) -> u64 {
     MAX_READ_WHOLE / length as u64 + 1
 }
 
 /// A file larger than [`MAX_READ_WHOLE`] in a directory of its own, removed when it is dropped.
-pub(super) struct LargeFile {
+pub struct LargeFile {
     dir: PathBuf,
     path: PathBuf,
 }
@@ -98,17 +104,14 @@ pub(super) struct LargeFile {
 impl LargeFile {
     /// `head`, then the `count` bodies that `body` makes of their indexes, then `tail`, which
     /// must make a file larger than [`MAX_READ_WHOLE`].
-    pub(super) fn new(
+    pub fn new(
         name: &str,
         head: &[u8],
         count: u64,
         mut body: impl FnMut(u64) -> Vec<u8>,
         tail: &[u8],
     ) -> Self {
-        let dir = crate::isolate::temp_dir().join(format!(
-            "extractous-media-large-{name}-{}",
-            std::process::id()
-        ));
+        let dir = temp_dir().join(format!("extractous-large-{name}-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join(name);
         let mut out = BufWriter::new(File::create(&path).unwrap());
@@ -125,15 +128,81 @@ impl LargeFile {
 
     /// The file's text and metadata, extracted under [`BUDGET`] and never holding more, which
     /// `parser` must have read.
-    pub(super) fn extract(&self, parser: &str) -> (String, Metadata) {
+    pub fn extract(&self, parser: &str) -> (String, Metadata) {
+        let mut text = String::new();
+        let metadata = self.extract_each(parser, |written| text.push_str(written));
+        (text, metadata)
+    }
+
+    /// The file's metadata, each line of its text handed to `each_line` as it is written, as
+    /// [`LargeFile::extract_each`] extracts it.
+    pub fn extract_lines(&self, parser: &str, mut each_line: impl FnMut(&str)) -> Metadata {
+        let mut line = String::new();
+        let metadata = self.extract_each(parser, |text| {
+            for piece in text.split_inclusive('\n') {
+                line.push_str(piece);
+                if let Some(whole) = line.strip_suffix('\n') {
+                    each_line(whole);
+                    line.clear();
+                }
+            }
+        });
+        if !line.is_empty() {
+            each_line(&line);
+        }
+        metadata
+    }
+
+    /// The file's metadata, its text handed to `each` as it is written, extracted on this
+    /// thread as a string extraction without a length limit, under [`BUDGET`] and never holding
+    /// more besides what `each` keeps, which `parser` must have read.
+    pub fn extract_each(&self, parser: &str, each: impl FnMut(&str)) -> Metadata {
         let path = self.path.to_str().unwrap();
-        let (extracted, peak) =
-            peak_of(|| memory::within(BUDGET, || Extractor::new().extract_file_to_string(path)));
-        let (text, metadata) = extracted
-            .unwrap_or_else(|error| panic!("{path} extracts under {BUDGET} bytes: {error}"));
+        let mut out = Each(each);
+        let chain = Chain::String {
+            output: Output::Text,
+            max_length: usize::MAX,
+        };
+        let configs = ParserConfigs::default();
+        let (parsed, peak) = peak_of(|| {
+            memory::within(BUDGET, || {
+                let routed =
+                    route_file(path).unwrap_or_else(|why| panic!("{path} is routed: {why}"));
+                assert!(routed.input.is_mapped(), "{path} is mapped");
+                parse_through(
+                    routed.parser,
+                    &routed.input,
+                    &routed.detected,
+                    &configs,
+                    chain,
+                    &mut out,
+                )
+            })
+        });
+        let metadata = parsed
+            .unwrap_or_else(|error| panic!("{path} extracts under {BUDGET} bytes: {error}"))
+            .unwrap_or_else(|why| panic!("{path} is read natively: {why}"));
         assert!(peak <= BUDGET, "{path} held {peak} bytes at its peak");
         assert_eq!(metadata["tk:parsed-by"].last().unwrap(), parser);
-        (text, metadata)
+        metadata
+    }
+}
+
+/// Hands each piece of text written to the closure it holds.
+struct Each<F>(F);
+
+impl<F: FnMut(&str)> Write for Each<F> {
+    fn write(&mut self, text: &str) -> Result<(), Stop> {
+        (self.0)(text);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), Stop> {
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), Stop> {
+        Ok(())
     }
 }
 

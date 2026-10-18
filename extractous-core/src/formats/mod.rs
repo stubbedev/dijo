@@ -533,6 +533,21 @@ pub(crate) fn parse_to_string_through(
     configs: &ParserConfigs,
     chain: Chain,
 ) -> ExtractResult<Result<(String, Metadata), Unsupported>> {
+    let mut out = StringOut::default();
+    let parsed = parse_through(parser, input, detected, configs, chain, &mut out)?;
+    Ok(parsed.map(|metadata| (out.0, metadata)))
+}
+
+/// Parses `input` on this thread through the handlers of `chain`, a string extraction's, into
+/// `out`: the final metadata, or why not when the parser leaves the document to Tika.
+pub(crate) fn parse_through<W: Write>(
+    parser: &dyn Parser,
+    input: &Input<'_>,
+    detected: &Detected,
+    configs: &ParserConfigs,
+    chain: Chain,
+    out: &mut W,
+) -> ExtractResult<Result<Metadata, Unsupported>> {
     let max_length = chain
         .max_length()
         .expect("a string extraction's chain limits its text");
@@ -545,22 +560,19 @@ pub(crate) fn parse_to_string_through(
             Ok(Err(Refused::Fails(error))) => return Err(error),
             Ok(Err(Refused::Unwritten(metadata))) => {
                 let metadata = unwritten(parser.name(), metadata, configs);
-                return Ok(Ok((String::new(), metadata.to_map())));
+                return Ok(Ok(metadata.to_map()));
             }
         };
         prepared_within_budget(parser)?;
-        let mut out = StringOut::default();
         let context = ParseContext::new(configs)
             .reading(detected.file.clone())
             .paging(input.pages())
             .with_write_limit(max_length);
-        let (metadata, result) = chain.write_to(&mut out, |handler| {
+        let (metadata, result) = chain.write_to(out, |handler| {
             run(parser, taken, metadata, input.len(), &context, handler)
         });
         match result {
-            Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => {
-                Ok(Ok((out.0, metadata.to_map())))
-            }
+            Ok(()) | Err(Failure::Stopped(Stop::LimitReached)) => Ok(Ok(metadata.to_map())),
             Err(failure) => Err(failure_error(parser, failure)),
         }
     })

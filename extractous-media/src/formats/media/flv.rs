@@ -380,11 +380,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::media::large::{bodies_past_limit, LargeFile};
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_same_as_tika, conformance_corpus, differing_reading, documents, Scratch,
     };
+    use extractous_core::large::{bodies_past_limit, LargeFile};
 
     #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.video.FLVParser";
