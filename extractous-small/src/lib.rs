@@ -46,6 +46,7 @@ pub mod formats {
     pub mod open_pgp;
     pub mod plist;
     pub mod prt;
+    pub mod sas;
     pub mod source_code;
     pub mod subtitle;
     mod thrown;

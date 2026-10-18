@@ -78,6 +78,7 @@ pub(crate) use extractous_small::formats::onenote;
 pub(crate) use extractous_small::formats::open_pgp;
 pub(crate) use extractous_small::formats::plist;
 pub(crate) use extractous_small::formats::prt;
+pub(crate) use extractous_small::formats::sas;
 pub(crate) use extractous_small::formats::source_code;
 pub(crate) use extractous_small::formats::subtitle;
 pub(crate) use extractous_small::formats::translation;
@@ -187,6 +188,7 @@ static PARSERS: &[&dyn Parser] = &[
     &publisher::PublisherParser,
     &mail::Rfc822Parser,
     &rtf::RtfParser,
+    &sas::Sas7bdatParser,
     &source_code::SourceCodeParser,
     #[cfg(not(feature = "static-image"))]
     &sqlite::Sqlite3Parser,
