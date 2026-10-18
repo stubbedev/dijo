@@ -5,8 +5,7 @@
 //! skipped, and then, in manifest order, the items outside the spine our `EpubEmbedded` admits,
 //! such as pictures and fonts, each in an `embedded` div. Without a package document, or with an
 //! empty spine, Tika writes every HTML and XML entry it can and fails. Encrypted books are left to
-//! Tika; books with elements outside XHTML in a content document's body are read differently from
-//! Tika's, the content document reported as malformed.
+//! Tika.
 
 mod content;
 mod package;
@@ -19,9 +18,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml;
 use crate::formats::zip_file::{ZipEntry, ZipFile};
-use crate::formats::{
-    unless_different, Decline, Deferral, Difference, Failure, Footprint, Parser, Prepared,
-};
+use crate::formats::{Decline, Deferral, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages};
 use crate::java;
 use crate::java::is_blank;
@@ -333,24 +330,15 @@ fn read_fallback(book: &mut Book, reason: &str, xhtml: &mut Xhtml) -> Result<(),
     ))))
 }
 
-/// A book read as far as deciding that this parser extracts it: the book, how it is read, and
-/// where the native reading differs from Tika's, if it does.
-struct Decided<'a> {
-    book: Book<'a>,
-    reading: Result<Reading, Failure>,
-    difference: Option<Difference>,
-}
-
 /// Reads the book in `input` as far as deciding whether this parser extracts it as Tika does:
-/// its package document, with the metadata it adds to `metadata`, and its content documents,
-/// each read again as it is written, so that no more than one is held at a time; and the first
-/// content document with elements outside XHTML in its body, which the native reading records
-/// as malformed where Tika's writes them; or why Tika's path should read it.
+/// the book and how it is read, along its package document, with the metadata it adds to
+/// `metadata`, and its content documents, each read again as it is written, so that no more than
+/// one is held at a time; or why Tika's path should read it.
 fn prepare<'a>(
     input: &'a [u8],
     pages: Pages<'a>,
     metadata: &mut TikaMetadata,
-) -> Result<Decided<'a>, Deferral> {
+) -> Result<(Book<'a>, Result<Reading, Failure>), Deferral> {
     let Ok(zip) = ZipFile::open(input, pages, "EPUB") else {
         return Err("its archive is not one the zip crate reads".to_owned());
     };
@@ -392,23 +380,12 @@ fn prepare<'a>(
                 .collect()
         }
     };
-    let mut difference = None;
     for document in &documents {
-        let Ok(bytes) = book.read(document) else {
+        if book.read(document).is_err() {
             return Err(format!("its entry {} cannot be read", document.name));
-        };
-        if difference.is_none() && content::holds_foreign_elements(&bytes, &document.name) {
-            difference = Some(Difference(format!(
-                "its content document {} has elements outside XHTML in its body",
-                document.name
-            )));
         }
     }
-    Ok(Decided {
-        book,
-        reading,
-        difference,
-    })
+    Ok((book, reading))
 }
 
 pub struct EpubParser;
@@ -446,18 +423,11 @@ impl Parser for EpubParser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let mut metadata = metadata.clone();
-        let Decided {
-            mut book,
-            reading,
-            difference,
-        } = prepare(input, pages, &mut metadata)?;
-        unless_different(
-            Box::new(move |xhtml| {
-                *xhtml.metadata_mut() = metadata;
-                write(&mut book, reading, xhtml)
-            }),
-            difference,
-        )
+        let (mut book, reading) = prepare(input, pages, &mut metadata)?;
+        Ok(Box::new(move |xhtml| {
+            *xhtml.metadata_mut() = metadata;
+            write(&mut book, reading, xhtml)
+        }))
     }
 }
 
@@ -562,8 +532,8 @@ mod tests {
     }
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_rewriting,
-        conformance_corpus, differing_reading, documents, Scratch,
+        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing_rewriting,
+        assert_same_as_tika_rewriting, conformance_corpus, documents, Departure, Scratch,
     };
     use std::io::{Cursor, Write};
     #[cfg(feature = "tika")]
@@ -716,6 +686,40 @@ mod tests {
         assert!(
             xhtml
                 .contains("<p>Før</p>\n<p xmlns:h=\"http://www.w3.org/1999/xhtml\">Prefixed</p>\n<p>Efter</p>"),
+            "{xhtml}"
+        );
+    }
+
+    /// Elements outside XHTML in a chapter's body, such as an iBooks `svg`, are written by their
+    /// local name with their text, neither indented nor followed by a line break.
+    #[test]
+    fn writes_elements_outside_xhtml() {
+        let opf = package(
+            "3.0",
+            "",
+            r#"<item id="a" href="a.xhtml" media-type="application/xhtml+xml"/>"#,
+            r#"<itemref idref="a"/>"#,
+        );
+        let input = book(&[
+            MIMETYPE_ENTRY,
+            CONTAINER_ENTRY,
+            ("OEBPS/content.opf", &opf),
+            (
+                "OEBPS/a.xhtml",
+                &chapter(
+                    r#"<object><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><title>Fyr</title><p>Ikke XHTML</p><li>Ej heller</li><image xlink:href="fyr.jpg"/></svg><p>Lys</p></object>"#,
+                ),
+            ),
+        ]);
+        let (xhtml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(&input)
+            .unwrap();
+        assert!(
+            xhtml.contains(
+                r#"<object><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><title>Fyr</title><p>Ikke XHTML</p><li>Ej heller</li><image href="fyr.jpg" /></svg><p>Lys</p>
+</object>"#
+            ),
             "{xhtml}"
         );
     }
@@ -1010,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_encrypted_books_and_foreign_elements_to_tika() {
+    fn leaves_encrypted_books_to_tika() {
         let opf = package(
             "3.0",
             "",
@@ -1028,14 +1032,6 @@ mod tests {
             entries.extend_from_slice(extra);
             book(&entries)
         };
-        let svg = with(
-            r#"<p>x</p><svg xmlns="http://www.w3.org/2000/svg"><title>t</title></svg>"#,
-            &[],
-        );
-        assert_eq!(
-            deferral(&svg).as_deref(),
-            Some("its content document OEBPS/a.xhtml has elements outside XHTML in its body")
-        );
         let encrypted = with(
             "<p>x</p>",
             &[(
@@ -1073,27 +1069,28 @@ mod tests {
     fn extracts_what_tikas_path_extracts_from_tikas_documents() {
         let corpus = conformance_corpus();
         let (parsed, deferred) = documents(&EpubParser, &[&corpus]);
-        let names: Vec<String> = deferred
-            .iter()
-            .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, ["testiBooks.ibooks"]);
-        let (Difference(reason), text) = differing_reading(&EpubParser, &deferred[0]);
-        assert!(
-            reason.ends_with("has elements outside XHTML in its body"),
-            "{reason}"
-        );
-        assert!(text.contains("Lorem ipsum dolor sit amet"), "{text}");
-        // Its pictures outside the spine come in manifest order, which Tika's `HashMap` of
-        // their ids does not keep (#88).
+        assert!(deferred.is_empty(), "{deferred:?}");
+        // Their pictures outside the spine come in manifest order, which Tika's `HashMap` of
+        // their ids does not keep (#88). The iBooks book's are each read by OCR, so its lines
+        // are compared in any order; the pictures of the other share lines.
+        let in_hash_order = ["testEPUB_multi-metadata-vals.epub", "testiBooks.ibooks"];
         let (reordered, parsed): (Vec<&Path>, Vec<&Path>) = parsed
             .iter()
             .map(PathBuf::as_path)
-            .partition(|path| path.ends_with("testEPUB_multi-metadata-vals.epub"));
+            .partition(|path| in_hash_order.iter().any(|name| path.ends_with(name)));
         assert_same_as_tika_rewriting(&parsed, TIKA_NAME, as_tika_writes_it);
-        let [reordered] = reordered[..] else {
-            panic!("{reordered:?}");
-        };
+        let [reordered, ibooks] = in_hash_order.map(|name| {
+            *reordered
+                .iter()
+                .find(|path| path.ends_with(name))
+                .unwrap_or_else(|| panic!("{name} among {reordered:?}"))
+        });
+        assert_same_as_tika_departing_rewriting(
+            &[ibooks],
+            TIKA_NAME,
+            &[Departure::Paragraphs("#88", &[])],
+            Some((as_tika_writes_it, None)),
+        );
         let (xml, _) = crate::Extractor::new()
             .set_xml_output(true)
             .extract_file_to_string(reordered.to_str().unwrap())
