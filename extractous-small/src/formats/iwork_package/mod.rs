@@ -5,6 +5,9 @@
 //! [`pages`]). The document starts with the first such entry, which gives it its type, where
 //! Tika's parser gives it the type of the last (#132): a package without one writes no
 //! document. The package's preview, a thumbnail, is never parsed.
+//!
+//! Each content entry is spooled as it is read: in prepare, to find its kind, and again as it is
+//! written, the stream read front to back once more up to it, one entry at a time.
 
 mod keynote;
 mod numbers;
@@ -13,13 +16,15 @@ mod pages;
 mod tests;
 
 use crate::compress::zip::stream::{self, ZipStream};
-use crate::compress::zip::Content;
+use crate::compress::zip::Decoded;
+use crate::compress::Undecoded;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
-use crate::formats::{Decline, Failure, Parser, Prepared, Unported};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared, Unported};
+use crate::input::{Input, Pages};
 use crate::mime::{IworkDocument, IWORK_CONTENT_ENTRIES};
 
 /// `MARK_LIMIT`: the bytes of a content entry its root element is looked for in.
@@ -30,9 +35,16 @@ const PROTECTED: &str = "application/x-tika-iworks-protected";
 /// What a content entry is, as `detectType` finds.
 enum Entry {
     /// A document of this kind, its XML.
-    Document(IworkDocument, Vec<u8>),
+    Document(IworkDocument, Content),
     /// One whose data the stream refuses, as it refuses an encrypted entry.
     Encrypted,
+}
+
+/// A content entry read ahead: the how manyth entry of a content entry's name it is in the
+/// stream, and its XML where it spooled to a file, which holds no memory.
+struct Content {
+    at: usize,
+    kept: Option<Input<'static>>,
 }
 
 /// The package as `parse` reads it: its content entries of a known kind, in order, and the
@@ -42,10 +54,33 @@ struct Package {
     failure: Option<String>,
 }
 
-/// Reads the package's entries front to back, as `parse` does, keeping the content entries.
-fn read(input: &[u8]) -> Result<Package, Unported> {
+/// The XML of the content entry `zip` is in, whose data has the pages `pages`, spooled: all of
+/// it, or why it is read otherwise.
+fn spool<'a>(
+    zip: &ZipStream<'a>,
+    pages: Pages<'a>,
+) -> Result<Result<Input<'a>, Unread>, stream::Failure> {
+    Ok(match zip.spool(pages)? {
+        Ok(Decoded::Complete(content)) => Ok(content),
+        Ok(Decoded::Truncated(_) | Decoded::Oversized(_)) => Err(Unread::CutShort),
+        Err(undecoded) => Err(Unread::Unspooled(undecoded)),
+    })
+}
+
+/// Why the XML of a content entry is not read whole.
+enum Unread {
+    /// The archive cuts it short, or it decodes past the limit.
+    CutShort,
+    /// Spooling it fails.
+    Unspooled(Undecoded),
+}
+
+/// Reads the package's entries front to back, as `parse` does, from `input`, whose pages are
+/// `pages`, finding the kind of each content entry.
+fn read(input: &[u8], pages: Pages<'_>) -> Result<Package, Decline<'static>> {
     let mut zip = ZipStream::new(input, false);
     let mut entries = Vec::new();
+    let mut at = 0;
     let failed = |failure: stream::Failure| -> Result<String, Unported> {
         match failure {
             stream::Failure::Method(method) => Err(Unported::new(format!(
@@ -71,13 +106,21 @@ fn read(input: &[u8]) -> Result<Package, Unported> {
         if !IWORK_CONTENT_ENTRIES.contains(&entry.name.as_str()) {
             continue;
         }
-        let content = match zip.content() {
-            Ok(Content::Complete(content)) => content,
-            Ok(Content::Truncated(_) | Content::Oversized(_)) => {
+        at += 1;
+        let content = match spool(&zip, pages) {
+            Ok(Ok(content)) => content,
+            Ok(Err(Unread::CutShort)) => {
                 return Err(Unported::new(
-                    "an iWork content entry the archive cuts short, which Xerces reads up to \
-                     where the stream fails",
-                ))
+                    "an iWork content entry the archive cuts short or that decodes past the \
+                     limit, which Xerces reads up to where the stream fails",
+                )
+                .into())
+            }
+            Ok(Err(Unread::Unspooled(undecoded))) => {
+                return Err(Decline::Fails(Error::IoError(format!(
+                    "reading the iWork content entry {} fails: {undecoded}",
+                    entry.name
+                ))))
             }
             Err(stream::Failure::Unsupported | stream::Failure::DataDescriptor) => {
                 entries.push(Entry::Encrypted);
@@ -96,9 +139,14 @@ fn read(input: &[u8]) -> Result<Package, Unported> {
                 return Err(Unported::new(
                     "a document type declaration in an iWork content entry, under which Xerces \
                      may report whitespace as ignorable",
-                ));
+                )
+                .into());
             }
-            entries.push(Entry::Document(kind, content.into_owned()));
+            let kept = match content {
+                Input::Mapped(map) => Some(Input::Mapped(map)),
+                _ => None,
+            };
+            entries.push(Entry::Document(kind, Content { at, kept }));
         }
     }
     Ok(Package {
@@ -151,10 +199,52 @@ impl<H: ContentHandler> SaxHandler for Driven<'_, '_, H> {
 
 /// `XMLReaderUtils.parseSAX` of a content entry's `content` into `handler`, which is told the
 /// document ended once the XML has been read whole.
-fn parse(xhtml: &mut Xhtml, content: &[u8], handler: impl ContentHandler) -> Result<(), Failure> {
+fn parse(
+    xhtml: &mut Xhtml,
+    content: &Input<'_>,
+    handler: impl ContentHandler,
+) -> Result<(), Failure> {
     let mut driven = Driven { xhtml, handler };
-    xml::parse_sax(content, "the iWork content entry", &mut driven)?;
+    xml::parse_part(content, "the iWork content entry", &mut driven)?;
     driven.handler.end_document(driven.xhtml)
+}
+
+/// Reads the stream of `input`, whose pages are `pages`, front to back again, handing `each` the
+/// XML of each content entry of `entries`, which [`read`] found in it, with its kind.
+fn each_document(
+    input: &[u8],
+    pages: Pages<'_>,
+    entries: Vec<Entry>,
+    mut each: impl FnMut(IworkDocument, &Input<'_>) -> Result<(), Failure>,
+) -> Result<(), Failure> {
+    let mut zip = ZipStream::new(input, false);
+    let mut at = 0;
+    let again = || Failure::Malformed("the iWork package reads otherwise again".to_owned());
+    for (kind, content) in entries.into_iter().filter_map(|entry| match entry {
+        Entry::Document(kind, content) => Some((kind, content)),
+        Entry::Encrypted => None,
+    }) {
+        while at < content.at {
+            let entry = zip.next_entry().ok().flatten().ok_or_else(again)?;
+            if IWORK_CONTENT_ENTRIES.contains(&entry.name.as_str()) {
+                at += 1;
+            }
+        }
+        let xml = match content.kept {
+            Some(kept) => kept,
+            None => match spool(&zip, pages).map_err(|_| again())? {
+                Ok(xml) => xml,
+                Err(Unread::CutShort) => return Err(again()),
+                Err(Unread::Unspooled(undecoded)) => {
+                    return Err(Failure::Extraction(Error::IoError(format!(
+                        "reading an iWork content entry again fails: {undecoded}"
+                    ))))
+                }
+            },
+        };
+        each(kind, &xml)?;
+    }
+    Ok(())
 }
 
 /// The value of the attribute written `name`, as SAX's `getValue(qName)`.
@@ -201,13 +291,27 @@ impl Parser for IworkPackageParser {
         ]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
+        metadata: &TikaMetadata,
         _: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let Package { entries, failure } = read(input)?;
+        let Package { entries, failure } = read(input, pages)?;
         if entries.is_empty() {
             return Err(match failure {
                 Some(failure) => Decline::Fails(Error::ParseError(failure)),
@@ -220,20 +324,11 @@ impl Parser for IworkPackageParser {
         };
         Ok(Box::new(move |xhtml| {
             xhtml.metadata_mut().set("Content-Type", media_type);
-            for entry in entries {
-                match entry {
-                    Entry::Encrypted => {}
-                    Entry::Document(kind, content) => match kind {
-                        IworkDocument::Keynote => {
-                            parse(xhtml, &content, keynote::Keynote::default())?
-                        }
-                        IworkDocument::Numbers => {
-                            parse(xhtml, &content, numbers::Numbers::default())?
-                        }
-                        IworkDocument::Pages => parse(xhtml, &content, pages::Pages::default())?,
-                    },
-                }
-            }
+            each_document(input, pages, entries, |kind, content| match kind {
+                IworkDocument::Keynote => parse(xhtml, content, keynote::Keynote::default()),
+                IworkDocument::Numbers => parse(xhtml, content, numbers::Numbers::default()),
+                IworkDocument::Pages => parse(xhtml, content, pages::Pages::default()),
+            })?;
             match failure {
                 Some(failure) => Err(Failure::Malformed(failure)),
                 None => Ok(()),
