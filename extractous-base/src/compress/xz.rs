@@ -2,7 +2,7 @@
 //! `XZCompressorInputStream` without `decompressConcatenated` and `LZMACompressorInputStream`
 //! read them, under the memory limit Tika's `CompressorParser` sets.
 
-use super::{read_whole, throws, Undecoded, MEMORY_LIMIT_KIB};
+use super::{decoder_failure, read_whole, Undecoded, MEMORY_LIMIT_KIB};
 
 /// The first stream of the xz file `data`, or why it is not decoded natively.
 pub(crate) fn decode_xz(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
@@ -16,7 +16,7 @@ pub(crate) fn decode_xz(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
 /// The content of the `.lzma` file `data`, or why it is not decoded natively.
 pub(crate) fn decode_lzma(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
     let reader = lzma_rust2::LzmaReader::new_mem_limit(data, MEMORY_LIMIT_KIB, None)
-        .map_err(|e| throws(e.to_string()))?;
+        .map_err(decoder_failure)?;
     read_whole(reader)
 }
 
@@ -67,6 +67,9 @@ pub mod tests {
         header.extend_from_slice(&(1u32 << 30).to_le_bytes());
         header.extend_from_slice(&[0xFF; 8]);
         header.extend_from_slice(&[0; 16]);
-        assert!(decode_lzma(&header).is_err());
+        assert!(matches!(
+            decode_lzma(&header),
+            Err(Undecoded::MemoryLimit(_))
+        ));
     }
 }

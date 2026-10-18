@@ -49,6 +49,9 @@ pub enum Undecoded {
     /// It is encrypted, and the password given does not decrypt it, where Tika's decoders fail
     /// on the garbled data with errors of their own.
     BadPassword,
+    /// Decoding it needs more memory than [`MEMORY_LIMIT_KIB`], as this says, for which Tika's
+    /// `CompressorParser` fails it with a `TikaMemoryLimitException`.
+    MemoryLimit(String),
 }
 
 impl fmt::Display for Undecoded {
@@ -63,6 +66,9 @@ impl fmt::Display for Undecoded {
                     f,
                     "it is encrypted, and the password given does not decrypt it"
                 )
+            }
+            Undecoded::MemoryLimit(reason) => {
+                write!(f, "decoding it needs more memory than allowed: {reason}")
             }
         }
     }
@@ -147,9 +153,19 @@ fn read_whole(reader: impl Read) -> Result<Vec<u8>, Undecoded> {
     reader
         .take(MAX_DECODED as u64 + 1)
         .read_to_end(&mut out)
-        .map_err(|e| throws(e.to_string()))?;
+        .map_err(decoder_failure)?;
     within_limit(&out)?;
     Ok(out)
+}
+
+/// Why a crate's decoder failed: its memory limit, which the decoders given one report as
+/// [`std::io::ErrorKind::OutOfMemory`], or else the error itself.
+fn decoder_failure(error: std::io::Error) -> Undecoded {
+    if error.kind() == std::io::ErrorKind::OutOfMemory {
+        Undecoded::MemoryLimit(format!("{error}, the limit being {MEMORY_LIMIT_KIB} KiB"))
+    } else {
+        throws(error.to_string())
+    }
 }
 
 #[cfg(test)]

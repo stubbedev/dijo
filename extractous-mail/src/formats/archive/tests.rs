@@ -355,10 +355,7 @@ fn extracts_tikas_test_compressed_files_as_tikas_path_does() {
         &[&conformance_corpus()],
         &[("testZSTD.zst", ZSTD_WITHOUT_ZSTD_JNI)],
     );
-    assert_eq!(
-        deferred,
-        ["TIKA-216.tgz", "quine.gz", "testLZMA_oom", "testZ_oom.Z"]
-    );
+    assert_eq!(deferred, ["TIKA-216.tgz", "quine.gz"]);
 }
 
 #[cfg(feature = "tika")]

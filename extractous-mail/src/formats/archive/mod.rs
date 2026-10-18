@@ -98,11 +98,13 @@ fn record_unreadable(metadata: &mut TikaMetadata, name: &str, reason: &str) {
     );
 }
 
-/// Why the native readers do not read `what`, for the reason `undecoded`.
+/// Why the native readers do not read `what`, for the reason `undecoded`: a stream beyond the
+/// memory limit fails at once, as Tika's path fails it.
 fn undecoded(what: &str, undecoded: Undecoded) -> Declined {
     let reason = format!("{what}: {undecoded}");
     match undecoded {
         Undecoded::TooLarge => too_large(reason),
+        Undecoded::MemoryLimit(_) => Declined::Fails(Error::LimitExceeded(reason)),
         _ => Declined::Deferred(reason),
     }
 }
