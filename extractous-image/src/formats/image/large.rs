@@ -218,14 +218,12 @@ fn extracts_bpg_images_too_large_to_read_whole_in_bounded_memory() {
     assert_eq!(metadata["tiff:ImageLength"], ["64"]);
 }
 
-/// An Apple icon file of an icon too large to read whole has its entries' headers read alone.
+/// An Apple icon file too large to read whole, its icons followed by padding, has the length
+/// its header declares read alone: Tika refuses one that declares more than 10 MiB.
 #[test]
 fn extracts_apple_icons_too_large_to_read_whole_in_bounded_memory() {
-    let icon = padding_of(PADDING) + 8;
-    let mut head = b"icns".to_vec();
-    head.extend((icon + 8).to_be_bytes());
-    head.extend(b"ic07");
-    head.extend(icon.to_be_bytes());
+    let icon = [&b"ic07"[..], &16u32.to_be_bytes(), &[0; 8]].concat();
+    let head = [&b"icns"[..], &(8 + icon.len() as u32).to_be_bytes(), &icon].concat();
     let file = zero_padded("icon.icns", &head, &[]);
     let metadata = metadata_of(&file, super::IcnsParser.name());
     assert_eq!(metadata["Icon count"], ["1"]);
@@ -239,7 +237,7 @@ fn extracts_heif_images_too_large_to_read_whole_in_bounded_memory() {
     head.extend(b"free");
     let file = zero_padded("photo.heic", &head, &[]);
     let metadata = metadata_of(&file, "extractous::HeifParser");
-    assert_eq!(metadata["tiff:ImageWidth"], ["512"]);
+    assert_eq!(metadata["img:Width"], ["512 pixels"]);
 }
 
 /// The JPEG XL test card, its codestream split over `jxlp` boxes, with a box of a type no reader
