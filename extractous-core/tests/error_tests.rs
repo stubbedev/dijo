@@ -1,30 +1,30 @@
 use extractous_core::{Error, Extractor};
 use std::io::Read;
 
-/// A MATLAB file of its header alone, which only Tika's path reads, and on which Tika's
-/// `MatParser` throws.
-fn header_only_matlab() -> Vec<u8> {
-    [b"MATLAB 5.0 MAT-file".as_slice(), &[b' '; 109]].concat()
+/// An HWP 5 document of its summary information alone, which only Tika's path reads, and on
+/// which Tika's `HwpV5Parser` throws, finding no file header.
+fn headerless_hwp() -> Vec<u8> {
+    extractous_base::ole2::tests::compound(&["\u{5}HwpSummaryInformation"], b"")
 }
 
 #[test]
 fn test_parse_error_carries_the_java_cause_chain() {
     let error = Extractor::new()
-        .extract_bytes_to_string(&header_only_matlab())
+        .extract_bytes_to_string(&headerless_hwp())
         .unwrap_err();
 
     assert!(matches!(error, Error::ParseError(_)), "{error:?}");
     assert!(
         error
             .to_string()
-            .contains(" <- caused by java.lang.ArrayIndexOutOfBoundsException"),
+            .contains(" <- caused by java.io.FileNotFoundException"),
         "{error}"
     );
 }
 
 #[test]
 fn test_stream_error_carries_the_java_cause_chain() {
-    let message = match Extractor::new().extract_bytes(&header_only_matlab()) {
+    let message = match Extractor::new().extract_bytes(&headerless_hwp()) {
         Err(error) => error.to_string(),
         Ok((mut reader, _)) => reader
             .read_to_string(&mut String::new())
