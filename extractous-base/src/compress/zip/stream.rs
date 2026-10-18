@@ -81,6 +81,7 @@ impl Described {
 }
 
 /// The local header of the entry the stream is in.
+#[derive(Debug, Clone)]
 struct Current {
     flags: u16,
     method: u16,
@@ -96,7 +97,9 @@ impl Current {
     }
 }
 
-/// A `ZipArchiveInputStream` over the whole input.
+/// A `ZipArchiveInputStream` over the whole input. A clone stays at the entry the stream is in,
+/// to read its data again once the stream has gone on.
+#[derive(Debug, Clone)]
 pub struct ZipStream<'a> {
     data: &'a [u8],
     position: usize,
@@ -295,7 +298,7 @@ impl<'a> ZipStream<'a> {
 
     /// The data of the entry the stream is in, read to its end into memory.
     pub fn content(&self) -> Result<Content<'a>, Failure> {
-        self.content_into(Pages::IN_MEMORY, |_| Decoding::in_memory())
+        self.content_into(Pages::IN_MEMORY, |_, _| Decoding::in_memory())
             .map(|read| read.expect("memory takes what is decoded"))
     }
 
@@ -305,18 +308,22 @@ impl<'a> ZipStream<'a> {
         self.content_into(pages, Decoding::spooled)
     }
 
-    /// [`ZipStream::spool`] keeping nothing, to tell whether the entry reads whole.
-    pub fn verify(&self) -> Result<Decoded<()>, Failure> {
-        self.content_into(Pages::IN_MEMORY, Decoding::discarded)
-            .map(|read| read.expect("nothing fails to take what is decoded"))
+    /// [`ZipStream::spool`] keeping nothing but the length decoded, to tell whether the entry
+    /// reads whole.
+    pub fn verify(&self) -> Result<Decoded<u64>, Failure> {
+        self.content_into(Pages::IN_MEMORY, |compressed, _| {
+            Decoding::discarded(compressed)
+        })
+        .map(|read| read.expect("nothing fails to take what is decoded"))
     }
 
     /// The data of the entry the stream is in, read to its end into what `decoding` makes of
-    /// the length of the data it reads, where the archive's data has the pages `pages`.
+    /// the length of the data it reads and the size its local header declares, where it does,
+    /// where the archive's data has the pages `pages`.
     fn content_into<W: Held>(
         &self,
         pages: Pages<'a>,
-        decoding: impl FnOnce(usize) -> Decoding<W>,
+        decoding: impl FnOnce(usize, Option<u64>) -> Decoding<W>,
     ) -> Result<Result<Decoded<W::Bytes<'a>>, Undecoded>, Failure> {
         let current = self.current.as_ref().ok_or(Failure::Io)?;
         self.check(current)?;
@@ -337,7 +344,8 @@ impl<'a> ZipStream<'a> {
             }
             DEFLATED => {
                 let raw = self.data.get(current.data_start..).unwrap_or_default();
-                let content = inflate_into(raw, decoding(raw.len()));
+                let declared = u64::try_from(current.size).ok();
+                let content = inflate_into(raw, decoding(raw.len(), declared));
                 if current.has_data_descriptor() && matches!(content, Ok(Decoded::Complete(_))) {
                     self.end(current)?;
                 }
@@ -348,13 +356,19 @@ impl<'a> ZipStream<'a> {
                 let length = usize::try_from(current.compressed_size).map_err(|_| Failure::Io)?;
                 let size = u64::try_from(current.size).map_err(|_| Failure::Io)?;
                 let raw = &raw[..length.min(raw.len())];
-                decode_into(method, current.flags, raw, size, decoding(raw.len()))
-                    .ok_or(Failure::Unsupported)
+                decode_into(
+                    method,
+                    current.flags,
+                    raw,
+                    size,
+                    decoding(raw.len(), Some(size)),
+                )
+                .ok_or(Failure::Unsupported)
             }
             method => {
                 let described = Described::of(method).ok_or(Failure::Unsupported)?;
                 let raw = self.data.get(current.data_start..).unwrap_or_default();
-                let mut decoding = decoding(raw.len());
+                let mut decoding = decoding(raw.len(), None);
                 let end = match described.decode(raw, &mut decoding) {
                     Ok(end) => end,
                     Err(undecoded @ Undecoded::Unspooled(_)) => return Ok(Err(undecoded)),

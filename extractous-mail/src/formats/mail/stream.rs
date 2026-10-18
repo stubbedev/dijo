@@ -998,14 +998,35 @@ impl Stream<'_> {
         }
     }
 
+    /// How many bytes the body of the current entity holds encoded, as far as the message
+    /// tells before the body is read: those up to where the boundary of the innermost multipart
+    /// around it next stands, or else to the end of the message, counted from the first byte
+    /// the entities have buffered and not yet read.
+    fn encoded_length(&self) -> u64 {
+        let buffered: usize = self
+            .entities
+            .iter()
+            .map(|entity| entity.buffer.buffered())
+            .sum();
+        let rest = &self.root.input[self.root.pos.saturating_sub(buffered)..];
+        let end = self
+            .entities
+            .iter()
+            .rev()
+            .find_map(|entity| entity.part.as_ref())
+            .and_then(|part| memchr::memmem::find(rest, &part.pattern));
+        end.unwrap_or(rest.len()) as u64
+    }
+
     /// The body of the current entity as the handler reads it, its transfer encoding decoded a
-    /// chunk at a time to a spool, which holds no more of it in memory than a file read whole.
+    /// chunk at a time to a spool, which holds no more of it in memory than a file read whole,
+    /// and none of a body whose encoded length says it is larger.
     fn body_content(&mut self, body: &BodyDescriptor) -> Result<Input<'static>, MimeError> {
         let unspooled = |error: std::io::Error| {
             MimeError(format!("spooling the body of a part fails: {error}"))
         };
         let mut decoder = BodyDecoder::of(body.transfer_encoding());
-        let mut spool = Spool::new(None);
+        let mut spool = Spool::new(Some(decoder.decoded_length(self.encoded_length())));
         let mut chunk = vec![0; COPY_BUFFER_SIZE];
         let mut decoded = Vec::with_capacity(COPY_BUFFER_SIZE);
         while let Some(count) = read_data(&mut self.root, &mut self.entities, &mut chunk) {

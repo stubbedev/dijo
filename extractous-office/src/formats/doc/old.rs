@@ -10,6 +10,7 @@
 //! fewer characters than bytes, decodes it in code page 1252 instead, or throws on a complex
 //! document (#119).
 
+use super::bins::PARAGRAPH_MARKS;
 use super::bins::{
     bin_pages, character_runs, paragraph_runs, rebuild_character_runs, rebuild_paragraph_runs,
     PageNumber, PropertyRun,
@@ -17,7 +18,7 @@ use super::bins::{
 use super::bytes::{index, safely_clone};
 use super::extractor::{clean, strip_fields};
 use super::range::{find_range, subrange};
-use super::text::{read_clx, ComplexFileTable, Plex, TextPiece, MAX_PIECE_LENGTH};
+use super::text::{read_clx, ComplexFileTable, Encoding, Plex, Text, TextPiece, MAX_PIECE_LENGTH};
 use crate::formats::poi::{i16_at, i32_at, u16_at, Read, Thrown, Unread};
 use crate::formats::Unported;
 use crate::text::charset::Charset;
@@ -35,7 +36,8 @@ const LINE_END: [u16; 2] = [0x0D, 0x0A];
 pub(super) struct OldDocument {
     /// The charset of the text, which the pieces and the text hold as bytes.
     charset: Charset,
-    pieces: ComplexFileTable,
+    /// The text of each piece, in the order of their ends.
+    piece_texts: Vec<Vec<u16>>,
     text: Vec<u16>,
     paragraphs: Vec<PropertyRun>,
     /// `fcMac - fcMin`: the end of the range `getRange` gives.
@@ -71,9 +73,10 @@ impl OldDocument {
             (pap_offset, pap_size),
             (sed_offset, sed_size),
         )?;
+        let piece_texts = pieces.pieces.iter().map(|piece| piece.text(main)).collect();
         Ok(OldDocument {
             charset,
-            pieces,
+            piece_texts,
             text,
             paragraphs,
             length: fc_mac.wrapping_sub(fc_min),
@@ -85,7 +88,12 @@ impl OldDocument {
     /// each piece, its carriage returns ended as lines.
     pub(super) fn paragraph_text(&self) -> Vec<Vec<u16>> {
         self.paragraphs_of_range()
-            .unwrap_or_else(|_| self.pieces.pieces.iter().map(piece_text).collect())
+            .unwrap_or_else(|_| {
+                self.piece_texts
+                    .iter()
+                    .map(|units| piece_text(units))
+                    .collect()
+            })
             .iter()
             .map(|paragraph| decoded(paragraph, self.charset))
             .collect()
@@ -115,9 +123,9 @@ impl OldDocument {
 }
 
 /// A piece's text, each carriage return ended as a line, as `Word6Extractor` ends it.
-fn piece_text(piece: &TextPiece) -> Vec<u16> {
-    let mut text = Vec::with_capacity(piece.text().len());
-    for &unit in piece.text() {
+fn piece_text(units: &[u16]) -> Vec<u16> {
+    let mut text = Vec::with_capacity(units.len());
+    for &unit in units {
         if unit == 0x0D {
             text.extend(LINE_END);
         } else {
@@ -136,7 +144,7 @@ fn runs(
     paragraphs: (i32, i32),
     sections: (i32, i32),
 ) -> Read<(Vec<u16>, Vec<PropertyRun>)> {
-    let text = pieces.text()?;
+    let text = Text::of(pieces)?;
     let character_pages = bin_pages(main, characters.0, characters.1, PageNumber::Short)?;
     let mut characters = character_runs(main, &character_pages, pieces)?;
     characters.sort_by_key(|run| run.start);
@@ -144,7 +152,14 @@ fn runs(
     let paragraphs = paragraph_runs(main, main, &paragraph_pages, pieces)?;
     read_sections(main, sections.0, sections.1)?;
     rebuild_character_runs(characters, pieces)?;
-    let paragraphs = rebuild_paragraph_runs(paragraphs, &text, pieces)?;
+    let paragraphs = rebuild_paragraph_runs(
+        paragraphs,
+        &text.positions_of(main, &PARAGRAPH_MARKS),
+        pieces,
+    )?;
+    let text = text
+        .read(main, 0..text.len())
+        .expect("the text lies within itself");
     Ok((text, paragraphs))
 }
 
@@ -182,14 +197,15 @@ fn complex_pieces(main: &[u8], offset: i32, charset: Charset) -> Result<ComplexF
             descriptor.end.wrapping_sub(descriptor.start),
             MAX_PIECE_LENGTH,
         )?;
-        let text = undecoded(charset, &bytes)?;
-        pieces.push(TextPiece::new(
+        check_decodes(charset, &bytes)?;
+        pieces.push(TextPiece::read(
+            main,
             descriptor.start,
             descriptor.end,
             descriptor.fc,
-            false,
+            Encoding::Bytes,
             descriptor.prm,
-            text,
+            MAX_PIECE_LENGTH,
         )?);
     }
     Ok(ComplexFileTable::new(grpprls, pieces))
@@ -204,21 +220,29 @@ fn whole_text(
 ) -> Result<ComplexFileTable, Unread> {
     let bytes = safely_clone(main, fc_min, fc_mac.wrapping_sub(fc_min), MAX_RECORD_LENGTH)?;
     let length = i32::try_from(bytes.len()).expect("a record of at most ten million bytes");
-    let text = undecoded(charset, &bytes)?;
-    let piece = TextPiece::new(0, length, fc_min, false, 0, text)?;
+    check_decodes(charset, &bytes)?;
+    let piece = TextPiece::read(
+        main,
+        0,
+        length,
+        fc_min,
+        Encoding::Bytes,
+        0,
+        MAX_RECORD_LENGTH,
+    )?;
     Ok(ComplexFileTable::new(Vec::new(), vec![piece]))
 }
 
-/// The bytes of text in `charset`, one unit each, once they are known to decode as
-/// `new String(bytes, charset)` decodes them.
-fn undecoded(charset: Charset, bytes: &[u8]) -> Result<Vec<u16>, Unread> {
+/// Whether text in `charset` decodes as `new String(bytes, charset)` decodes it, which the
+/// pieces keep as its bytes, one unit each.
+fn check_decodes(charset: Charset, bytes: &[u8]) -> Result<(), Unread> {
     charset.decode_exactly(bytes).ok_or_else(|| {
         Unported(format!(
             "text in {}, which this port does not decode as Java does",
             charset.name()
         ))
     })?;
-    Ok(bytes.iter().map(|&byte| u16::from(byte)).collect())
+    Ok(())
 }
 
 /// Text kept as bytes, one unit each, decoded in `charset`; a unit past a byte, which cleaning a

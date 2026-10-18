@@ -134,14 +134,14 @@ enum Stopped<E> {
 
 /// Hands `each` the files of the 7z archive `data`, decrypted with `password` where it is
 /// encrypted, in the order the archive lists them, each decoded into what `decoding` makes of
-/// the archive's length as its data is read, so that one file's data is held at a time: whether
+/// the archive's length and the file's listed size as its data is read, so that one file's data is held at a time: whether
 /// all of them were handed on whole, `false` where they end at one that decodes past the limit,
 /// which `each` is handed cut; the failure of `each`, which ends them; or why they are not read
 /// natively.
 pub fn visit<W: Held, E>(
     data: &[u8],
     password: Option<&str>,
-    decoding: impl Fn(usize) -> Decoding<W>,
+    decoding: impl Fn(usize, Option<u64>) -> Decoding<W>,
     mut each: impl FnMut(&Listed, Limited<W::Bytes<'static>>) -> Result<(), E>,
 ) -> Result<Result<bool, E>, Undecoded> {
     let password = password.map_or_else(Password::empty, Password::new);
@@ -168,7 +168,9 @@ pub fn visit<W: Held, E>(
                 }
             }
             next = index + 1;
-            let content = match decode(read, decoding(data.len()))?.and_then(Decoding::finish) {
+            let content = match decode(read, decoding(data.len(), Some(listed[index].size)))?
+                .and_then(Decoding::finish)
+            {
                 Ok(content) => content,
                 Err(undecoded) => {
                     stopped = Some(Stopped::Unheld(undecoded));

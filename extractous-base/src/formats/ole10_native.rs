@@ -1,6 +1,8 @@
 //! POI's `Ole10Native`: the record an OLE 1.0 object keeps its document in, the content of its
 //! `\1Ole10Native` stream, read as `new Ole10Native(data, 0)` reads it and failing where it fails.
 
+use std::borrow::Cow;
+
 use crate::java;
 
 /// `Ole10Native`'s default `MAX_RECORD_LENGTH`.
@@ -9,15 +11,15 @@ const MAX_STRING_LENGTH: i32 = 1024;
 
 /// An OLE 1.0 object's record.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ole10Native {
+pub struct Ole10Native<'a> {
     /// The name the object is shown with; only a record in the parsed form has one.
     pub label: Option<String>,
     /// The path of the embedded file; only a record in the parsed form has one.
     pub file_name: Option<String>,
     /// The command that opens the embedded file; only a record in the parsed form has one.
     pub command: Option<String>,
-    /// The embedded document.
-    pub data: Vec<u8>,
+    /// The embedded document, in place in the record.
+    pub data: Cow<'a, [u8]>,
 }
 
 /// Why POI reads no record.
@@ -30,11 +32,11 @@ pub enum Unread {
     Failed(String),
 }
 
-impl Ole10Native {
+impl<'a> Ole10Native<'a> {
     /// `new Ole10Native(data, 0)`: the record in its parsed form when its flags are 2 and its
     /// label starts with a printable byte, in its compact form when they are 2 and it does not,
     /// and unparsed otherwise.
-    pub fn parse(data: &[u8]) -> Result<Ole10Native, Unread> {
+    pub fn parse(data: &'a [u8]) -> Result<Ole10Native<'a>, Unread> {
         let mut stream = Stream::new(data);
         let total_size = stream.read_int()?;
         stream.limit(total_size.wrapping_add(4));
@@ -59,7 +61,7 @@ impl Ole10Native {
         stream.read_short()?;
         let command = read_ascii_len(&mut stream)?;
         let length = stream.read_int()?;
-        let data = stream.read_array(length, MAX_RECORD_LENGTH)?.to_vec();
+        let data = Cow::Borrowed(stream.read_array(length, MAX_RECORD_LENGTH)?);
         stream.mark();
         if stream.read_short()? != 0 {
             stream.reset();
@@ -75,12 +77,22 @@ impl Ole10Native {
         })
     }
 
-    fn unparsed(data: &[u8]) -> Ole10Native {
+    fn unparsed(data: &'a [u8]) -> Ole10Native<'a> {
         Ole10Native {
             label: None,
             file_name: None,
             command: None,
-            data: data.to_vec(),
+            data: Cow::Borrowed(data),
+        }
+    }
+
+    /// The same, owning its document.
+    pub fn into_owned(self) -> Ole10Native<'static> {
+        Ole10Native {
+            label: self.label,
+            file_name: self.file_name,
+            command: self.command,
+            data: Cow::Owned(self.data.into_owned()),
         }
     }
 }
@@ -251,11 +263,12 @@ mod tests {
 
     #[test]
     fn reads_the_names_and_data_of_the_parsed_form() {
-        let native = Ole10Native::parse(&parsed(b"hello", &[0, 0])).unwrap();
+        let data = parsed(b"hello", &[0, 0]);
+        let native = Ole10Native::parse(&data).unwrap();
         assert_eq!(native.label.as_deref(), Some("label.txt"));
         assert_eq!(native.file_name.as_deref(), Some("C:\\dir\\file.txt"));
         assert_eq!(native.command.as_deref(), Some("C:\\x"));
-        assert_eq!(native.data, b"hello");
+        assert_eq!(&*native.data, b"hello");
     }
 
     #[test]
@@ -287,16 +300,18 @@ mod tests {
 
     #[test]
     fn reads_the_compact_form_after_its_flags() {
-        let native = Ole10Native::parse(&record(&[2, 0, 1, 2, 3])).unwrap();
+        let data = record(&[2, 0, 1, 2, 3]);
+        let native = Ole10Native::parse(&data).unwrap();
         assert_eq!(native.label, None);
-        assert_eq!(native.data, [1, 2, 3]);
+        assert_eq!(&*native.data, [1, 2, 3]);
     }
 
     #[test]
     fn reads_the_unparsed_form_whole() {
-        let native = Ole10Native::parse(&record(&[7, 0, 1, 2])).unwrap();
+        let data = record(&[7, 0, 1, 2]);
+        let native = Ole10Native::parse(&data).unwrap();
         assert_eq!(native.command, None);
-        assert_eq!(native.data, [7, 0, 1, 2]);
+        assert_eq!(&*native.data, [7, 0, 1, 2]);
     }
 
     #[test]

@@ -31,7 +31,7 @@ required-features = ["tika"]
 # a release. It is the reference the parity tests and conformance compare the native parsers with,
 # and it extracts what no native parser reads yet. Without it, those documents fail with
 # `Error::Unsupported`, and the build needs no GraalVM.
-tika = ["extractous-base/tika", "extractous-tika/tika", "extractous-mime/tika", "extractous-html/tika", "extractous-image/tika", "extractous-pdf/tika", "extractous-media/tika", "extractous-odf/tika", "extractous-small/tika", "extractous-mail/tika", "extractous-office/tika", "extractous-ooxml/tika"]
+tika = ["extractous-base/tika", "extractous-tika/tika", "extractous-mime/tika", "extractous-html/tika", "extractous-image/tika", "extractous-pdf/tika", "extractous-media/tika", "extractous-odf/tika", "extractous-small/tika", "extractous-science/tika", "extractous-mail/tika", "extractous-office/tika", "extractous-ooxml/tika"]
 # Link tesseract, Leptonica and libheif statically, as `EXTRACTOUS_STATIC_LIBS` lists them, instead
 # of loading them: for the statically linked Linux executable without Tika that ci/static-native.nix builds.
 static = ["extractous-native/static", "extractous-tika/static", "extractous-image/static"]
@@ -41,7 +41,7 @@ static = ["extractous-native/static", "extractous-tika/static", "extractous-imag
 static-image = ["static", "tika", "extractous-tika/static-image", "extractous-mail/static-image"]
 # The parity harness, which compares the native parsers with Tika's path, for the tests of the crates
 # of the formats.
-parity = ["extractous-base/testing", "extractous-mime/testing", "extractous-html/testing", "extractous-image/testing", "extractous-pdf/testing", "extractous-media/testing", "extractous-odf/testing", "extractous-small/testing", "extractous-mail/testing", "extractous-office/testing", "extractous-ooxml/testing"]
+parity = ["extractous-base/testing", "extractous-mime/testing", "extractous-html/testing", "extractous-image/testing", "extractous-pdf/testing", "extractous-media/testing", "extractous-odf/testing", "extractous-small/testing", "extractous-science/testing", "extractous-mail/testing", "extractous-office/testing", "extractous-ooxml/testing"]
 
 [dependencies]
 extractous-base = { path = "../extractous-base", default-features = false }
@@ -51,6 +51,7 @@ extractous-ooxml = { path = "../extractous-ooxml", default-features = false }
 extractous-office = { path = "../extractous-office", default-features = false }
 extractous-mail = { path = "../extractous-mail", default-features = false }
 extractous-small = { path = "../extractous-small", default-features = false }
+extractous-science = { path = "../extractous-science", default-features = false }
 extractous-odf = { path = "../extractous-odf", default-features = false }
 extractous-media = { path = "../extractous-media", default-features = false }
 extractous-pdf = { path = "../extractous-pdf", default-features = false }
@@ -66,6 +67,7 @@ extractous-ooxml = { path = "../extractous-ooxml", default-features = false, fea
 extractous-office = { path = "../extractous-office", default-features = false, features = ["testing"] }
 extractous-mail = { path = "../extractous-mail", default-features = false, features = ["testing"] }
 extractous-small = { path = "../extractous-small", default-features = false, features = ["testing"] }
+extractous-science = { path = "../extractous-science", default-features = false, features = ["testing"] }
 extractous-odf = { path = "../extractous-odf", default-features = false, features = ["testing"] }
 extractous-media = { path = "../extractous-media", default-features = false, features = ["testing"] }
 extractous-pdf = { path = "../extractous-pdf", default-features = false, features = ["testing"] }

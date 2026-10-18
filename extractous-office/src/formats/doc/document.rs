@@ -2,10 +2,16 @@
 //! encrypted, read into its text, its character, paragraph and section runs, its styles and
 //! lists, the tables Tika's extractor reads, and every other structure POI reads on opening the
 //! document, failing where it fails.
+//!
+//! The streams are read in place where each lies in one run of the compound document. The
+//! text is not held: the pieces say where each character of it is in the main stream, which a
+//! range of it is read from where it is needed.
+
+use std::borrow::Cow;
 
 use super::bins::{
     bin_pages, character_runs, paragraph_runs, rebuild_character_runs, rebuild_paragraph_runs,
-    PageNumber, PropertyRun,
+    PageNumber, PropertyRun, PARAGRAPH_MARKS,
 };
 use super::bytes::{index, safely_clone, utf16_units};
 use super::fib::{
@@ -16,7 +22,7 @@ use super::lists::ListTables;
 use super::old::OldDocument;
 use super::range::Span;
 use super::styles::StyleSheet;
-use super::text::{ComplexFileTable, Plex};
+use super::text::{ComplexFileTable, Plex, Text};
 use crate::config::ParserConfigs;
 use crate::formats::crypt::xor::{WordXorKey, Xor};
 use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Mode, Rc4Keys, Unopened};
@@ -62,18 +68,34 @@ const DG_CONTAINER: u16 = 0xF002;
 
 /// A Word document as Tika's `WordExtractor` reads it: with `HWPFDocument`, or, before Word 97,
 /// with `HWPFOldDocument` in `parseWord6`.
-pub(super) enum Word {
-    Modern(Box<Document>),
+pub(super) enum Word<'a> {
+    Modern(Box<Streams<'a>>),
     Old(OldDocument),
 }
 
-/// A document as Tika's extractor reads it.
-pub(super) struct Document {
+/// The streams of a Word 97–2003 document, each in place where it lies in one run of the
+/// compound document, else copied together, and decrypted where the document is encrypted.
+pub(super) struct Streams<'a> {
+    fib: Fib,
+    main: Cow<'a, [u8]>,
+    table: Cow<'a, [u8]>,
+    data: Cow<'a, [u8]>,
+}
+
+impl Streams<'_> {
+    /// The document the streams hold, as `HWPFDocument` reads it.
+    pub(super) fn document(&self) -> Read<Document<'_>> {
+        Document::from_streams(self.fib.clone(), &self.main, &self.table, &self.data)
+    }
+}
+
+/// A document as Tika's extractor reads it, from its streams.
+pub(super) struct Document<'d> {
     pub(super) fib: Fib,
-    pub(super) main: Vec<u8>,
-    pub(super) data: Vec<u8>,
-    /// The text, in UTF-16 units, as POI indexes it.
-    pub(super) text: Vec<u16>,
+    pub(super) main: &'d [u8],
+    pub(super) data: &'d [u8],
+    /// The text, which the pieces of the main stream give, as POI indexes it.
+    pub(super) text: Text,
     pub(super) characters: Vec<PropertyRun>,
     pub(super) paragraphs: Vec<PropertyRun>,
     /// The character ranges of the sections, in the order of their starts.
@@ -86,24 +108,24 @@ pub(super) struct Document {
     pub(super) revision_authors: Option<Vec<Option<String>>>,
     pub(super) fields: Fields,
     /// The stored pictures of the drawing group, `getBStoreContainer`.
-    pub(super) picture_store: Option<Escher<'static>>,
-    table: Vec<u8>,
+    pub(super) picture_store: Option<Escher<'d>>,
+    table: &'d [u8],
 }
 
-impl Document {
-    /// `new HWPFDocument(directory)`: the document, decrypted with the password where it is
-    /// encrypted, or, for one before Word 97, on which it throws `OldWordFileFormatException`,
-    /// `new HWPFOldDocument(directory)`; or why it is left to Tika, or fails as Tika's path does
-    /// where the password does not open it.
+impl<'a> Word<'a> {
+    /// `new HWPFDocument(directory)`: the document's streams, decrypted with the password where
+    /// it is encrypted, or, for one before Word 97, on which it throws
+    /// `OldWordFileFormatException`, `new HWPFOldDocument(directory)`; or why it is left to
+    /// Tika, or fails as Tika's path does where the password does not open it.
     pub(super) fn read(
-        file: &Ole2<'_>,
+        file: &Ole2<'a>,
         root: EntryId,
         configs: &ParserConfigs,
-    ) -> Result<Word, Decline<'static>> {
+    ) -> Result<Word<'a>, Decline<'static>> {
         let mut main = document_bytes(file, root, WORD_DOCUMENT)?;
         let encryption = encryption(file, root, &main, configs)?;
         if let Some(key) = &encryption {
-            key.decrypt(&mut main, FIB_BASE);
+            key.decrypt(main.to_mut(), FIB_BASE);
         }
         let fib = Fib::read(&main)?;
         if let Some(pool) = file.child_ignoring_case(root, OBJECT_POOL) {
@@ -128,7 +150,7 @@ impl Document {
         let mut table = document_bytes(file, root, table_name)?;
         let mut data = match file.child_ignoring_case(root, DATA) {
             Some(_) => document_bytes(file, root, DATA)?,
-            None => Vec::new(),
+            None => Cow::Borrowed(&[][..]),
         };
         if let Some(key) = &encryption {
             let header = key.plain_table();
@@ -138,55 +160,62 @@ impl Document {
                 ))
                 .into());
             }
-            key.decrypt(&mut table, header);
-            key.decrypt(&mut data, 0);
+            key.decrypt(table.to_mut(), header);
+            key.decrypt(data.to_mut(), 0);
         }
-        Ok(Word::Modern(Box::new(Self::from_streams(
-            fib, main, table, data,
-        )?)))
+        Ok(Word::Modern(Box::new(Streams {
+            fib,
+            main,
+            table,
+            data,
+        })))
     }
+}
 
-    fn from_streams(fib: Fib, main: Vec<u8>, table: Vec<u8>, data: Vec<u8>) -> Read<Document> {
-        fib.check_unread_fields(&table)?;
-        check_document_properties(&table, fib.offset(field::DOP)?, fib.size(field::DOP)?)?;
-        let clx = ComplexFileTable::read(&main, &table, fib.offset(field::CLX)?)?;
+impl<'d> Document<'d> {
+    fn from_streams(
+        fib: Fib,
+        main: &'d [u8],
+        table: &'d [u8],
+        data: &'d [u8],
+    ) -> Read<Document<'d>> {
+        fib.check_unread_fields(table)?;
+        check_document_properties(table, fib.offset(field::DOP)?, fib.size(field::DOP)?)?;
+        let clx = ComplexFileTable::read(main, table, fib.offset(field::CLX)?)?;
         let character_pages = bin_pages(
-            &table,
+            table,
             fib.offset(field::PLCFBTECHPX)?,
             fib.size(field::PLCFBTECHPX)?,
             PageNumber::Int,
         )?;
-        let characters = character_runs(&main, &character_pages, &clx)?;
+        let characters = character_runs(main, &character_pages, &clx)?;
         let paragraph_pages = bin_pages(
-            &table,
+            table,
             fib.offset(field::PLCFBTEPAPX)?,
             fib.size(field::PLCFBTEPAPX)?,
             PageNumber::Int,
         )?;
-        let paragraphs = paragraph_runs(&main, &data, &paragraph_pages, &clx)?;
-        let text = clx.text()?;
+        let paragraphs = paragraph_runs(main, data, &paragraph_pages, &clx)?;
+        let text = Text::of(&clx)?;
         let characters = rebuild_character_runs(characters, &clx)?;
-        let paragraphs = rebuild_paragraph_runs(paragraphs, &text, &clx)?;
+        let paragraphs =
+            rebuild_paragraph_runs(paragraphs, &text.positions_of(main, &PARAGRAPH_MARKS), &clx)?;
         for part in [field::PLCSPAHDR, field::PLCSPAMOM] {
-            Plex::read(&table, fib.offset(part)?, fib.size(part)?, FSPA_SIZE)?;
+            Plex::read(table, fib.offset(part)?, fib.size(part)?, FSPA_SIZE)?;
         }
         let picture_store = read_office_art(
-            &table,
+            table,
             fib.offset(field::DGGINFO)?,
             fib.size(field::DGGINFO)?,
         )?;
-        let sections = read_sections(&main, &table, &fib)?;
-        let styles = StyleSheet::read(&table, fib.offset(field::STSHF)?)?;
-        check_font_table(&table, fib.offset(field::STTBFFFN)?)?;
+        let sections = read_sections(main, table, &fib)?;
+        let styles = StyleSheet::read(table, fib.offset(field::STSHF)?)?;
+        check_font_table(table, fib.offset(field::STTBFFFN)?)?;
         let lists = match (fib.offset(field::PLFLST)?, fib.size(field::PLFLST)?) {
             (0, _) | (_, 0) => None,
-            (offset, _) => Some(ListTables::read(
-                &table,
-                offset,
-                fib.offset(field::PLFLFO)?,
-            )?),
+            (offset, _) => Some(ListTables::read(table, offset, fib.offset(field::PLFLFO)?)?),
         };
-        let save_locations = read_string_table(&table, &fib, field::STTBSAVEDBY)?.map(|strings| {
+        let save_locations = read_string_table(table, &fib, field::STTBSAVEDBY)?.map(|strings| {
             strings
                 .as_chunks::<2>()
                 .0
@@ -194,16 +223,16 @@ impl Document {
                 .map(|[_, location]| location.clone())
                 .collect()
         });
-        let revision_authors = read_string_table(&table, &fib, field::STTBFRMARK)?;
-        check_bookmarks(&table, &fib)?;
+        let revision_authors = read_string_table(table, &fib, field::STTBFRMARK)?;
+        check_bookmarks(table, &fib)?;
         for (references, texts) in [
             (field::PLCFENDREF, field::PLCFENDTXT),
             (field::PLCFFNDREF, field::PLCFFNDTXT),
         ] {
-            check_plex(&table, &fib, references, FRD_SIZE)?;
-            check_plex(&table, &fib, texts, 0)?;
+            check_plex(table, &fib, references, FRD_SIZE)?;
+            check_plex(table, &fib, texts, 0)?;
         }
-        let fields = Fields::read(&table, &fib)?;
+        let fields = Fields::read(table, &fib)?;
         Ok(Document {
             fib,
             main,
@@ -228,13 +257,13 @@ impl Document {
     /// the anchors.
     pub(super) fn anchored_textboxes(&self) -> Read<Vec<(i32, Span)>> {
         let anchors = Plex::read(
-            &self.table,
+            self.table,
             self.fib.offset(field::PLCSPAMOM)?,
             self.fib.size(field::PLCSPAMOM)?,
             FSPA_SIZE,
         )?;
         let textboxes = Plex::read(
-            &self.table,
+            self.table,
             self.fib.offset(field::PLCFTXBXTXT)?,
             self.fib.size(field::PLCFTXBXTXT)?,
             FTXBXS_SIZE,
@@ -270,7 +299,7 @@ impl Document {
         if size == 0 {
             return Ok(None);
         }
-        Plex::read(&self.table, self.fib.offset(field::PLCFHDD)?, size, 0).map(Some)
+        Plex::read(self.table, self.fib.offset(field::PLCFHDD)?, size, 0).map(Some)
     }
 
     /// The character range of a story, as `HWPFDocument.getRange(SubdocumentType)` gives it.
@@ -374,18 +403,19 @@ fn encryption_header_length(main: &[u8]) -> Result<usize, Unread> {
         .map_err(|_| Thrown(format!("a negative encryption header length {length}")).into())
 }
 
-/// `getDocumentEntryBytes`: the stream named in any case, read whole.
-fn document_bytes(file: &Ole2<'_>, root: EntryId, name: &str) -> Result<Vec<u8>, Unread> {
+/// `getDocumentEntryBytes`: the stream named in any case, in place where it lies in one run of
+/// the compound document.
+fn document_bytes<'a>(file: &Ole2<'a>, root: EntryId, name: &str) -> Result<Cow<'a, [u8]>, Unread> {
     let entry = file
         .child_ignoring_case(root, name)
         .filter(|&entry| file.kind(entry) == EntryKind::Document)
         .ok_or_else(|| Thrown(format!("the document has no stream {name}")))?;
-    file.read(entry).map_err(|Unreadable(reason)| {
-        Thrown(format!(
+    let content = file.content(entry).map_err(|Unreadable(reason)| {
+        Unread::from(Thrown(format!(
             "cannot read the document's stream {name}: {reason}"
-        ))
-        .into()
-    })
+        )))
+    })?;
+    Ok(content.bytes())
 }
 
 /// `new DocumentProperties(tableStream, fcDop, lcbDop)`: its fields, and the bytes past them.
@@ -405,7 +435,7 @@ fn check_document_properties(table: &[u8], offset: i32, size: i32) -> Read<()> {
 
 /// `new OfficeArtContent(tableStream, fcDggInfo, lcbDggInfo)`: the drawing group's store of
 /// pictures, after its drawings are read as POI reads them.
-fn read_office_art(table: &[u8], offset: i32, size: i32) -> Read<Option<Escher<'static>>> {
+fn read_office_art(table: &[u8], offset: i32, size: i32) -> Read<Option<Escher<'_>>> {
     if size == 0 {
         return Ok(None);
     }
@@ -437,10 +467,7 @@ fn read_office_art(table: &[u8], offset: i32, size: i32) -> Read<Option<Escher<'
              {offset}, size: {size}"
         )));
     }
-    Ok(group
-        .child(BSTORE_CONTAINER)
-        .cloned()
-        .map(Escher::into_owned))
+    Ok(group.child(BSTORE_CONTAINER).cloned())
 }
 
 /// A position moved on by the length a record says it read.

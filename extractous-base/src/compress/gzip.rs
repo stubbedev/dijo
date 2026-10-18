@@ -50,11 +50,24 @@ pub struct Member {
     pub content: Input<'static>,
 }
 
+/// The smallest gzip member: its header, the end of an empty deflate stream, and its trailer.
+const SMALLEST_MEMBER: usize = 20;
+
+/// What the gzip file `data` declares it decodes into: the size modulo 2^32 the trailer it ends
+/// in gives, that of its last member, which is all of it for a file of one member.
+pub fn declared_size(data: &[u8]) -> Option<u64> {
+    if data.len() < SMALLEST_MEMBER {
+        return None;
+    }
+    let trailer: [u8; 4] = data[data.len() - 4..].try_into().expect("four bytes");
+    Some(u64::from(u32::from_le_bytes(trailer)))
+}
+
 /// The first member of the gzip file `data`, as flate2 reads it: the header checked, the
 /// content checked against the trailer's CRC and size, whatever follows ignored.
 pub fn decode(data: &[u8]) -> Result<Limited<Member>, Undecoded> {
     let mut decoder = flate2::bufread::GzDecoder::new(data);
-    let content = spool_limited(&mut decoder, data.len())?;
+    let content = spool_limited(&mut decoder, data.len(), declared_size(data))?;
     let file_name = decoder
         .header()
         .and_then(flate2::GzHeader::filename)
@@ -65,8 +78,9 @@ pub fn decode(data: &[u8]) -> Result<Limited<Member>, Undecoded> {
     Ok(content.map(|content| Member { file_name, content }))
 }
 
-/// [`decode`] keeping nothing, to tell whether the first member of `data` decodes whole.
-pub fn verify(data: &[u8]) -> Result<Limited<()>, Undecoded> {
+/// [`decode`] keeping nothing, to tell whether the first member of `data` decodes whole: how
+/// many bytes it decodes into.
+pub fn verify(data: &[u8]) -> Result<Limited<u64>, Undecoded> {
     let mut decoding = Decoding::discarded(data.len());
     decoding.read_from(flate2::bufread::GzDecoder::new(data))?;
     decoding.finish()
@@ -120,6 +134,15 @@ pub mod tests {
         let member = decode(&data).and_then(Limited::whole).unwrap();
         assert_eq!(member.file_name.as_deref(), Some("caf\u{e9}.txt"));
         assert_eq!(member.content, b"first");
+    }
+
+    #[test]
+    fn declares_the_size_of_its_last_member() {
+        assert_eq!(declared_size(&gzip(b"some content", None)), Some(12));
+        let mut two = gzip(b"first", None);
+        two.extend_from_slice(&gzip(b"second", None));
+        assert_eq!(declared_size(&two), Some(6));
+        assert_eq!(declared_size(b"\x1f\x8b"), None);
     }
 
     #[test]

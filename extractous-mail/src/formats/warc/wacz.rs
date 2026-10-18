@@ -155,8 +155,8 @@ fn first_unread(
         let unread = match cut {
             Some(cut) => Some(cut),
             None => match gunzipped(&data, gzip::verify).map_err(unspooled(entry))? {
-                Gunzipped::Plain | Gunzipped::Whole(()) => None,
-                Gunzipped::Cut(()) => Some(Unread::TooLarge),
+                Gunzipped::Plain | Gunzipped::Whole(_) => None,
+                Gunzipped::Cut(_) => Some(Unread::TooLarge),
                 Gunzipped::Fails => Some(Unread::Gzip),
             },
         };

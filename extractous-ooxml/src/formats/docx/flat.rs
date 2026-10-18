@@ -5,6 +5,7 @@
 //! metadata, and the base64 data of every other part parsed as an embedded document.
 
 use std::collections::HashMap;
+use std::io::Write;
 
 use super::body::{Body, Context};
 use super::notes::InlineParts;
@@ -16,8 +17,10 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ooxml::{CORE_PROPERTIES_CONTENT_TYPE, RELATIONSHIPS_CONTENT_TYPE};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xml::{self, attribute, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Parser, Prepared};
-use crate::java::commons_base64_decode;
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::{Input, Pages, Spool};
+use crate::java::CommonsBase64;
+use crate::Error;
 
 /// `Word2006MLDocHandler.PKG_NS`.
 const PACKAGE_NAMESPACE: &str = "http://schemas.microsoft.com/office/2006/xmlPackage";
@@ -55,19 +58,41 @@ impl Parser for Word2006MlParser {
         &["application/vnd.ms-word2006ml"]
     }
 
+    /// The document is read as it is written, its parts' binary data decoded to a spool.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        Ok(Box::new(move |xhtml| write(input, &configs.office, xhtml)))
+        Ok(Box::new(move |xhtml| {
+            write(input, pages, &configs.office, xhtml)
+        }))
     }
 }
 
-/// `Word2006MLParser.parse`: a document Xerces fails on fails the parse, after what was written
-/// before, and is not ended.
-fn write(input: &[u8], config: &OfficeParserConfig, xhtml: &mut Xhtml) -> Result<(), Failure> {
+/// `Word2006MLParser.parse` of `input`, whose pages are `pages`: a document Xerces fails on fails
+/// the parse, after what was written before, and is not ended.
+fn write(
+    input: &[u8],
+    pages: Pages,
+    config: &OfficeParserConfig,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
     let inline = InlineParts::default();
     let links = HashMap::new();
     let mut flat = Flat {
@@ -79,7 +104,7 @@ fn write(input: &[u8], config: &OfficeParserConfig, xhtml: &mut Xhtml) -> Result
         extended: PropertiesReader::new(&EXTENDED_PROPERTIES),
         binary: BinaryData::default(),
     };
-    xml::parse_sax(input, WHAT, &mut flat).map_err(|failure| match failure {
+    xml::parse_paged(input, pages, WHAT, &mut flat).map_err(|failure| match failure {
         Failure::Malformed(reason) => Failure::Malformed(format!("XML parse error: {reason}")),
         Failure::Stopped(Stop::LimitReached) => Failure::Malformed(LIMIT_RETHROWN.to_owned()),
         other => other,
@@ -240,11 +265,57 @@ impl PropertiesReader {
 }
 
 /// `BinaryDataHandler`: the base64 text of the `pkg:binaryData` elements of the parts it reads,
-/// until a part with some ends.
+/// until a part with some ends, decoded to a spool as it is read.
 #[derive(Default)]
 struct BinaryData {
     in_data: bool,
-    base64: String,
+    /// The data decoded so far, once some text was read.
+    decoding: Option<Decoding>,
+}
+
+/// The data of a part being decoded.
+struct Decoding {
+    decoder: CommonsBase64,
+    spool: Spool,
+    /// What the text read last decoded into, reused for the next.
+    decoded: Vec<u8>,
+}
+
+impl BinaryData {
+    /// Decodes `text` to the spool.
+    fn add(&mut self, text: &str) -> Result<(), Failure> {
+        let decoding = self.decoding.get_or_insert_with(|| Decoding {
+            decoder: CommonsBase64::default(),
+            spool: Spool::new(None),
+            decoded: Vec::new(),
+        });
+        decoding.decoded.clear();
+        decoding.decoder.push(text, &mut decoding.decoded);
+        decoding
+            .spool
+            .write_all(&decoding.decoded)
+            .map_err(unspooled)
+    }
+
+    /// The data decoded, if the parts read since the last had some text.
+    fn take(&mut self) -> Result<Option<Input<'static>>, Failure> {
+        let Some(mut decoding) = self.decoding.take() else {
+            return Ok(None);
+        };
+        decoding.decoded.clear();
+        decoding.decoder.finish(&mut decoding.decoded);
+        decoding
+            .spool
+            .write_all(&decoding.decoded)
+            .map_err(unspooled)?;
+        decoding.spool.finish().map(Some).map_err(unspooled)
+    }
+}
+
+fn unspooled(error: std::io::Error) -> Failure {
+    Failure::Extraction(Error::IoError(format!(
+        "Could not spool the binary data of a part of {WHAT}: {error}"
+    )))
 }
 
 /// The handler reading the part the document is in, which holds the output.
@@ -320,11 +391,13 @@ impl<'x, 'h> Flat<'x, 'h, '_> {
     fn end_part(&mut self) -> Result<(), Failure> {
         let binary = matches!(current(&mut self.reader), Reader::Data(_, DataPart::Binary));
         let xhtml = self.take_xhtml();
-        let parsed = if binary && !self.binary.base64.is_empty() {
-            let data = commons_base64_decode(&std::mem::take(&mut self.binary.base64));
-            xhtml.parse_embedded(&data, &TikaMetadata::new(), Wrapping::PackageEntry)
-        } else {
-            Ok(())
+        let data = if binary { self.binary.take() } else { Ok(None) };
+        let parsed = match data {
+            Ok(Some(data)) => {
+                xhtml.parse_embedded_input(&data, &TikaMetadata::new(), Wrapping::PackageEntry)
+            }
+            Ok(None) => Ok(()),
+            Err(failure) => Err(failure),
         };
         self.reader = Some(Reader::Outside(xhtml));
         parsed
@@ -389,8 +462,8 @@ impl SaxHandler for Flat<'_, '_, '_> {
             Reader::Text(handler) => return handler.characters(text),
             Reader::Data(_, DataPart::Core) => self.core.buffer.push_str(text),
             Reader::Data(_, DataPart::Extended) => self.extended.buffer.push_str(text),
-            Reader::Data(_, DataPart::Binary) if self.binary.in_data => {
-                self.binary.base64.push_str(text);
+            Reader::Data(_, DataPart::Binary) if self.binary.in_data && !text.is_empty() => {
+                self.binary.add(text)?;
             }
             Reader::Outside(_) | Reader::Data(..) => {}
         }

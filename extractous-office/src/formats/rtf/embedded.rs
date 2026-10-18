@@ -407,7 +407,7 @@ fn compound(
             ));
         }
         return match Ole10Native::parse(&record) {
-            Ok(native) => Ok(Some(native.data)),
+            Ok(native) => Ok(Some(native.data.into_owned())),
             Err(Unread::Invalid) => Ok(None),
             Err(Unread::Failed(message)) => Err(message),
         };

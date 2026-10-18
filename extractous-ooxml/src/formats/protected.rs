@@ -9,10 +9,16 @@
 //! A package whose encryption this port does not open, one whose own parser leaves it to Tika,
 //! and macros extracted when asked to, are left to Tika; where no password opens the package,
 //! the parse fails as Tika's path fails it.
+//!
+//! The package is decrypted a chunk at a time into a spool, in memory as far as a file is read
+//! whole and to a mapped temporary file beyond, which the parser of its format reads with its
+//! pages, so that a protected package of any size is read in bounded memory.
+
+use std::io::Write;
 
 use crate::config::ParserConfigs;
 use crate::formats::crypt::{
-    self, PackageEncryption, Unopened, ENCRYPTED_PACKAGE, ENCRYPTION_INFO,
+    self, package_length, PackageEncryption, Unopened, ENCRYPTED_PACKAGE, ENCRYPTION_INFO,
 };
 use crate::formats::docx::DocxParser;
 use crate::formats::metadata::TikaMetadata;
@@ -21,9 +27,12 @@ use crate::formats::ole2::Summaries;
 use crate::formats::pptx::PptxParser;
 use crate::formats::xlsx::XlsxParser;
 use crate::formats::{
-    self, decision, unless_different, Decline, Failure, Parser, Prepared, Unported, PASSWORD_USED,
+    self, decision, unless_different, Decline, Failure, Footprint, Parser, Prepared, Unported,
+    PASSWORD_USED,
 };
+use crate::input::{Input, Pages, Paging, Spool};
 use crate::mime::{self, Origin};
+use crate::Error;
 
 const MEDIA_TYPE: &str = "application/x-tika-ooxml-protected";
 /// The native parsers of the formats `OOXMLParser` reads.
@@ -55,15 +64,30 @@ impl Parser for ProtectedParser {
         &[MEDIA_TYPE]
     }
 
+    /// The package is decrypted to a spool, and the parsers of the formats it holds are bounded.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
+    fn prepare<'a>(
+        &self,
+        input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
     /// Fails packages no password opens, and defers those whose encryption this port does not
     /// open, those the parser of their format defers, and macros extracted when asked to.
     ///
     /// The package is decrypted here and prepared by its parser to learn whether that parser
     /// extracts it; the parser prepares it again as the document is written, as what it
     /// prepared borrows the decrypted package, which only the writing outlives.
-    fn prepare<'a>(
+    fn prepare_paged<'a>(
         &self,
         input: &'a [u8],
+        pages: Pages<'a>,
         metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -72,7 +96,7 @@ impl Parser for ProtectedParser {
             package,
             media_type,
             parser,
-        } = Package::read(input, configs)?;
+        } = Package::read(input, pages, configs)?;
         let mut prepared_metadata = metadata.clone();
         let asks_password = configs.password.is_some();
         write_metadata(
@@ -81,16 +105,20 @@ impl Parser for ProtectedParser {
             asks_password,
             &media_type,
         );
-        let difference = decision(parser.prepare(&package, &prepared_metadata, configs))?;
+        let difference =
+            decision(parser.prepare_paged(&package, package.pages(), &prepared_metadata, configs))?;
         let reading: Prepared<'a> = Box::new(move |xhtml| {
             write_metadata(xhtml.metadata_mut(), &summaries, asks_password, &media_type);
             let metadata = xhtml.metadata_mut().clone();
-            let prepared =
-                formats::reading(parser.prepare(&package, &metadata, configs)).map_err(|_| {
-                    Failure::Malformed(
-                        "the decrypted package no longer prepares as it did".to_owned(),
-                    )
-                })?;
+            let prepared = formats::reading(parser.prepare_paged(
+                &package,
+                package.pages(),
+                &metadata,
+                configs,
+            ))
+            .map_err(|_| {
+                Failure::Malformed("the decrypted package no longer prepares as it did".to_owned())
+            })?;
             prepared(xhtml)
         });
         unless_different(reading, difference)
@@ -119,14 +147,20 @@ fn write_metadata(
 /// decrypted, and the parser of its format.
 struct Package {
     summaries: Summaries,
-    package: Vec<u8>,
+    package: Input<'static>,
     /// The type of the package, as `OOXMLExtractorFactory` sets it before it extracts it.
     media_type: String,
     parser: &'static dyn Parser,
 }
 
 impl Package {
-    fn read(input: &[u8], configs: &ParserConfigs) -> Result<Package, Decline<'static>> {
+    /// Reads the protected package `input`, whose pages are `pages`, which are released as the
+    /// package is decrypted.
+    fn read(
+        input: &[u8],
+        pages: Pages<'_>,
+        configs: &ParserConfigs,
+    ) -> Result<Package, Decline<'static>> {
         let file = office::open(input, configs, MEDIA_TYPE, "protected package")?;
         let summaries = Summaries::read(&file, file.root())?;
         let info = file.root_document(ENCRYPTION_INFO).map_err(Unported)?;
@@ -138,10 +172,16 @@ impl Package {
             .verify(crypt::password(configs))
             .map_err(|unopened| unopened.unported())?
             .ok_or_else(|| Decline::Fails(crypt::encrypted(None)))?;
-        let encrypted = file.root_document(ENCRYPTED_PACKAGE).map_err(Unported)?;
-        let package = key
-            .decrypt(&encrypted)
-            .map_err(|unopened| unopened.unported())?;
+        let encrypted = file.root_content(ENCRYPTED_PACKAGE).map_err(Unported)?;
+        let length = package_length(&encrypted).map_err(|unopened| unopened.unported())?;
+        let mut spool = Spool::new(Some(length.min(encrypted.len()) as u64));
+        let paging = Paging::new(pages);
+        key.decrypt(&encrypted, |chunk| {
+            paging.read(chunk.len());
+            spool.write_all(chunk).map_err(unspooled)
+        })?;
+        drop(paging);
+        let package = spool.finish().map_err(unspooled)?;
         let media_type = mime::detect(&package, Origin::Bytes)
             .map_err(|_| Unported("the decrypted package is not detected".to_owned()))?
             .media_type
@@ -162,6 +202,13 @@ impl Package {
             parser,
         })
     }
+}
+
+/// Why the decrypted package is not read: spooling it fails.
+fn unspooled(error: std::io::Error) -> Decline<'static> {
+    Decline::Fails(Error::IoError(format!(
+        "Could not spool the decrypted package: {error}"
+    )))
 }
 
 #[cfg(all(test, feature = "tika"))]

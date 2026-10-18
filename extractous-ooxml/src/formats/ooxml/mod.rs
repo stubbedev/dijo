@@ -8,6 +8,8 @@
 //! to the parser of its format.
 
 pub(crate) mod extractor;
+#[cfg(test)]
+mod large;
 mod package;
 mod properties;
 #[cfg(test)]

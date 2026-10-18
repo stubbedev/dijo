@@ -73,9 +73,10 @@ impl<'a> DataIo<'a> {
     }
 
     /// `init(OutputStream)` and `init(FileHeader)`: the packed data of `packed` bytes from
-    /// `start` on, unpacked afresh, with a fresh checksum of the kind `sum`.
-    pub(super) fn start(&mut self, start: u64, packed: i64, sum: Sum) {
-        self.unpacked = Some(Decoding::spooled(self.archive.len()));
+    /// `start` on, which the header declares unpack into `unpacked` bytes, unpacked afresh,
+    /// with a fresh checksum of the kind `sum`.
+    pub(super) fn start(&mut self, start: u64, packed: i64, unpacked: Option<u64>, sum: Sum) {
+        self.unpacked = Some(Decoding::spooled(self.archive.len(), unpacked));
         self.position = start;
         self.packed_left = packed;
         self.checksum = Checksum::new(sum);

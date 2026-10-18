@@ -13,28 +13,30 @@ pub(super) const SP_CONTAINER: u16 = 0xF004;
 
 /// An Escher record of a drawing.
 #[derive(Debug)]
-pub(super) struct Node {
+pub(super) struct Node<'d> {
     pub(super) record_id: u16,
-    pub(super) content: Content<'static>,
-    pub(super) children: Vec<Node>,
+    pub(super) content: Content<'d>,
+    pub(super) children: Vec<Node<'d>>,
     /// The slide records of a shape's client data (`HSLFEscherClientDataRecord`).
-    pub(super) client: Vec<Record>,
+    pub(super) client: Vec<Record<'d>>,
     /// The records of a text box (`EscherTextboxWrapper`), or why POI throws building them.
-    pub(super) textbox: Option<Built<Vec<Record>>>,
+    pub(super) textbox: Option<Built<Vec<Record<'d>>>>,
 }
 
-impl Node {
-    /// Converts an Escher record, reading the slide records its client data and text box hold.
-    fn of(escher: Escher<'_>, depth: Depth) -> Built<Node> {
+impl<'d> Node<'d> {
+    /// Converts an Escher record, reading the slide records its client data and text box hold,
+    /// which own their bytes, as the Escher record holds a copy of them.
+    fn of(escher: Escher<'d>, depth: Depth) -> Built<Node<'d>> {
         let inner = depth.deeper()?;
         let client = match &escher.content {
             Content::ClientData(data) => client_records(data, inner)?,
             _ => Vec::new(),
         };
         let textbox = match &escher.content {
-            Content::Textbox(data) if escher.record_id == escher_kind::CLIENT_TEXTBOX => {
-                Some(children_at(data, 0, data.len() as i64, inner))
-            }
+            Content::Textbox(data) if escher.record_id == escher_kind::CLIENT_TEXTBOX => Some(
+                children_at(data, 0, data.len() as i64, inner)
+                    .map(|records| records.into_iter().map(Record::into_owned).collect()),
+            ),
             _ => None,
         };
         let children = escher
@@ -44,11 +46,23 @@ impl Node {
             .collect::<Built<Vec<_>>>()?;
         Ok(Node {
             record_id: escher.record_id,
-            content: escher.content.into_owned(),
+            content: escher.content,
             children,
             client,
             textbox,
         })
+    }
+
+    fn into_owned(self) -> Node<'static> {
+        Node {
+            record_id: self.record_id,
+            content: self.content.into_owned(),
+            children: self.children.into_iter().map(Node::into_owned).collect(),
+            client: self.client.into_iter().map(Record::into_owned).collect(),
+            textbox: self.textbox.map(|built| {
+                built.map(|records| records.into_iter().map(Record::into_owned).collect())
+            }),
+        }
     }
 
     pub(super) fn is_container(&self) -> bool {
@@ -56,14 +70,14 @@ impl Node {
     }
 
     /// `getChildById`: the first child of the type.
-    pub(super) fn child(&self, record_id: u16) -> Option<&Node> {
+    pub(super) fn child(&self, record_id: u16) -> Option<&Node<'d>> {
         self.children
             .iter()
             .find(|child| child.record_id == record_id)
     }
 
     /// The first slide record of the client data of the type (`getClientDataRecord`).
-    pub(super) fn client_record(&self, kind: u16) -> Option<&Record> {
+    pub(super) fn client_record(&self, kind: u16) -> Option<&Record<'d>> {
         self.child(escher_kind::CLIENT_DATA)?
             .client
             .iter()
@@ -97,12 +111,12 @@ impl Node {
 }
 
 /// `HSLFEscherClientDataRecord.setRemainingData`: the slide records of client data.
-fn client_records(data: &[u8], depth: Depth) -> Built<Vec<Record>> {
+fn client_records(data: &[u8], depth: Depth) -> Built<Vec<Record<'static>>> {
     let mut records = Vec::new();
     let mut offset: i64 = 0;
     while offset < data.len() as i64 {
         if let Some(record) = build_at(data, offset, depth)? {
-            records.push(record);
+            records.push(record.into_owned());
         }
         let length = i64::from(i32_at(data, offset as usize + 4)? as u32);
         offset += 8 + length;
@@ -115,9 +129,9 @@ fn client_records(data: &[u8], depth: Depth) -> Built<Vec<Record>> {
 
 /// A slide's drawing.
 #[derive(Debug)]
-pub(super) struct Drawing {
+pub(super) struct Drawing<'d> {
     /// The `DgContainer`.
-    pub(super) root: Node,
+    pub(super) root: Node<'d>,
     /// `getTextboxWrappers`: the text boxes of the shapes of the drawing's groups, each by the
     /// group's index among the root's children, the shape's among the group's, and its shape id.
     pub(super) wrappers: Vec<Wrapper>,
@@ -131,9 +145,9 @@ pub(super) struct Wrapper {
     pub(super) shape_id: i32,
 }
 
-impl Drawing {
+impl<'d> Drawing<'d> {
     /// `new PPDrawing(source, start, length)`.
-    pub(super) fn read(source: &[u8], start: i64, depth: Depth) -> Built<Drawing> {
+    pub(super) fn read(source: &'d [u8], start: i64, depth: Depth) -> Built<Drawing<'d>> {
         let at = usize::try_from(start + 8)
             .map_err(|_| Unread::Thrown(Thrown::new("a drawing starts before its data")))?;
         let (escher, _) = escher::container_made_at(source, at, Factory::Slides)?;
@@ -170,13 +184,20 @@ impl Drawing {
         Ok(Drawing { root, wrappers })
     }
 
+    pub(super) fn into_owned(self) -> Drawing<'static> {
+        Drawing {
+            root: self.root.into_owned(),
+            wrappers: self.wrappers,
+        }
+    }
+
     /// The shape container a wrapper wraps the text box of.
-    pub(super) fn wrapped(&self, wrapper: Wrapper) -> &Node {
+    pub(super) fn wrapped(&self, wrapper: Wrapper) -> &Node<'d> {
         &self.root.children[wrapper.group].children[wrapper.shape]
     }
 
     /// The first group of the drawing, whose shapes are the sheet's (`getShapes`), or `None`.
-    pub(super) fn first_group(&self) -> Option<(usize, &Node)> {
+    pub(super) fn first_group(&self) -> Option<(usize, &Node<'d>)> {
         self.root
             .children
             .iter()
@@ -186,7 +207,9 @@ impl Drawing {
 }
 
 /// The records of the text box of a shape container, as its wrapper holds them.
-pub(super) fn textbox_records(shape: &Node) -> Option<Result<&[Record], Unread>> {
+pub(super) fn textbox_records<'n, 'd>(
+    shape: &'n Node<'d>,
+) -> Option<Result<&'n [Record<'d>], Unread>> {
     let textbox = shape.child(escher_kind::CLIENT_TEXTBOX)?;
     match textbox.textbox.as_ref()? {
         Ok(records) => Some(Ok(records)),

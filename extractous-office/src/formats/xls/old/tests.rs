@@ -1,6 +1,17 @@
 use super::*;
 use crate::formats::xls::stream::tests::record;
 
+/// `getText`: the text of each record, each ending its line.
+fn text(stream: &[u8]) -> Result<String, Unread> {
+    let mut texts = Texts::new(stream)?;
+    let mut text = String::new();
+    while let Some(line) = texts.next()? {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    Ok(text)
+}
+
 fn bof(sid: u16) -> Vec<u8> {
     let mut data = 0x0500i16.to_le_bytes().to_vec();
     data.extend(0x10i16.to_le_bytes());
@@ -59,4 +70,30 @@ fn fails_where_poi_throws() {
         text(&encrypted),
         Err(Unread::Thrown(Thrown(reason))) if reason.contains("encrypted")
     ));
+}
+
+/// An Excel 2 workbook too large to read whole is read a record at a time, each label written
+/// as it comes, in memory that does not grow with it.
+#[test]
+fn extracts_workbooks_too_large_to_read_whole_in_bounded_memory() {
+    use extractous_core::large::{bodies_past_limit, LargeFile};
+
+    let label = |index: u64| {
+        let text = format!("Linje {index} i logbogen");
+        let mut data = vec![0; 7];
+        data.push(text.len() as u8);
+        data.extend(text.as_bytes());
+        record(old_sid::LABEL_BIFF2, &data)
+    };
+    let count = bodies_past_limit(label(0).len());
+    let head = record(old_sid::BOF_BIFF2, &[0, 0, 0x10, 0]);
+    let file = LargeFile::new("large.xls", &head, count, label, b"");
+    let last = format!("Linje {} i logbogen", count - 1);
+    let (mut first_seen, mut last_seen) = (false, false);
+    file.extract_lines("extractous::OldExcelParser", |line| match line.trim() {
+        "Linje 0 i logbogen" => first_seen = true,
+        line if line == last => last_seen = first_seen,
+        _ => {}
+    });
+    assert!(first_seen && last_seen);
 }

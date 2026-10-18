@@ -148,7 +148,8 @@ mod tests {
         assert_eq!(listed, table);
     }
 
-    /// The types routed to a native parser other than the one replacing Tika's, and why.
+    /// The types routed to a native parser other than the one replacing Tika's, and why: but for
+    /// those of the parsers of the scientific formats (#172).
     #[cfg(feature = "tika")]
     const EXCEPTIONS: [(&str, &str); 1] = [("application/zstd", parity::ZSTD_WITHOUT_ZSTD_JNI)];
 
@@ -169,6 +170,18 @@ mod tests {
             let Ok(native) = formats::parser_for(kind.as_str()) else {
                 continue;
             };
+            if formats::SCIENTIFIC
+                .iter()
+                .any(|scientific| scientific.name() == native.name())
+            {
+                assert_eq!(
+                    tika_class(kind.as_str()),
+                    EMPTY_PARSER,
+                    "{kind}: {}",
+                    parity::WITHOUT_SCIENTIFIC_MODULE
+                );
+                continue;
+            }
             let tika = tika_class(kind.as_str());
             if native.tika_name() != tika {
                 differences.push(format!("{kind}: {} where Tika picks {tika}", native.name()));

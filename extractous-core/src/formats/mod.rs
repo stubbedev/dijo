@@ -54,6 +54,11 @@ pub(crate) use extractous_ooxml::formats::xlsx;
 pub(crate) use extractous_ooxml::formats::xps;
 pub(crate) use extractous_pdf::formats::font;
 pub(crate) use extractous_pdf::formats::pdf;
+pub(crate) use extractous_science::formats::fits;
+pub(crate) use extractous_science::formats::grib;
+pub(crate) use extractous_science::formats::hdf;
+pub(crate) use extractous_science::formats::isatab;
+pub(crate) use extractous_science::formats::netcdf;
 pub(crate) use extractous_small::formats::apple_single;
 pub(crate) use extractous_small::formats::chm;
 pub(crate) use extractous_small::formats::class_file;
@@ -130,10 +135,12 @@ static PARSERS: &[&dyn Parser] = &[
     &docx::flat::Word2006MlParser,
     &dwg::DwgParser,
     &feed::FeedParser,
+    &fits::FitsParser,
     &font::AdobeFontMetricParser,
     &font::TrueTypeParser,
     &fiction_book::FictionBookParser,
     &geogebra::GeoGebraParser,
+    &grib::GribParser,
     &html::JSoupParser,
     &image::BpgParser,
     &image::HeifParser,
@@ -145,7 +152,9 @@ static PARSERS: &[&dyn Parser] = &[
     &image::RecognizedImageParser,
     &image::TiffParser,
     &hwpx::HwpxParser,
+    &hdf::HdfParser,
     &idml::IdmlParser,
+    &isatab::IsaTabParser,
     &iwork::IworkArchiveParser,
     &iwork_package::IworkPackageParser,
     &mail::EmlxParser,
@@ -176,6 +185,7 @@ static PARSERS: &[&dyn Parser] = &[
     &dbf::DbfParser,
     &mobi::MobiParser,
     &msg::MsgParser,
+    &netcdf::NetCdfParser,
     &notebook::NotebookParser,
     &epub::EpubParser,
     &odf::OpenDocumentParser,
@@ -215,6 +225,17 @@ static PARSERS: &[&dyn Parser] = &[
     &vsdx::VsdxParser,
     &xps::XpsParser,
     &empty::EmptyParser,
+];
+
+/// The parsers of the scientific formats, which Tika's path parses with `EmptyParser`, as its
+/// native image lacks their module (#172).
+#[cfg(all(test, feature = "tika"))]
+pub(crate) static SCIENTIFIC: &[&dyn Parser] = &[
+    &fits::FitsParser,
+    &grib::GribParser,
+    &hdf::HdfParser,
+    &isatab::IsaTabParser,
+    &netcdf::NetCdfParser,
 ];
 
 /// The native parser for a document of `media_type`, picked as `CompositeParser.getParser` picks
@@ -1318,10 +1339,12 @@ mod tests {
         // The head of CMS content shows its Content-Length, which Tika's path does not give it
         // (#113); CMS content is parsed in place, never spooled, and its comparison with Tika's
         // is cms.rs's.
-        for parser in PARSERS
-            .iter()
-            .filter(|parser| parser.name() != cms::CmsParser.name())
-        {
+        for parser in PARSERS.iter().filter(|parser| {
+            parser.name() != cms::CmsParser.name()
+                && !SCIENTIFIC
+                    .iter()
+                    .any(|scientific| scientific.name() == parser.name())
+        }) {
             let (parsed, _) = crate::formats::parity::documents(*parser, &[&corpus]);
             for path in parsed {
                 let name = path.file_name().unwrap().to_string_lossy();
@@ -1655,13 +1678,13 @@ mod tests {
     }
 
     /// Files too large to read whole, in a directory of their own removed when they are dropped:
-    /// a WAVE file, an MP4 file, a PDF and a Word document of 2 GiB each.
+    /// a WAVE file, an MP4 file, a PDF and an Access database of 2 GiB each.
     struct LargeFiles {
         dir: std::path::PathBuf,
         wave: String,
         mp4: String,
         pdf: String,
-        doc: String,
+        database: String,
     }
 
     impl LargeFiles {
@@ -1671,11 +1694,11 @@ mod tests {
             std::fs::create_dir(&dir).unwrap();
             let large = 2u64 << 30;
             let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
-            let (wave, mp4, pdf, doc) = (
+            let (wave, mp4, pdf, database) = (
                 path("long.wav"),
                 path("long.mp4"),
                 path("long.pdf"),
-                path("long.doc"),
+                path("long.mdb"),
             );
             let samples = u32::try_from(large).unwrap() - 44;
             sparse(wave.as_ref(), &wave_header(samples), large);
@@ -1687,8 +1710,8 @@ mod tests {
             );
             sparse(pdf.as_ref(), b"%PDF-1.4\n", large);
             sparse(
-                doc.as_ref(),
-                &crate::ole2::tests::compound(&["WordDocument"], b""),
+                database.as_ref(),
+                b"\x00\x01\x00\x00Standard Jet DB\x00",
                 large,
             );
             Self {
@@ -1696,7 +1719,7 @@ mod tests {
                 wave,
                 mp4,
                 pdf,
-                doc,
+                database,
             }
         }
     }
@@ -1724,16 +1747,16 @@ mod tests {
         }
         #[cfg(feature = "tika")]
         assert!(matches!(
-            route_file(&files.doc),
+            route_file(&files.database),
             Err(Unsupported::TooLarge {
-                parser: "extractous::OfficeParser",
+                parser: "extractous::JackcessParser",
                 limit: input::MAX_READ_WHOLE,
             })
         ));
         #[cfg(not(feature = "tika"))]
         {
-            let routed = route_file(&files.doc).unwrap();
-            assert_eq!(routed.parser.name(), "extractous::OfficeParser");
+            let routed = route_file(&files.database).unwrap();
+            assert_eq!(routed.parser.name(), "extractous::JackcessParser");
             assert!(routed.input.is_mapped());
         }
     }

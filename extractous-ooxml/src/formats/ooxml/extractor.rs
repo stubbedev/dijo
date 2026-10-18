@@ -16,6 +16,7 @@ use crate::formats::ole10_native::{self, Ole10Native, Unread};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::input::Input;
 use crate::java::is_blank;
 use crate::mime::is_ole10_native;
 use crate::ole2::{Ole2, Unreadable};
@@ -299,7 +300,7 @@ pub(crate) fn check_embedded(
         )));
     }
     if embedding == Embedding::OleObject {
-        read_ole_object(package, target)?;
+        read_ole_object(package, target, &read_part(package, target)?)?;
     }
     Ok(())
 }
@@ -449,7 +450,7 @@ fn write_embedded_file(
         package.parts[file.part].content_type.clone(),
     );
     anchor(file.part, &mut metadata);
-    xhtml.parse_embedded(&package.read(file.part)?, &metadata, Wrapping::PackageEntry)
+    xhtml.parse_embedded_input(&package.read(file.part)?, &metadata, Wrapping::PackageEntry)
 }
 
 /// What Tika's metadata names of every part it parses as an embedded document.
@@ -475,36 +476,49 @@ fn source_description(source: &str) -> String {
 
 /// What `handleEmbeddedOLE` finds in an OLE object part large enough to open.
 #[derive(Debug)]
-enum OleObject {
+enum OleObject<'b> {
     /// An OLE 1.0 object whose record POI rejects: nothing is parsed.
     Skipped,
-    /// The stream of an OLE 2.0 object that holds its document.
-    Entry(Vec<u8>),
+    /// The stream of an OLE 2.0 object that holds its document, in place in the part where it
+    /// lies in one run.
+    Entry(Input<'b>),
     /// The record of an OLE 1.0 object.
-    Native(Ole10Native),
+    Native(Ole10Native<'static>),
     /// Any other compound document, parsed whole.
     Whole,
 }
 
-/// `handleEmbeddedOLE`'s reading of an OLE object part, or, as [`Unported`], the failure Tika
-/// records in the embedding document's metadata instead.
-fn read_ole_object(package: &Package, part: usize) -> Result<OleObject, Unported> {
-    let name = package.name(part);
-    let fails =
-        |what: String| Unported(format!("Tika fails to read the OLE object {name}: {what}"));
-    let bytes = package
+/// The bytes of the OLE object `part`, or, as [`Unported`], the failure Tika records.
+fn read_part<'a>(package: &Package<'a>, part: usize) -> Result<Input<'a>, Unported> {
+    package
         .read(part)
-        .map_err(|_| fails("the part cannot be read".to_owned()))?;
-    let file = Ole2::open_stream(&bytes).map_err(|Unreadable(reason)| {
+        .map_err(|_| ole_object_fails(package.name(part), "the part cannot be read".to_owned()))
+}
+
+fn ole_object_fails(name: &str, what: String) -> Unported {
+    Unported(format!("Tika fails to read the OLE object {name}: {what}"))
+}
+
+/// `handleEmbeddedOLE`'s reading of the OLE object `part` of `bytes`, or, as [`Unported`], the
+/// failure Tika records in the embedding document's metadata instead.
+fn read_ole_object<'b>(
+    package: &Package,
+    part: usize,
+    bytes: &'b Input<'_>,
+) -> Result<OleObject<'b>, Unported> {
+    let name = package.name(part);
+    let fails = |what: String| ole_object_fails(name, what);
+    let file = Ole2::open_stream(bytes).map_err(|Unreadable(reason)| {
         fails(format!(
             "POI cannot open it as a compound document: {reason}"
         ))
     })?;
     if let Some(entry) = package_entry_name(&file) {
-        return file
-            .root_document(entry)
+        let content = file.root_content(entry).map_err(fails)?;
+        let pieces: Vec<&'b [u8]> = content.pieces().collect();
+        return Input::joined(&pieces, bytes.pages())
             .map(OleObject::Entry)
-            .map_err(fails);
+            .map_err(|e| fails(format!("its stream {entry} cannot be spooled: {e}")));
     }
     if !is_ole10_native(&file) {
         return Ok(OleObject::Whole);
@@ -517,7 +531,7 @@ fn read_ole_object(package: &Package, part: usize) -> Result<OleObject, Unported
         )));
     }
     match Ole10Native::parse(&record) {
-        Ok(native) => Ok(OleObject::Native(native)),
+        Ok(native) => Ok(OleObject::Native(native.into_owned())),
         Err(Unread::Invalid) => Ok(OleObject::Skipped),
         Err(Unread::Failed(message)) => Err(fails(message)),
     }
@@ -545,8 +559,9 @@ fn write_ole_object(
     anchor: &dyn Fn(usize, &mut TikaMetadata),
     xhtml: &mut Xhtml,
 ) -> Result<(), Failure> {
-    let object =
-        read_ole_object(package, part).map_err(|Unported(reason)| Failure::Malformed(reason))?;
+    let malformed = |Unported(reason)| Failure::Malformed(reason);
+    let bytes = read_part(package, part).map_err(malformed)?;
+    let object = read_ole_object(package, part, &bytes).map_err(malformed)?;
     let mut metadata = part_metadata(id, ResourceType::Attachment, package.name(part));
     let data = match object {
         OleObject::Skipped => return Ok(()),
@@ -570,10 +585,10 @@ fn write_ole_object(
             for name in [native.command, native.file_name].into_iter().flatten() {
                 metadata.add(name::ORIGINAL_RESOURCE_NAME, name);
             }
-            native.data
+            native.data.into()
         }
     };
-    xhtml.parse_embedded(&data, &metadata, Wrapping::PackageEntry)
+    xhtml.parse_embedded_input(&data, &metadata, Wrapping::PackageEntry)
 }
 
 /// `handleThumbnail`: a marker for each thumbnail, which extractous does not parse.
@@ -627,7 +642,7 @@ mod tests {
     use crate::mime::compound_document;
 
     /// What `read_ole_object` makes of an OLE object part of `content`.
-    fn ole_object(content: &[u8]) -> Result<OleObject, Unported> {
+    fn ole_object(content: &[u8]) -> Result<OleObject<'static>, Unported> {
         let input = testing::package(
             "main.xml",
             &[
@@ -639,7 +654,13 @@ mod tests {
         let [part] = package.parts_by_content_type(OLE_OBJECT_TYPE)[..] else {
             panic!("one OLE object");
         };
-        read_ole_object(&package, part)
+        let bytes = read_part(&package, part)?;
+        read_ole_object(&package, part, &bytes).map(|object| match object {
+            OleObject::Entry(data) => OleObject::Entry(data.to_static()),
+            OleObject::Skipped => OleObject::Skipped,
+            OleObject::Native(native) => OleObject::Native(native),
+            OleObject::Whole => OleObject::Whole,
+        })
     }
 
     fn native_record(body: &[u8]) -> Vec<u8> {
@@ -687,7 +708,7 @@ mod tests {
         assert_eq!(native.label.as_deref(), Some("a.txt"));
         assert_eq!(native.file_name.as_deref(), Some("C:\\a.txt"));
         assert_eq!(native.command.as_deref(), Some(""));
-        assert_eq!(native.data, b"x");
+        assert_eq!(&*native.data, b"x");
     }
 
     #[test]

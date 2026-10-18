@@ -54,7 +54,7 @@ fn reads_double_byte_text_in_the_code_page_the_fonts_name() {
 
 #[test]
 fn ends_the_lines_of_a_piece_as_word6_extractor_falls_back_to() {
-    let piece = TextPiece::new(0, 3, 0, false, 0, units("a\rb")).unwrap();
+    let piece = units("a\rb");
     assert_eq!(piece_text(&piece), units("a\r\nb"));
 }
 

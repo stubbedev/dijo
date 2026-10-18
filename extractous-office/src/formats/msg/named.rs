@@ -73,7 +73,7 @@ fn tags(chunks: &[Chunk]) -> Read<HashMap<i64, Vec<Tag>>> {
         let kind = guid_index & 1;
         guid_index >>= 1;
         let property_index = i64::from(u16::from_le_bytes([entry[6], entry[7]]));
-        let guid = property_guid(guid_index, guids);
+        let guid = property_guid(guid_index, &guids);
         let mut name_crc: i64 = -1;
         let stream_id = if kind == 0 {
             0x1000 + i64::from((name_offset as i32 ^ (guid_index << 1)) % 0x1F)
@@ -255,7 +255,7 @@ pub(super) fn extract(message: &Message, metadata: &mut TikaMetadata) -> Read<()
         .chunks
         .iter()
         .filter_map(Chunk::bytes)
-        .map(<[u8]>::len)
+        .map(|bytes| bytes.len())
         .sum();
     if length == 0 {
         return Ok(());

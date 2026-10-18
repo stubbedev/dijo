@@ -6,6 +6,9 @@
 //! footers, the pictures no run claims, the objects of the object pool, and the metadata of the
 //! document's features. Text is cleaned as our `WordText` cleans it, and the paragraphs of the
 //! other stories as our substitute for POI's `getParagraphText` gives them.
+//!
+//! The events are handed on as they are made, the text of a run read from the main stream a
+//! piece at a time, a picture handed on from where it is stored.
 
 use std::collections::VecDeque;
 
@@ -17,13 +20,16 @@ use super::pictures::{has_picture, Pictures};
 use super::range::{CharacterRun, Paragraph, Span};
 use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::embedded::{Wrapping, RESOURCE_NAME};
-use crate::formats::metadata::office::RESOURCE_NAME_EXTENSION_INFERRED;
+use crate::formats::metadata::office::{
+    COMMENT_PERSONS, HAS_COMMENTS, HAS_HIDDEN_TEXT, HAS_TRACK_CHANGES, ORIGINAL_RESOURCE_NAME,
+    RESOURCE_NAME_EXTENSION_INFERRED,
+};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{office_document, Embedded, Handed};
-use crate::formats::poi::{Read, Thrown, Unread};
+use crate::formats::poi::{Halt, Read, Thrown};
 use crate::formats::Unported;
 use crate::java::parse_int;
-use crate::ole2::{EntryId, EntryKind, Ole2};
+use crate::ole2::{EntryId, EntryKind, Node, Ole2};
 use crate::unicode::is_whitespace;
 
 const FIELD_BEGIN: u16 = 0x13;
@@ -41,44 +47,33 @@ const FOOTERS: [usize; 3] = [11, 8, 9];
 
 /// What the extractor writes.
 #[derive(Debug)]
-pub(super) enum Out {
+pub(super) enum Out<'d> {
     Start(&'static str),
     StartWith(&'static str, Vec<(&'static str, String)>),
     End(&'static str),
     /// Characters, never empty.
     Text(Vec<u16>),
-    Embedded(Handed, Wrapping),
+    Embedded(Handed<'d>, Wrapping),
+    /// A value added to the document's metadata.
+    Add(&'static str, String),
+    /// A value set in the document's metadata.
+    Set(&'static str, String),
 }
 
-/// The output of a document and the metadata of its features.
-#[derive(Debug)]
-pub(super) struct Extracted {
-    /// `extractSavedByMetadata`: the places it was saved to, set before its content.
-    pub(super) save_locations: Vec<String>,
-    pub(super) out: Vec<Out>,
-    pub(super) has_comments: bool,
-    /// The authors of its revisions, each once, in the order the document lists them.
-    pub(super) revision_authors: Vec<String>,
-    pub(super) has_hidden_text: bool,
-    pub(super) has_track_changes: bool,
-}
+/// Where the extractor hands its events on, whatever they borrow.
+pub(super) type Sink<'s, E> = dyn for<'x> FnMut(Out<'x>) -> Result<(), E> + 's;
 
-impl Extracted {
-    /// What `parseWord6` writes: an element for each paragraph that is not empty.
-    pub(super) fn paragraphs(paragraphs: Vec<Vec<u16>>) -> Extracted {
-        let mut out = Vec::new();
-        for paragraph in paragraphs.into_iter().filter(|text| !text.is_empty()) {
-            out.extend([Out::Start("p"), Out::Text(paragraph), Out::End("p")]);
-        }
-        Extracted {
-            save_locations: Vec::new(),
-            out,
-            has_comments: false,
-            revision_authors: Vec::new(),
-            has_hidden_text: false,
-            has_track_changes: false,
-        }
+/// What extracting the document does next, or why it stops.
+type Step<T, E> = Result<T, Halt<E>>;
+
+/// What `parseWord6` writes: an element for each paragraph that is not empty.
+pub(super) fn paragraphs<E>(paragraphs: Vec<Vec<u16>>, sink: &mut Sink<'_, E>) -> Result<(), E> {
+    for paragraph in paragraphs.into_iter().filter(|text| !text.is_empty()) {
+        sink(Out::Start("p"))?;
+        sink(Out::Text(paragraph))?;
+        sink(Out::End("p"))?;
     }
+    Ok(())
 }
 
 /// `FormattingUtils.Tag`, in the order of its declaration.
@@ -267,26 +262,26 @@ struct Textboxes {
     anchored: VecDeque<(i32, Vec<Vec<u16>>)>,
     unanchored: Vec<Vec<u16>>,
 }
-
-struct Extractor<'d> {
-    document: &'d Document,
-    file: &'d Ole2<'d>,
+struct Extractor<'s, 'd, E> {
+    document: &'s Document<'d>,
+    file: &'s Ole2<'d>,
     root: EntryId,
-    config: &'d OfficeParserConfig,
-    configs: &'d ParserConfigs,
-    pictures: Pictures,
+    config: &'s OfficeParserConfig,
+    configs: &'s ParserConfigs,
+    pictures: Pictures<'d>,
     formatting: Vec<Tag>,
-    out: Vec<Out>,
+    sink: &'s mut Sink<'s, E>,
 }
 
-/// `WordExtractor.parse(root, xhtml)`.
-pub(super) fn extract(
-    document: &Document,
-    file: &Ole2<'_>,
+/// `WordExtractor.parse(root, xhtml)`: its events handed to `sink` as they are made, the
+/// metadata of the document's features after them.
+pub(super) fn extract<'s, 'd, E>(
+    document: &'s Document<'d>,
+    file: &'s Ole2<'d>,
     root: EntryId,
-    configs: &ParserConfigs,
-) -> Result<Extracted, Unread> {
-    let config = &configs.office;
+    configs: &'s ParserConfigs,
+    sink: &'s mut Sink<'s, E>,
+) -> Step<(), E> {
     let save_locations = match &document.save_locations {
         None => Vec::new(),
         Some(locations) => locations
@@ -303,23 +298,32 @@ pub(super) fn extract(
         document,
         file,
         root,
-        config,
+        config: &configs.office,
         configs,
         pictures,
         formatting: Vec::new(),
-        out: Vec::new(),
+        sink,
     };
+    for location in save_locations {
+        extractor.emit(Out::Add(ORIGINAL_RESOURCE_NAME, location))?;
+    }
     let has_comments = extractor.body()?;
     extractor.object_pool()?;
     let (has_hidden_text, has_track_changes) = features(document)?;
-    Ok(Extracted {
-        save_locations,
-        out: extractor.out,
-        has_comments,
-        revision_authors: revision_authors(document)?,
-        has_hidden_text,
-        has_track_changes,
-    })
+    let revision_authors = revision_authors(document)?;
+    if has_comments {
+        extractor.emit(Out::Set(HAS_COMMENTS, "true".to_owned()))?;
+    }
+    for author in revision_authors {
+        extractor.emit(Out::Add(COMMENT_PERSONS, author))?;
+    }
+    if has_hidden_text {
+        extractor.emit(Out::Set(HAS_HIDDEN_TEXT, "true".to_owned()))?;
+    }
+    if has_track_changes {
+        extractor.emit(Out::Set(HAS_TRACK_CHANGES, "true".to_owned()))?;
+    }
+    Ok(())
 }
 
 /// `extractFeatures`' authors: the distinct authors of the revisions, in the order the
@@ -356,34 +360,40 @@ fn features(document: &Document) -> Read<(bool, bool)> {
     Ok((hidden, tracked))
 }
 
-impl Extractor<'_> {
-    fn start(&mut self, tag: &'static str) {
-        self.out.push(Out::Start(tag));
+impl<'d, E> Extractor<'_, 'd, E> {
+    /// Hands an event on.
+    fn emit(&mut self, out: Out<'d>) -> Step<(), E> {
+        (self.sink)(out).map_err(Halt::Written)
     }
 
-    fn end(&mut self, tag: &'static str) {
-        self.out.push(Out::End(tag));
+    fn start(&mut self, tag: &'static str) -> Step<(), E> {
+        self.emit(Out::Start(tag))
     }
 
-    fn text(&mut self, text: Vec<u16>) {
-        if !text.is_empty() {
-            self.out.push(Out::Text(text));
+    fn end(&mut self, tag: &'static str) -> Step<(), E> {
+        self.emit(Out::End(tag))
+    }
+
+    fn text(&mut self, text: Vec<u16>) -> Step<(), E> {
+        if text.is_empty() {
+            return Ok(());
         }
+        self.emit(Out::Text(text))
     }
 
     /// `xhtml.element(name, value)`: nothing for an empty value.
-    fn element(&mut self, tag: &'static str, text: Vec<u16>) {
+    fn element(&mut self, tag: &'static str, text: Vec<u16>) -> Step<(), E> {
         if text.is_empty() {
-            return;
+            return Ok(());
         }
-        self.start(tag);
-        self.text(text);
-        self.end(tag);
+        self.start(tag)?;
+        self.text(text)?;
+        self.end(tag)
     }
 
     /// The headers, the body, the other stories, the footers and the unclaimed pictures:
     /// whether a comment had text.
-    fn body(&mut self) -> Read<bool> {
+    fn body(&mut self) -> Step<bool, E> {
         let document = self.document;
         let headers = if self.config.includes_headers_and_footers() {
             Some(document.header_plex()?)
@@ -405,27 +415,27 @@ impl Extractor<'_> {
         let mut index = 0;
         while index < document.paragraph_count(main)? {
             let paragraph = document.paragraph(main, index)?;
-            self.anchored_textboxes(&mut textboxes, paragraph.span.end);
+            self.anchored_textboxes(&mut textboxes, paragraph.span.end)?;
             index += self.paragraph(&paragraph, 0, main, Part::Main, &mut lists)?;
             index += 1;
         }
-        self.anchored_textboxes(&mut textboxes, i32::MAX);
-        self.textbox_paragraphs(textboxes.unanchored);
+        self.anchored_textboxes(&mut textboxes, i32::MAX)?;
+        self.textbox_paragraphs(textboxes.unanchored)?;
         for text in self.story_paragraphs(Story::Footnote)? {
             if !is_blank(&text) {
-                self.element("p", text);
+                self.element("p", text)?;
             }
         }
         let mut has_comments = false;
         for text in self.story_paragraphs(Story::Annotation)? {
             if !is_blank(&text) {
-                self.element("p", text);
+                self.element("p", text)?;
                 has_comments = true;
             }
         }
         for text in self.story_paragraphs(Story::Endnote)? {
             if !is_blank(&text) {
-                self.element("p", text);
+                self.element("p", text)?;
             }
         }
         if let Some(plex) = &headers {
@@ -456,7 +466,7 @@ impl Extractor<'_> {
         (0..document.paragraph_count(range)?)
             .map(|index| {
                 let paragraph = document.paragraph(range, index)?;
-                let text = clean(&strip_fields(document.text_of(paragraph.span)?)?);
+                let text = clean(&strip_fields(&document.text_of(paragraph.span)?)?);
                 Ok((paragraph.span, text))
             })
             .collect()
@@ -495,24 +505,26 @@ impl Extractor<'_> {
 
     /// The paragraphs of each text box anchored before `end`, before the paragraph that ends
     /// there, where Tika writes every text box after the main text (#111).
-    fn anchored_textboxes(&mut self, textboxes: &mut Textboxes, end: i32) {
+    fn anchored_textboxes(&mut self, textboxes: &mut Textboxes, end: i32) -> Step<(), E> {
         while let Some((anchor, _)) = textboxes.anchored.front() {
             if *anchor >= end {
                 break;
             }
             if let Some((_, paragraphs)) = textboxes.anchored.pop_front() {
-                self.textbox_paragraphs(paragraphs);
+                self.textbox_paragraphs(paragraphs)?;
             }
         }
+        Ok(())
     }
 
     /// Each paragraph of a text box that is not blank.
-    fn textbox_paragraphs(&mut self, paragraphs: Vec<Vec<u16>>) {
+    fn textbox_paragraphs(&mut self, paragraphs: Vec<Vec<u16>>) -> Step<(), E> {
         for text in paragraphs {
             if !is_blank(&text) {
-                self.element("p", text);
+                self.element("p", text)?;
             }
         }
+        Ok(())
     }
 
     /// `HeaderStories.getSubrangeAt` of each index: the stories with text, within the header
@@ -550,7 +562,7 @@ impl Extractor<'_> {
     }
 
     /// `handleHeaderFooter`.
-    fn header_footer(&mut self, ranges: &[Option<Span>], kind: &'static str) -> Read<()> {
+    fn header_footer(&mut self, ranges: &[Option<Span>], kind: &'static str) -> Step<(), E> {
         let document = self.document;
         let mut count = 0;
         for range in ranges.iter().flatten() {
@@ -559,8 +571,7 @@ impl Extractor<'_> {
         if count == 0 {
             return Ok(());
         }
-        self.out
-            .push(Out::StartWith("div", vec![("class", kind.to_owned())]));
+        self.emit(Out::StartWith("div", vec![("class", kind.to_owned())]))?;
         let mut lists = ListManager::new();
         for &range in ranges.iter().flatten() {
             let mut index = 0;
@@ -570,8 +581,18 @@ impl Extractor<'_> {
                 index += 1;
             }
         }
-        self.end("div");
-        Ok(())
+        self.end("div")
+    }
+
+    /// `isBlankParagraph` of a paragraph's text, read a piece at a time as far as the first
+    /// character that is not blank.
+    fn is_blank_paragraph(&self, span: Span) -> Read<bool> {
+        let mut blank = true;
+        self.document.chunks_of(span, |units| {
+            blank = is_blank_paragraph(&units);
+            Ok(blank)
+        })?;
+        Ok(blank)
     }
 
     /// `handleParagraph`: a table, a paragraph of runs, or nothing for a blank paragraph; the
@@ -583,29 +604,29 @@ impl Extractor<'_> {
         range: Span,
         part: Part,
         lists: &mut ListManager,
-    ) -> Read<usize> {
+    ) -> Step<usize, E> {
         let document = self.document;
         if paragraph.is_in_table() && paragraph.table_level() > parent_level && parent_level == 0 {
             let table = document.table(range, paragraph)?;
-            self.start("table");
-            self.start("tbody");
+            self.start("table")?;
+            self.start("tbody")?;
             for row in &table.rows {
-                self.start("tr");
+                self.start("tr")?;
                 for &cell in row {
-                    self.start("td");
+                    self.start("td")?;
                     for index in 0..document.paragraph_count(cell)? {
                         let inner = document.paragraph(cell, index)?;
                         self.paragraph(&inner, paragraph.table_level(), cell, part, lists)?;
                     }
-                    self.end("td");
+                    self.end("td")?;
                 }
-                self.end("tr");
+                self.end("tr")?;
             }
-            self.end("tbody");
-            self.end("table");
+            self.end("tbody")?;
+            self.end("table")?;
             return Ok(document.paragraph_count(table.span)? - 1);
         }
-        if is_blank_paragraph(document.text_of(paragraph.span)?) {
+        if self.is_blank_paragraph(paragraph.span)? {
             return Ok(0);
         }
         let mut numbering = None;
@@ -628,22 +649,25 @@ impl Extractor<'_> {
         };
         let tag = leak_tag(&tas.tag);
         match &tas.class {
-            Some(class) => self
-                .out
-                .push(Out::StartWith(tag, vec![("class", class.clone())])),
-            None => self.start(tag),
+            Some(class) => self.emit(Out::StartWith(tag, vec![("class", class.clone())]))?,
+            None => self.start(tag)?,
         }
         if let Some(numbering) = numbering {
-            self.text(numbering.encode_utf16().collect());
+            self.text(numbering.encode_utf16().collect())?;
         }
         let heading = tas.is_heading();
         let mut index = 0;
         while index < document.run_count(paragraph.span)? {
             let run = document.paragraph_run(paragraph, index)?;
-            let text = document.text_of(run.span)?;
-            let first = *text
-                .first()
-                .ok_or_else(|| Thrown::new("Index 0 out of bounds for length 0"))?;
+            document.check_span(run.span)?;
+            let length = (run.span.end - run.span.start) as usize;
+            if length == 0 {
+                return Err(Thrown::new("Index 0 out of bounds for length 0").into());
+            }
+            let first = document.text_of(Span {
+                start: run.span.start,
+                end: run.span.start + 1,
+            })?[0];
             if first == FIELD_BEGIN {
                 // The fields of the headers count from the start of their story; Tika looks
                 // them up by the position in the whole text (#111).
@@ -664,21 +688,21 @@ impl Extractor<'_> {
                             }
                             None => None,
                         };
-                        self.out.push(Out::StartWith(
+                        self.emit(Out::StartWith(
                             "div",
                             vec![
                                 ("class", "embedded".to_owned()),
                                 ("id", id.unwrap_or_else(|| "_unknown_id".to_owned())),
                             ],
-                        ));
-                        self.end("div");
+                        ))?;
+                        self.end("div")?;
                     }
                 }
             }
-            if text == [FIELD_BEGIN] {
+            if first == FIELD_BEGIN && length == 1 {
                 index += self.special_runs(paragraph, index, heading)?;
             } else if first == PICTURE_MARK {
-                for _ in 0..text.len() {
+                for _ in 0..length {
                     let picture = self.pictures.next_unclaimed();
                     self.picture(Some(&run), picture)?;
                 }
@@ -690,8 +714,8 @@ impl Extractor<'_> {
             }
             index += 1;
         }
-        self.close_styles(false);
-        self.end(tag);
+        self.close_styles(false)?;
+        self.end(tag)?;
         Ok(0)
     }
 
@@ -700,10 +724,11 @@ impl Extractor<'_> {
         run.is_none_or(|run| !run.chp.deleted || self.config.includes_deleted_content())
     }
 
-    /// `handleCharacterRun`.
-    fn character_run(&mut self, run: &CharacterRun, skip_styling: bool) -> Read<()> {
-        let text = self.document.text_of(run.span)?;
-        if !self.is_rendered(Some(run)) || text == [CARRIAGE_RETURN] {
+    /// `handleCharacterRun`: its text, but a closing cell mark, cleaned and written a piece at
+    /// a time as it is read.
+    fn character_run(&mut self, run: &CharacterRun, skip_styling: bool) -> Step<(), E> {
+        let document = self.document;
+        if document.text_is(run.span, &[CARRIAGE_RETURN])? || !self.is_rendered(Some(run)) {
             return Ok(());
         }
         if !skip_styling {
@@ -717,34 +742,47 @@ impl Extractor<'_> {
                     Tag::U => chp.kul != 0,
                 })
                 .collect();
-            self.ensure_formatting(&desired);
+            self.ensure_formatting(&desired)?;
         }
-        let text = text.strip_suffix(&[CELL_MARK]).unwrap_or(text);
-        let cleaned = clean(text);
-        self.text(cleaned);
-        Ok(())
+        let mut span = run.span;
+        if span.end > span.start
+            && document.text_of(Span {
+                start: span.end - 1,
+                end: span.end,
+            })? == [CELL_MARK]
+        {
+            span.end -= 1;
+        }
+        let mut written = Ok(());
+        document.chunks_of(span, |units| {
+            written = self.text(clean(&units));
+            Ok(written.is_ok())
+        })?;
+        written
     }
 
     /// `FormattingUtils.ensureFormattingState`: the open tags not wanted closed, from the most
     /// recent, until none is left; then the wanted ones not open opened, in their order.
-    fn ensure_formatting(&mut self, desired: &[Tag]) {
+    fn ensure_formatting(&mut self, desired: &[Tag]) -> Step<(), E> {
         while self.formatting.iter().any(|tag| !desired.contains(tag)) {
             let tag = self.formatting.pop().expect("an open tag");
-            self.end(tag.name());
+            self.end(tag.name())?;
         }
         for &tag in desired {
             if !self.formatting.contains(&tag) {
                 self.formatting.push(tag);
-                self.start(tag.name());
+                self.start(tag.name())?;
             }
         }
+        Ok(())
     }
 
     /// `closeStyleElements`.
-    fn close_styles(&mut self, skip_styling: bool) {
+    fn close_styles(&mut self, skip_styling: bool) -> Step<(), E> {
         if !skip_styling {
-            self.ensure_formatting(&[]);
+            self.ensure_formatting(&[])?;
         }
+        Ok(())
     }
 
     /// `handleSpecialCharacterRuns`: the runs of a field from the run after its begin mark,
@@ -754,7 +792,7 @@ impl Extractor<'_> {
         paragraph: &Paragraph,
         index: usize,
         skip_styling: bool,
-    ) -> Read<usize> {
+    ) -> Step<usize, E> {
         let document = self.document;
         let mut controls: Vec<CharacterRun> = Vec::new();
         let mut texts: Vec<CharacterRun> = Vec::new();
@@ -762,19 +800,18 @@ impl Extractor<'_> {
         let mut i = index + 1;
         while i < document.run_count(paragraph.span)? {
             let run = document.paragraph_run(paragraph, i)?;
-            let text = document.text_of(run.span)?;
-            if text == [FIELD_BEGIN] {
+            if document.text_is(run.span, &[FIELD_BEGIN])? {
                 // Tika hands on the run after the nested field's begin mark as if it were the
                 // mark, skipping a run, and ends this field at the nested one's end (#111).
                 i += self.special_runs(paragraph, i, skip_styling)?;
-            } else if text == [FIELD_SEPARATOR] {
+            } else if document.text_is(run.span, &[FIELD_SEPARATOR])? {
                 has_separator = true;
-            } else if text == [FIELD_END] {
+            } else if document.text_is(run.span, &[FIELD_END])? {
                 if !has_separator {
                     texts = std::mem::take(&mut controls);
                 }
                 break;
-            } else if text == [FIELD_SEPARATOR, FIELD_END] {
+            } else if document.text_is(run.span, &[FIELD_SEPARATOR, FIELD_END])? {
                 has_separator = true;
             } else if has_separator {
                 texts.push(run);
@@ -791,7 +828,7 @@ impl Extractor<'_> {
         }
         let mut code: Vec<u16> = Vec::new();
         for run in &controls {
-            code.extend_from_slice(document.text_of(run.span)?);
+            code.extend(document.text_of(run.span)?);
         }
         let quote = u16::from(b'"');
         let hyperlink: Vec<u16> = "HYPERLINK".encode_utf16().collect();
@@ -806,13 +843,13 @@ impl Extractor<'_> {
             } else {
                 String::new()
             };
-            self.close_styles(skip_styling);
-            self.out.push(Out::StartWith("a", vec![("href", url)]));
+            self.close_styles(skip_styling)?;
+            self.emit(Out::StartWith("a", vec![("href", url)]))?;
             for run in &texts {
                 self.character_run(run, skip_styling)?;
             }
-            self.close_styles(skip_styling);
-            self.end("a");
+            self.close_styles(skip_styling)?;
+            self.end("a")?;
         } else {
             for run in &texts {
                 if has_picture(document, run)? {
@@ -826,8 +863,9 @@ impl Extractor<'_> {
         Ok(i - index)
     }
 
-    /// `handlePictureCharacterRun`: an image element, and the picture handed on the first time.
-    fn picture(&mut self, run: Option<&CharacterRun>, picture: Option<usize>) -> Read<()> {
+    /// `handlePictureCharacterRun`: an image element, and the picture handed on the first time,
+    /// from where it is stored.
+    fn picture(&mut self, run: Option<&CharacterRun>, picture: Option<usize>) -> Step<(), E> {
         let Some(picture) = picture else {
             return Ok(());
         };
@@ -841,52 +879,53 @@ impl Extractor<'_> {
             filename.push('.');
             filename.push_str(extension);
         }
-        self.out.push(Out::StartWith(
+        self.emit(Out::StartWith(
             "img",
             vec![
                 ("src", format!("embedded:{filename}")),
                 ("alt", filename.clone()),
             ],
-        ));
-        self.end("img");
+        ))?;
+        self.end("img")?;
         if self.pictures.first_output(picture) {
             let data = self.pictures.get(picture).content()?;
             let mut metadata = TikaMetadata::new();
             metadata.set(RESOURCE_NAME_EXTENSION_INFERRED, "true");
             metadata.set(RESOURCE_NAME, filename);
             metadata.set("Content-Type", kind.media_type());
-            self.out.push(Out::Embedded(
-                Handed::Document(Embedded { data, metadata }),
+            self.emit(Out::Embedded(
+                Handed::Document(Embedded {
+                    data: Node::from(data),
+                    metadata,
+                }),
                 Wrapping::Bare,
-            ));
+            ))?;
         }
         Ok(())
     }
 
     /// The object pool's storages of embedded objects, each handed on as
-    /// `handleEmbeddedOfficeDoc` hands it on.
-    fn object_pool(&mut self) -> Result<(), Unread> {
-        let Some(pool) = self.file.child(self.root, OBJECT_POOL) else {
+    /// `handleEmbeddedOfficeDoc` hands it on, its streams in place.
+    fn object_pool(&mut self) -> Step<(), E> {
+        let file = self.file;
+        let Some(pool) = file.child(self.root, OBJECT_POOL) else {
             return Ok(());
         };
-        if self.file.kind(pool) == EntryKind::Document {
+        if file.kind(pool) == EntryKind::Document {
             return Err(Thrown::new(
                 "java.lang.ClassCastException: the object pool is a document, which Tika casts to \
                  a directory",
             )
             .into());
         }
-        for entry in self.file.children(pool) {
-            if !self.file.name(entry).starts_with('_')
-                || self.file.kind(entry) == EntryKind::Document
-            {
+        for entry in file.children(pool) {
+            if !file.name(entry).starts_with('_') || file.kind(entry) == EntryKind::Document {
                 continue;
             }
             if let Some(embedded) =
-                office_document(self.file, entry, TikaMetadata::new(), None, self.configs)?
+                office_document(file, entry, TikaMetadata::new(), None, self.configs)?
             {
-                self.out
-                    .push(Out::Embedded(embedded, Wrapping::PackageEntry));
+                self.emit(Out::Embedded(embedded, Wrapping::PackageEntry))?;
             }
         }
         Ok(())

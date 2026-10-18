@@ -9,9 +9,7 @@ use std::collections::HashSet;
 
 mod write;
 
-#[cfg(any(test, feature = "testing"))]
-pub use write::Storage;
-pub use write::{write, Node};
+pub use write::{write, Node, Storage};
 
 /// The signature an OLE2 compound document starts with.
 pub(crate) const SIGNATURE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
@@ -485,6 +483,11 @@ impl<'a> Ole2<'a> {
     /// `createDocumentInputStream(name)` on the root, read whole: the document found ignoring
     /// case, or why POI cannot read it.
     pub fn root_document(&self, name: &str) -> std::result::Result<Vec<u8>, String> {
+        self.root_content(name).map(|content| content.to_vec())
+    }
+
+    /// [`Ole2::root_document`] in place.
+    pub fn root_content(&self, name: &str) -> std::result::Result<Content<'a>, String> {
         let entry = self
             .child_ignoring_case(self.root(), name)
             .ok_or_else(|| format!("the compound document has no entry {name:?}"))?;
@@ -493,7 +496,7 @@ impl<'a> Ole2<'a> {
                 "the compound document's entry {name:?} is not a document"
             ));
         }
-        self.read(entry).map_err(|Unreadable(reason)| {
+        self.content(entry).map_err(|Unreadable(reason)| {
             format!("the compound document's entry {name:?} is unreadable: {reason}")
         })
     }
@@ -860,10 +863,7 @@ pub mod tests {
                         entries: Vec::new(),
                     }),
                 ),
-                None => (
-                    name.encode_utf16().collect(),
-                    Node::Document(content.to_vec()),
-                ),
+                None => (name.encode_utf16().collect(), Node::Owned(content.to_vec())),
             })
             .collect();
         write::write(&Storage {

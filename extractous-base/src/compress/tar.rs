@@ -840,7 +840,7 @@ pub fn files<'a>(
         let content = if directory {
             Limited::Whole(Input::Borrowed(&[]))
         } else if entry.is_sparse() {
-            let mut decoding = Decoding::spooled(data.len());
+            let mut decoding = Decoding::spooled(data.len(), u64::try_from(entry.real_size()).ok());
             let zeros = [0u8; 8192];
             stream.read_data(|read| match read {
                 Read::Bytes(bytes) => decoding.write(bytes),

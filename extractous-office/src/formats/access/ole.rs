@@ -25,9 +25,9 @@ pub(super) enum Ole {
     /// A link's path, as text.
     Link(String),
     /// A document handed on bare, its stream opened alone.
-    Resource(Embedded),
+    Resource(Embedded<'static>),
     /// What `handleEmbeddedOfficeDoc` hands on of a compound document, in a package entry.
-    Storage(Handed),
+    Storage(Handed<'static>),
 }
 
 fn string_index(message: String) -> Thrown {
@@ -138,10 +138,10 @@ pub(super) fn read(value: &[u8], configs: &ParserConfigs) -> Result<Ole, Thrown>
 fn other(value: &[u8], type_name: String, position: i32, length: i32) -> Result<Ole, Thrown> {
     let mut metadata = TikaMetadata::new();
     metadata.set("Content-Type", type_name);
-    Ok(Ole::Resource(Embedded {
-        data: stream(value, position, length)?,
+    Ok(Ole::Resource(Embedded::owned(
+        stream(value, position, length)?,
         metadata,
-    }))
+    )))
 }
 
 /// `createSimplePackageContent`: an embedded file with its names, a link, or other data.
@@ -186,10 +186,10 @@ fn simple_package(
         let mut metadata = TikaMetadata::new();
         metadata.set(RESOURCE_NAME, file_name);
         metadata.set("Content-Type", type_name);
-        return Ok(Ole::Resource(Embedded {
-            data: stream(value, data_position, data_length)?,
+        return Ok(Ole::Resource(Embedded::owned(
+            stream(value, data_position, data_length)?,
             metadata,
-        }));
+        )));
     }
     if package_type == PS_LINKED_FILE {
         buffer.i16()?;
@@ -209,7 +209,7 @@ fn compound(data: &[u8], configs: &ParserConfigs) -> Result<Ole, Thrown> {
         ))
     })?;
     match office_document(&file, file.root(), TikaMetadata::new(), None, configs) {
-        Ok(Some(handed)) => Ok(Ole::Storage(handed)),
+        Ok(Some(handed)) => Ok(Ole::Storage(handed.into_owned())),
         Ok(None) => Ok(Ole::Nothing),
         Err(unported) => Err(Thrown::unported(unported.0)),
     }

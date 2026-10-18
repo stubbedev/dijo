@@ -9,7 +9,8 @@ use crate::formats::ooxml::extractor::{self, Ignore};
 use crate::formats::ooxml::{self, Package, Properties, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java;
 
 /// `VISIO_DOCUMENT_REL`.
@@ -44,14 +45,29 @@ impl Parser for VsdxParser {
         ]
     }
 
-    /// Defers packages POI does not open as this port does and pages declaring a document type.
+    /// The pages are checked one at a time, then written one at a time as they are read.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    /// Defers packages POI does not open as this port does and pages declaring a document type.
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let package = Package::open(input, crate::input::Pages::IN_MEMORY)?;
+        let package = Package::open(input, pages)?;
         let drawing = Drawing::open(package).map_err(|Unported(reason)| reason)?;
         Ok(Box::new(move |xhtml| drawing.write(xhtml)))
     }

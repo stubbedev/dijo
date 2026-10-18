@@ -23,6 +23,7 @@ extractous-mime = { path = "../extractous-mime", default-features = false }
 ar = "0.9.0"
 cpio = "0.4.1"
 flate2 = "1.1.5"
+memchr = "2.8.3"
 regex = "1.13.1"
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "column_decltype", "serialize"] }
 zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }

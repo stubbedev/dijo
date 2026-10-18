@@ -388,7 +388,7 @@ pub fn entries(data: &[u8]) -> Result<Limited<Vec<DumpEntry>>, Unread> {
         if let Some(rest) = name.strip_prefix("./") {
             name = rest.to_owned();
         }
-        let mut decoding = Decoding::spooled(data.len());
+        let mut decoding = Decoding::spooled(data.len(), u64::try_from(named.header.size).ok());
         if !directory {
             stream.read_data(&mut decoding).map_err(Unread::Fails)?;
         }

@@ -12,7 +12,7 @@ use crate::input::Input;
 
 /// The content of the Zstandard file `data`, or why it is not decoded natively.
 pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
-    let mut decoding = Decoding::spooled(data.len());
+    let mut decoding = Decoding::spooled(data.len(), None);
     decode_into(data, &mut decoding)?;
     decoding.finish()
 }

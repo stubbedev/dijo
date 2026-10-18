@@ -257,10 +257,10 @@ impl<'a> Unpack<'a> {
         self.dest_unp_size = size;
     }
 
-    /// `ComprDataIO.init`: an entry's packed data of `packed` bytes from `start` on, its
-    /// unpacked data checked by `sum`.
-    pub(super) fn start_entry(&mut self, start: u64, packed: i64, sum: Sum) {
-        self.input.io.start(start, packed, sum);
+    /// `ComprDataIO.init`: an entry's packed data of `packed` bytes from `start` on, which
+    /// unpacks into the `unpacked` bytes its header declares, checked by `sum`.
+    pub(super) fn start_entry(&mut self, start: u64, packed: i64, unpacked: Option<u64>, sum: Sum) {
+        self.input.io.start(start, packed, unpacked, sum);
     }
 
     /// The checksum of what the entry wrote.

@@ -96,6 +96,14 @@ pub const ZSTD_WITHOUT_ZSTD_JNI: &str = "Tika's path parses Zstandard with Empty
                                                 its native image lacks zstd-jni; the native path \
                                                 decodes it";
 
+/// Why the native path extracts the scientific formats Tika's path leaves empty (#172): Tika's
+/// native image lacks `tika-parser-scientific-module`, so its path parses NetCDF, HDF, GRIB, FITS
+/// and ISA-Tab with `EmptyParser`; the native parsers read their headers.
+pub const WITHOUT_SCIENTIFIC_MODULE: &str = "Tika's path parses the scientific formats with \
+                                                    EmptyParser, as its native image lacks \
+                                                    tika-parser-scientific-module (#172); the \
+                                                    native path reads their headers";
+
 /// One extraction's result, as the two paths are compared on it.
 #[cfg(feature = "tika")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2418,6 +2426,46 @@ pub fn assert_read_where_tika_fails_with(
                 document.display()
             );
         }
+    }
+}
+
+/// Asserts that Tika's path parses each document with `EmptyParser` and writes no text of it,
+/// where the native parser reads it on purpose, for the reasons `departures` give: the native
+/// text is not empty. The parser's own tests check what it reads.
+#[cfg(feature = "tika")]
+pub fn assert_read_where_tika_reads_nothing(documents: &[&Path], departures: &[&str]) {
+    let departure = departures.join("; ");
+    for document in documents {
+        let path = document.to_str().unwrap();
+        let tika = tika_string(path, &ParserConfigs::default(), Output::Text)
+            .unwrap_or_else(|failure| panic!("{path}: Tika's path fails ({departure}): {failure}"));
+        assert!(
+            tika.metadata.iter().any(|(name, values)| name == PARSED_BY
+                && values
+                    .iter()
+                    .any(|parser| parser == formats::empty::EmptyParser.tika_name())),
+            "{path}: Tika's path parses it with a parser of its own ({departure}): {:?}",
+            tika.metadata
+        );
+        assert!(
+            String::from_utf8_lossy(&tika.text).trim().is_empty(),
+            "{path}: Tika's path writes text ({departure})"
+        );
+        let routed = routed(path);
+        let (text, _) = formats::parse_to_string(
+            routed.parser,
+            &routed.input,
+            &routed.detected,
+            &ParserConfigs::default(),
+            SMALL_LIMIT,
+            Output::Text,
+        )
+        .unwrap_or_else(|failure| panic!("{path}: the native parser fails: {failure:?}"))
+        .unwrap_or_else(|unsupported| panic!("{path}: no native parser: {unsupported:?}"));
+        assert!(
+            !text.trim().is_empty(),
+            "{path}: the native parser writes no text either"
+        );
     }
 }
 

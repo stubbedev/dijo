@@ -50,7 +50,7 @@ pub(super) enum Part {
 /// `HeadersFooters` of a sheet.
 pub(super) struct HeadersFooters<'s, 'a> {
     sheet: &'s Sheet<'a>,
-    container: Option<&'a Record>,
+    container: Option<&'a Record<'a>>,
     ppt_2007: bool,
 }
 
@@ -177,11 +177,16 @@ fn programmable_tag(container: &Record) -> Option<String> {
     Some(String::from_utf16_lossy(&tag.utf16()))
 }
 
-/// The sheet `getNotesHeadersFooters` reads: the first notes, else the first master.
-pub(super) fn notes_sheet<'s, 'a>(show: &'s Show<'a>) -> Result<&'s Sheet<'a>, Unread> {
-    if let Some(notes) = show.notes.first() {
+/// The sheet `getNotesHeadersFooters` reads: the `first_notes` of the presentation, else its
+/// first master.
+pub(super) fn notes_sheet<'s, 'a>(
+    show: &'s Show<'a>,
+    first_notes: Option<&'s Sheet<'a>>,
+) -> Result<&'s Sheet<'a>, Unread> {
+    if let Some(notes) = first_notes {
         return Ok(notes);
     }
+
     show.masters
         .first()
         .map(|master| &master.sheet)

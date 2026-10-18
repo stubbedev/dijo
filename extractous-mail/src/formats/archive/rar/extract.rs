@@ -109,7 +109,12 @@ impl Extraction {
                     .to_owned(),
             );
         }
-        unpack.start_entry(start, header.full_pack_size, self.sum());
+        unpack.start_entry(
+            start,
+            header.full_pack_size,
+            u64::try_from(header.full_unpack_size).ok(),
+            self.sum(),
+        );
         let unpacked = if header.unp_method == STORED {
             unpack.unstore(header.full_unpack_size)
         } else {

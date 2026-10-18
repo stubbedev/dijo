@@ -60,12 +60,12 @@
 //! TextAndCSVParser's recovery from a malformed table (a `div` of the rest as text) never runs,
 //! since Commons CSV reads every text with the format it uses (see [`csv`]).
 
-mod csv;
+pub mod csv;
 #[cfg(test)]
 mod reference;
 mod sniffer;
 
-use csv::Records;
+use csv::{Excel, Records};
 use sniffer::Delimiter;
 
 use crate::config::ParserConfigs;
@@ -238,7 +238,8 @@ fn write(
             xhtml.metadata_mut().set("csv:delimiter", delimiter.name());
             xhtml.start_element("table")?;
             let mut rows = 0usize;
-            for record in Records::new(chars, delimiter.char()) {
+            for record in Records::new(chars, Excel(delimiter.char())) {
+                let Ok(record) = record;
                 xhtml.start_element("tr")?;
                 for value in &record {
                     xhtml.start_element("td")?;

@@ -187,7 +187,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> 
         characters: (0..=256u16).map(|i| i as u8).collect(),
     };
     decoder.clear_entries();
-    let mut decoding = Decoding::spooled(data.len());
+    let mut decoding = Decoding::spooled(data.len(), None);
     let mut out = Vec::with_capacity(2 * CHUNK);
     while decoder.next_symbol(&mut out)? {
         if out.len() >= CHUNK {

@@ -72,19 +72,68 @@ pub(super) struct Table {
     pub(super) rows: Vec<Vec<Span>>,
 }
 
-impl Document {
-    /// `text`: the text of a range, failing where it runs past the text.
-    pub(super) fn text_of(&self, span: Span) -> Read<&[u16]> {
+impl Document<'_> {
+    /// `text`: the text of a range, read from the main stream, failing where it runs past the
+    /// text.
+    pub(super) fn text_of(&self, span: Span) -> Read<Vec<u16>> {
         self.text
-            .get(span.start as usize..span.end as usize)
-            .ok_or_else(|| {
-                Thrown(format!(
-                    "begin {}, end {}, length {}",
-                    span.start,
-                    span.end,
-                    self.text.len()
-                ))
-            })
+            .read(self.main, span.start as usize..span.end as usize)
+            .ok_or_else(|| self.past_the_text(span))
+    }
+
+    /// Fails where a range runs past the text, as reading its text does.
+    pub(super) fn check_span(&self, span: Span) -> Read<()> {
+        if span.end as usize > self.text.len() {
+            return Err(self.past_the_text(span));
+        }
+        Ok(())
+    }
+
+    fn past_the_text(&self, span: Span) -> Thrown {
+        Thrown(format!(
+            "begin {}, end {}, length {}",
+            span.start,
+            span.end,
+            self.text.len()
+        ))
+    }
+
+    /// Whether the text of a range is `units`, read only where it is as long.
+    pub(super) fn text_is(&self, span: Span, units: &[u16]) -> Read<bool> {
+        self.check_span(span)?;
+        if (span.end - span.start) as usize != units.len() {
+            return Ok(false);
+        }
+        Ok(self.text_of(span)? == units)
+    }
+
+    /// The text of a range a piece at a time, each at most `CHUNK` characters, a surrogate
+    /// pair never cut, failing where it runs past the text.
+    pub(super) fn chunks_of(
+        &self,
+        span: Span,
+        mut each: impl FnMut(Vec<u16>) -> Read<bool>,
+    ) -> Read<()> {
+        const CHUNK: i32 = 1 << 16;
+        self.check_span(span)?;
+        let mut at = span.start;
+        while at < span.end {
+            let mut to = at.saturating_add(CHUNK).min(span.end);
+            let mut units = self.text_of(Span { start: at, end: to })?;
+            if to < span.end
+                && units
+                    .last()
+                    .is_some_and(|&unit| (0xD800..0xDC00).contains(&unit))
+            {
+                units.pop();
+                to -= 1;
+            }
+            if !each(units)? {
+                return Ok(());
+            }
+            at = to;
+        }
+        Ok(())
     }
 
     /// `new Range(start, end, document)`.
@@ -301,8 +350,17 @@ impl Document {
         let mut cell_start = 0;
         for index in 0..count {
             let paragraph = self.paragraph(row, index)?;
-            let text = self.text_of(paragraph.span)?;
-            let ends_cell = text.last() == Some(&CELL_MARK) || paragraph.pap.inner_table_cell;
+            self.check_span(paragraph.span)?;
+            let span = paragraph.span;
+            let ends_with_mark = span.end > span.start
+                && self.text_is(
+                    Span {
+                        start: span.end - 1,
+                        end: span.end,
+                    },
+                    &[CELL_MARK],
+                )?;
+            let ends_cell = ends_with_mark || paragraph.pap.inner_table_cell;
             if ends_cell && paragraph.table_level() == level {
                 let first = self.paragraph(row, cell_start)?;
                 cells.push(self.subrange(first.span.start, paragraph.span.end)?);
