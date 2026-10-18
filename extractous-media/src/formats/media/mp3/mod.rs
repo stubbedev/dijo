@@ -533,7 +533,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::media::large::LargeFile;
+    use crate::formats::media::large::{bodies_past_limit, LargeFile};
     #[cfg(feature = "tika")]
     use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
 
@@ -638,7 +638,9 @@ mod tests {
     #[test]
     fn extracts_mp3s_too_large_to_read_whole_in_bounded_memory() {
         let tag = id3v23(&frame("TIT2", b"\x00Lang sang"));
-        let (file, frames) = LargeFile::new("long.mp3", &tag, |_| audio_frame(false), b"");
+        let frame = audio_frame(false);
+        let frames = bodies_past_limit(frame.len());
+        let file = LargeFile::new("long.mp3", &tag, frames, |_| frame.clone(), b"");
         let (text, metadata) = file.extract(Mp3Parser.name());
         assert!(text.contains("Lang sang"), "{text}");
         assert_eq!(metadata["audio:bitrate"], ["128000"]);

@@ -13,6 +13,11 @@ use crate::{memory, Metadata};
 /// The memory an extraction of a large file may take: a fraction of the file.
 const BUDGET: u64 = 16 << 20;
 
+/// How many bodies of `length` bytes make a file too large to read whole.
+pub(super) fn bodies_past_limit(length: usize) -> u64 {
+    MAX_READ_WHOLE / length as u64 + 1
+}
+
 /// A file larger than [`MAX_READ_WHOLE`] in a directory of its own, removed when it is dropped.
 pub(super) struct LargeFile {
     dir: PathBuf,
@@ -20,14 +25,15 @@ pub(super) struct LargeFile {
 }
 
 impl LargeFile {
-    /// `head`, then each of `bodies` that `body` makes of its index, until the file is larger than
-    /// [`MAX_READ_WHOLE`], then `tail`; with how many bodies it holds.
+    /// `head`, then the `count` bodies that `body` makes of their indexes, then `tail`, which
+    /// must make a file larger than [`MAX_READ_WHOLE`].
     pub(super) fn new(
         name: &str,
         head: &[u8],
+        count: u64,
         mut body: impl FnMut(u64) -> Vec<u8>,
         tail: &[u8],
-    ) -> (Self, u64) {
+    ) -> Self {
         let dir = crate::isolate::temp_dir().join(format!(
             "extractous-media-large-{name}-{}",
             std::process::id()
@@ -36,17 +42,14 @@ impl LargeFile {
         let path = dir.join(name);
         let mut out = BufWriter::new(File::create(&path).unwrap());
         out.write_all(head).unwrap();
-        let mut written = head.len() as u64;
-        let mut bodies = 0;
-        while written <= MAX_READ_WHOLE {
-            let bytes = body(bodies);
-            out.write_all(&bytes).unwrap();
-            written += bytes.len() as u64;
-            bodies += 1;
+        for index in 0..count {
+            out.write_all(&body(index)).unwrap();
         }
         out.write_all(tail).unwrap();
-        out.into_inner().unwrap().sync_all().unwrap();
-        (Self { dir, path }, bodies)
+        let file = out.into_inner().unwrap();
+        file.sync_all().unwrap();
+        assert!(file.metadata().unwrap().len() > MAX_READ_WHOLE);
+        Self { dir, path }
     }
 
     /// The file's text and metadata, extracted under [`BUDGET`], which `parser` must have read.

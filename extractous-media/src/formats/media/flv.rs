@@ -380,7 +380,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::media::large::LargeFile;
+    use crate::formats::media::large::{bodies_past_limit, LargeFile};
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_same_as_tika, conformance_corpus, differing_reading, documents, Scratch,
@@ -454,7 +454,8 @@ mod tests {
     #[test]
     fn extracts_flash_videos_too_large_to_read_whole_in_bounded_memory() {
         let video = tag(TYPE_VIDEO, &[0x17; 1 << 16]);
-        let (file, _) = LargeFile::new("long.flv", &flv(&[]), |_| video.clone(), b"");
+        let count = bodies_past_limit(video.len());
+        let file = LargeFile::new("long.flv", &flv(&[]), count, |_| video.clone(), b"");
         let (_, metadata) = file.extract(FlvParser.name());
         assert_eq!(metadata["flv:hasVideo"], ["true"]);
         assert_eq!(metadata["flv:duration"], ["12.5"]);
