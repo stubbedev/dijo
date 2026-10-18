@@ -15,12 +15,13 @@
 //! - Tika's traversal and `HtmlHandler` write it ([`handler`]).
 //!
 //! A document defers to Tika when a detector may name a charset the native decoders do not
-//! decode, or when Tika would parse embedded content or resolve links against a URL
-//! ([`handler::difference`]), where the parser reads the document differently from Tika's.
+//! decode, and the parser reads it differently from Tika's where it embeds the text of a data
+//! URI in a charset it does not encode ([`handler::difference`]).
 
 mod dom;
 mod handler;
 mod tree_builder;
+mod url;
 
 #[cfg(test)]
 mod reference;
@@ -28,6 +29,7 @@ mod reference;
 mod trees;
 
 use dom::Dom;
+use handler::Base;
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
@@ -106,9 +108,10 @@ pub fn prepare(
     let previous = metadata.get("Content-Type").map(str::to_owned);
     let document = read(input, previous.as_deref())
         .map_err(|_| Decline::Deferred("the document cannot be decoded natively".to_owned()))?;
-    let difference = handler::difference(&document.dom, metadata.get("tk:resource-name"));
+    let difference = handler::difference(&document.dom);
+    let base = Base::of(metadata);
     unless_different(
-        Box::new(move |xhtml| write(&document, previous.as_deref(), xhtml)),
+        Box::new(move |xhtml| write(&document, previous.as_deref(), base, xhtml)),
         difference,
     )
 }
@@ -118,22 +121,21 @@ pub fn prepare(
 /// [`Decline::Differs`] where the parser reads the HTML differently from Tika's.
 pub fn prepare_string(html: &[u16]) -> Result<Prepared<'static>, Decline<'static>> {
     let dom = tree_builder::parse(&String::from_utf16_lossy(html));
-    let difference = handler::difference(&dom, None);
+    let difference = handler::difference(&dom);
     unless_different(
-        Box::new(move |xhtml| {
-            let Err(stop) = handler::write(&dom, xhtml) else {
-                return Ok(());
-            };
-            xhtml.end_document()?;
-            Err(stop.into())
-        }),
+        Box::new(move |xhtml| write_dom(&dom, Base::Unknown, xhtml)),
         difference,
     )
 }
 
 /// Writes the document as `JSoupParser.parse` does, which ends the document even when writing
 /// it fails; `previous` is the `Content-Type` the metadata held before.
-fn write(document: &Document, previous: Option<&str>, xhtml: &mut Xhtml) -> Result<(), Failure> {
+fn write(
+    document: &Document,
+    previous: Option<&str>,
+    base: Base,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
     {
         let metadata = xhtml.metadata_mut();
         auto_detect_reader::set_metadata(&document.detection, metadata);
@@ -150,11 +152,16 @@ fn write(document: &Document, previous: Option<&str>, xhtml: &mut Xhtml) -> Resu
         }
         metadata.set("Content-Encoding", charset);
     }
-    let Err(stop) = handler::write(&document.dom, xhtml) else {
+    write_dom(&document.dom, base, xhtml)
+}
+
+/// Writes the tree through Tika's handlers, which end the document even when writing it fails.
+fn write_dom(dom: &Dom, base: Base, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let Err(failure) = handler::write(dom, base, xhtml) else {
         return Ok(());
     };
     xhtml.end_document()?;
-    Err(stop.into())
+    Err(failure)
 }
 
 struct Document {
@@ -249,11 +256,7 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_same_as_tika_departing, conformance_corpus, differing_reading, documents,
-    };
-    #[cfg(feature = "tika")]
-    use crate::formats::Difference;
+    use crate::formats::parity::{assert_same_as_tika_departing, conformance_corpus, documents};
 
     #[cfg(feature = "tika")]
     const TIKA_NAME: &str = "org.apache.tika.parser.html.JSoupParser";
@@ -280,63 +283,13 @@ mod tests {
         assert_same_as_whatwg_tika(&paths);
     }
 
-    /// The documents of Tika's that the parser reads differently from Tika's are read natively,
-    /// as a build without Tika takes them: links unresolved, and without the data a data URI or
-    /// an `iframe`'s `srcdoc` holds (#144).
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn reads_natively_the_documents_it_reads_differently_from_tika() {
-        let documents = conformance_corpus().join("tika-parsers-standard");
-        let modules = documents.join(
-            "tika-parsers-standard-modules/tika-parser-html-module/src/test/resources/test-documents",
-        );
-        let integration = documents
-            .join("tika-parsers-standard-integration-tests/src/test/resources/test-documents");
-        for (path, difference, text) in [
-            (
-                integration.join("big-preamble.html"),
-                "an object's codebase is a URL",
-                "Агентство недвижимости",
-            ),
-            (
-                modules.join("testHTML_embedded_img.html"),
-                "a data URI",
-                "some other content",
-            ),
-            (
-                modules.join("testSrcDoc.html"),
-                "an iframe's srcdoc",
-                "outside",
-            ),
-        ] {
-            let (Difference(reason), read) = differing_reading(&JSoupParser, &path);
-            assert!(reason.starts_with(difference), "{path:?}: {reason}");
-            assert!(read.contains(text), "{path:?}: {read}");
-        }
-    }
-
     #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
         let (parsed, deferred) = documents(&JSoupParser, &[&conformance_corpus()]);
-        let deferred: Vec<String> = deferred
-            .iter()
-            .filter_map(|path| path.file_name())
-            .map(|name| name.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(
-            deferred,
-            [
-                "big-preamble.html",
-                "big-preamble.html",
-                "testHTML_embedded_img.html",
-                "testSrcDoc.html"
-            ],
-            "deferred"
-        );
-        assert!(parsed.len() >= 31, "{} documents", parsed.len());
+        assert!(deferred.is_empty(), "deferred: {deferred:?}");
+        assert!(parsed.len() >= 35, "{} documents", parsed.len());
         let (departing, paths): (Vec<&Path>, Vec<&Path>) = parsed
             .iter()
             .map(PathBuf::as_path)

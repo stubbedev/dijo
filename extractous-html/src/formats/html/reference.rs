@@ -13,10 +13,6 @@ use crate::formats::Parser;
 
 const REFERENCE: &[u8] = include_bytes!("../../../tests/fixtures/html/html-reference.tsv.gz");
 
-/// The inputs the parser leaves to Tika: a data URI image and an iframe's `srcdoc`, which Tika
-/// parses as embedded documents.
-const DEFERRED: [&str; 2] = ["synthetic/data-uri.html", "synthetic/srcdoc.html"];
-
 /// The inputs whose metadata the parser gives differently from Tika on purpose: a `meta` title
 /// after the `title` element, which Tika records as `html:dc:title`, is a further `dc:title`, as
 /// is one before it, which Tika drops (#86). `handler`'s tests check what the port gives.
@@ -29,10 +25,11 @@ const DEPARTURES: [&str; 2] = [
 /// 195 of html5lib's documents, and nearly every other input, whose white space after `</body>`
 /// is the body's. Their metadata, read from the head, is still Tika's; the corpus tests compare
 /// the text of the documents among them with what the algorithm changes in it left out.
-const WHATWG_TREES: usize = 233;
+const WHATWG_TREES: usize = 237;
 
 #[test]
 fn parses_as_tika_does() {
+    extractous_core::parity::install_routes();
     let cases = cases(REFERENCE);
     let mut mismatches = Vec::new();
     let mut deferred = Vec::new();
@@ -72,23 +69,12 @@ fn parses_as_tika_does() {
     );
     departed.sort_unstable();
     assert_eq!(departed, DEPARTURES, "departures not in the reference");
-    let tika_deferred: Vec<&str> = deferred
-        .iter()
-        .copied()
-        .filter(|label| label.starts_with("tika/"))
-        .collect();
-    let others: Vec<&str> = deferred
-        .iter()
-        .copied()
-        .filter(|label| !label.starts_with("tika/"))
-        .collect();
     assert!(
         cases.len() > 1600,
         "the reference has {} inputs",
         cases.len()
     );
-    assert_eq!(others, DEFERRED, "deferred inputs");
-    assert_eq!(tika_deferred.len(), 4, "deferred: {tika_deferred:?}");
+    assert!(deferred.is_empty(), "deferred: {deferred:?}");
     assert!(
         mismatches.is_empty(),
         "{} of {} inputs differ:\n{}",

@@ -1756,17 +1756,19 @@ mod tests {
     #[test]
     fn reads_an_embedded_document_its_parser_reads_differently_from_tika() {
         let page =
-            b"<html><body><p>Inside.</p><img src=\"data:image/gif;base64,R0lGOD\"></body></html>";
+            b"<html><body><p>Inside.</p><img src=\"data:text/plain;charset=windows-1252,hej\"></body></html>";
         let archive = crate::compress::zip::file::tests::zip(&[("page.html", page)]);
         let (text, metadata) = crate::Extractor::new()
             .extract_bytes_to_string(&archive)
             .unwrap();
         assert!(text.contains("Inside."), "{text}");
+        assert!(text.contains("hej"), "{text}");
         assert_eq!(
             metadata["tk:exception:embedded-exception"],
             [
                 "extractous::JSoupParser read the embedded document \"page.html\" differently \
-                 from Tika: a data URI would be parsed as an embedded document"
+                 from Tika: a data URI of text in windows-1252, which the native parser encodes in \
+                 UTF-8"
             ]
         );
     }
