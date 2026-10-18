@@ -49,10 +49,14 @@ impl<'a> Input<'a> {
         Ok(())
     }
 
-    /// The next `length` bytes, or `None` when fewer are left, as `IOUtils.readFully` fails.
-    pub(super) fn take(&mut self, length: usize) -> Option<Vec<u8>> {
-        if length > self.pushed + (self.bytes.len() - self.at) {
-            return None;
+    /// The next `length` bytes, or, as `IOUtils.readFully` fails when fewer are left, how many
+    /// were, all of them read.
+    pub(super) fn take(&mut self, length: usize) -> Result<Vec<u8>, usize> {
+        let available = self.pushed + (self.bytes.len() - self.at);
+        if length > available {
+            self.pushed = 0;
+            self.at = self.bytes.len();
+            return Err(available);
         }
         let mut taken = Vec::with_capacity(length);
         while taken.len() < length && self.pushed > 0 {
@@ -61,7 +65,7 @@ impl<'a> Input<'a> {
         let rest = length - taken.len();
         taken.extend_from_slice(&self.bytes[self.at..self.at + rest]);
         self.at += rest;
-        Some(taken)
+        Ok(taken)
     }
 
     /// Skips `length` bytes, as `IOUtils.skipFully` does, failing when fewer are left.
@@ -106,12 +110,16 @@ mod tests {
         let mut input = Input::new(b"abcdef");
         input.read();
         input.unread(Some(b'a')).unwrap();
-        assert_eq!(input.take(3), Some(b"abc".to_vec()));
-        assert_eq!(input.take(4), None);
+        assert_eq!(input.take(3), Ok(b"abc".to_vec()));
         input.unread(Some(b'c')).unwrap();
         input.skip(2).unwrap();
         assert_eq!(input.read(), Some(b'e'));
         assert!(input.skip(2).is_err());
+        assert_eq!(input.read(), None);
+        let mut input = Input::new(b"abc");
+        input.read();
+        input.unread(Some(b'a')).unwrap();
+        assert_eq!(input.take(4), Err(3));
         assert_eq!(input.read(), None);
     }
 }
