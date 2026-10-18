@@ -1,6 +1,7 @@
 //! JBIG2 files (ITU-T T.88, Annex D): their structure as jbig2-imageio's `JBIG2Document` maps it
-//! for ImageIO, the pages and the information of each, and the image of a file of one page,
-//! which hayro-jbig2 decodes.
+//! for ImageIO, the pages and the information of each, and the image of the first page, which
+//! hayro-jbig2 decodes, as jbig2-imageio decodes the first image for our Java
+//! `PreparingOcrParser`.
 
 use std::collections::BTreeMap;
 
@@ -31,12 +32,14 @@ enum Organisation {
     RandomAccess,
 }
 
-/// A segment's header, as far as the structure needs it.
+/// A segment's header, as far as the structure needs it, and where it lies.
 #[derive(Debug, Clone, Copy)]
 struct Segment {
     kind: u8,
     data_length: u64,
     data_start: u64,
+    /// The offsets of the header's first byte and of the byte after it.
+    header: (u64, u64),
 }
 
 /// A page's information segment (7.4.8): its size, `0xffffffff` high when it is striped and of
@@ -50,10 +53,11 @@ pub(crate) struct PageInformation {
 }
 
 /// A JBIG2 file as `JBIG2Document` maps it: the segments of each page by page number, each
-/// page's by segment number.
+/// page's by segment number, and the global segments, of no page, by segment number.
 #[derive(Debug)]
 pub(crate) struct Jbig2File {
     pages: BTreeMap<i32, BTreeMap<i32, Segment>>,
+    globals: BTreeMap<i32, Segment>,
 }
 
 /// Reads past the end of the data fail, as `EOFException` does.
@@ -119,6 +123,7 @@ impl Jbig2File {
         let mut offset = bits.position;
         let mut segments = Vec::new();
         let mut pages: BTreeMap<i32, BTreeMap<i32, usize>> = BTreeMap::new();
+        let mut globals: BTreeMap<i32, usize> = BTreeMap::new();
         let mut kind = 0;
         while kind != END_OF_FILE && !bits.ends_at(offset) {
             bits.position = offset;
@@ -137,6 +142,8 @@ impl Jbig2File {
                     .entry(page)
                     .or_default()
                     .insert(number, segments.len());
+            } else if kind != END_OF_FILE {
+                globals.insert(number, segments.len());
             }
             segments.push(segment);
             offset = bits.position;
@@ -153,17 +160,51 @@ impl Jbig2File {
                 offset = offset.saturating_add(segment.data_length);
             }
         }
+        let numbered = |numbers: BTreeMap<i32, usize>| -> BTreeMap<i32, Segment> {
+            numbers
+                .into_iter()
+                .map(|(number, index)| (number, segments[index]))
+                .collect()
+        };
+        let globals = numbered(globals);
         let pages = pages
             .into_iter()
-            .map(|(page, numbers)| {
-                let segments = numbers
-                    .into_iter()
-                    .map(|(number, index)| (number, segments[index]))
-                    .collect();
-                (page, segments)
-            })
+            .map(|(page, numbers)| (page, numbered(numbers)))
             .collect();
-        Ok(Self { pages })
+        Ok(Self { pages, globals })
+    }
+
+    /// The global segments and those of the first page, each header followed by its data, in
+    /// the order of their numbers: the first page alone, as a file's embedded stream (D.3).
+    fn first_page_stream(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+        let first = self
+            .pages
+            .get(&1)
+            .ok_or("Requested page at index=0 does not exist.")?;
+        let mut segments: Vec<(i32, Segment)> = self
+            .globals
+            .iter()
+            .chain(first)
+            .map(|(&number, &segment)| (number, segment))
+            .collect();
+        segments.sort_by_key(|&(number, _)| number);
+        let mut stream = Vec::new();
+        for (number, segment) in segments {
+            let bytes = |start: u64, end: u64| {
+                usize::try_from(start)
+                    .ok()
+                    .zip(usize::try_from(end).ok())
+                    .and_then(|(start, end)| data.get(start..end))
+                    .ok_or_else(|| format!("the file ends inside segment {number}"))
+            };
+            stream.extend_from_slice(bytes(segment.header.0, segment.header.1)?);
+            let end = segment
+                .data_start
+                .checked_add(segment.data_length)
+                .ok_or_else(|| format!("segment {number} has no known length"))?;
+            stream.extend_from_slice(bytes(segment.data_start, end)?);
+        }
+        Ok(stream)
     }
 
     /// The pages the file holds. jbig2-imageio's `getAmountOfPages` takes the count the header
@@ -212,6 +253,7 @@ fn segment_header(
     bits: &mut Bits,
     organisation: Organisation,
 ) -> Result<(i32, i32, Segment), String> {
+    let header_start = bits.position;
     let number = bits.u32()?;
     let flags = bits.u8()?;
     let long_page = flags & 0x40 != 0;
@@ -253,6 +295,7 @@ fn segment_header(
             kind,
             data_length,
             data_start,
+            header: (header_start, bits.position),
         },
     ))
 }
@@ -283,17 +326,12 @@ fn unknown_length(data: &[u8], start: u64) -> Option<u64> {
     (end <= data.len()).then(|| (end - start) as u64)
 }
 
-/// The image of a JBIG2 file of one page, black on white, or why it cannot be decoded.
+/// The image of a JBIG2 file's first page, black on white, or why it cannot be decoded.
 pub(crate) fn decode(data: &[u8]) -> Result<GrayImage, String> {
-    let file = Jbig2File::read(data)?;
-    if file.page_count() != 1 {
-        return Err(format!(
-            "a JBIG2 file of {} pages, whose first the decoder cannot decode alone",
-            file.page_count()
-        ));
-    }
-    let image = hayro_jbig2::Image::new(data).map_err(|e| format!("cannot read the JBIG2: {e}"))?;
-    super::decode::within_limits(image.width(), image.height())?;
+    let page = Jbig2File::read(data)?.first_page_stream(data)?;
+    let image = hayro_jbig2::Image::new_embedded(&page, None)
+        .map_err(|e| format!("cannot read the JBIG2: {e}"))?;
+    super::decode::decodable(image.width(), image.height())?;
     let mut gray = Gray {
         pixels: Vec::with_capacity(image.width() as usize * image.height() as usize),
     };
@@ -388,9 +426,16 @@ mod tests {
         assert_eq!(Jbig2File::read(&two).unwrap().page_count(), 2);
     }
 
+    /// jbig2enc coded two pages with the symbols they share as global segments; the first page
+    /// decodes as jbig2dec decodes it, without the second.
     #[test]
-    fn decodes_files_of_one_page_alone() {
-        assert!(decode(&file(2, true)).unwrap_err().contains("of 2 pages"));
+    fn decodes_the_first_page_of_several() {
+        let file = std::fs::read("tests/fixtures/jbig2/two-pages.jb2").unwrap();
+        assert_eq!(Jbig2File::read(&file).unwrap().page_count(), 2);
+        let first = image::open("tests/fixtures/jbig2/first-page.png")
+            .unwrap()
+            .to_luma8();
+        assert_eq!(decode(&file).unwrap(), first);
     }
 
     /// jbig2enc coded the corpus's bitmap without loss.
