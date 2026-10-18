@@ -131,10 +131,27 @@ pub enum Flow {
     Stop,
 }
 
+/// How a parse reads a document type declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentTypes {
+    /// As Xerces' SAX parser reads one: the entities and attribute defaults of its internal
+    /// subset apply, and an external subset or a parameter entity reference may declare an
+    /// entity the document uses.
+    Processed,
+    /// As the JDK's StAX reader reads one without DTD support (`SUPPORT_DTD` off): its internal
+    /// subset is skipped up to the first `]`, and nothing of it applies.
+    Skipped,
+}
+
 /// Parses `bytes` as one XML document, handing each start and end tag to `handler` until it
 /// asks to stop. An error is what Xerces would throw before the handler stopped it.
 pub fn parse(bytes: &[u8], handler: &mut dyn FnMut(Event<'_>) -> Flow) -> Result<()> {
-    parse_paged(bytes, &Paging::new(Pages::IN_MEMORY), handler)
+    parse_paged(
+        bytes,
+        &Paging::new(Pages::IN_MEMORY),
+        DocumentTypes::Processed,
+        handler,
+    )
 }
 
 /// Whether `bytes` are read as UTF-8 throughout, so that the ASCII characters of the document
@@ -177,6 +194,7 @@ pub fn is_read_as_utf8(bytes: &[u8]) -> bool {
 pub(crate) fn parse_paged(
     bytes: &[u8],
     paging: &Paging,
+    document_types: DocumentTypes,
     handler: &mut dyn FnMut(Event<'_>) -> Flow,
 ) -> Result<()> {
     let Some((detected, reader, start)) = detect_encoding(bytes) else {
@@ -185,6 +203,7 @@ pub(crate) fn parse_paged(
     let mut parser = Parser {
         text: Text::new(bytes, detected, reader, start, paging),
         position: 0,
+        document_types,
         entities: HashMap::new(),
         expansions: Cell::new(0),
         defaults: HashMap::new(),
@@ -630,6 +649,7 @@ struct Default {
 struct Parser<'a> {
     text: Text<'a>,
     position: usize,
+    document_types: DocumentTypes,
     entities: HashMap<String, Entity>,
     /// The entities expanded so far, as Xerces counts them against its limit.
     expansions: Cell<usize>,
@@ -1094,14 +1114,35 @@ impl Parser<'_> {
             if !spaced {
                 return malformed("white space required before an external identifier");
             }
-            self.external_subset = self.external_id(true)?;
+            let external_subset = self.external_id(true)?;
+            self.external_subset =
+                external_subset && self.document_types == DocumentTypes::Processed;
             self.skip_spaces()?;
         }
         if self.skip("[")? {
-            self.internal_subset()?;
+            match self.document_types {
+                DocumentTypes::Processed => self.internal_subset()?,
+                DocumentTypes::Skipped => self.skip_internal_subset()?,
+            }
             self.skip_spaces()?;
         }
         self.require(">", "the end of the DOCTYPE")
+    }
+
+    /// Skips an internal subset up to the `]` that ends it, as a reader without DTD support
+    /// skips it, reading none of it.
+    fn skip_internal_subset(&mut self) -> Result<()> {
+        loop {
+            match self.peek()? {
+                None => return malformed("the internal subset does not end"),
+                Some(c) => {
+                    self.position += c.len_utf8();
+                    if c == ']' {
+                        return Ok(());
+                    }
+                }
+            }
+        }
     }
 
     fn internal_subset(&mut self) -> Result<()> {
@@ -1923,6 +1964,49 @@ mod tests {
                 b"<!DOCTYPE a [<!ENTITY e 'v'><!ATTLIST a xmlns CDATA #FIXED 'urn:d'>]><a t='&e;'>"
             ),
             Ok(Some(("urn:d".into(), "a".into())))
+        );
+    }
+
+    #[test]
+    fn skips_a_document_type_without_dtd_support() {
+        let skipped = |bytes: &[u8]| {
+            let mut attributes = Vec::new();
+            let mut texts = Vec::new();
+            let paging = Paging::new(Pages::IN_MEMORY);
+            let result = parse_paged(bytes, &paging, DocumentTypes::Skipped, &mut |event| {
+                match event {
+                    Event::Start(_, found) => {
+                        attributes.extend(found.iter().map(|a| a.local_name.clone()))
+                    }
+                    Event::Text(text, _) => texts.push(text.to_owned()),
+                    _ => {}
+                }
+                Flow::Continue
+            });
+            (result.is_ok(), attributes, texts.concat())
+        };
+        assert_eq!(
+            skipped(b"<!DOCTYPE a [ <!ENTITY e > %p; ]><a>x&amp;&#65;</a>"),
+            (true, vec![], "x&A".to_owned())
+        );
+        assert_eq!(
+            skipped(b"<!DOCTYPE a [<!ATTLIST a b CDATA 'd'>]><a/>"),
+            (true, vec![], String::new())
+        );
+        for undeclared in [
+            &b"<!DOCTYPE a [<!ENTITY e 'v'>]><a>&e;</a>"[..],
+            b"<!DOCTYPE a SYSTEM 'x.dtd'><a>&e;</a>",
+            b"<!DOCTYPE a [<!ENTITY % p 'x'> %p;]><a t='&e;'/>",
+        ] {
+            assert!(
+                !skipped(undeclared).0,
+                "{}",
+                String::from_utf8_lossy(undeclared)
+            );
+        }
+        assert_eq!(
+            events(b"<!DOCTYPE a [<!ENTITY e 'v'>]><a>&e;</a>").0,
+            ["<!DOCTYPE>", "<a>", "v", "</a>"]
         );
     }
 

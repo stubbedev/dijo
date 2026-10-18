@@ -9,8 +9,8 @@ use unicode_normalization::UnicodeNormalization;
 
 use super::jfloat;
 use super::position::{TextPosition, FIRST_RIGHT_TO_LEFT};
-use super::Unported;
 use crate::formats::xhtml::Stop;
+use crate::formats::Difference;
 use crate::hash::FastMap;
 
 const BIDI_MIRRORING: &str = include_str!("../../../models/pdf/BidiMirroring.txt");
@@ -23,28 +23,10 @@ const INDENT_THRESHOLD: f32 = 2.0;
 /// The word separator, which `enableAutoSpace` sets.
 pub(super) const WORD_SEPARATOR: &str = " ";
 
-/// Why writing stopped: the output stopped, or a word PDFBox writes in a way the port does not
-/// follow.
-#[derive(Debug)]
-pub(super) enum WriteError {
-    Stop(Stop),
-    Unported(Unported),
-}
-
-impl From<Stop> for WriteError {
-    fn from(stop: Stop) -> Self {
-        Self::Stop(stop)
-    }
-}
-
-impl From<Unported> for WriteError {
-    fn from(unported: Unported) -> Self {
-        Self::Unported(unported)
-    }
-}
-
-/// The calls `writePage` makes, which Tika's writers override.
+/// The calls `writePage` makes, which Tika's writers override, and where the port writes a
+/// word otherwise than PDFBox, the difference.
 pub(super) trait Callbacks {
+    fn differ(&mut self, difference: Difference);
     /// `writePageStart`, where extractous orders a tagged page's lines.
     fn write_page_start(&mut self, articles: &mut [Vec<TextPosition>]);
     fn write_paragraph_start(&mut self) -> Result<(), Stop>;
@@ -97,7 +79,7 @@ enum LineItem {
 pub(super) fn write_page(
     articles: &mut [Vec<TextPosition>],
     callbacks: &mut impl Callbacks,
-) -> Result<(), WriteError> {
+) -> Result<(), Stop> {
     if !articles.is_empty() {
         callbacks.write_page_start(articles);
     }
@@ -158,7 +140,8 @@ pub(super) fn write_page(
                     max_y_for_line,
                     max_height_for_line,
                 ) {
-                    write_line(&normalize(positions, &line)?, callbacks)?;
+                    let words = normalize(positions, &line, callbacks);
+                    write_line(&words, callbacks)?;
                     line.clear();
                     handle_line_separation(
                         articles,
@@ -208,7 +191,8 @@ pub(super) fn write_page(
             previous_average_char_width = average_char_width;
         }
         if !line.is_empty() {
-            write_line(&normalize(positions, &line)?, callbacks)?;
+            let words = normalize(positions, &line, callbacks);
+            write_line(&words, callbacks)?;
             callbacks.write_paragraph_end()?;
         }
     }
@@ -388,22 +372,29 @@ fn write_line(line: &[Word], callbacks: &mut impl Callbacks) -> Result<(), Stop>
     Ok(())
 }
 
-/// `normalize`: a line's items made into words, split at the word separators.
+/// `normalize`: a line's items made into words, split at the word separators, each word the
+/// port orders otherwise than PDFBox noted to `callbacks`.
 fn normalize<'a>(
     positions: &'a [TextPosition],
     line: &[LineItem],
-) -> Result<Vec<Word<'a>>, Unported> {
+    callbacks: &mut impl Callbacks,
+) -> Vec<Word<'a>> {
     let mut words = Vec::new();
     let mut builder = String::new();
     let mut word_positions: Vec<&TextPosition> = Vec::new();
+    let mut word = |text: String, positions: Vec<&'a TextPosition>| {
+        let Directed { text, difference } = normalize_word(text);
+        if let Some(difference) = difference {
+            callbacks.differ(difference);
+        }
+        Word { text, positions }
+    };
     for item in line {
         match item {
-            LineItem::WordSeparator => {
-                words.push(Word {
-                    text: normalize_word(std::mem::take(&mut builder))?,
-                    positions: std::mem::take(&mut word_positions),
-                });
-            }
+            LineItem::WordSeparator => words.push(word(
+                std::mem::take(&mut builder),
+                std::mem::take(&mut word_positions),
+            )),
             LineItem::Position(index) => {
                 let position = &positions[*index];
                 position.push_visually_ordered_unicode(&mut builder);
@@ -412,19 +403,16 @@ fn normalize<'a>(
         }
     }
     if !builder.is_empty() {
-        words.push(Word {
-            text: normalize_word(builder)?,
-            positions: word_positions,
-        });
+        words.push(word(builder, word_positions));
     }
-    Ok(words)
+    words
 }
 
 /// `normalizeWord`: Unicode presentation forms decomposed, then `handleDirection`, neither of
 /// which changes a word of characters before the first that can run right to left.
-fn normalize_word(word: String) -> Result<String, Unported> {
+fn normalize_word(word: String) -> Directed {
     if word.is_ascii() || word.chars().all(|c| c < FIRST_RIGHT_TO_LEFT) {
-        return Ok(word);
+        return Directed::as_is(word);
     }
     let mut out = String::with_capacity(word.len());
     let mut previous: Option<char> = None;
@@ -470,32 +458,66 @@ static MIRRORING: LazyLock<FastMap<char, char>> = LazyLock::new(|| {
     map
 });
 
+/// A word in visual order, and where the port orders it otherwise than PDFBox, how.
+#[derive(Debug, PartialEq)]
+struct Directed {
+    text: String,
+    difference: Option<Difference>,
+}
+
+impl Directed {
+    fn as_is(text: String) -> Self {
+        Self {
+            text,
+            difference: None,
+        }
+    }
+}
+
 /// `handleDirection`: a word with right-to-left runs reordered visually and their mirrored
-/// characters mirrored, as `java.text.Bidi` orders them.
-fn handle_direction(word: &str) -> Result<String, Unported> {
-    use unicode_bidi::{BidiInfo, Level};
+/// characters mirrored, as `java.text.Bidi` orders them. A word holding a paragraph separator
+/// is ordered paragraph by paragraph, and a character beyond the Basic Multilingual Plane in a
+/// right-to-left run is kept whole, where PDFBox reverses its UTF-16 units; both are noted.
+fn handle_direction(word: &str) -> Directed {
+    use unicode_bidi::BidiInfo;
     if word.chars().all(|c| c < FIRST_RIGHT_TO_LEFT) {
-        return Ok(word.to_owned());
+        return Directed::as_is(word.to_owned());
     }
     let info = BidiInfo::new(word, None);
     if info.levels.iter().all(|level| level.is_ltr()) {
-        return Ok(word.to_owned());
+        return Directed::as_is(word.to_owned());
     }
-    let [paragraph] = info.paragraphs.as_slice() else {
-        return Err(Unported(
-            "a word holding a paragraph separator, which the port does not order as \
-             java.text.Bidi does"
-                .to_owned(),
-        ));
-    };
-    let base = paragraph.level;
-    let line_levels = info.reordered_levels(paragraph, paragraph.range.clone());
-    let char_levels: Vec<(char, Level)> = word
+    let mut difference = (info.paragraphs.len() > 1).then(|| {
+        Difference::new(
+            "a word holding a paragraph separator, which the port orders paragraph by \
+             paragraph, otherwise than java.text.Bidi",
+        )
+    });
+    let mut text = String::with_capacity(word.len());
+    for paragraph in &info.paragraphs {
+        text.push_str(&order_paragraph(&info, paragraph, &mut difference));
+    }
+    Directed { text, difference }
+}
+
+/// The characters of the paragraph `paragraph` of the word `info` holds in visual order,
+/// noting a character beyond the Basic Multilingual Plane in a right-to-left run in
+/// `difference`.
+fn order_paragraph(
+    info: &unicode_bidi::BidiInfo,
+    paragraph: &unicode_bidi::ParagraphInfo,
+    difference: &mut Option<Difference>,
+) -> String {
+    use unicode_bidi::{BidiInfo, Level};
+    let range = paragraph.range.clone();
+    let text = &info.text[range.clone()];
+    let line_levels = info.reordered_levels(paragraph, range.clone());
+    let char_levels: Vec<(char, Level)> = text
         .char_indices()
-        .map(|(byte, c)| (c, line_levels[byte]))
+        .map(|(byte, c)| (c, line_levels[range.start + byte]))
         .collect();
-    if base.is_ltr() && char_levels.iter().all(|(_, level)| level.is_ltr()) {
-        return Ok(word.to_owned());
+    if paragraph.level.is_ltr() && char_levels.iter().all(|(_, level)| level.is_ltr()) {
+        return text.to_owned();
     }
     let mut runs: Vec<(usize, usize, Level)> = Vec::new();
     for (index, &(_, level)) in char_levels.iter().enumerate() {
@@ -505,16 +527,15 @@ fn handle_direction(word: &str) -> Result<String, Unported> {
         }
     }
     let levels: Vec<Level> = runs.iter().map(|run| run.2).collect();
-    let mut result = String::with_capacity(word.len());
+    let mut result = String::with_capacity(text.len());
     for run in BidiInfo::reorder_visual(&levels) {
         let (start, end, level) = runs[run];
         if level.is_rtl() {
             for &(c, _) in char_levels[start..end].iter().rev() {
-                if u32::from(c) > 0xFFFF {
-                    return Err(Unported(
+                if u32::from(c) > 0xFFFF && difference.is_none() {
+                    *difference = Some(Difference::new(
                         "a right-to-left run holding a character beyond the Basic Multilingual \
-                         Plane, which PDFBox reverses unit by unit"
-                            .to_owned(),
+                         Plane, which the port keeps whole where PDFBox reverses it unit by unit",
                     ));
                 }
                 result.push(MIRRORING.get(&c).copied().unwrap_or(c));
@@ -523,7 +544,7 @@ fn handle_direction(word: &str) -> Result<String, Unported> {
             result.extend(char_levels[start..end].iter().map(|&(c, _)| c));
         }
     }
-    Ok(result)
+    result
 }
 
 #[cfg(test)]
@@ -545,10 +566,23 @@ mod tests {
     #[test]
     fn keeps_left_to_right_words_across_paragraph_separators() {
         assert_eq!(
-            handle_direction("þú\u{2029}ħ\rö").unwrap(),
-            "þú\u{2029}ħ\rö"
+            handle_direction("þú\u{2029}ħ\rö"),
+            Directed::as_is("þú\u{2029}ħ\rö".to_owned())
         );
-        assert!(handle_direction("\u{5D0}\u{2029}b").is_err());
+    }
+
+    #[test]
+    fn orders_right_to_left_words_paragraph_by_paragraph_noting_the_difference() {
+        let directed = handle_direction("\u{5D0}\u{5D1}\u{2029}b\u{5D2}\u{5D3}");
+        assert_eq!(directed.text, "\u{2029}\u{5D1}\u{5D0}b\u{5D3}\u{5D2}");
+        assert!(directed.difference.is_some());
+    }
+
+    #[test]
+    fn keeps_characters_beyond_the_basic_plane_whole_in_right_to_left_runs() {
+        let directed = handle_direction("\u{5D0}\u{10900}\u{5D1}");
+        assert_eq!(directed.text, "\u{5D1}\u{10900}\u{5D0}");
+        assert!(directed.difference.is_some());
     }
 
     #[test]
@@ -559,12 +593,16 @@ mod tests {
 
     #[test]
     fn decomposes_presentation_forms_and_orders_right_to_left_words() {
-        assert_eq!(normalize_word("\u{FB01}ne".to_owned()).unwrap(), "fine");
-        assert_eq!(normalize_word("plain".to_owned()).unwrap(), "plain");
+        let text = |directed: Directed| {
+            assert_eq!(directed.difference, None);
+            directed.text
+        };
+        assert_eq!(text(normalize_word("\u{FB01}ne".to_owned())), "fine");
+        assert_eq!(text(normalize_word("plain".to_owned())), "plain");
         assert_eq!(
-            handle_direction("\u{05D0}\u{05D1}").unwrap(),
+            text(handle_direction("\u{05D0}\u{05D1}")),
             "\u{05D1}\u{05D0}"
         );
-        assert_eq!(handle_direction("(\u{05D0})").unwrap(), "(\u{05D0})");
+        assert_eq!(text(handle_direction("(\u{05D0})")), "(\u{05D0})");
     }
 }

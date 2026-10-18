@@ -10,19 +10,21 @@ use lopdf::{Dictionary, Object};
 use super::attachment::{self, FileSpec, SpecKey, Written};
 use super::cos::{as_dict, decode_java, Identity, Pdf};
 use super::document::Page;
-use super::engine::{Engine, PageContent};
+use super::engine::{differ_past, Engine, PageContent};
 use super::form;
 use super::images::Images;
 use super::ocr::{Layer, PageCheck};
 use super::position::TextPosition;
 use super::reading_order;
 use super::recording::Recording;
-use super::stripper::{self, Callbacks, WriteError, WORD_SEPARATOR};
+use super::stripper::{self, Callbacks, WORD_SEPARATOR};
 use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
 use super::xfa::{self, Extracted};
 use super::{jfloat, ImageExtraction, Settings, Unported};
 use crate::formats::embedded::EXCEPTION_WARNING;
+use crate::formats::thrown::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
+use crate::formats::Difference;
 use crate::java::is_blank;
 
 /// How many annotation types and subtypes Tika lists, at most.
@@ -41,7 +43,8 @@ const MAX_BOOKMARK_DEPTH: usize = 50;
 pub(super) enum WriteFailure {
     /// The recording outgrew the extraction's memory budget.
     Stop(Stop),
-    Unported(Unported),
+    /// Tika's `PDFParser` throws this, which fails the document.
+    Throws(Thrown),
 }
 
 impl From<Stop> for WriteFailure {
@@ -50,24 +53,46 @@ impl From<Stop> for WriteFailure {
     }
 }
 
-impl From<Unported> for WriteFailure {
+/// Why writing a part of a page stopped: the recording stopped, or the part is one the port
+/// does not read, which the writer goes past ([`gone_past`]).
+pub(super) enum PartFailure {
+    Stop(Stop),
+    Unported(Unported),
+}
+
+impl From<Stop> for PartFailure {
+    fn from(stop: Stop) -> Self {
+        Self::Stop(stop)
+    }
+}
+
+impl From<Unported> for PartFailure {
     fn from(unported: Unported) -> Self {
         Self::Unported(unported)
     }
 }
 
-impl From<WriteError> for WriteFailure {
-    fn from(error: WriteError) -> Self {
-        match error {
-            WriteError::Stop(stop) => Self::Stop(stop),
-            WriteError::Unported(unported) => Self::Unported(unported),
+/// What writing the part `what` of a document left: where the port does not read it, it goes on
+/// past it, `pdf` noting the difference ([`differ_past`]).
+pub(super) fn gone_past(
+    pdf: &Pdf,
+    what: &str,
+    written: Result<(), PartFailure>,
+) -> Result<(), Stop> {
+    match written {
+        Ok(()) => Ok(()),
+        Err(PartFailure::Unported(unported)) => {
+            differ_past(pdf, what, unported);
+            Ok(())
         }
+        Err(PartFailure::Stop(stop)) => Err(stop),
     }
 }
 
 /// The stripper's callbacks as `PDF2XHTML` and, for a tagged document,
 /// `PDFMarkedContent2XHTML` take them.
 pub(super) struct PageWriter<'p, 'r> {
+    pdf: &'p Pdf<'p>,
     pub(super) out: &'r mut Recording,
     /// `PDFTextStripper.inParagraph`.
     in_paragraph: bool,
@@ -147,6 +172,10 @@ impl PageWriter<'_, '_> {
 }
 
 impl Callbacks for PageWriter<'_, '_> {
+    fn differ(&mut self, difference: Difference) {
+        self.pdf.differ(difference);
+    }
+
     fn write_page_start(&mut self, articles: &mut [Vec<TextPosition>]) {
         if let Some(tagged) = &self.tagged {
             if tagged.reading_order {
@@ -226,6 +255,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             pdf,
             engine: Engine::new(pdf, labels),
             page: PageWriter {
+                pdf,
                 out,
                 in_paragraph: false,
                 tagged,
@@ -254,7 +284,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         &mut self,
         after_page: &mut dyn FnMut(&mut Recording) -> ControlFlow<()>,
     ) -> Result<ControlFlow<()>, WriteFailure> {
-        for page in self.pdf.pages()? {
+        for page in self.pdf.pages() {
             self.page.out.enter_page();
             self.process_page(page)?;
             self.page.out.leave_page();
@@ -274,7 +304,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             self.page
                 .out
                 .start_element_with("div", &[("class", "page")])?;
-            if self.renders(page)? {
+            if self.renders(page) {
                 self.page
                     .out
                     .release_read(self.page_number - 1, PageCheck::Recognize);
@@ -282,7 +312,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             return self.close_page(page, 0, 0);
         }
         self.start_page()?;
-        let mut content = self.engine.process_page(page)?;
+        let mut content = self.engine.process_page(page);
         if self.page.tagged.is_none() && self.settings.reading_order {
             for article in content.articles.iter_mut() {
                 reading_order::arrange(article);
@@ -343,16 +373,22 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             (Some(_), true) => Layer::Embedding,
             (Some(text), false) => Layer::Text(text),
         };
-        let check = match self
-            .settings
-            .ocr
-            .page(self.page_number, glyphs, unmapped, layer)?
-        {
-            PageCheck::Recognize if !self.renders(page)? => PageCheck::Keep,
+        let check = match self.settings.ocr.page(glyphs, unmapped, layer) {
+            PageCheck::Recognize if !self.renders(page) => PageCheck::Keep,
             check => check,
         };
         match check {
             PageCheck::Keep => self.page.out.release(),
+            PageCheck::Unrecognized => {
+                self.pdf.differ(Difference(format!(
+                    "page {} shows {glyphs} glyphs, {unmapped} of them without characters, \
+                     which Tika's PDF parser wants OCR for, read without OCR as no tesseract \
+                     runs",
+                    self.page_number
+                )));
+                self.page.out.count_unrecognized();
+                self.page.out.release();
+            }
             check => self.page.out.release_read(self.page_number - 1, check),
         }
         self.page.out.end_element("div")?;
@@ -361,8 +397,8 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
 
     /// Whether Tika's renderer renders `page` for the OCR parser: not a page too small to hold
     /// anything (`RenderSettings.belowMinimum`). A page above its limit of pixels, whose failure
-    /// Tika records, is left to Tika.
-    fn renders(&self, page: Page<'p>) -> Result<bool, Unported> {
+    /// Tika records, is read without OCR, the difference noted.
+    fn renders(&self, page: Page<'p>) -> bool {
         let [left, bottom, right, top] = page.crop_box(self.pdf);
         let (width, height) = (f64::from(right - left), f64::from(top - bottom));
         let (width, height) = match page.rotation(self.pdf) {
@@ -371,16 +407,17 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         };
         let pixels = |points: f64| (points / 72.0 * RENDER_DPI).ceil();
         if pixels(width) < MIN_RENDER_PIXELS || pixels(height) < MIN_RENDER_PIXELS {
-            return Ok(false);
+            return false;
         }
         if pixels(width) * pixels(height) > MAX_RENDER_PIXELS {
-            return Err(Unported(format!(
-                "page {} renders to more pixels than Tika's renderer allows, which Tika records \
-                 as a failure",
+            self.pdf.differ(Difference(format!(
+                "page {} renders to more pixels than Tika's renderer allows, whose failure Tika \
+                 records, read without OCR",
                 self.page_number
             )));
+            return false;
         }
-        Ok(true)
+        true
     }
 
     /// The annotations of a page, as `processPageAnnotation` writes and records them.
@@ -394,17 +431,19 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 continue;
             };
             let Some(annotation) = as_dict(object) else {
-                return Err(Unported(
-                    "an annotation that is not a dictionary, which PDFBox fails on".to_owned(),
-                )
-                .into());
+                pdf.differ(Difference::new(
+                    "the port leaves out an annotation that is not a dictionary, which PDFBox \
+                     fails on",
+                ));
+                continue;
             };
-            self.annotation(annotation)?;
+            let annotated = self.annotation(annotation);
+            gone_past(pdf, "an annotation", annotated)?;
         }
         Ok(())
     }
 
-    fn annotation(&mut self, annotation: &'p Dictionary) -> Result<(), WriteFailure> {
+    fn annotation(&mut self, annotation: &'p Dictionary) -> Result<(), PartFailure> {
         let pdf = self.pdf;
         let name = pdf.text(annotation, b"NM");
         if self.annotation_types.len() < MAX_ANNOTATION_TYPES {
@@ -606,7 +645,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         &mut self,
         source: &str,
         spec: Option<FileSpec<'p>>,
-    ) -> Result<(), WriteFailure> {
+    ) -> Result<(), PartFailure> {
         let Some(spec) = spec else {
             return Ok(());
         };
@@ -636,12 +675,20 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
     /// annotation led to, each parsed as an embedded document.
     fn embedded_documents(&mut self) -> Result<(), WriteFailure> {
         let pdf = self.pdf;
-        for (name, spec) in attachment::document_specs(pdf)? {
+        let specs = attachment::document_specs(pdf);
+        for (name, spec) in specs.specs {
             let spec = FileSpec::Complex(spec);
             if self.extracted.contains(&spec.key()) {
                 continue;
             }
-            for written in attachment::written(pdf, &name, "", spec, Vec::new())? {
+            let written = match attachment::written(pdf, &name, "", spec, Vec::new()) {
+                Ok(written) => written,
+                Err(unported) => {
+                    differ_past(pdf, "an embedded file", unported);
+                    continue;
+                }
+            };
+            for written in written {
                 let out = &mut *self.page.out;
                 match written {
                     Written::Link(attributes) => {
@@ -656,6 +703,9 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 }
             }
         }
+        if let Some(thrown) = specs.thrown {
+            self.page.out.catch_io(thrown);
+        }
         Ok(())
     }
 
@@ -667,8 +717,13 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             .catalog()
             .and_then(|catalog| pdf.dict(catalog, b"AcroForm"))
             .and_then(|form| pdf.get(form, b"XFA"));
-        if let Some(xfa) = xfa {
-            match xfa::extract(&xfa::bytes(pdf, xfa)?)? {
+        let bytes = xfa.map(|xfa| xfa::bytes(pdf, xfa)).transpose();
+        let bytes = bytes.unwrap_or_else(|unported| {
+            differ_past(pdf, "the XFA form", unported);
+            None
+        });
+        if let Some(bytes) = bytes {
+            match xfa::extract(&bytes) {
                 Extracted::Read(form) => return self.xfa(&form),
                 Extracted::Failed {
                     paragraphs,
@@ -684,7 +739,11 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             }
         }
         let out = &mut *self.page.out;
-        let Some(lines) = form::lines(pdf, out)? else {
+        let lines = form::lines(pdf, out).unwrap_or_else(|unported| {
+            differ_past(pdf, "the form's fields", unported);
+            None
+        });
+        let Some(lines) = lines else {
             return Ok(());
         };
         out.start_element_with("div", &[("class", "acroform")])?;

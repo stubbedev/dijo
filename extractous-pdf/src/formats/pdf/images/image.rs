@@ -10,7 +10,7 @@ use super::super::cos::{float_value, int_value, Pdf};
 use super::super::Unported;
 use super::colorspace::{self, ColorSpace};
 use super::filters;
-use super::{Thrown, Unwritten};
+use super::{Exception, Unwritten};
 
 const IO_EXCEPTION: &str = "java.io.IOException";
 /// `ImageGraphicsEngine.JPEG`, `JP2` and `JB2`: the filters whose data is copied as it is.
@@ -63,7 +63,8 @@ impl<'p> PdImage<'p> {
 
     /// `new PDInlineImage(parameters, data, resources)`, which decodes the data at once, or
     /// none for an image `BeginInlineImage` skips: one without data, or whose data decodes to
-    /// nothing.
+    /// nothing, or one whose data Java has no reader for, whose `MissingImageReaderException`
+    /// `PDFStreamEngine.operatorException` logs and goes past.
     pub(super) fn inline(
         pdf: &'p Pdf<'p>,
         image: InlineImage,
@@ -73,7 +74,7 @@ impl<'p> PdImage<'p> {
         let Some(raw) = data.filter(|data| !data.is_empty()) else {
             return Ok(None);
         };
-        let filters = filter_names(pdf, get2(pdf, &parameters, b"F", b"Filter"));
+        let filters = pdf.filter_names(get2(pdf, &parameters, b"F", b"Filter"));
         let decode_parameters = get2(pdf, &parameters, b"DP", b"DecodeParms");
         let height = get2(pdf, &parameters, b"H", b"Height")
             .and_then(int_value)
@@ -81,11 +82,13 @@ impl<'p> PdImage<'p> {
         let decoded = match filters::decoded(
             pdf,
             Cow::Borrowed(&raw),
+            &parameters,
             &filters,
             decode_parameters,
             height,
         ) {
             Ok(decoded) => decoded,
+            Err(Unwritten::MissingReader(_)) => return Ok(None),
             Err(Unwritten::Unported(unported)) => return Err(unported),
             Err(failed) => {
                 return Err(Unported(format!(
@@ -196,7 +199,7 @@ impl<'p> PdImage<'p> {
                     Some(value) => colorspace::create(self.pdf, value, self.resources),
                     None if self.is_stencil() => Ok(ColorSpace::Gray),
                     None if self.has_filter(&JP2) => Err(filters::missing_jpeg_2000_reader()),
-                    None => Err(Unwritten::Stream(Thrown::new(
+                    None => Err(Unwritten::Stream(Exception::new(
                         IO_EXCEPTION,
                         "could not determine color space".to_owned(),
                     ))),
@@ -205,7 +208,7 @@ impl<'p> PdImage<'p> {
             Source::Inline { .. } => match self.get(b"ColorSpace", b"CS").cloned() {
                 Some(value) => self.inline_color_space(value),
                 None if self.is_stencil() => Ok(ColorSpace::Gray),
-                None => Err(Unwritten::Stream(Thrown::new(
+                None => Err(Unwritten::Stream(Exception::new(
                     IO_EXCEPTION,
                     "could not determine inline image color space".to_owned(),
                 ))),
@@ -256,7 +259,7 @@ impl<'p> PdImage<'p> {
             Source::XObject(stream) => self.pdf.get(&stream.dict, b"Filter"),
             Source::Inline { .. } => self.get(b"Filter", b"F"),
         };
-        filter_names(self.pdf, value)
+        self.pdf.filter_names(value)
     }
 
     fn has_filter(&self, names: &[&[u8]]) -> bool {
@@ -311,6 +314,7 @@ impl<'p> PdImage<'p> {
                 parameters, raw, ..
             } => self.pdf.decode_data(
                 Cow::Borrowed(raw),
+                parameters,
                 get2(self.pdf, parameters, b"F", b"Filter"),
                 get2(self.pdf, parameters, b"DP", b"DecodeParms"),
                 stop,
@@ -327,6 +331,7 @@ impl<'p> PdImage<'p> {
             Source::XObject(stream) => filters::decoded(
                 self.pdf,
                 self.pdf.raw(stream)?,
+                &stream.dict,
                 &self.filters(),
                 self.pdf.get(&stream.dict, b"DecodeParms"),
                 self.height(),
@@ -402,19 +407,4 @@ impl<'p> PdImage<'p> {
 /// `getDictionaryObject(first, second)`.
 fn get2<'a>(pdf: &'a Pdf, dict: &'a Dictionary, first: &[u8], second: &[u8]) -> Option<&'a Object> {
     pdf.get(dict, first).or_else(|| pdf.get(dict, second))
-}
-
-/// The names a `Filter` entry gives.
-fn filter_names<'a>(pdf: &'a Pdf, value: Option<&'a Object>) -> Vec<&'a [u8]> {
-    match value {
-        Some(Object::Name(name)) => vec![name.as_slice()],
-        Some(Object::Array(items)) => items
-            .iter()
-            .filter_map(|item| match pdf.resolve(item) {
-                Some(Object::Name(name)) => Some(name.as_slice()),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
 }

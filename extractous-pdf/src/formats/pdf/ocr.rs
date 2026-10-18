@@ -11,15 +11,15 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
+use super::cos::Pdf;
 use super::quality::{self, Assessment, Unmapped};
-use super::Unported;
 use crate::config::{ParserConfigs, Password, PdfOcrStrategy, PdfParserConfig};
 use crate::errors::Error;
 use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::image::enricher::write_text;
 use crate::formats::image::PREPARING_OCR_PARSER;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::Failure;
+use crate::formats::{Difference, Failure};
 use crate::ocr::{
     self, Attempt, Bitmap, FirstPage, Image, OcrError, OcrSettings, Outputs, PdfPages, Recognized,
     Recognizer, Resolution, Tesseract,
@@ -49,15 +49,21 @@ const FASTER_UNMAPPED: Unmapped = Unmapped::Share(0.1);
 impl Thresholds {
     /// `PdfConfig.setOcrStrategyAuto`: `better`, `faster` or `unmapped[%][,characters]`, as its
     /// pattern `\s*(?:(better|faster)|(\d{1,3})(%)?)(?:,\s*(\d{1,3}))?\s*` matches the whole
-    /// setting; `None` where the setter throws.
-    fn parse(setting: &str) -> Option<Self> {
+    /// setting, or why the setter throws.
+    fn parse(setting: &str) -> Result<Self, RejectedThresholds> {
+        let mismatch = || {
+            RejectedThresholds(format!(
+                "Automatic OCR thresholds are better, faster or unmapped[%][,characters]: \
+                 {setting}"
+            ))
+        };
         let trimmed = setting.trim_matches(is_java_space);
         let (head, total) = match trimmed.split_once(',') {
             Some((head, total)) => (head, Some(total.trim_start_matches(is_java_space))),
             None => (trimmed, None),
         };
         let total_chars = match total {
-            Some(total) => digits(total)?,
+            Some(total) => digits(total).ok_or_else(mismatch)?,
             None => DEFAULT.total_chars,
         };
         let unmapped = match head {
@@ -65,16 +71,18 @@ impl Thresholds {
             "faster" => FASTER_UNMAPPED,
             _ => match head.strip_suffix('%') {
                 Some(share) => {
-                    let share = digits(share)? as f32;
+                    let share = digits(share).ok_or_else(mismatch)? as f32;
                     if share > 100.0 {
-                        return None;
+                        return Err(RejectedThresholds(format!(
+                            "The share of unmapped glyphs cannot exceed 100%: {setting}"
+                        )));
                     }
                     Unmapped::Share(share / 100.0)
                 }
-                None => Unmapped::Count(digits(head)? as f32),
+                None => Unmapped::Count(digits(head).ok_or_else(mismatch)? as f32),
             },
         };
-        Some(Self {
+        Ok(Self {
             total_chars,
             unmapped,
         })
@@ -89,6 +97,23 @@ impl Thresholds {
             Unmapped::Share(share) => unmapped as f32 / glyphs as f32 > share,
             Unmapped::Count(count) => unmapped as f32 > count,
         }
+    }
+}
+
+/// The message of the `IllegalArgumentException` our Java's `PdfConfig.setOcrStrategyAuto`
+/// throws on thresholds it does not read, which fails every extraction under them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RejectedThresholds(String);
+
+impl RejectedThresholds {
+    /// The error Tika's path fails with, a Java exception our Java throws as it applies the
+    /// settings.
+    pub(super) fn into_error(self) -> Error {
+        let exception = format!("java.lang.IllegalArgumentException: {}", self.0);
+        #[cfg(feature = "tika")]
+        return Error::JavaException(exception);
+        #[cfg(not(feature = "tika"))]
+        Error::Unknown(format!("Java exception: {exception}"))
     }
 }
 
@@ -137,34 +162,28 @@ pub(super) enum PageCheck {
     /// Tika's PDF parser OCRs the page itself, its rendering read by the OCR parser it hands
     /// it to.
     Recognize,
+    /// Tika's PDF parser wants OCR for the page, which no tesseract reads in this process: its
+    /// text layer is kept, and the page counted among those OCR was asked for, as Tika's PDF
+    /// parser does finding no OCR engine.
+    Unrecognized,
 }
 
 impl OcrCheck {
     /// The check Tika's path makes under the PDF settings, with tesseract running or not, or
-    /// why the port leaves the document to Tika: OCR in place of the text layer, and
-    /// thresholds Tika rejects.
-    pub(super) fn of(config: &PdfParserConfig, ocr_runs: bool) -> Result<Self, Unported> {
+    /// the thresholds our Java rejects. Without tesseract the OCR strategies still read every
+    /// page by OCR, which reads nothing ([`PageOcr::of`]).
+    pub(super) fn of(config: &PdfParserConfig, ocr_runs: bool) -> Result<Self, RejectedThresholds> {
         let thresholds = match config.ocr_strategy_auto() {
             None => DEFAULT,
-            Some(setting) => Thresholds::parse(setting).ok_or_else(|| {
-                Unported(format!(
-                    "the automatic OCR thresholds {setting:?}, which Tika rejects"
-                ))
-            })?,
+            Some(setting) => Thresholds::parse(setting)?,
         };
-        match config.ocr_strategy() {
-            PdfOcrStrategy::NO_OCR => Ok(Self::Never),
-            PdfOcrStrategy::AUTO if ocr_runs => Ok(Self::Assessed(thresholds)),
-            PdfOcrStrategy::AUTO => Ok(Self::Wanted(thresholds)),
-            PdfOcrStrategy::OCR_ONLY if ocr_runs => Ok(Self::Only),
-            PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION if ocr_runs => Ok(Self::AndText),
-            strategy @ (PdfOcrStrategy::OCR_ONLY | PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION) => {
-                Err(Unported(format!(
-                    "the OCR strategy {strategy} with no OCR parser to run, where Tika's PDF \
-                     parser fails the document"
-                )))
-            }
-        }
+        Ok(match config.ocr_strategy() {
+            PdfOcrStrategy::NO_OCR => Self::Never,
+            PdfOcrStrategy::AUTO if ocr_runs => Self::Assessed(thresholds),
+            PdfOcrStrategy::AUTO => Self::Wanted(thresholds),
+            PdfOcrStrategy::OCR_ONLY => Self::Only,
+            PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION => Self::AndText,
+        })
     }
 
     /// Whether Tika's PDF parser reads no page's text, only its OCR text.
@@ -192,44 +211,33 @@ impl OcrCheck {
         matches!(self, Self::Assessed(_))
     }
 
-    /// What is done with page `page` of `glyphs` glyphs, `unmapped` of them without
-    /// characters, whose `div` holds `layer`, or why Tika's path takes the document: a page
-    /// Tika's PDF parser wants OCR for with no OCR parser to run.
-    pub(super) fn page(
-        self,
-        page: usize,
-        glyphs: i32,
-        unmapped: i32,
-        layer: Layer<'_>,
-    ) -> Result<PageCheck, Unported> {
+    /// What is done with a page of `glyphs` glyphs, `unmapped` of them without characters,
+    /// whose `div` holds `layer`.
+    pub(super) fn page(self, glyphs: i32, unmapped: i32, layer: Layer<'_>) -> PageCheck {
         let thresholds = match self {
-            Self::Never | Self::Only => return Ok(PageCheck::Keep),
-            Self::AndText => return Ok(PageCheck::Recognize),
+            Self::Never | Self::Only => return PageCheck::Keep,
+            Self::AndText => return PageCheck::Recognize,
             Self::Wanted(thresholds) => {
                 return match thresholds.ocr_wanted(glyphs, unmapped) {
-                    true => Err(Unported(format!(
-                        "page {page} shows {glyphs} glyphs, {unmapped} of them without \
-                         characters, which Tika's PDF parser wants OCR for with no OCR parser \
-                         to run"
-                    ))),
-                    false => Ok(PageCheck::Keep),
+                    true => PageCheck::Unrecognized,
+                    false => PageCheck::Keep,
                 };
             }
             Self::Assessed(thresholds) => thresholds,
         };
         if glyphs <= thresholds.total_chars {
-            return Ok(PageCheck::Add);
+            return PageCheck::Add;
         }
         let text = match layer {
             Layer::Text(text) => text,
-            Layer::Embedding => return Ok(PageCheck::Settle { glyphs, unmapped }),
+            Layer::Embedding => return PageCheck::Settle { glyphs, unmapped },
             Layer::Unheld => unreachable!("a page is held for its assessment"),
         };
         let assessment = quality::assess(text, glyphs, unmapped, thresholds.unmapped);
         if assessment.badness < quality::DOUBTFUL {
-            return Ok(PageCheck::Keep);
+            return PageCheck::Keep;
         }
-        Ok(PageCheck::Weigh(assessment))
+        PageCheck::Weigh(assessment)
     }
 
     /// The unmapped glyphs that make a page garbage, which OCR text is weighed against.
@@ -276,17 +284,19 @@ pub(super) struct PageOcr {
 impl PageOcr {
     /// The OCR of the `pages` of a document of `page_count` pages under `check`, rendered from
     /// `input` opened with the password of `configs`, under its OCR settings, or none when it
-    /// reads no page. A document the renderer cannot open, or whose pages it counts otherwise,
-    /// is left to Tika's path, as is one whose pages tesseract cannot read in this process.
+    /// reads no page. Where tesseract cannot read the pages in this process, or the renderer
+    /// cannot open the document or counts its pages otherwise, the pages are read as with OCR
+    /// skipped, which reads nothing, and `pdf` notes the difference.
     pub(super) fn of(
         pages: Vec<usize>,
         page_count: usize,
         check: OcrCheck,
         input: &[u8],
         configs: &ParserConfigs,
-    ) -> Result<Option<Self>, Unported> {
+        pdf: &Pdf,
+    ) -> Option<Self> {
         if pages.is_empty() {
-            return Ok(None);
+            return None;
         }
         let document = Arc::new(input.to_vec());
         let password = configs
@@ -294,36 +304,50 @@ impl PageOcr {
             .as_ref()
             .map_or("", Password::expose)
             .to_owned();
-        let settings = OcrSettings::of(&configs.ocr);
-        let reader = if configs.ocr.skips_ocr() {
-            Reader::Skipping
-        } else {
-            let tesseract = ocr::tesseract().map_err(|reason| {
-                Unported(format!(
-                    "OCR of PDF pages in this process, which needs tesseract's library: {reason}"
-                ))
-            })?;
-            let rendered = PdfPages::open(document.clone(), &password).map_err(Unported)?;
-            if rendered.count() != page_count {
-                return Err(Unported(format!(
-                    "a document the renderer finds {} pages in, where the parser finds \
-                     {page_count}",
-                    rendered.count()
-                )));
-            }
-            Reader::Tesseract {
-                tesseract,
-                settings,
+        let reader = match configs.ocr.skips_ocr() {
+            true => Reader::Skipping,
+            false => {
+                Self::tesseract(&document, &password, page_count, configs).unwrap_or_else(|why| {
+                    pdf.differ(Difference(format!(
+                        "pages Tika's path reads by OCR, read without it: {why}"
+                    )));
+                    Reader::Skipping
+                })
             }
         };
-        Ok(Some(Self {
+        Some(Self {
             pages,
             unmapped: check.unmapped(),
             reader,
             document,
             password,
             resolution: check.resolution(),
-        }))
+        })
+    }
+
+    /// Tesseract reading the pages of `document` of `page_count` pages, which the renderer
+    /// opens with `password`, under the OCR settings of `configs`, or why it cannot.
+    fn tesseract(
+        document: &Arc<Vec<u8>>,
+        password: &str,
+        page_count: usize,
+        configs: &ParserConfigs,
+    ) -> Result<Reader, String> {
+        let tesseract = ocr::tesseract()
+            .map_err(|reason| format!("tesseract's library does not load: {reason}"))?;
+        let rendered = PdfPages::open(document.clone(), password)
+            .map_err(|reason| format!("the renderer does not open the document: {reason}"))?;
+        if rendered.count() != page_count {
+            return Err(format!(
+                "the renderer finds {} pages in the document, where the parser finds \
+                 {page_count}",
+                rendered.count()
+            ));
+        }
+        Ok(Reader::Tesseract {
+            tesseract,
+            settings: OcrSettings::of(&configs.ocr),
+        })
     }
 
     /// Writes the document with `write`, the pages to read rendered and read side by side
@@ -515,7 +539,7 @@ impl EndPage for PageHook<'_, '_, '_> {
             None => unreachable!("a page to read has its reading"),
         };
         match check {
-            PageCheck::Keep => held(xhtml),
+            PageCheck::Keep | PageCheck::Unrecognized => held(xhtml),
             PageCheck::Add => {
                 reading.warn(xhtml, index);
                 held(xhtml)?;
@@ -576,7 +600,9 @@ mod tests {
     use super::*;
 
     fn parsed(setting: &str) -> Option<(i32, Unmapped)> {
-        Thresholds::parse(setting).map(|thresholds| (thresholds.total_chars, thresholds.unmapped))
+        Thresholds::parse(setting)
+            .ok()
+            .map(|thresholds| (thresholds.total_chars, thresholds.unmapped))
     }
 
     #[test]
@@ -593,6 +619,26 @@ mod tests {
         assert_eq!(parsed("better,"), None);
         assert_eq!(parsed("best"), None);
         assert_eq!(parsed("5 %"), None);
+    }
+
+    #[test]
+    fn rejects_thresholds_with_our_pdf_configs_messages() {
+        let rejected = |setting| {
+            Thresholds::parse(setting)
+                .unwrap_err()
+                .into_error()
+                .to_string()
+        };
+        assert_eq!(
+            rejected("best"),
+            "Java exception: java.lang.IllegalArgumentException: Automatic OCR thresholds are \
+             better, faster or unmapped[%][,characters]: best"
+        );
+        assert_eq!(
+            rejected(" 101%,5"),
+            "Java exception: java.lang.IllegalArgumentException: The share of unmapped glyphs \
+             cannot exceed 100%:  101%,5"
+        );
     }
 
     #[test]
@@ -638,50 +684,36 @@ mod tests {
     }
 
     #[test]
-    fn ocrs_every_page_under_the_ocr_strategies_with_an_ocr_parser_to_run() {
+    fn ocrs_every_page_under_the_ocr_strategies_with_or_without_tesseract() {
         for (strategy, check) in [
             (PdfOcrStrategy::OCR_ONLY, OcrCheck::Only),
             (PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION, OcrCheck::AndText),
         ] {
             let config = PdfParserConfig::new().set_ocr_strategy(strategy);
             assert_eq!(OcrCheck::of(&config, true), Ok(check));
-            let Err(Unported(reason)) = OcrCheck::of(&config, false) else {
-                panic!("{strategy} with no OCR parser to run");
-            };
-            assert!(reason.contains("no OCR parser to run"), "{reason}");
+            assert_eq!(OcrCheck::of(&config, false), Ok(check));
         }
+        assert_eq!(OcrCheck::Only.page(3, 0, Layer::Unheld), PageCheck::Keep);
         assert_eq!(
-            OcrCheck::Only.page(1, 3, 0, Layer::Unheld),
-            Ok(PageCheck::Keep)
-        );
-        assert_eq!(
-            OcrCheck::AndText.page(1, 300, 0, Layer::Unheld),
-            Ok(PageCheck::Recognize)
+            OcrCheck::AndText.page(300, 0, Layer::Unheld),
+            PageCheck::Recognize
         );
     }
 
     #[test]
     fn checks_pages_as_text_layer_checking_pdf_parser_does() {
         let assessed = OcrCheck::Assessed(DEFAULT);
-        assert_eq!(
-            assessed.page(1, 3, 0, Layer::Text("ab")),
-            Ok(PageCheck::Add)
-        );
+        assert_eq!(assessed.page(3, 0, Layer::Text("ab")), PageCheck::Add);
         let prose = "The keeper climbed the stairs every evening and wrote one line. ".repeat(5);
-        assert_eq!(
-            assessed.page(1, 300, 0, Layer::Text(&prose)),
-            Ok(PageCheck::Keep)
-        );
+        assert_eq!(assessed.page(300, 0, Layer::Text(&prose)), PageCheck::Keep);
         assert!(matches!(
-            assessed.page(1, 300, 200, Layer::Text(&prose)),
-            Ok(PageCheck::Weigh(_))
+            assessed.page(300, 200, Layer::Text(&prose)),
+            PageCheck::Weigh(_)
         ));
-        assert!(OcrCheck::Wanted(DEFAULT)
-            .page(1, 3, 0, Layer::Unheld)
-            .is_err());
         assert_eq!(
-            OcrCheck::Never.page(1, 3, 0, Layer::Unheld),
-            Ok(PageCheck::Keep)
+            OcrCheck::Wanted(DEFAULT).page(3, 0, Layer::Unheld),
+            PageCheck::Unrecognized
         );
+        assert_eq!(OcrCheck::Never.page(3, 0, Layer::Unheld), PageCheck::Keep);
     }
 }

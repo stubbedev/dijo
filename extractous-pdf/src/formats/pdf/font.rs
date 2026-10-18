@@ -21,6 +21,7 @@ use super::position::GlyphText;
 use super::truetype::{self, TrueType};
 use super::type1::{self, BuiltIn, Type1};
 use super::Unported;
+use crate::formats::Difference;
 use crate::hash::FastMap;
 
 /// `PDFontDescriptor`, as far as text extraction reads it.
@@ -516,7 +517,7 @@ impl Font {
             .and_then(|_| pdf.dict(dict, b"FontDescriptor"))
             .and_then(|fd| pdf.stream(fd, b"FontFile2"))
         {
-            match read_true_type(pdf, stream)? {
+            match read_true_type(&pdf.decode(stream)?)? {
                 Some(ttf) => program = Program::Embedded(ttf),
                 None => damaged = true,
             }
@@ -1868,12 +1869,14 @@ fn mac_roman(ttf: &TrueType) -> Option<&truetype::CmapSubtable> {
 }
 
 /// Reads an embedded TrueType program: the font, or `None` when it is damaged to PDFBox.
-fn read_true_type(pdf: &Pdf, stream: &Stream) -> Result<Option<Box<TrueType>>, Unported> {
-    let data = pdf.decode(stream)?;
-    match TrueType::read(&data) {
-        truetype::Read::Font(ttf) => Ok(Some(Box::new(ttf))),
-        truetype::Read::Damaged(_) => Ok(None),
-        truetype::Read::Unported(reason) => Err(Unported(reason)),
+fn read_true_type(data: &[u8]) -> Result<Option<Box<TrueType>>, Unported> {
+    match TrueType::read(data) {
+        Ok(ttf) => Ok(Some(Box::new(ttf))),
+        Err(truetype::Failure::Damaged(_) | truetype::Failure::PostScript) => Ok(None),
+        Err(truetype::Failure::GlyphOutOfBounds { glyph }) => Err(Unported(format!(
+            "a font program whose cmap maps a code to glyph {glyph}, one past the last, where \
+             FontBox throws an ArrayIndexOutOfBoundsException"
+        ))),
     }
 }
 
@@ -1954,12 +1957,22 @@ impl CidFont {
                 .or_else(|| pdf.stream(fd, b"FontFile"))
         });
         if let Some(stream) = stream {
-            match read_true_type(pdf, stream)? {
-                Some(ttf) => {
-                    font.kind = CidKind::TrueType(Program::Embedded(ttf));
-                    font.embedded = true;
+            let data = pdf.decode(stream)?;
+            if data.starts_with(b"OTTO") {
+                pdf.differ(Difference(
+                    "an OpenType font program, which PDFBox reads with OTFParser and the port \
+                     takes for damaged"
+                        .to_owned(),
+                ));
+                font.damaged = true;
+            } else {
+                match read_true_type(&data)? {
+                    Some(ttf) => {
+                        font.kind = CidKind::TrueType(Program::Embedded(ttf));
+                        font.embedded = true;
+                    }
+                    None => font.damaged = true,
                 }
-                None => font.damaged = true,
             }
         }
         font.cid_to_gid = match pdf.stream(dict, b"CIDToGIDMap") {

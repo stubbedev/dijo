@@ -31,7 +31,8 @@ pub const PARSER_OVERRIDE: &str = "tk:content-type-parser-override";
 const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
-const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
+/// `TikaCoreProperties.EMBEDDED_STREAM_EXCEPTION`.
+pub const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
 /// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
 pub const EXCEPTION_WARNING: &str = "tk:exception:warn";
 

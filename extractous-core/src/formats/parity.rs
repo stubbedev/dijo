@@ -294,9 +294,12 @@ const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
 #[cfg(feature = "tika")]
 const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
-/// Where the XHTML head writes a recorded warning.
+/// Where the XHTML head writes a recorded warning and a recorded failure of an embedded stream.
 #[cfg(any(test, feature = "tika"))]
-const WARNING_META: &str = "<meta name=\"tk:exception:warn\" content=\"";
+const RECORDED_METAS: [&str; 2] = [
+    "<meta name=\"tk:exception:warn\" content=\"",
+    "<meta name=\"tk:exception:embedded-stream-exception\" content=\"",
+];
 /// The first frame below an embedded document's parse in Tika's path, where the embedding
 /// parser hands it to the embedded document extractor.
 #[cfg(any(test, feature = "tika"))]
@@ -769,28 +772,32 @@ fn without_nested_head_breaks(
     tika
 }
 
-/// The text of an extraction, in `char_set`, with the recorded warnings the XHTML head writes
-/// without their frames.
+/// The text of an extraction, in `char_set`, with the recorded warnings and failures of
+/// embedded streams the XHTML head writes without their frames.
 #[cfg(any(test, feature = "tika"))]
 fn without_warning_frames(text: Vec<u8>, char_set: CharSet) -> Vec<u8> {
-    let Some(decoded) = decoded(&text, char_set).filter(|decoded| decoded.contains(WARNING_META))
+    let Some(mut decoded) = decoded(&text, char_set)
+        .filter(|decoded| RECORDED_METAS.iter().any(|meta| decoded.contains(meta)))
     else {
         return text;
     };
-    let mut kept = String::with_capacity(decoded.len());
-    let mut rest = decoded.as_str();
-    while let Some(at) = rest.find(WARNING_META) {
-        let start = at + WARNING_META.len();
-        let end = rest[start..]
-            .find('"')
-            .map_or(rest.len(), |end| start + end);
-        kept.push_str(&rest[..start]);
-        kept.push_str(&without_frames(&rest[start..end]));
-        rest = &rest[end..];
+    for meta in RECORDED_METAS {
+        let mut kept = String::with_capacity(decoded.len());
+        let mut rest = decoded.as_str();
+        while let Some(at) = rest.find(meta) {
+            let start = at + meta.len();
+            let end = rest[start..]
+                .find('"')
+                .map_or(rest.len(), |end| start + end);
+            kept.push_str(&rest[..start]);
+            kept.push_str(&without_frames(&rest[start..end]));
+            rest = &rest[end..];
+        }
+        kept.push_str(rest);
+        decoded = kept;
     }
-    kept.push_str(rest);
     let mut encoded = Vec::with_capacity(text.len());
-    formats::encode(&kept, char_set, &mut encoded);
+    formats::encode(&decoded, char_set, &mut encoded);
     encoded
 }
 

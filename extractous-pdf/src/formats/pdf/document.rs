@@ -3,6 +3,7 @@
 //! joined as PDFBox joins them.
 
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 use flate2::{Decompress, FlushDecompress, Status};
 use lopdf::{Dictionary, Object};
@@ -10,6 +11,13 @@ use lopdf::{Dictionary, Object};
 use super::cos::{as_dict, Identity, Pdf};
 use super::font::rectangle;
 use super::Unported;
+
+/// The empty page `PDPageTree.getKids` puts in place of a kid that reads as `null`.
+static EMPTY_PAGE: LazyLock<Dictionary> = LazyLock::new(|| {
+    let mut page = Dictionary::new();
+    page.set("Type", Object::Name(b"Page".to_vec()));
+    page
+});
 
 /// `PDRectangle.LETTER`, the media box PDFBox gives a page without one.
 const LETTER: [f32; 4] = [0.0, 0.0, 612.0, 792.0];
@@ -27,70 +35,84 @@ impl Pdf<'_> {
         self.get(self.trailer(), b"Root").and_then(as_dict)
     }
 
-    /// The root of the page tree.
-    fn page_tree_root(&self) -> Option<(Identity, &Dictionary)> {
-        let catalog = self.catalog()?;
-        let (identity, object) = self.get_identified(catalog, b"Pages")?;
-        as_dict(object).map(|dict| (identity, dict))
+    /// The document's catalog and page tree root, or the `IOException` `PDFParser.initialParse`
+    /// throws for a catalog the trailer does not name, or a page tree root that is no
+    /// dictionary. A document that loads has both.
+    pub(super) fn check_catalog(&self) -> Result<(), &'static str> {
+        let catalog = self
+            .catalog()
+            .ok_or("Missing root object specification in trailer.")?;
+        self.dict(catalog, b"Pages")
+            .ok_or("Page tree root must be a dictionary")?;
+        Ok(())
+    }
+
+    /// The root of the page tree, which a document that loads has ([`Pdf::check_catalog`]).
+    fn page_tree_root(&self) -> (Identity, &Dictionary) {
+        self.catalog()
+            .and_then(|catalog| self.get_identified(catalog, b"Pages"))
+            .and_then(|(identity, object)| as_dict(object).map(|dict| (identity, dict)))
+            .expect("a loaded document has a page tree root")
     }
 
     /// `PDDocument.getNumberOfPages`: the `/Count` of the page tree root, as PDFBox reads it,
     /// which need not be the number of pages the tree holds.
-    pub(super) fn number_of_pages(&self) -> Result<i32, Unported> {
-        let (_, root) = self.page_tree_root().ok_or_else(|| {
-            Unported("a document without a page tree, which PDFBox fails on".to_owned())
-        })?;
+    pub(super) fn number_of_pages(&self) -> i32 {
+        let (_, root) = self.page_tree_root();
         if self.name(root, b"Type") == Some(b"Page") {
-            return Ok(1);
+            return 1;
         }
-        Ok(self.int(root, b"Count", 0))
+        self.int(root, b"Count", 0)
     }
 
     /// `PDPageTree.iterator`: the pages, leaves of the tree in order, each visited once.
-    pub(super) fn pages(&self) -> Result<Vec<Page<'_>>, Unported> {
-        let (identity, root) = self.page_tree_root().ok_or_else(|| {
-            Unported("a document without a page tree, which PDFBox fails on".to_owned())
-        })?;
+    pub(super) fn pages(&self) -> Vec<Page<'_>> {
+        let (identity, root) = self.page_tree_root();
         let mut pages = Vec::new();
         if self.name(root, b"Type") == Some(b"Page") {
             pages.push(Page {
                 identity,
                 dict: root,
             });
-            return Ok(pages);
+            return pages;
         }
         let mut visited: HashSet<Identity> = HashSet::new();
-        self.enqueue_kids(root, &mut visited, &mut pages)?;
-        Ok(pages)
+        self.enqueue_kids(root, self.trailer_rebuilt, &mut visited, &mut pages);
+        pages
     }
 
     fn is_page_tree_node(&self, node: &Dictionary) -> bool {
         self.name(node, b"Type") == Some(b"Pages") || node.has(b"Kids")
     }
 
+    /// `enqueueKids`, over `getKids`, which puts an empty page in place of a kid that reads as
+    /// `null`, unless `checked`, as the kids of the page tree nodes `COSParser.checkPages`
+    /// walks are where the trailer was rebuilt: it drops such a kid, and one held directly.
     fn enqueue_kids<'a>(
         &'a self,
         node: &'a Dictionary,
+        checked: bool,
         visited: &mut HashSet<Identity>,
         pages: &mut Vec<Page<'a>>,
-    ) -> Result<(), Unported> {
+    ) {
         if !self.is_page_tree_node(node) {
-            if self.name(node, b"Type") == Some(b"Page") {
-                return Err(Unported(
-                    "a page tree node without kids that is a page".to_owned(),
-                ));
-            }
-            return Ok(());
+            return;
         }
         let Some(kids) = self.array(node, b"Kids") else {
-            return Ok(());
+            return;
         };
         for kid in kids {
+            if checked && !matches!(kid, Object::Reference(_)) {
+                continue;
+            }
             let Some((identity, object)) = self.resolve_identified(kid) else {
-                return Err(Unported(
-                    "a page tree with a missing kid, which PDFBox replaces by an empty page"
-                        .to_owned(),
-                ));
+                if !checked {
+                    pages.push(Page {
+                        identity: Identity::of_direct(kid),
+                        dict: &EMPTY_PAGE,
+                    });
+                }
+                continue;
             };
             let Some(dict) = as_dict(object) else {
                 continue;
@@ -102,12 +124,12 @@ impl Pdf<'_> {
                 visited.insert(identity);
             }
             if self.is_page_tree_node(dict) {
-                self.enqueue_kids(dict, visited, pages)?;
+                let checked = checked && self.name(dict, b"Type") == Some(b"Pages");
+                self.enqueue_kids(dict, checked, visited, pages);
             } else if self.name(dict, b"Type") == Some(b"Page") {
                 pages.push(Page { identity, dict });
             }
         }
-        Ok(())
     }
 
     /// `PDPageTree.getInheritableAttribute`.

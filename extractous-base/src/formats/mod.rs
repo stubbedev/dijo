@@ -75,6 +75,15 @@ impl Difference {
     pub fn new(reason: impl Into<String>) -> Self {
         Self(reason.into())
     }
+
+    /// The warning a build without Tika records on a document the parser `parser` read with
+    /// this difference.
+    pub fn warning(&self, parser: &str) -> String {
+        format!(
+            "{parser} read the document differently from Tika: {}",
+            self.0
+        )
+    }
 }
 
 /// Why a native parser does not take a document as it prepared it. A [`Decline<'static>`] holds no
