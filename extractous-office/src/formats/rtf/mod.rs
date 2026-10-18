@@ -331,7 +331,7 @@ mod tests {
     /// and what it has read released, in memory that does not grow with it.
     #[test]
     fn extracts_documents_too_large_to_read_whole_in_bounded_memory() {
-        use crate::large::{bodies_past_limit, LargeFile};
+        use extractous_core::large::{bodies_past_limit, LargeFile};
         let filler = "0123456789abcdef".repeat(4096);
         let body = |index: u64| {
             format!("{{\\*\\datastore {filler}}}\\pard Linje {index} i logbogen\\par\n")
@@ -339,9 +339,7 @@ mod tests {
         };
         let count = bodies_past_limit(body(0).len());
         let file = LargeFile::new("large.rtf", br"{\rtf1\ansi ", count, body, b"}");
-        let (text, _) = file.extract("extractous::RTFParser", |path| {
-            crate::Extractor::new().extract_file_to_string(path)
-        });
+        let (text, _) = file.extract("extractous::RTFParser");
         assert!(text.contains("Linje 0 i logbogen\n"), "{text}");
         let last = format!("Linje {} i logbogen", count - 1);
         assert!(

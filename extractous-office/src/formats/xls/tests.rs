@@ -543,7 +543,7 @@ fn shared_string_table(strings: &[String]) -> Vec<u8> {
 #[test]
 fn extracts_workbooks_too_large_to_read_whole_in_bounded_memory() {
     use crate::input::MAX_READ_WHOLE;
-    use crate::large::LargeFile;
+    use extractous_core::large::LargeFile;
     const ROWS: u16 = 65_000;
     let strings: Vec<String> = (0..100_000)
         .map(|index| format!("Fyrets logbog, linje {index}"))
@@ -578,11 +578,9 @@ fn extracts_workbooks_too_large_to_read_whole_in_bounded_memory() {
     }
     let workbook = crate::ole2::tests::compound(&["Workbook"], &stream);
     drop(stream);
-    let file = LargeFile::written("large.xls", |out| out.write_all(&workbook));
+    let file = LargeFile::new("large.xls", &workbook, 0, |_| Vec::new(), b"");
     drop(workbook);
-    let (text, metadata) = file.extract("extractous::OfficeParser", |path| {
-        crate::Extractor::new().extract_file_to_string(path)
-    });
+    let (text, metadata) = file.extract("extractous::OfficeParser");
     assert_in_order(
         &text,
         &[

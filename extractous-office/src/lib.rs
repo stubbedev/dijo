@@ -11,8 +11,8 @@ use extractous_mime::mime;
 /// and measure the peak of what each thread holds.
 #[cfg(test)]
 #[global_allocator]
-static ALLOCATOR: memory::CountingAllocator<large::Peak<std::alloc::System>> =
-    memory::CountingAllocator(large::Peak(std::alloc::System));
+static ALLOCATOR: memory::CountingAllocator<extractous_core::large::Peak<std::alloc::System>> =
+    memory::CountingAllocator(extractous_core::large::Peak(std::alloc::System));
 
 /// The parsers, at the paths they have in `extractous-core`.
 pub mod formats {
