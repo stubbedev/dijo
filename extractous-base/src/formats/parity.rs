@@ -21,6 +21,11 @@ pub enum Departure<'a> {
     /// head and body, and its line breaks, as the WHATWG algorithm says rather than as Tika's
     /// jsoup does.
     BlankLines(&'a str),
+    /// Elements: the body of the XHTML output is compared as its text, without its tags, where
+    /// the native HTML parser builds another tree around the same text than Tika's jsoup does,
+    /// as the WHATWG algorithm says: a table inside a paragraph of a quirks mode document, the
+    /// line feed that starts a `pre` left out. The text output is compared in full.
+    Elements(&'a str),
     /// The PNG files of the embedded documents a spool holds: compared by the image each holds,
     /// its size, colour type, depth, resolution and pixels, not by how it is compressed.
     PngImages(&'a str),

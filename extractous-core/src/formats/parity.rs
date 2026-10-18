@@ -525,7 +525,8 @@ fn cut_to(mut native: Extracted, tika: &Extracted) -> Extracted {
 /// one of them is only end tags and white space: the native text was cut at the length limit
 /// before a [`NativeRewrite`] rewrote it, or before a departure was left out, and what the
 /// rewrite undoes or the departure changes counts towards the limit,
-/// so the text ends earlier or later than Tika's, its open elements then ended.
+/// so the text ends earlier or later than Tika's, its open elements then ended. The last end
+/// tag may be cut short, where [`cut_alike`] cut both texts to the length of the shorter.
 #[cfg(feature = "tika")]
 fn cut_texts(mut tika: Extracted, mut native: Extracted) -> (Extracted, Extracted) {
     let common = tika
@@ -536,13 +537,18 @@ fn cut_texts(mut tika: Extracted, mut native: Extracted) -> (Extracted, Extracte
         .count();
     let only_end_tags = |rest: &[u8]| {
         let mut rest = std::str::from_utf8(rest).unwrap_or("x").trim_start();
-        while let Some(tag) = rest.strip_prefix("</") {
-            let Some(end) = tag.find('>') else {
+        loop {
+            if "</".starts_with(rest) {
+                return true;
+            }
+            let Some(tag) = rest.strip_prefix("</") else {
                 return false;
+            };
+            let Some(end) = tag.find('>') else {
+                return !tag.contains('<');
             };
             rest = tag[end + 1..].trim_start();
         }
-        rest.is_empty()
     };
     if only_end_tags(&tika.text[common..]) || only_end_tags(&native.text[common..]) {
         tika.text.truncate(common);
@@ -1142,10 +1148,11 @@ const DEPARTED: &str = "<departed>";
 /// value of a metadata name, in the metadata and as the content of each `meta` element of the
 /// XHTML head, up to the end of a string extraction the length limit cuts in it; and, for
 /// line breaks, every CRLF of the text an LF; for blank lines, each run of white space that holds
-/// a line break an LF.
+/// a line break an LF; for elements, the tags of an XHTML output's body.
 #[cfg(feature = "tika")]
 fn without_departures(
     mut extracted: Extracted,
+    output: Output,
     char_set: CharSet,
     departures: Departures,
 ) -> Extracted {
@@ -1159,6 +1166,7 @@ fn without_departures(
             Departure::Unset(..)
             | Departure::LineBreaks(_)
             | Departure::BlankLines(_)
+            | Departure::Elements(_)
             | Departure::PngImages(_)
             | Departure::Paragraphs(..) => None,
         })
@@ -1191,6 +1199,13 @@ fn without_departures(
             text.pop();
             text.push('\n');
         }
+    }
+    if output == Output::Xml
+        && departures
+            .iter()
+            .any(|departure| matches!(departure, Departure::Elements(_)))
+    {
+        text = without_body_tags(&text);
     }
     if departures
         .iter()
@@ -1291,7 +1306,7 @@ fn as_paragraphs(
     (tika, native)
 }
 
-/// A line of XHTML without its tags.
+/// XHTML, a line or more, without its tags.
 #[cfg(feature = "tika")]
 fn without_tags(line: &str) -> String {
     let mut text = String::with_capacity(line.len());
@@ -1304,6 +1319,24 @@ fn without_tags(line: &str) -> String {
     }
     text.push_str(rest);
     text
+}
+
+/// XHTML as a [`Departure::Elements`] compares it: without the tags inside its body, up to
+/// `</body>` or, where the length limit cut it, the end of the text.
+#[cfg(feature = "tika")]
+fn without_body_tags(xhtml: &str) -> String {
+    let Some(start) = xhtml.find("<body>").map(|start| start + "<body>".len()) else {
+        return xhtml.to_owned();
+    };
+    let end = xhtml[start..]
+        .find("</body>")
+        .map_or(xhtml.len(), |end| start + end);
+    format!(
+        "{}{}{}",
+        &xhtml[..start],
+        without_tags(&xhtml[start..end]),
+        &xhtml[end..]
+    )
 }
 
 /// `text` as a [`Departure::BlankLines`] compares it: without the white space that ends the
@@ -2243,13 +2276,19 @@ fn compare(
                     let names = tika_names(native_name, naming.tika_name, naming.delegates);
                     let mut native = without_departures(
                         comparable(as_tika(native, &names, char_set), char_set),
+                        output,
                         char_set,
                         naming.departures,
                     );
                     let (tika, skipped_ocr_parser) =
                         without_skipped_ocr_parser(tika, char_set, configs);
                     let (mut tika, edit_time_longer) = with_native_edit_time(
-                        without_departures(comparable(tika, char_set), char_set, naming.departures),
+                        without_departures(
+                            comparable(tika, char_set),
+                            output,
+                            char_set,
+                            naming.departures,
+                        ),
                         &native,
                         char_set,
                     );
@@ -2275,7 +2314,12 @@ fn compare(
                             native.text = with_the_body_end_tika_leaks(native.text, &tika.text);
                             let (tika, native) = cut_alike(tika, native, naming.departures);
                             let moves_the_cut = naming.departures.iter().any(|departure| {
-                                matches!(departure, Departure::Unset(..) | Departure::BlankLines(_))
+                                matches!(
+                                    departure,
+                                    Departure::Unset(..)
+                                        | Departure::BlankLines(_)
+                                        | Departure::Elements(_)
+                                )
                             });
                             if rewrite.is_some() || moves_the_cut {
                                 cut_texts(tika, native)
@@ -2766,8 +2810,8 @@ fn spools_as_tika_under(
                 CharSet::UTF_8,
             );
             let (mut tika_extracted, mut native_extracted) = with_rewrite(
-                without_departures(tika_extracted, CharSet::UTF_8, departures),
-                without_departures(native_extracted, CharSet::UTF_8, departures),
+                without_departures(tika_extracted, Output::Xml, CharSet::UTF_8, departures),
+                without_departures(native_extracted, Output::Xml, CharSet::UTF_8, departures),
                 CharSet::UTF_8,
                 rewrite,
             );
@@ -2983,6 +3027,49 @@ mod tests {
         assert_eq!(without_blank_lines(tika), compared);
         assert_eq!(without_blank_lines(native), compared);
         assert_eq!(without_blank_lines("text \t\n"), "text");
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn cuts_both_texts_where_one_has_only_end_tags_left_even_cut_short() {
+        let extracted = |text: &str| Extracted {
+            text: text.as_bytes().to_vec(),
+            metadata: Vec::new(),
+        };
+        for tika in [
+            "<body>ab</body></html>",
+            "<body>ab </bod",
+            "<body>ab<",
+            "<body>ab</",
+        ] {
+            let (tika, native) = cut_texts(extracted(tika), extracted("<body>abcd"));
+            assert_eq!(
+                (tika.text, native.text),
+                (b"<body>ab".to_vec(), b"<body>ab".to_vec())
+            );
+        }
+        let (tika, native) = cut_texts(extracted("<body>ab<p>"), extracted("<body>abcd"));
+        assert_eq!(
+            (tika.text, native.text),
+            (b"<body>ab<p>".to_vec(), b"<body>abcd".to_vec())
+        );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn compares_the_body_without_its_tags_up_to_its_end_or_the_cut() {
+        let jsoup = "<head><title>t</title></head><body><p>\n</p>\n<table><tbody><tr><td>a\
+                     </td></tr>\n<tr><td>b</td></tr>\n</tbody></table>\n<pre>\nc</pre></body></html>";
+        let whatwg = "<head><title>t</title></head><body><p>\n<table><tbody><tr><td>a</td></tr>\
+                      \n</tbody></table>\n</p><tr><td>b</td></tr>\n<pre>c</pre></body></html>";
+        let compared = "<head><title>t</title></head><body>\na\nb\nc</body></html>";
+        assert_eq!(without_blank_lines(&without_body_tags(jsoup)), compared);
+        assert_eq!(without_blank_lines(&without_body_tags(whatwg)), compared);
+        assert_eq!(
+            without_body_tags("<head /><body><p>a</p><p>b"),
+            "<head /><body>ab"
+        );
+        assert_eq!(without_body_tags("<p>no body</p>"), "<p>no body</p>");
     }
 
     #[test]
