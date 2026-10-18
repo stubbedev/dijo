@@ -346,6 +346,35 @@ fn writes_quattro_pro_spreadsheets_too_large_to_read_whole_in_order() {
     assert_eq!(cells, count * u64::from(COLUMNS));
 }
 
+/// A Quattro Pro 9 workbook too large to read whole, its record stream read in place in the
+/// compound document, under a budget far below it.
+#[test]
+fn reads_quattro_pro_workbooks_too_large_to_read_whole_in_place() {
+    use crate::input::MAX_READ_WHOLE;
+
+    let label = {
+        let text = b"Q".repeat(255);
+        let mut body = vec![0; 6];
+        body.extend(254u16.to_le_bytes());
+        body.push(0);
+        body.extend(&text);
+        record(0x0c02, &body)
+    };
+    let count = MAX_READ_WHOLE as usize / label.len() + 1;
+    let mut records = record(0x0001, &[0; 14]);
+    records.extend(label.repeat(count));
+    let workbook = crate::ole2::tests::compound(&["NativeContent_MAIN"], &records);
+    drop(records);
+    let file =
+        extractous_core::large::LargeFile::written("large.qpw", |out| out.write_all(&workbook));
+    drop(workbook);
+    let mut letters = 0usize;
+    file.extract_each(QuattroProParser.name(), |text| {
+        letters += text.matches('Q').count();
+    });
+    assert_eq!(letters, count * 255);
+}
+
 #[test]
 fn indexes_cells_out_of_the_order_of_their_addresses() {
     fn cell(column: u16, row: u16, text: &[u8]) -> Vec<u8> {
