@@ -32,6 +32,10 @@ pub enum Departure<'a> {
     /// The PNG files of the embedded documents a spool holds: compared by the image each holds,
     /// its size, colour type, depth, resolution and pixels, not by how it is compressed.
     PngImages(&'a str),
+    /// Placeable headers: the WMF files of the embedded documents a spool holds, compared with
+    /// the units per inch of their placeable header, and its checksum, as POI writes them, 72
+    /// whatever the picture's units, where the native parser gives each picture its own.
+    PlaceableHeaders(&'a str),
     /// Whole content: the embedded documents a spool holds, where the native parser keeps every
     /// byte of a document cut short that Tika's path loses the end of. Each of Tika's files is
     /// compared with as much of the start of the native one, which must not be shorter.
