@@ -5,6 +5,7 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::strip;
@@ -33,13 +34,7 @@ impl Parser for FictionBookParser {
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        Ok(Box::new(move |xhtml| {
-            let blocks = read_book(input, xhtml.metadata_mut())?;
-            for block in blocks {
-                xhtml.element(&block.element, &block.text)?;
-            }
-            Ok(())
-        }))
+        Ok(Box::new(move |xhtml| read_book(input, xhtml)))
     }
 }
 
@@ -50,10 +45,9 @@ struct Block {
     text: String,
 }
 
-/// Collects the book's metadata and blocks while its XML is read.
+/// Collects the book's metadata, and each block as it ends, while its XML is read.
 #[derive(Default)]
 struct Book {
-    blocks: Vec<Block>,
     open: Vec<String>,
     text: String,
     name: Vec<String>,
@@ -90,39 +84,46 @@ impl Book {
         }
     }
 
-    fn end(&mut self, element: &str, metadata: &mut TikaMetadata) {
+    /// Ends `element`, adding what it names to `metadata`: the block it ends, if any.
+    fn end(&mut self, element: &str, metadata: &mut TikaMetadata) -> Option<Block> {
         self.open.pop();
         if element == "section" {
             self.sections = self.sections.saturating_sub(1);
         }
         if element == "p" && self.collecting.as_deref() == Some("title") {
             self.text.push(' ');
-            return;
+            return None;
         }
         if element == "author" && self.inside("title-info") && !self.name.is_empty() {
             metadata.add("dc:creator", self.name.join(" "));
             self.name.clear();
         }
         if self.collecting.as_deref() != Some(element) {
-            return;
+            return None;
         }
         self.collecting = None;
-        let value = collapse_whitespace(&self.text);
-        if value.is_empty() {
-            return;
+        let text = collapse_whitespace(&self.text);
+        if text.is_empty() {
+            return None;
         }
-        match element {
-            "book-title" => metadata.set("dc:title", value),
-            "lang" => metadata.set("dc:language", value),
-            "title" => self.block(heading(self.sections + 1), value),
-            "subtitle" => self.block(heading(self.sections + 2), value),
-            _ if NAME_PARTS.contains(&element) => self.name.push(value),
-            _ => self.block("p".to_owned(), value),
-        }
-    }
-
-    fn block(&mut self, element: String, text: String) {
-        self.blocks.push(Block { element, text });
+        let element = match element {
+            "book-title" => {
+                metadata.set("dc:title", text);
+                return None;
+            }
+            "lang" => {
+                metadata.set("dc:language", text);
+                return None;
+            }
+            _ if NAME_PARTS.contains(&element) => {
+                self.name.push(text);
+                return None;
+            }
+            "title" => heading(self.sections + 1),
+            "subtitle" => heading(self.sections + 2),
+            _ => "p".to_owned(),
+        };
+        Some(Block { element, text })
     }
 }
 
@@ -151,13 +152,13 @@ fn collapse_whitespace(text: &str) -> String {
 
 const WHAT: &str = "The FictionBook XML";
 
-/// The book being read and the metadata it fills, as the SAX handler of its XML.
-struct Reading<'m> {
+/// The book being read and the document it is written to, as the SAX handler of its XML.
+struct Reading<'x, 'w> {
     book: Book,
-    metadata: &'m mut TikaMetadata,
+    xhtml: &'x mut Xhtml<'w>,
 }
 
-impl SaxHandler for Reading<'_> {
+impl SaxHandler for Reading<'_, '_> {
     fn start_element(
         &mut self,
         _namespace: &str,
@@ -169,7 +170,9 @@ impl SaxHandler for Reading<'_> {
     }
 
     fn end_element(&mut self, _namespace: &str, local_name: &str) -> Result<(), Failure> {
-        self.book.end(local_name, self.metadata);
+        if let Some(block) = self.book.end(local_name, self.xhtml.metadata_mut()) {
+            self.xhtml.element(&block.element, &block.text)?;
+        }
         Ok(())
     }
 
@@ -179,13 +182,13 @@ impl SaxHandler for Reading<'_> {
     }
 }
 
-fn read_book(input: &[u8], metadata: &mut TikaMetadata) -> Result<Vec<Block>, Failure> {
+/// Writes the book's blocks as its XML is read, and its metadata.
+fn read_book(input: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
     let mut reading = Reading {
         book: Book::default(),
-        metadata,
+        xhtml,
     };
-    xml::parse_sax(input, WHAT, &mut reading)?;
-    Ok(reading.book.blocks)
+    xml::parse_sax(input, WHAT, &mut reading)
 }
 
 #[cfg(test)]
@@ -207,6 +210,34 @@ mod tests {
         assert_same_as_tika(&paths, "ai.yobix.FictionBookParser");
     }
 
+    /// A book too large to read whole, read mapped by the build without Tika, is written a
+    /// block at a time. The parser stays of proportional memory, as the XML reader holds the
+    /// text of a document in another encoding than UTF-8 or with carriage returns decoded whole,
+    /// so a build with Tika leaves the file to Tika.
+    #[cfg(not(feature = "tika"))]
+    #[test]
+    fn writes_books_too_large_to_read_whole_a_block_at_a_time() {
+        let paragraph = |index: u64| format!("<p>Afsnit {index}</p>\n").into_bytes();
+        let count = extractous_core::large::bodies_past_limit(paragraph(1_000_000).len());
+        let file = extractous_core::large::LargeFile::new(
+            "long.fb2",
+            br#"<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"><body><section>
+"#,
+            count,
+            paragraph,
+            b"</section></body></FictionBook>\n",
+        );
+        let mut paragraphs = 0;
+        file.extract_lines(FictionBookParser.name(), |line| {
+            if !line.is_empty() {
+                assert_eq!(line, format!("Afsnit {paragraphs}"));
+                paragraphs += 1;
+            }
+        });
+        assert_eq!(paragraphs, count);
+    }
+
     #[test]
     fn collapses_whitespace_as_java_does() {
         assert_eq!(collapse_whitespace("  a \t\n b\u{a0}\u{2003}"), "a b\u{a0}");
@@ -224,40 +255,34 @@ mod tests {
 <section><title><p>Kapitel 1</p></title><p>Hver aften &amp; nat&#x21;</p>
 <image l:href="#cover"/><section><subtitle>Vers</subtitle><poem><stanza><v>linje</v></stanza></poem></section></section></body>
 <binary id="cover">AAAA</binary></FictionBook>"##;
-        let mut metadata = TikaMetadata::new();
-        let blocks = read_book(book, &mut metadata).unwrap();
-        let blocks: Vec<(&str, &str)> = blocks
-            .iter()
-            .map(|block| (block.element.as_str(), block.text.as_str()))
-            .collect();
+        let (xml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .extract_bytes_to_string(book)
+            .unwrap();
+        let body = &xml[xml.find("<body>").unwrap()..];
         assert_eq!(
-            blocks,
-            [
-                ("h1", "Del en"),
-                ("h2", "Kapitel 1"),
-                ("p", "Hver aften & nat!"),
-                ("h4", "Vers"),
-                ("p", "linje"),
-            ]
+            body,
+            "<body><h1>Del en</h1>\n<h2>Kapitel 1</h2>\n<p>Hver aften &amp; nat!</p>\n\
+             <h4>Vers</h4>\n<p>linje</p>\n</body></html>"
         );
-        assert_eq!(metadata.values("dc:creator"), ["Anna Berg"]);
-        assert_eq!(metadata.get("dc:title"), Some("Fyrets bog"));
-        assert_eq!(metadata.get("dc:language"), Some("da"));
+        assert_eq!(metadata["dc:creator"], ["Anna Berg"]);
+        assert_eq!(metadata["dc:title"], ["Fyrets bog"]);
+        assert_eq!(metadata["dc:language"], ["da"]);
     }
 
     #[test]
     fn fails_on_malformed_xml_and_undeclared_entities() {
-        let mut metadata = TikaMetadata::new();
-        assert!(read_book(
-            b"<FictionBook><body><p>x</body></FictionBook>",
-            &mut metadata
-        )
-        .is_err());
-        assert!(read_book(
-            b"<FictionBook><body><p>&nbsp;</p></body></FictionBook>",
-            &mut metadata
-        )
-        .is_err());
-        assert!(read_book(b"<FictionBook><body>", &mut metadata).is_err());
+        for body in [
+            "<body><p>x</body></FictionBook>",
+            "<body><p>&nbsp;</p></body></FictionBook>",
+            "<body>",
+        ] {
+            let book = format!(
+                r#"<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">{body}"#
+            );
+            assert!(crate::Extractor::new()
+                .extract_bytes_to_string(book.as_bytes())
+                .is_err());
+        }
     }
 }
