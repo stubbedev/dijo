@@ -40,21 +40,41 @@ use crate::text::charset::{self, Charset, Detection};
 
 /// Where the text the parser writes departs from Tika's, for the parity tests of every parser
 /// that hands it HTML: the WHATWG algorithm makes each line break an LF, drops the white space
-/// before `head`, and puts the white space after `</body>` in the body (#84).
+/// before `head`, and puts the white space after `</body>` in the body (#84), and the WHATWG
+/// URL standard resolves its links (#162).
 #[cfg(all(feature = "tika", any(test, feature = "testing")))]
-pub const DEPARTURES: extractous_base::formats::parity::Departures =
-    &[extractous_base::formats::parity::Departure::BlankLines(
-        "#84",
-    )];
+pub const DEPARTURES: extractous_base::formats::parity::Departures = &[
+    extractous_base::formats::parity::Departure::BlankLines("#84"),
+    extractous_base::formats::parity::Departure::Links("#162"),
+];
 
 /// [`DEPARTURES`], for the parity tests of parsers that hand it pages whose tree differs from
 /// jsoup's, by the WHATWG algorithm: their XHTML compared on its text, its elements aside (#84).
-/// The HTML reference test compares such pages on their metadata alone.
+/// The HTML reference test compares such pages on their metadata alone. Its links are resolved
+/// by the WHATWG URL standard (#162).
 #[cfg(all(feature = "tika", any(test, feature = "testing")))]
 pub const TREE_DEPARTURES: extractous_base::formats::parity::Departures = &[
     extractous_base::formats::parity::Departure::BlankLines("#84"),
     extractous_base::formats::parity::Departure::Elements("#84"),
+    extractous_base::formats::parity::Departure::Links("#162"),
 ];
+
+/// Whether an attribute of an XHTML element by this name holds a link the parser resolves, as
+/// the WHATWG URL standard resolves it, where Tika's path resolves it as `java.net.URL` does
+/// (#162).
+#[cfg(all(feature = "tika", any(test, feature = "testing")))]
+pub fn is_link_attribute(name: &str) -> bool {
+    handler::URI_ATTRIBUTES.contains(&name)
+        || name == handler::CODEBASE
+        || handler::OBJECT_LINKS.contains(&name)
+}
+
+/// Whether `native`, a link the parser writes against the URL `base`, is `tika`, the one Tika's
+/// path writes for it, as the WHATWG URL standard resolves it (#162).
+#[cfg(all(feature = "tika", any(test, feature = "testing")))]
+pub fn resolves_alike(base: Option<&str>, tika: &str, native: &str) -> bool {
+    url::resolves_alike(base, tika, native)
+}
 
 /// How many documents the HTML parser has built by the WHATWG algorithm in this process, every
 /// parser that hands it HTML included: a native extraction that adds to it departs from Tika's
@@ -312,6 +332,36 @@ mod tests {
             metadata.get("dc:title"),
             Some(&vec!["ActualTitle".to_owned(), "OldMetaTitle".to_owned()])
         );
+    }
+
+    /// Links the WHATWG URL standard resolves otherwise than Tika's `java.net.URL` (#162): every
+    /// other part of the page is still Tika's, and where Tika fails on a query against a `jar`
+    /// base, the parser reads the page.
+    #[cfg(feature = "tika")]
+    #[test]
+    fn departs_from_tika_by_the_links_the_url_standard_resolves() {
+        use crate::formats::parity::{assert_read_where_tika_fails, Scratch};
+        let scratch = Scratch::new("html-links");
+        let page = |name: &str, base: &str, links: &[&str]| {
+            let anchors: String = links
+                .iter()
+                .map(|link| format!("<p><a href=\"{link}\">{link}</a></p>"))
+                .collect();
+            scratch.write(
+                name,
+                format!("<html><head><base href=\"{base}\"></head><body>{anchors}</body></html>")
+                    .as_bytes(),
+            )
+        };
+        let departing = [
+            page("user.html", "http://u:p@Host:80/a/b", &["?q", "c", "/d e"]),
+            page("root.html", "http://h/a/", &["../../z", "y"]),
+            page("pathless.html", "http://h", &["a/../../b", "#f"]),
+            page("ftp.html", "ftp://h/d/", &["x", "mailto:me@x.org"]),
+        ];
+        let paths: Vec<&Path> = departing.iter().map(PathBuf::as_path).collect();
+        assert_same_as_whatwg_tika(&paths);
+        assert_read_where_tika_fails(&[&page("jar.html", "url:jar:#x", &["?q"])], "#162");
     }
 
     #[test]

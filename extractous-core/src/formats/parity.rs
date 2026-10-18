@@ -588,6 +588,126 @@ fn without_frames(trace: &str) -> String {
         .replace("\r\n", "\n")
 }
 
+/// Tika's result with its links as the native parser writes them, where the native link is
+/// Tika's as the WHATWG URL standard resolves it ([`Departure::Links`]): the `Content-Location`,
+/// in the metadata and in the XHTML head, and each value of an XHTML attribute that holds a
+/// link, paired with the native ones in their order. Every other difference stays.
+#[cfg(feature = "tika")]
+fn with_native_links(mut tika: Extracted, native: &Extracted, char_set: CharSet) -> Extracted {
+    const LOCATION: &str = "Content-Location";
+    let location = |metadata: &[(String, Vec<String>)]| {
+        metadata
+            .iter()
+            .find(|(name, _)| name == LOCATION)
+            .map(|(_, values)| values.clone())
+    };
+    let native_location = location(&native.metadata);
+    let base = native_location
+        .as_ref()
+        .and_then(|values| values.last())
+        .cloned();
+    let (Some(mut text), Some(native_text)) = (
+        decoded(&tika.text, char_set),
+        decoded(&native.text, char_set),
+    ) else {
+        return tika;
+    };
+    if let (Some(tika_values), Some(native_values)) =
+        (location(&tika.metadata), native_location.as_ref())
+    {
+        let alike = tika_values.len() == native_values.len()
+            && tika_values.iter().zip(native_values).all(|(tika, native)| {
+                tika == native || formats::html::resolves_alike(None, tika, native)
+            });
+        if alike && tika_values != *native_values {
+            let meta = format!("<meta name=\"{LOCATION}\" content=\"");
+            for (tika, native) in tika_values.iter().zip(native_values) {
+                text = text.replacen(
+                    &format!("{meta}{}\"", escaped_attribute(tika)),
+                    &format!("{meta}{}\"", escaped_attribute(native)),
+                    1,
+                );
+            }
+            for (name, values) in &mut tika.metadata {
+                if name == LOCATION {
+                    values.clone_from(native_values);
+                }
+            }
+        }
+    }
+    let tika_links = link_values(&text);
+    let native_links = link_values(&native_text);
+    if tika_links.len() == native_links.len() {
+        let mut linked = String::with_capacity(text.len());
+        let mut at = 0;
+        for ((name, range), (native_name, native_range)) in tika_links.into_iter().zip(native_links)
+        {
+            let (tika_value, native_value) = (&text[range.clone()], &native_text[native_range]);
+            let alike = name == native_name
+                && tika_value != native_value
+                && formats::html::resolves_alike(
+                    base.as_deref(),
+                    &unescaped_attribute(tika_value),
+                    &unescaped_attribute(native_value),
+                );
+            if alike {
+                linked.push_str(&text[at..range.start]);
+                linked.push_str(native_value);
+                at = range.end;
+            }
+        }
+        linked.push_str(&text[at..]);
+        text = linked;
+    }
+    tika.text.clear();
+    formats::encode(&text, char_set, &mut tika.text);
+    tika
+}
+
+/// The values of the attributes of XHTML `text` that hold a link, each by its name and where
+/// it stands, still escaped.
+#[cfg(feature = "tika")]
+fn link_values(text: &str) -> Vec<(&str, std::ops::Range<usize>)> {
+    let mut links = Vec::new();
+    let mut from = 0;
+    while let Some(open) = text[from..].find('<').map(|at| from + at) {
+        let close = text[open..].find('>').map_or(text.len(), |at| open + at);
+        let mut rest = open;
+        while let Some(equals) = text[rest..close].find("=\"").map(|at| rest + at) {
+            let start = equals + 2;
+            let end = text[start..close].find('"').map_or(close, |at| start + at);
+            let name_start = text[..equals].rfind(' ').map_or(open, |at| at + 1);
+            let name = &text[name_start..equals];
+            if formats::html::is_link_attribute(name) {
+                links.push((name, start..end));
+            }
+            rest = end;
+        }
+        from = close;
+    }
+    links
+}
+
+/// An attribute value as the XHTML writes it, escaped.
+#[cfg(feature = "tika")]
+fn escaped_attribute(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// An attribute value the XHTML writes escaped, as it is.
+#[cfg(feature = "tika")]
+fn unescaped_attribute(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        .replace("&amp;", "&")
+}
+
 /// Text written in `char_set`, decoded, unless it is not valid in it.
 #[cfg(any(test, feature = "tika"))]
 fn decoded(text: &[u8], char_set: CharSet) -> Option<String> {
@@ -1174,6 +1294,7 @@ fn without_departures(
             | Departure::PlaceableHeaders(_)
             | Departure::WholeContent(_)
             | Departure::Paragraphs(..)
+            | Departure::Links(_)
             | Departure::DoubledBreaks(_)
             | Departure::FinalInHead(..)
             | Departure::UnreadEmbedded(_) => None,
@@ -2381,6 +2502,13 @@ fn compare(
                         char_set,
                     );
                     with_native_failures_masked(&mut tika, &mut native);
+                    if naming
+                        .departures
+                        .iter()
+                        .any(|departure| matches!(departure, Departure::Links(_)))
+                    {
+                        tika = with_native_links(tika, &native, char_set);
+                    }
                     if naming.tika_name == RECOGNIZED_IMAGE_PARSER {
                         tika.text = without_nested_document(tika.text, output, char_set);
                         native.text = without_nested_document(native.text, output, char_set);
