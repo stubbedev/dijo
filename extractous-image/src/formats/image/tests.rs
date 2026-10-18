@@ -202,8 +202,10 @@ fn reads_tikas_test_heif_images_with_tesseract_as_tikas_path_does() {
     );
 }
 
-/// Damaged HEIF and AVIF images libheif cannot decode for OCR fail as Tika's path fails them
-/// (#173).
+/// Damaged HEIF and AVIF images libheif cannot decode for OCR fail as Tika's path fails them,
+/// with the exception it throws (#173). Tika's `CompositeParser` names the parser it wraps the
+/// exception for by the decorator around `HeifParser`, `MimeFilteringDecorator@<hash>`, which
+/// differs on each run, where the native path names `HeifParser`.
 #[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
@@ -218,12 +220,15 @@ fn fails_on_heif_images_libheif_cannot_decode_as_tikas_path_does() {
     ];
     let damaged: Vec<&Path> = damaged.iter().map(PathBuf::as_path).collect();
     let configs = automatic_language();
+    let cause = |error: &str| {
+        error
+            .split_once(" <- caused by ")
+            .map(|(_, cause)| cause.to_owned())
+    };
     for path in &damaged {
-        println!(
-            "{}: {:?}",
-            path.display(),
-            crate::formats::parity::errors(path, &configs)
-        );
+        let (native, tika) = crate::formats::parity::errors(path, &configs);
+        assert!(cause(&native).is_some(), "{}: {native}", path.display());
+        assert_eq!(cause(&native), cause(&tika), "{}", path.display());
     }
     assert_fails_as_tika_with(&damaged, &configs);
 }

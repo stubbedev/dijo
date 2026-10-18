@@ -211,7 +211,7 @@ mod imp {
 mod imp {
     use std::io::Read;
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
+    use std::process::{Command, ExitStatus, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
@@ -315,13 +315,26 @@ mod imp {
                 .saturating_sub(MAX_REPORTED_ERROR_CHARS);
             errors.chars().skip(skip).collect()
         };
+        let status = exit_value(status);
         Ok(Outcome::Finished {
-            success: status.success(),
+            success: status == 0,
             failure: match tail.is_empty() {
-                true => format!("{program} exited with {status}"),
-                false => format!("{program} exited with {status}: {tail}"),
+                true => format!("{program} exited with status {status}"),
+                false => format!("{program} exited with status {status}: {tail}"),
             },
         })
+    }
+
+    /// `Process.exitValue`: the program's exit code, or for one ended by a signal 128 and the
+    /// signal's number, as the JDK reports it on Unix.
+    fn exit_value(status: ExitStatus) -> i32 {
+        #[cfg(unix)]
+        if let Some(signal) = std::os::unix::process::ExitStatusExt::signal(&status) {
+            return 128 + signal;
+        }
+        status
+            .code()
+            .expect("a program that was waited for has an exit code or a signal")
     }
 
     /// The PNG a program decoded the image to, in the colours ImageIO reads it in.
