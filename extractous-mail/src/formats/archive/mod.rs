@@ -5,6 +5,8 @@
 //! `RarParser` ([`rar`]).
 
 mod compressor;
+#[cfg(all(test, not(feature = "tika")))]
+mod large;
 mod nesting;
 mod package;
 mod rar;
@@ -23,6 +25,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure};
+use crate::input::Paging;
 use crate::java::time::format_instant;
 use crate::Error;
 
@@ -124,6 +127,7 @@ fn undecoded(what: &str, undecoded: Undecoded, tika_name: &str) -> Decline<'stat
         Undecoded::MemoryLimit(_) => {
             Decline::Fails(Error::LimitExceeded(format!("{what}: {undecoded}")))
         }
+        Undecoded::Unspooled(_) => Decline::Fails(Error::IoError(format!("{what}: {undecoded}"))),
         Undecoded::Unported(_) => Decline::Deferred(format!("{what}: {undecoded}")),
         Undecoded::Fails(_) | Undecoded::Encrypted | Undecoded::BadPassword if DEFERS => {
             Decline::Deferred(format!(
@@ -196,11 +200,13 @@ fn within_limit<T>(
 }
 
 /// The loop of `PackageParser` and `SevenZParser` over the files but the directories, each
-/// handed to the embedded document extractor.
-fn write_files(files: &[ArchiveFile], xhtml: &mut Xhtml) -> Result<(), Failure> {
+/// handed to the embedded document extractor, the pages of the archive released by `paging` as
+/// its files are read.
+fn write_files(files: &[ArchiveFile], xhtml: &mut Xhtml, paging: &Paging) -> Result<(), Failure> {
     for file in files.iter().filter(|file| !file.directory) {
         let metadata = entry_metadata(file, xhtml)?;
-        xhtml.parse_embedded(&file.content, &metadata, Wrapping::PackageEntry)?;
+        xhtml.parse_embedded_input(&file.content, &metadata, Wrapping::PackageEntry)?;
+        paging.read(file.content.len());
     }
     Ok(())
 }

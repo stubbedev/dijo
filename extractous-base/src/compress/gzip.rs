@@ -1,7 +1,8 @@
 //! gzip files, which flate2 decodes, read as `GzipCompressorInputStream` reads them without
 //! `decompressConcatenated`: the first member only; and `GzipUtils`'s names of what they hold.
 
-use super::{read_limited, Limited, Undecoded};
+use super::{spool_limited, Limited, Undecoded};
+use crate::input::Input;
 
 /// `GzipUtils`'s suffixes of gzip file names, with what replaces each in the uncompressed name.
 const UNCOMPRESSED_SUFFIXES: [(&str, &str); 11] = [
@@ -46,14 +47,14 @@ pub struct Member {
     /// The original file name of the header: UTF-8 when it is valid UTF-8, else ISO-8859-1,
     /// which RFC 1952 names and commons-compress always decodes it as (#100).
     pub(crate) file_name: Option<String>,
-    pub content: Vec<u8>,
+    pub content: Input<'static>,
 }
 
 /// The first member of the gzip file `data`, as flate2 reads it: the header checked, the
 /// content checked against the trailer's CRC and size, whatever follows ignored.
 pub fn decode(data: &[u8]) -> Result<Limited<Member>, Undecoded> {
     let mut decoder = flate2::bufread::GzDecoder::new(data);
-    let content = read_limited(&mut decoder)?;
+    let content = spool_limited(&mut decoder, data.len())?;
     let file_name = decoder
         .header()
         .and_then(flate2::GzHeader::filename)

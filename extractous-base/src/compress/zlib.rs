@@ -1,18 +1,22 @@
 //! zlib streams, which flate2 decodes, read as `DeflateCompressorInputStream` reads them: the
 //! header, the deflate data and the Adler-32 checksum, whatever follows ignored.
 
-use super::{read_limited, read_whole, Limited, Undecoded};
+use super::{spool_limited, Decoding, Limited, Undecoded};
+use crate::input::Input;
 
 /// The content of the zlib stream `data`, or why it is not decoded natively.
-pub fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
-    read_limited(flate2::bufread::ZlibDecoder::new(data))
+pub fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
+    spool_limited(flate2::bufread::ZlibDecoder::new(data), data.len())
 }
 
-/// The content of the zlib stream `data` starts with, as [`decode`] gives it, and how many bytes
-/// of `data` the stream takes.
+/// The content of the zlib stream `data` starts with, decoded into memory, up to
+/// [`MAX_DECODED`](super::MAX_DECODED) bytes, past which it fails, and how many bytes of `data`
+/// the stream takes.
 pub fn decode_prefix(data: &[u8]) -> Result<(Vec<u8>, usize), Undecoded> {
     let mut decoder = flate2::bufread::ZlibDecoder::new(data);
-    let content = read_whole(&mut decoder)?;
+    let mut decoding = Decoding::in_memory();
+    decoding.read_from(&mut decoder)?;
+    let content = decoding.into_limited().whole()?;
     let taken = usize::try_from(decoder.total_in()).expect("a stream takes at most its input");
     Ok((content, taken))
 }

@@ -192,7 +192,7 @@ fn reads_names_times_and_directories_as_junrar_does() {
         archive_files(&std::fs::read(path).unwrap())
             .unwrap()
             .into_iter()
-            .map(|file| (file.name, file.content))
+            .map(|file| (file.name, file.content.to_vec()))
             .collect()
     };
     assert_eq!(

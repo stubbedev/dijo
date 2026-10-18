@@ -10,7 +10,8 @@ use std::io::{Cursor, Read};
 
 use sevenz_rust2::{ArchiveEntry, ArchiveReader, EncoderMethod, NtTime, Password};
 
-use super::{limit, throws, ArchiveFile, Limited, Undecoded, MAX_DECODED, MEMORY_LIMIT_KIB};
+use super::{throws, ArchiveFile, Decoding, Limited, Undecoded, CHUNK, MEMORY_LIMIT_KIB};
+use crate::input::Input;
 
 /// The milliseconds from 1601, where NTFS times start, to 1970.
 const NTFS_EPOCH_MILLIS: i64 = 11_644_473_600_000;
@@ -82,31 +83,42 @@ fn entry_name(file: &ArchiveEntry) -> String {
 }
 
 /// The files of the 7z archive `data`, decrypted with `password` where it is encrypted, each
-/// decoded up to [`MAX_DECODED`] bytes, or why they are not read natively. The files end at
-/// one that decodes into more, which is cut there.
-pub fn files(data: &[u8], password: Option<&str>) -> Result<Limited<Vec<ArchiveFile>>, Undecoded> {
+/// decoded to a spool up to the [`decode_limit`](super::decode_limit) of the archive, or why
+/// they are not read natively. The files end at one that decodes into more, which is cut there.
+pub fn files(
+    data: &[u8],
+    password: Option<&str>,
+) -> Result<Limited<Vec<ArchiveFile<'static>>>, Undecoded> {
     let password = password.map_or_else(Password::empty, Password::new);
     let mut reader = ArchiveReader::new(Cursor::new(data), password).map_err(fail)?;
     if over_memory_limit(&reader)? {
         return Err(throws("a coder needs more memory than Tika allows"));
     }
-    let mut contents: HashMap<*const ArchiveEntry, Limited<Vec<u8>>> = HashMap::new();
+    let mut contents: HashMap<*const ArchiveEntry, Limited<Input<'static>>> = HashMap::new();
+    let mut unspooled = None;
     reader
         .for_each_entries(|entry, read| {
-            let mut content = Vec::new();
-            read.take(MAX_DECODED as u64 + 1)
-                .read_to_end(&mut content)?;
-            let content = limit(content);
+            let decoded = decode(read, data.len())?;
+            let content = match decoded.and_then(Decoding::finish) {
+                Ok(content) => content,
+                Err(undecoded) => {
+                    unspooled = Some(undecoded);
+                    return Ok(false);
+                }
+            };
             let whole = matches!(content, Limited::Whole(_));
             contents.insert(entry, content);
             Ok(whole)
         })
         .map_err(fail)?;
+    if let Some(undecoded) = unspooled {
+        return Err(undecoded);
+    }
     let mut files = Vec::new();
     for file in &reader.archive().files {
         let content = contents
             .remove(&(file as *const ArchiveEntry))
-            .unwrap_or(Limited::Whole(Vec::new()));
+            .unwrap_or(Limited::Whole(Input::Borrowed(&[])));
         let file = content.map(|content| ArchiveFile {
             name: entry_name(file),
             size: file.size,
@@ -122,6 +134,28 @@ pub fn files(data: &[u8], password: Option<&str>) -> Result<Limited<Vec<ArchiveF
         }
     }
     Ok(Limited::Whole(files))
+}
+
+/// What `read`, an entry of an archive of `archive` bytes, decodes into, or why it is not
+/// spooled. Its decoder's failures are the reader's, which sevenz-rust2 tells a bad password by.
+fn decode(
+    read: &mut dyn Read,
+    archive: usize,
+) -> Result<Result<Decoding<crate::input::Spool>, Undecoded>, sevenz_rust2::Error> {
+    let mut decoding = Decoding::spooled(archive);
+    let mut chunk = vec![0; CHUNK];
+    loop {
+        let length = read.read(&mut chunk)?;
+        if length == 0 {
+            return Ok(Ok(decoding));
+        }
+        if let Err(undecoded) = decoding.write(&chunk[..length]) {
+            return Ok(Err(undecoded));
+        }
+        if decoding.is_cut() {
+            return Ok(Ok(decoding));
+        }
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -155,7 +189,7 @@ pub mod tests {
             .and_then(Limited::whole)
             .unwrap()
             .into_iter()
-            .map(|file| (file.name, file.directory, file.content))
+            .map(|file| (file.name, file.directory, file.content.to_vec()))
             .collect();
         assert_eq!(
             found,

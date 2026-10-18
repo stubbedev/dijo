@@ -3,7 +3,8 @@
 //! little-endian bit stream, realigned to a multiple of eight codes whenever the width changes,
 //! the stream ending at the first code the input cannot fill.
 
-use super::{limit, throws, Limited, Undecoded, MAX_DECODED, MEMORY_LIMIT_KIB};
+use super::{throws, Decoding, Limited, Undecoded, CHUNK, MEMORY_LIMIT_KIB};
+use crate::input::Input;
 
 const MAGIC: [u8; 2] = [0x1F, 0x9D];
 const BLOCK_MODE: u8 = 0x80;
@@ -147,7 +148,7 @@ impl Decoder<'_> {
 }
 
 /// The content of the `.Z` file `data`, or why it is not decoded natively.
-pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
+pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
     let (Some(magic), Some(&flags)) = (data.get(..2), data.get(2)) else {
         return Err(throws("Input is not in .Z format"));
     };
@@ -186,13 +187,19 @@ pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
         characters: (0..=256u16).map(|i| i as u8).collect(),
     };
     decoder.clear_entries();
-    let mut out = Vec::with_capacity(data.len().saturating_mul(3));
+    let mut decoding = Decoding::spooled(data.len());
+    let mut out = Vec::with_capacity(2 * CHUNK);
     while decoder.next_symbol(&mut out)? {
-        if out.len() > MAX_DECODED {
-            return Ok(limit(out));
+        if out.len() >= CHUNK {
+            decoding.write(&out)?;
+            if decoding.is_cut() {
+                return decoding.finish();
+            }
+            out.clear();
         }
     }
-    Ok(Limited::Whole(out))
+    decoding.write(&out)?;
+    decoding.finish()
 }
 
 #[cfg(any(test, feature = "testing"))]

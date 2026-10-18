@@ -8,6 +8,7 @@ use crate::compress::{seven_z, Undecoded};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{crypt, Decline, Parser, Prepared, PASSWORD_USED};
+use crate::input::{Pages, Paging};
 
 const SEVEN_Z: &str = "application/x-7z-compressed";
 /// What commons-compress's `SevenZFile` throws on encrypted data it was given no password for,
@@ -51,7 +52,8 @@ impl Parser for SevenZParser {
                 xhtml.metadata_mut().set(PASSWORD_USED, "true");
             }
             xhtml.metadata_mut().set("Content-Type", SEVEN_Z);
-            let written = write_files(&files, xhtml).and_then(|()| Cut::end(cut));
+            let paging = Paging::new(Pages::IN_MEMORY);
+            let written = write_files(&files, xhtml, &paging).and_then(|()| Cut::end(cut));
             xhtml.end_document()?;
             written
         }))

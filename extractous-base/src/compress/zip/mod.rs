@@ -11,7 +11,7 @@ use std::io::Read;
 
 use flate2::{Decompress, FlushDecompress, Status};
 
-use super::MAX_DECODED;
+use super::{Decoding, Limited, MAX_DECODED};
 
 pub(crate) const LFH_SIG: [u8; 4] = *b"PK\x03\x04";
 pub(crate) const CFH_SIG: [u8; 4] = *b"PK\x01\x02";
@@ -152,9 +152,12 @@ pub(crate) fn method_name(code: u16) -> Option<&'static str> {
 /// stored and deflated data, which the readers take from the archive as far as it goes.
 pub(crate) fn decode(method: u16, flags: u16, raw: &[u8], size: u64) -> Option<Content<'static>> {
     if ZSTD.contains(&method) {
-        return Some(match super::zstd::decode(raw) {
-            Ok(super::Limited::Whole(content)) => Content::Complete(Cow::Owned(content)),
-            Ok(super::Limited::Cut(content)) => Content::Oversized(Cow::Owned(content)),
+        let mut decoding = Decoding::in_memory();
+        return Some(match super::zstd::decode_into(raw, &mut decoding) {
+            Ok(()) => match decoding.into_limited() {
+                Limited::Whole(content) => Content::Complete(Cow::Owned(content)),
+                Limited::Cut(content) => Content::Oversized(Cow::Owned(content)),
+            },
             Err(_) => Content::Truncated(Cow::Owned(Vec::new())),
         });
     }

@@ -1,11 +1,15 @@
 //! Brotli streams, which brotli-decompressor decodes as `BrotliCompressorInputStream`, over
 //! Google's own Java decoder, decodes them for Tika's `CompressorParser`.
 
-use super::{read_limited, Limited, Undecoded};
+use super::{spool_limited, Limited, Undecoded};
+use crate::input::Input;
 
 /// The content of the Brotli stream `data`, or why it is not decoded natively.
-pub(crate) fn decode(data: &[u8]) -> Result<Limited<Vec<u8>>, Undecoded> {
-    read_limited(brotli_decompressor::Decompressor::new(data, 64 * 1024))
+pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
+    spool_limited(
+        brotli_decompressor::Decompressor::new(data, 64 * 1024),
+        data.len(),
+    )
 }
 
 #[cfg(any(test, feature = "testing"))]

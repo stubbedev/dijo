@@ -404,6 +404,7 @@ fn compressed_content(input: &[u8]) -> Option<Vec<u8>> {
         .and_then(Limited::whole)
         .ok()
         .filter(|inflated| inflated.len() <= MAX_DECOMPRESSED)
+        .map(|inflated| inflated.to_vec())
 }
 
 /// Whether `metadata` types the document `application/pkcs7-signature`.

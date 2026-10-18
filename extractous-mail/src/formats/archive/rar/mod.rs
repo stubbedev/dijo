@@ -108,7 +108,7 @@ pub(super) fn is_rar(data: &[u8]) -> bool {
 
 /// The files of the RAR archive `data` but its directories, with their data, empty for an
 /// entry the port cannot give, if the port reads it.
-pub(super) fn archive_files(data: &[u8]) -> Option<Vec<ArchiveFile>> {
+pub(super) fn archive_files(data: &[u8]) -> Option<Vec<ArchiveFile<'static>>> {
     let headers = headers::read(data).ok()?;
     let (entries, _) = entries(data, &headers).ok()?;
     Some(entries.into_iter().map(|entry| entry.file).collect())
@@ -116,7 +116,7 @@ pub(super) fn archive_files(data: &[u8]) -> Option<Vec<ArchiveFile>> {
 
 /// A file of the archive, and why its data cannot be given, if it cannot.
 struct Entry {
-    file: ArchiveFile,
+    file: ArchiveFile<'static>,
     unread: Option<String>,
 }
 
@@ -160,7 +160,7 @@ fn entries(
                     modified_millis: header.modified_millis,
                     created_millis: header.created_millis,
                     directory: false,
-                    content,
+                    content: content.into(),
                 },
                 unread,
             }
