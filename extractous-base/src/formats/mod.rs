@@ -17,6 +17,7 @@ pub mod ole10_native;
 #[cfg(any(test, feature = "testing"))]
 pub mod parity;
 pub mod secure;
+pub mod wmf_placeable;
 pub mod xhtml;
 pub mod xml;
 pub mod xmp;
