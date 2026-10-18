@@ -51,6 +51,24 @@ pub enum Departure<'a> {
     /// the files a spool holds: each of the native parser's, by its content, one of Tika's
     /// path's, but for those a budget cut, which hold the start of other files.
     Paragraphs(&'a str, &'a [&'a str]),
+    /// Doubled breaks: the XHTML is compared with the second line break after each block
+    /// element, and the second tab before each indented one, taken out, where Tika's path writes
+    /// through two XHTML handlers and the native parser through one. The text output is
+    /// compared in full.
+    DoubledBreaks(&'a str),
+    /// A metadata name whose `meta` element in the XHTML head is compared with the final value
+    /// of the metadata, where Tika's path writes the head with a value it changes later and the
+    /// native parser knows the final one when it writes the head.
+    FinalInHead(&'a str, &'a str),
+    /// Embedded documents whose data cannot be read whole: the native parser records the
+    /// failure as a warning and spools none of such a document, whatever the budget. Tika's path
+    /// copies as much of it as the budget reaches before the failure, and where the copy fails,
+    /// leaves its file unrecorded, so that the next document's file collides with it and the
+    /// parse fails with a `FileAlreadyExistsException`. Where Tika's path fails so, there is
+    /// nothing to compare. Otherwise Tika's spooled files of names the native spool lacks are
+    /// left out, as many as the native parser records warnings Tika's path does not, and the
+    /// files after them numbered on; and those warnings are not compared.
+    UnreadEmbedded(&'a str),
 }
 
 /// What a native parser does otherwise than Tika's path on purpose.

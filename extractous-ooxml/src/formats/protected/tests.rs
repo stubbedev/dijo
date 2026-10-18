@@ -74,10 +74,13 @@ fn assert_same_as_tika_with_single_breaks(documents: &[PathBuf]) {
 /// saying so, as the native parser writes it, where Tika's says `false` before it reads the
 /// sheets (#95). The metadata, which the comparison also holds alike, keeps Tika's final value.
 fn with_protected_sheets_in_head(xhtml: &str) -> String {
-    const META: &str = "<meta name=\"msoffice:excel:protected-worksheet\" content=";
+    let meta = format!(
+        "<meta name=\"{}\" content=",
+        crate::formats::xlsx::excel::PROTECTED_WORKSHEET
+    );
     parity::without_doubled_breaks(xhtml).replace(
-        &format!("{META}\"false\" />"),
-        &format!("{META}\"true\" />"),
+        &format!("{meta}\"false\" />"),
+        &format!("{meta}\"true\" />"),
     )
 }
 

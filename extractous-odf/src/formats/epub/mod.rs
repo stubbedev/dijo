@@ -454,6 +454,18 @@ fn write(
     }
 }
 
+/// For the parity tests: the books of Tika's tests with pictures outside the spine, which the
+/// native parser writes in manifest order and Tika's path in the order of a `HashMap` of their
+/// ids (#88).
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const IN_HASH_ORDER: [&str; 2] = ["testEPUB_multi-metadata-vals.epub", "testiBooks.ibooks"];
+
+/// For the parity tests: the books [`IN_HASH_ORDER`] compared with their lines, and the files a
+/// spool holds, in any order (#88).
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const MANIFEST_ORDER: crate::formats::parity::Departures =
+    &[crate::formats::parity::Departure::Paragraphs("#88", &[])];
+
 /// A native result as Tika's path writes it, without the fixes of #89 that real books
 /// meet everywhere: an element's `xml:lang` and `lang` collapse into the first, named
 /// `lang`, and a publication or modification date beside a `dcterms:created` is dropped,
@@ -533,7 +545,7 @@ mod tests {
     #[cfg(feature = "tika")]
     use crate::formats::parity::{
         assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing_rewriting,
-        assert_same_as_tika_rewriting, conformance_corpus, documents, Departure, Scratch,
+        assert_same_as_tika_rewriting, conformance_corpus, documents, Scratch,
     };
     use std::io::{Cursor, Write};
     #[cfg(feature = "tika")]
@@ -1073,13 +1085,12 @@ mod tests {
         // Their pictures outside the spine come in manifest order, which Tika's `HashMap` of
         // their ids does not keep (#88). The iBooks book's are each read by OCR, so its lines
         // are compared in any order; the pictures of the other share lines.
-        let in_hash_order = ["testEPUB_multi-metadata-vals.epub", "testiBooks.ibooks"];
         let (reordered, parsed): (Vec<&Path>, Vec<&Path>) = parsed
             .iter()
             .map(PathBuf::as_path)
-            .partition(|path| in_hash_order.iter().any(|name| path.ends_with(name)));
+            .partition(|path| IN_HASH_ORDER.iter().any(|name| path.ends_with(name)));
         assert_same_as_tika_rewriting(&parsed, TIKA_NAME, as_tika_writes_it);
-        let [reordered, ibooks] = in_hash_order.map(|name| {
+        let [reordered, ibooks] = IN_HASH_ORDER.map(|name| {
             *reordered
                 .iter()
                 .find(|path| path.ends_with(name))
@@ -1088,7 +1099,7 @@ mod tests {
         assert_same_as_tika_departing_rewriting(
             &[ibooks],
             TIKA_NAME,
-            &[Departure::Paragraphs("#88", &[])],
+            MANIFEST_ORDER,
             Some((as_tika_writes_it, None)),
         );
         let (xml, _) = crate::Extractor::new()
