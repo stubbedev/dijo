@@ -9,6 +9,7 @@ mod workers;
 use std::convert::Infallible;
 use std::future::Future;
 use std::io;
+use std::num::NonZeroU64;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -36,10 +37,11 @@ use crate::cli::{processors_per_process, Embedded, Format, Isolation, Ocr, Serve
 use crate::normalize::{Step, Steps};
 use crate::render::RenderOptions;
 use crate::spool::Spool;
+use crate::tree::Limits;
 use handlers::{error_body, ExtractRequest, Head, Task};
 use metrics::Metrics;
 use processes::ProcessOptions;
-use upload::UploadError;
+use upload::{Name, UploadError};
 use workers::{Chunk, Job, Pool, Workers};
 
 const PASSWORD_HEADER: &str = "x-extractous-password";
@@ -56,6 +58,8 @@ struct State {
     spool: Spool,
     capacity: usize,
     max_input_bytes: Option<u64>,
+    max_output_chars: Option<NonZeroU64>,
+    limits: Limits,
     timeout: Option<Duration>,
     client_timeout: Duration,
     next_id: AtomicU64,
@@ -126,6 +130,8 @@ fn start(args: &ServeArgs) -> Result<bool, String> {
         spool,
         capacity: workers + args.queue,
         max_input_bytes: args.max_input_bytes,
+        max_output_chars: args.max_output_chars,
+        limits: args.limits.limits(),
         timeout: args.timeout.map(Duration::from_secs),
         client_timeout: Duration::from_secs(args.client_timeout.get()),
         next_id: AtomicU64::new(0),
@@ -340,15 +346,20 @@ fn parse_flag(name: &str, value: &str) -> Result<bool, String> {
     }
 }
 
-fn parse_extract_request(request: &Request<Incoming>) -> Result<ExtractRequest, String> {
+fn parse_extract_request(
+    request: &Request<Incoming>,
+    state: &State,
+) -> Result<ExtractRequest, String> {
     let mut extract = ExtractRequest {
         deadline: None,
         embedded: Embedded::Inline,
+        limits: state.limits,
         render: RenderOptions {
             format: Format::Text,
             metadata: false,
             raw_metadata: false,
             normalization: Steps::ALL,
+            max_chars: state.max_output_chars,
         },
         ocr: Ocr::Auto,
         ocr_lang: None,
@@ -403,7 +414,7 @@ fn parse_extract_request(request: &Request<Incoming>) -> Result<ExtractRequest, 
 }
 
 async fn extract(request: Request<Incoming>, state: &Arc<State>) -> Response<ResponseBody> {
-    let task = match parse_extract_request(&request) {
+    let task = match parse_extract_request(&request, state) {
         Ok(extract) => Task::Extract(extract),
         Err(message) => return error(400, &message),
     };
@@ -431,11 +442,13 @@ async fn run(
     if let (Task::Extract(extract), Some(deadline)) = (&mut task, deadline) {
         extract.deadline = Some(deadline.into_std());
     }
-    let name = request
-        .headers()
-        .get(FILENAME_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(upload::file_name);
+    let header = |name| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value: &HeaderValue| value.to_str().ok())
+    };
+    let name = Name::from_hints(header(FILENAME_HEADER), header(CONTENT_TYPE.as_str()));
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let received = upload::receive(
         request.into_body(),

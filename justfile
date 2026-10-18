@@ -345,16 +345,11 @@ ocr-image-reference:
     java -Djava.awt.headless=true "$fixtures/ImageReference.java" "$fixtures/image-reference.tsv.gz" \
         documents=test_files/documents corpus=quality/corpus tika="$CONFORMANCE_CORPUS"
 
-# Build the container image extractous:local, FROM scratch around the static executable that
-# `just static` built.
+# Build the container image extractous:local around the static executable that `just static` built
+# (ci/container.nix) and load it into Docker; `nix build .#container` builds the one without Tika.
 [linux]
 container:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    context=$(mktemp -d)
-    trap 'rm -rf "$context"' EXIT
-    cp target/static-image/extractous "$context/"
-    docker build --file Dockerfile --tag extractous:local "$context"
+    docker load --input "$(ci/container.sh target/static-image/extractous)"
 
 # Retrain the models that tell closely related languages apart (extractous-cli/models/language-groups.bin) from the
 # Wikipedia shards pinned in extractous-cli/models/language-groups.tsv, fetched into target/wikipedia (about 7 GB).
@@ -364,9 +359,8 @@ language-groups:
     set -euo pipefail
     sources=extractous-cli/models/language-groups.tsv
     ci/fetch-wikipedia.sh "$sources" target/wikipedia
-    rev=$(nix eval --raw --impure --expr "(builtins.fromJSON (builtins.readFile $PWD/devenv.lock)).nodes.nixpkgs.locked.rev")
     python=$(nix build --no-link --print-out-paths --impure --expr \
-        "((builtins.getFlake \"github:cachix/devenv-nixpkgs/$rev\").legacyPackages.\${builtins.currentSystem}.python3.withPackages (ps: [ ps.pyarrow ]))")
+        "((import $PWD/ci/nixpkgs.nix).legacyPackages.\${builtins.currentSystem}.python3.withPackages (ps: [ ps.pyarrow ]))")
     "$python/bin/python3" -I extractous-cli/models/language-groups.py "$sources" target/wikipedia target/language-groups
     LANGUAGE_GROUPS_SENTENCES="$PWD/target/language-groups" cargo test --release --package extractous --lib \
         language::groups::tests::train -- --ignored
@@ -384,10 +378,16 @@ static:
     ci/static-image.sh target/static-image/extractous
 
 # Build the statically linked Linux executable without Tika, target/static/extractous: the program alone, with
-# musl, tesseract and libheif linked in, needing nothing at run time and no GraalVM to build.
+# musl, tesseract and libheif linked in, needing nothing at run time and no GraalVM to build (the flake's
+# static output, built with Crane).
 [linux]
 static-native:
-    ci/static.sh target/static/extractous
+    #!/usr/bin/env bash
+    set -euo pipefail
+    built=$(nix build --no-link --print-out-paths .#static)
+    mkdir -p target/static
+    install -m 755 "$built/bin/extractous" target/static/extractous.partial
+    mv target/static/extractous.partial target/static/extractous
 
 # Run the server under load for SOAK_SECONDS (120 by default) per test with a release build:
 # answers stay alike and memory level over a long run, and damaged documents are answered while
@@ -412,12 +412,13 @@ fuzz seconds="300":
 throughput:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test bench --no-capture
 
-# Built optimised with debug assertions and overflow checks kept, reusing the prebuilt native
-# library; arguments, such as `-E 'test(/xlsx/)'`, go to nextest.
-# Compare every native parser with Tika's path on Tika's own test documents.
+# Compare native parsers with Tika's path on Tika's own test documents, built optimised with debug
+# assertions and overflow checks kept, reusing the prebuilt native library. The filter, such as
+# `'test(/xlsx/)'`, narrows the run; further arguments go to nextest. Dates compare in UTC, since
+# Tika writes them in the machine's zone.
 [unix]
 [positional-arguments]
-parity *args:
+parity filter='all()' *args:
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
@@ -430,8 +431,10 @@ parity *args:
             cp -a "$libs/." "$seed/"
         fi
     done
-    cargo nextest run --workspace --lib --cargo-profile parity --run-ignored only \
-        -E 'not test(/^formats::audit::/)' "$@"
+    filter="$1"
+    shift
+    TZ=UTC cargo nextest run --workspace --lib --cargo-profile parity --run-ignored only \
+        -E "($filter) & not test(/^formats::audit::/)" "$@"
 
 # Compare native extraction of Apache Tika's own test documents with Tika on the JVM, fail on
 # any regression and write conformance/MATRIX.md; the corpus and tika-app are cached in target/.

@@ -10,7 +10,8 @@ runs as native code inside the process.
 ## Install
 
 Each [release](https://github.com/stubbedev/extractous/releases) has archives for Linux (x86_64, aarch64, and static
-builds for both, `x86_64-linux-static` and `aarch64-linux-static`), macOS (aarch64) and Windows (x86_64) with the binary, its licence and the third-party notices, plus `SHA256SUMS`, CycloneDX
+builds for both, `x86_64-linux-static` and `aarch64-linux-static`, and the static builds without Tika,
+`x86_64-linux-static-native` and `aarch64-linux-static-native`), macOS (aarch64) and Windows (x86_64) with the binary, its licence and the third-party notices, plus `SHA256SUMS`, CycloneDX
 SBOMs of the Rust crates and Java libraries, and build provenance you can check with
 `gh attestation verify <archive> --repo stubbedev/extractous`.
 
@@ -31,7 +32,9 @@ native parsers read everything they read in the default build, and a document th
 with an `unsupported` error naming why (no native parser for its type, or what of it the native parser does not read
 yet); an embedded document of that kind is reported unread in its container, which is extracted. Unpacking embedded
 documents whole (`extract_embedded_*`) is Tika's alone. `just static-native` builds the statically linked musl
-executable without Tika, with tesseract and libheif linked in, into `target/static/extractous`. The tests that compare
+executable without Tika, with tesseract and libheif linked in, into `target/static/extractous`: the flake's `static`
+output, built with Crane, whose `container` output is the image around it and `static-dependencies` the third-party
+crates alone, which a binary cache serves to CI and fresh machines. The tests that compare
 with Tika's path, or that exercise it, are compiled only with the feature; `cargo nextest run --no-default-features`
 runs the rest.
 
@@ -181,7 +184,7 @@ curl --data-binary @mystery.bin localhost:9998/detect
 
 | Endpoint | |
 | --- | --- |
-| `POST /extract` | The request body is the document. Query: `format` (`text`, `xhtml`, `json`, `pages`, `elements`), `metadata`, `raw_metadata`, `raw`, `no_normalize` (comma-separated steps), `ocr`, `ocr_lang`, as on the command line. Passwords go in `X-Extractous-Password` headers, an optional file name hint in `X-Extractous-Filename`. |
+| `POST /extract` | The request body is the document. Query: `format` (`text`, `xhtml`, `json`, `pages`, `elements`), `metadata`, `raw_metadata`, `raw`, `no_normalize` (comma-separated steps), `ocr`, `ocr_lang`, as on the command line. Passwords go in `X-Extractous-Password` headers, an optional file name hint in `X-Extractous-Filename`; without one, a `Content-Type` other than `application/octet-stream` is the hint. |
 | `POST /detect` | The detected media type, as text. |
 | `GET /healthz`, `GET /readyz` | Liveness, and whether a request would be accepted now. |
 | `GET /metrics` | Prometheus metrics: requests by endpoint and status, failures by category, extraction time per media type, bytes in and out, workers and requests in flight. |
@@ -192,7 +195,10 @@ it is extracted.
 When every worker and queue slot (`--queue`) is busy, requests get 503 with `Retry-After`. A document that cannot be
 extracted at all gets a JSON error document with 415 (unsupported), 422 (corrupt or encrypted) or 500; partial results
 come back as 200 with their status in the JSON. `--max-heap-bytes` caps the Java heap all workers share and each native extraction's memory (an extraction beyond it gets 413), `--max-input-bytes` caps uploads (413) and `--timeout` bounds a whole
-request (408 while uploading, 504 before extraction starts, a cut connection after). SIGTERM stops accepting and waits
+request (408 while uploading, 504 before extraction starts, a cut connection after). `--max-output-chars` cuts a
+document's text short (json, pages and elements report it as partial with a `limit-exceeded` error; XHTML stays
+well-formed), and `--max-depth`, `--max-embedded` and `--max-expanded-bytes` bound `embedded=separate` as on the
+command line. SIGTERM stops accepting and waits
 `--shutdown-grace` seconds for running requests.
 
 `--isolation process` runs each worker as a process of its own instead of a thread, so a parser that crashes, hangs
@@ -211,8 +217,9 @@ Documents and requests are untrusted input. What the server defends against, and
 - **XML attacks.** No parser resolves external entities or loads external DTDs (XXE), and entity expansion is
   capped, so a billion-laughs document fails as `limit-exceeded`. Tests cover XML, SVG and DOCX.
 - **Resource exhaustion.** `--max-input-bytes` caps uploads, `--timeout` caps a request's time, `--max-heap-bytes`
-  caps the Java heap and each native extraction's memory, and `--worker-max-rss-bytes` caps a worker process's memory. Embedded documents have depth,
-  count and expanded-size limits with `embedded=separate`; inline, Tika's zip-bomb guard applies.
+  caps the Java heap and each native extraction's memory, `--worker-max-rss-bytes` caps a worker process's memory,
+  and `--max-output-chars` caps a document's text. Embedded documents have depth, count and expanded-size limits
+  with `embedded=separate`; inline, Tika's zip-bomb guard applies.
 - **Slow and idle clients.** `--client-timeout` closes a connection whose headers arrive too slowly, and answers an
   upload that goes silent with 408.
 - **Busy servers.** Requests beyond the workers and `--queue` are refused with 503, never queued without bound.

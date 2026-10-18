@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use super::{SpreadsheetMlParser, WordMlParser};
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
+    assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus,
+    documents, Scratch, ANCHORED_BLOCKS, ANCHORED_BLOCK_DOCUMENTS,
 };
 use crate::formats::Parser;
 
@@ -85,8 +86,15 @@ fn extracts_tikas_test_office_2003_xml_as_tikas_path_does() {
     let (parsed, deferred) = documents(&WordMlParser, &[&corpus]);
     assert!(deferred.is_empty(), "{deferred:?}");
     assert_eq!(parsed.len(), 3, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    let (anchored, paths): (Vec<&Path>, Vec<&Path>) =
+        parsed.iter().map(PathBuf::as_path).partition(|path| {
+            ANCHORED_BLOCK_DOCUMENTS
+                .iter()
+                .any(|name| path.ends_with(name))
+        });
+    assert_eq!(anchored.len(), 1, "{parsed:?}");
     assert_same_as_tika(&paths, WordMlParser.tika_name());
+    assert_same_as_tika_departing(&anchored, WordMlParser.tika_name(), ANCHORED_BLOCKS);
 
     let (parsed, deferred) = documents(&SpreadsheetMlParser, &[&corpus]);
     assert!(deferred.is_empty(), "{deferred:?}");

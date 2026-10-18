@@ -1282,6 +1282,9 @@ mod tests {
                     }
                     _ => Vec::new(),
                 };
+                if crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS.contains(&name.as_ref()) {
+                    departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
+                }
                 if crate::formats::mail::OTHER_SENDER_NAMES.contains(&name.as_ref()) {
                     departures.push(crate::formats::parity::Departure::Values(
                         "message:from-name",

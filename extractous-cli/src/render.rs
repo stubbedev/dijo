@@ -1,6 +1,8 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::num::NonZeroU64;
 use std::path::Path;
 
 use extractous_core::{EmbeddedSpool, Extractor, Metadata, SpooledEmbedded, StreamReader};
@@ -9,6 +11,7 @@ use crate::cli::Format;
 use serde::{Deserialize, Serialize};
 
 use crate::language::{self, DetectedLanguage, Sample};
+use crate::limit::OutputLimit;
 use crate::normalize::{self, Normalizer, Step, Steps};
 use crate::running::{self, Placement, RunningLines};
 use crate::schema::{self, ErrorCategory, ExtractionError, Source, Status, SCHEMA_VERSION};
@@ -22,6 +25,8 @@ pub struct RenderOptions {
     pub metadata: bool,
     pub raw_metadata: bool,
     pub normalization: Steps,
+    /// The most characters of text the output may have; past them it is cut short.
+    pub max_chars: Option<NonZeroU64>,
 }
 
 impl RenderOptions {
@@ -192,9 +197,23 @@ fn render_text(
     };
     let write = |chunk: &[u8], sink: &mut dyn Write| sink.write_all(chunk);
     let mut copied = match options.format {
-        Format::Xhtml => copy(&mut stream, sink, Steps::NONE, None, write)?,
+        Format::Xhtml => copy(
+            &mut stream,
+            sink,
+            Steps::NONE,
+            OutputLimit::xhtml(options.max_chars),
+            None,
+            write,
+        )?,
         _ if options.needs_xhtml() => copy_pages(&mut stream, sink, options, None, write)?,
-        _ => copy(&mut stream, sink, options.normalization, None, write)?,
+        _ => copy(
+            &mut stream,
+            sink,
+            options.normalization,
+            OutputLimit::text(options.max_chars),
+            None,
+            write,
+        )?,
     };
     let (metadata, embedded) = finish(&stream, &mut copied);
     Ok(Outcome {
@@ -267,6 +286,7 @@ fn render_json(
                     &mut stream,
                     sink,
                     options.normalization,
+                    OutputLimit::text(options.max_chars),
                     Some(&mut sample),
                     write_json_string_content,
                 )?
@@ -448,7 +468,16 @@ fn split_parts(
     let mut running = RunningLines::new(emit, headers);
     let mut run: Option<Normalizer> = None;
     let mut page_begun = false;
-    let split = structure::split(stream, unit, &mut |part| {
+    let mut limit = OutputLimit::text(options.max_chars);
+    let cut = Cell::new(false);
+    let reader = UntilCut {
+        inner: stream,
+        cut: &cut,
+    };
+    let split = structure::split(reader, unit, &mut |part| {
+        if cut.get() {
+            return Ok(());
+        }
         bytes += (part.text.len() + part.artifacts.len()) as u64;
         let mut text = if part.continued || run.is_some() {
             let normalizer = run.get_or_insert_with(|| Normalizer::new(options.normalization));
@@ -463,6 +492,10 @@ fn split_parts(
             normalize::normalize(options.normalization, &part.text)
         };
         let mut artifacts = normalize::normalize(options.normalization, &part.artifacts);
+        text.truncate(limit.admit(text.as_bytes()).len());
+        artifacts.truncate(limit.admit(artifacts.as_bytes()).len());
+        let reached = limit.reached().is_some();
+        cut.set(reached);
         if !headers && !artifacts.is_empty() {
             if !text.is_empty() {
                 text.push('\n');
@@ -484,18 +517,34 @@ fn split_parts(
             page: part.page,
             element: part.element,
             artifacts: (!artifacts.is_empty()).then_some(artifacts),
-            continued: part.continued,
+            continued: part.continued && !reached,
         };
         running.push(place, text, placement)
     })?;
     running.finish()?;
-    Ok(Copied {
-        bytes,
-        error: split.err().map(|error| match error {
+    let error = limit.reached().or_else(|| {
+        split.err().map(|error| match error {
             SplitError::Read(error) => ExtractionError::from_io(&error),
             SplitError::Malformed(message) => ExtractionError::from_message(message),
-        }),
-    })
+        })
+    });
+    Ok(Copied { bytes, error })
+}
+
+/// Reads a stream until the output is cut short, and then reads nothing more, which ends the
+/// extraction.
+struct UntilCut<'c, R> {
+    inner: R,
+    cut: &'c Cell<bool>,
+}
+
+impl<R: Read> Read for UntilCut<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.cut.get() {
+            return Ok(0);
+        }
+        self.inner.read(buffer)
+    }
 }
 
 /// Copies the text of the extracted XHTML's pages into the sink, normalised and without their
@@ -536,11 +585,13 @@ fn copy_pages(
     Ok(copied)
 }
 
-/// Copies the extracted text into the sink, normalised; fails only when the sink does.
+/// Copies the extracted text into the sink, normalised, until it ends or reaches `limit`; fails
+/// only when the sink does.
 fn copy(
     stream: &mut StreamReader,
     sink: &mut dyn Write,
     steps: Steps,
+    mut limit: OutputLimit,
     mut sample: Option<&mut Sample>,
     write: impl Fn(&[u8], &mut dyn Write) -> io::Result<()>,
 ) -> io::Result<Copied> {
@@ -548,27 +599,35 @@ fn copy(
     let mut normalizer = Normalizer::new(steps);
     let mut normalized = Vec::with_capacity(READ_BUFFER_SIZE);
     let mut bytes = 0;
+    let mut pass = |normalized: &[u8], limit: &mut OutputLimit, sink: &mut dyn Write| {
+        let admitted = limit.admit(normalized);
+        if let Some(sample) = sample.as_deref_mut() {
+            sample.push(admitted);
+        }
+        write(admitted, sink)
+    };
     let error = loop {
         match stream.read(&mut buffer) {
             Ok(0) => break None,
             Ok(read) => {
                 normalizer.push(&buffer[..read], &mut normalized);
-                if let Some(sample) = sample.as_deref_mut() {
-                    sample.push(&normalized);
-                }
-                write(&normalized, sink)?;
+                pass(&normalized, &mut limit, sink)?;
                 normalized.clear();
                 bytes += read as u64;
+                if limit.reached().is_some() {
+                    break None;
+                }
             }
             Err(error) => break Some(ExtractionError::from_io(&error)),
         }
     };
     normalizer.finish(&mut normalized);
-    if let Some(sample) = sample {
-        sample.push(&normalized);
-    }
-    write(&normalized, sink)?;
-    Ok(Copied { bytes, error })
+    pass(&normalized, &mut limit, sink)?;
+    write(&limit.closing(), sink)?;
+    Ok(Copied {
+        bytes,
+        error: limit.reached().or(error),
+    })
 }
 
 /// Writes UTF-8 bytes as the inside of a JSON string. Only ASCII needs escaping, so this works on

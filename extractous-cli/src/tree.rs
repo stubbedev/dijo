@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use extractous_core::{EmbeddedSpool, Extractor, SpooledEmbedded};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cache::{Cache, OutputSettings};
 use crate::cli::Format;
@@ -12,7 +12,7 @@ use crate::render::{self, Outcome, RenderOptions};
 use crate::schema::{ErrorCategory, ExtractionError, Source, Status, SCHEMA_VERSION};
 
 /// Bounds on how far, and how much, extraction descends into embedded documents.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Limits {
     pub max_depth: usize,
     pub max_documents: usize,

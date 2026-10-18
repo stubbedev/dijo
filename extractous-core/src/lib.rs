@@ -35,6 +35,14 @@ pub use ocr::tesseract_version;
 
 pub use bundle::{bundled_ocr_licenses, linked_native_licenses};
 
+/// The file extension, with its dot, that Tika's default types give a media type first, such as
+/// `.pdf` for `application/pdf`, whatever its parameters; None for a type they do not know, or
+/// give no extension.
+pub fn media_type_extension(media_type: &str) -> Option<&'static str> {
+    let extension = mime::extension(&mime::MediaType::parse(media_type)?.base_type());
+    (!extension.is_empty()).then_some(extension)
+}
+
 mod fetch;
 mod formats;
 /// The parity harness, which compares the native parsers with Tika's path, for the tests of the

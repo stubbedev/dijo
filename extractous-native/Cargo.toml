@@ -12,7 +12,7 @@ authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
 # Tika's GraalVM native image, built from extractous-core/tika-native, embedded as a shared library.
 tika = []
 # tesseract, Leptonica and libheif linked statically, as `EXTRACTOUS_STATIC_LIBS` lists them, instead
-# of loaded: for the statically linked Linux executable without Tika that ci/static.sh builds.
+# of loaded: for the statically linked Linux executable without Tika that ci/static-native.nix builds.
 static = []
 # Linked into the GraalVM native image of Tika, which ci/static-image.sh builds, instead of loading the
 # image as a shared library.
