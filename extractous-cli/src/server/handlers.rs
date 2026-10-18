@@ -200,6 +200,7 @@ fn extract(
             metadata: false,
             raw_metadata: false,
             normalization: Steps::NONE,
+            max_chars: None,
         };
         if render::render_opened(Err(error.clone()), &source, options, &mut document).is_ok() {
             respond.report(Report::Failure(error.category));

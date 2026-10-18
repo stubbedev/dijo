@@ -195,7 +195,10 @@ it is extracted.
 When every worker and queue slot (`--queue`) is busy, requests get 503 with `Retry-After`. A document that cannot be
 extracted at all gets a JSON error document with 415 (unsupported), 422 (corrupt or encrypted) or 500; partial results
 come back as 200 with their status in the JSON. `--max-heap-bytes` caps the Java heap all workers share and each native extraction's memory (an extraction beyond it gets 413), `--max-input-bytes` caps uploads (413) and `--timeout` bounds a whole
-request (408 while uploading, 504 before extraction starts, a cut connection after). SIGTERM stops accepting and waits
+request (408 while uploading, 504 before extraction starts, a cut connection after). `--max-output-chars` cuts a
+document's text short (json, pages and elements report it as partial with a `limit-exceeded` error; XHTML stays
+well-formed), and `--max-depth`, `--max-embedded` and `--max-expanded-bytes` bound `embedded=separate` as on the
+command line. SIGTERM stops accepting and waits
 `--shutdown-grace` seconds for running requests.
 
 `--isolation process` runs each worker as a process of its own instead of a thread, so a parser that crashes, hangs
@@ -214,8 +217,9 @@ Documents and requests are untrusted input. What the server defends against, and
 - **XML attacks.** No parser resolves external entities or loads external DTDs (XXE), and entity expansion is
   capped, so a billion-laughs document fails as `limit-exceeded`. Tests cover XML, SVG and DOCX.
 - **Resource exhaustion.** `--max-input-bytes` caps uploads, `--timeout` caps a request's time, `--max-heap-bytes`
-  caps the Java heap and each native extraction's memory, and `--worker-max-rss-bytes` caps a worker process's memory. Embedded documents have depth,
-  count and expanded-size limits with `embedded=separate`; inline, Tika's zip-bomb guard applies.
+  caps the Java heap and each native extraction's memory, `--worker-max-rss-bytes` caps a worker process's memory,
+  and `--max-output-chars` caps a document's text. Embedded documents have depth, count and expanded-size limits
+  with `embedded=separate`; inline, Tika's zip-bomb guard applies.
 - **Slow and idle clients.** `--client-timeout` closes a connection whose headers arrive too slowly, and answers an
   upload that goes silent with 408.
 - **Busy servers.** Requests beyond the workers and `--queue` are refused with 503, never queued without bound.

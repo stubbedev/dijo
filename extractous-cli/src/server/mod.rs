@@ -9,6 +9,7 @@ mod workers;
 use std::convert::Infallible;
 use std::future::Future;
 use std::io;
+use std::num::NonZeroU64;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -57,6 +58,7 @@ struct State {
     spool: Spool,
     capacity: usize,
     max_input_bytes: Option<u64>,
+    max_output_chars: Option<NonZeroU64>,
     limits: Limits,
     timeout: Option<Duration>,
     client_timeout: Duration,
@@ -128,6 +130,7 @@ fn start(args: &ServeArgs) -> Result<bool, String> {
         spool,
         capacity: workers + args.queue,
         max_input_bytes: args.max_input_bytes,
+        max_output_chars: args.max_output_chars,
         limits: args.limits.limits(),
         timeout: args.timeout.map(Duration::from_secs),
         client_timeout: Duration::from_secs(args.client_timeout.get()),
@@ -356,6 +359,7 @@ fn parse_extract_request(
             metadata: false,
             raw_metadata: false,
             normalization: Steps::ALL,
+            max_chars: state.max_output_chars,
         },
         ocr: Ocr::Auto,
         ocr_lang: None,

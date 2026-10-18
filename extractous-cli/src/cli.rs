@@ -100,6 +100,12 @@ pub struct ServeArgs {
     )]
     pub client_timeout: NonZeroU64,
 
+    /// The most characters of text one document's output may have; past them it is cut short,
+    /// and json, pages and elements output reports it as partial with a limit-exceeded error.
+    /// XHTML counts the characters of its text, and stays well-formed. Unlimited by default.
+    #[arg(long, value_name = "N", env = "EXTRACTOUS_MAX_OUTPUT_CHARS")]
+    pub max_output_chars: Option<NonZeroU64>,
+
     #[command(flatten)]
     pub limits: EmbeddedLimitsArgs,
 

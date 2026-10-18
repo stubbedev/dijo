@@ -6,6 +6,7 @@ mod cache;
 mod cli;
 mod inputs;
 mod language;
+mod limit;
 mod normalize;
 mod render;
 mod running;
@@ -176,6 +177,7 @@ fn render_options(args: &ExtractArgs) -> RenderOptions {
         metadata: args.metadata,
         raw_metadata: args.raw_metadata,
         normalization: Steps::selected(args.raw, &args.no_normalize),
+        max_chars: None,
     }
 }
 

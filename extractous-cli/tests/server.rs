@@ -551,6 +551,82 @@ fn embedded_document_limits_are_configurable() {
 }
 
 #[test]
+fn output_is_cut_short_at_the_character_limit() {
+    let unlimited = Server::start(&[]);
+    let full_text = unlimited
+        .post_file("/extract", &[], "2022_Q3_AAPL.pdf")
+        .text();
+    let full_xhtml = unlimited
+        .post_file("/extract?format=xhtml", &[], "2022_Q3_AAPL.pdf")
+        .text();
+    drop(unlimited);
+
+    let server = Server::start(&["--max-output-chars", "500"]);
+    let text = server.post_file("/extract", &[], "2022_Q3_AAPL.pdf");
+    assert_eq!(text.status, 200);
+    let text = text.text();
+    assert_eq!(text.trim_end().chars().count(), 500, "{text}");
+    assert!(full_text.starts_with(text.trim_end()));
+
+    let json = server
+        .post_file("/extract?format=json", &[], "2022_Q3_AAPL.pdf")
+        .json();
+    assert_eq!(json["status"], "partial");
+    assert_eq!(json["errors"][0]["category"], "limit-exceeded");
+    assert_eq!(
+        json["text"].as_str().unwrap().trim_end().chars().count(),
+        500
+    );
+
+    let pages = server.post_file("/extract?format=pages", &[], "2022_Q3_AAPL.pdf");
+    let records: Vec<serde_json::Value> = pages
+        .text()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let (document, pages) = records.split_last().unwrap();
+    let characters: usize = pages
+        .iter()
+        .map(|page| page["text"].as_str().unwrap().chars().count())
+        .sum();
+    assert!(characters <= 500, "{characters}");
+    assert!(pages.len() < 28);
+    assert_eq!(document["status"], "partial");
+    assert_eq!(document["errors"][0]["category"], "limit-exceeded");
+
+    let xhtml = server
+        .post_file("/extract?format=xhtml", &[], "2022_Q3_AAPL.pdf")
+        .text();
+    assert!(xhtml.len() < full_xhtml.len());
+    assert!(xhtml.ends_with("</body></html>"), "{xhtml}");
+    let cut = xhtml.rfind("</p>").unwrap();
+    assert!(full_xhtml.starts_with(&xhtml[..cut]));
+
+    let short = server
+        .post_file("/extract?format=json", &[], "simple.odt")
+        .json();
+    assert_eq!(short["status"], "complete");
+    drop(server);
+
+    let in_processes = Server::start(&[
+        "--isolation",
+        "process",
+        "--workers",
+        "1",
+        "--max-output-chars",
+        "500",
+    ]);
+    let json = in_processes
+        .post_file("/extract?format=json", &[], "2022_Q3_AAPL.pdf")
+        .json();
+    assert_eq!(json["status"], "partial");
+    assert_eq!(
+        json["text"].as_str().unwrap().trim_end().chars().count(),
+        500
+    );
+}
+
+#[test]
 fn a_declared_content_type_hints_at_the_type() {
     let server = Server::start(&[]);
     let csv = "table-multi-row-column-cells-actual.csv";
