@@ -31,6 +31,7 @@ use listener::{is_listened, render, Cell, Extracted, Listener, Out, Page, Settin
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::lines;
+use crate::formats::compound::{is_ms_graph_chart, CompoundDocumentParser};
 use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Content, Escher};
 use crate::formats::metadata::write_sheet_numbers;
@@ -42,6 +43,10 @@ use crate::formats::{Declined, Failure, Parser, Prepared, Unported, PASSWORD_USE
 use crate::ole2::{EntryKind, Unreadable};
 
 const MEDIA_TYPE: &str = "application/vnd.ms-excel";
+/// `POIFSDocumentType.XLR`: a Works 7.0 spreadsheet, which `OfficeParser` reads as a workbook.
+const WORKS_SPREADSHEET: &str = "application/x-tika-msworks-spreadsheet";
+/// The types `OfficeParser` reads with its Excel extractor.
+const MEDIA_TYPES: [&str; 2] = [MEDIA_TYPE, WORKS_SPREADSHEET];
 /// `InternalWorkbook.WORKBOOK_DIR_ENTRY_NAMES`, in the order POI looks for them.
 const WORKBOOK_ENTRY_NAMES: [&str; 4] = ["Workbook", "WORKBOOK", "BOOK", "WorkBook"];
 /// The entry of a workbook before BIFF8, which Tika reads with its `OldExcelExtractor`.
@@ -115,25 +120,31 @@ impl Parser for XlsParser {
     }
 
     fn media_types(&self) -> &'static [&'static str] {
-        &[MEDIA_TYPE]
+        &MEDIA_TYPES
     }
 
     /// Fails encrypted workbooks the password does not open, and defers workbooks POI or Tika
-    /// throws on and macros extracted when asked to.
+    /// throws on and macros extracted when asked to. An MS Graph chart, which Tika's detection
+    /// of an embedded storage names a workbook, is read as `OfficeParser` reads it once it has
+    /// detected the chart: its summary information only.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
+        if is_ms_graph_chart(input) {
+            return CompoundDocumentParser.prepare(input, metadata, configs);
+        }
         let workbook = Workbook::read(input, configs)?;
         Ok(Box::new(move |xhtml| workbook.write(xhtml)))
     }
 }
 
-/// A workbook read: the summary information and its content.
+/// A workbook read: the summary information, the type `OfficeParser` sets, and its content.
 struct Workbook {
     summaries: Summaries,
+    media_type: &'static str,
     content: WorkbookContent,
 }
 
@@ -165,7 +176,7 @@ struct Picture {
 
 impl Workbook {
     fn read(input: &[u8], configs: &ParserConfigs) -> Result<Self, Declined> {
-        let file = office::open(input, configs, MEDIA_TYPE, "workbook")?;
+        let (file, media_type) = office::open_as(input, configs, &MEDIA_TYPES, "workbook")?;
         let root = file.root();
         let summaries = Summaries::read(&file, root)?;
         let Some(name) = WORKBOOK_ENTRY_NAMES
@@ -189,6 +200,7 @@ impl Workbook {
             })?;
             return Ok(Workbook {
                 summaries,
+                media_type,
                 content: WorkbookContent::Old(old::text(&stream)?),
             });
         };
@@ -218,6 +230,7 @@ impl Workbook {
         }
         Ok(Workbook {
             summaries,
+            media_type,
             content: WorkbookContent::Biff8(Box::new(Biff8 {
                 asks_password: configs.password.is_some(),
                 read,
@@ -229,7 +242,7 @@ impl Workbook {
 
     fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         self.summaries.write(xhtml.metadata_mut());
-        xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+        xhtml.metadata_mut().set("Content-Type", self.media_type);
         match self.content {
             WorkbookContent::Biff8(workbook) => workbook.write(xhtml),
             WorkbookContent::Old(text) => write_old(&text, xhtml).map_err(Failure::from),

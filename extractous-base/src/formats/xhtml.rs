@@ -941,7 +941,9 @@ impl<'h> Xhtml<'h> {
     }
 
     /// Tika's path's parse of an embedded document `bridged` to it, its events and how it ended,
-    /// which this document has not taken in yet.
+    /// which this document has not taken in yet. It is parsed with the extraction's password,
+    /// as Tika's path parses every embedded document under the password its parse context
+    /// provides.
     #[cfg(feature = "tika")]
     fn parse_with_tika_quietly(
         &self,
@@ -953,7 +955,7 @@ impl<'h> Xhtml<'h> {
             bridged,
             data,
             &metadata.pairs(),
-            &self.embedding.context().configs().with_password(None),
+            self.embedding.context().configs(),
         )
         .map_err(Failure::Embedded)
     }

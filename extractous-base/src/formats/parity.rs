@@ -19,12 +19,15 @@ pub enum Departure<'a> {
     /// Blank lines: the text is compared with each run of white space that holds a line break
     /// (LF or CR) one LF, where the native HTML parser puts the white space around a document's
     /// head and body, and its line breaks, as the WHATWG algorithm says rather than as Tika's
-    /// jsoup does.
+    /// jsoup does, or where blocks held in a paragraph are written before the element they sit
+    /// in closes, the line breaks after them with them ([`ANCHORED_BLOCKS`]).
     BlankLines(&'a str),
     /// Elements: the body of the XHTML output is compared as its text, without its tags, where
-    /// the native HTML parser builds another tree around the same text than Tika's jsoup does,
-    /// as the WHATWG algorithm says: a table inside a paragraph of a quirks mode document, the
-    /// line feed that starts a `pre` left out. The text output is compared in full.
+    /// the native output builds another tree around the same text than Tika's path does: the
+    /// native HTML parser, as the WHATWG algorithm says, with a table inside a paragraph of a
+    /// quirks mode document or the line feed that starts a `pre` left out, or blocks held in a
+    /// paragraph written inside the element they sit in ([`ANCHORED_BLOCKS`]). The text output
+    /// is compared in full.
     Elements(&'a str),
     /// The PNG files of the embedded documents a spool holds: compared by the image each holds,
     /// its size, colour type, depth, resolution and pixels, not by how it is compressed.
@@ -43,6 +46,26 @@ pub enum Departure<'a> {
 /// What a native parser does otherwise than Tika's path on purpose.
 #[cfg(feature = "tika")]
 pub type Departures<'a> = &'a [Departure<'a>];
+
+/// Where a document has a block held in a paragraph that sits in another element of the
+/// paragraph, such as a table's later rows or an embedded document's text in its
+/// `package-entry`: the native handler writes it before that element closes, where Tika's
+/// `AnchoredBlockHandler` moves it after the paragraph, out of the element (#136).
+#[cfg(feature = "tika")]
+pub const ANCHORED_BLOCKS: Departures<'static> =
+    &[Departure::BlankLines("#136"), Departure::Elements("#136")];
+
+/// The documents of Tika's tests that depart by [`ANCHORED_BLOCKS`], by file name: a table in a
+/// paragraph, notes of several paragraphs, and attachments and embedded objects in paragraphs.
+#[cfg(feature = "tika")]
+pub const ANCHORED_BLOCK_DOCUMENTS: [&str; 6] = [
+    "testPages.pages",
+    "testWORD_endnote_table.docx",
+    "testWORD_numbered_list.docx",
+    "testWORD_2003ml.xml",
+    "test-incremental-updates.eml",
+    "testRFC822_normal_zip",
+];
 
 /// The metadata of an extraction, as the two paths are compared on it.
 #[cfg(feature = "tika")]

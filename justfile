@@ -412,12 +412,13 @@ fuzz seconds="300":
 throughput:
     cargo nextest run --package extractous --cargo-profile release --run-ignored only --test bench --no-capture
 
-# Built optimised with debug assertions and overflow checks kept, reusing the prebuilt native
-# library; arguments, such as `-E 'test(/xlsx/)'`, go to nextest.
-# Compare every native parser with Tika's path on Tika's own test documents.
+# Compare native parsers with Tika's path on Tika's own test documents, built optimised with debug
+# assertions and overflow checks kept, reusing the prebuilt native library. The filter, such as
+# `'test(/xlsx/)'`, narrows the run; further arguments go to nextest. Dates compare in UTC, since
+# Tika writes them in the machine's zone.
 [unix]
 [positional-arguments]
-parity *args:
+parity filter='all()' *args:
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
@@ -430,8 +431,10 @@ parity *args:
             cp -a "$libs/." "$seed/"
         fi
     done
-    cargo nextest run --workspace --lib --cargo-profile parity --run-ignored only \
-        -E 'not test(/^formats::audit::/)' "$@"
+    filter="$1"
+    shift
+    TZ=UTC cargo nextest run --workspace --lib --cargo-profile parity --run-ignored only \
+        -E "($filter) & not test(/^formats::audit::/)" "$@"
 
 # Compare native extraction of Apache Tika's own test documents with Tika on the JVM, fail on
 # any regression and write conformance/MATRIX.md; the corpus and tika-app are cached in target/.

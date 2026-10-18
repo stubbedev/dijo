@@ -212,7 +212,8 @@ static PARSERS: &[&dyn Parser] = &[
 /// fallback, the [`empty::EmptyParser`]. A supertype's parser takes the document only where it
 /// reads that type's subtypes. Where Tika's parser for a type is not native, and at a type the
 /// default types do not declare, whose parser in Tika's composite parser only a parse could
-/// tell, Tika's path reads the document.
+/// tell, Tika's path reads the document; but for the undeclared types Tika's detection names
+/// that it is known to read with no parser.
 fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unsupported> {
     install_routes(&Registry);
     let Some(parsed) = MediaType::parse(media_type) else {
@@ -234,6 +235,9 @@ fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unsupported> {
         };
         if let Some(parser) = PARSERS.iter().copied().find(reads) {
             return Ok(parser);
+        }
+        if composite::is_unparsed_undeclared(&kind) {
+            return Ok(&empty::EmptyParser);
         }
         if !mime::declares(&kind) || composite::tika_reads(&kind) {
             return Err(Unsupported::Format(media_type.to_owned()));
@@ -1284,6 +1288,9 @@ mod tests {
                     }
                     _ => Vec::new(),
                 };
+                if crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS.contains(&name.as_ref()) {
+                    departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
+                }
                 if crate::formats::mail::OTHER_SENDER_NAMES.contains(&name.as_ref()) {
                     departures.push(crate::formats::parity::Departure::Values(
                         "message:from-name",

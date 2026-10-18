@@ -10,10 +10,6 @@ use crate::formats::parity::{self, assert_same_as_tika_with_passwords};
 #[cfg(feature = "tika")]
 const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
 
-/// The workbooks of Tika's own tests this port leaves to Tika, with why.
-#[cfg(feature = "tika")]
-const DEFERRED_CONFORMANCE: [(&str, &str); 1] = [("testMSChart-govdocs-428996.xls", "MS Graph")];
-
 /// The encrypted workbooks, by file name, with the password that opens them.
 #[cfg(feature = "tika")]
 const ENCRYPTED: [(&str, &str); 2] = [
@@ -27,46 +23,13 @@ fn file_name(path: &Path) -> String {
 }
 
 #[cfg(feature = "tika")]
-fn deferral(path: &Path, configs: &ParserConfigs) -> Option<String> {
-    let input = std::fs::read(path).unwrap();
-    XlsParser.defers(&input, &TikaMetadata::new(), configs)
-}
-
-/// Of `documents`, those this port reads under `configs`, after checking that it leaves exactly
-/// `deferred` to Tika, by file name and a part of the reason.
-#[cfg(feature = "tika")]
-fn ported(
-    documents: &[PathBuf],
-    deferred: &[(&str, &str)],
-    configs: &ParserConfigs,
-) -> Vec<PathBuf> {
-    let mut ported = Vec::new();
-    let mut unexpected = Vec::new();
-    for document in documents {
-        let name = file_name(document);
-        let expected = deferred.iter().find(|(deferred, _)| *deferred == name);
-        match (deferral(document, configs), expected) {
-            (None, None) => ported.push(document.clone()),
-            (Some(reason), Some((_, why))) if reason.contains(why) => {}
-            (reason, expected) => {
-                unexpected.push(format!("{name}: {reason:?}, expected {expected:?}"))
-            }
-        }
-    }
-    assert!(unexpected.is_empty(), "{}", unexpected.join("\n"));
-    ported
-}
-
-#[cfg(feature = "tika")]
 #[test]
 #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
 fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-    let (mut documents, deferred) = parity::documents(&XlsParser, &[&parity::conformance_corpus()]);
-    documents.extend(deferred);
-    documents.sort();
-    let defaults = ParserConfigs::default();
-    let ported = ported(&documents, &DEFERRED_CONFORMANCE, &defaults);
-    assert_eq!(ported.len(), 27);
+    let (mut ported, deferred) = parity::documents(&XlsParser, &[&parity::conformance_corpus()]);
+    assert!(deferred.is_empty(), "{deferred:?}");
+    ported.sort();
+    assert_eq!(ported.len(), 29);
     let (departing, compared): (Vec<PathBuf>, Vec<PathBuf>) =
         ported.into_iter().partition(|document| {
             DEPARTING
@@ -439,4 +402,16 @@ fn finds_the_pictures_and_the_sheets_showing_them() {
     assert_eq!(picture.data, b"png?");
     assert_eq!(picture.media_type, "image/png");
     assert_eq!(picture.sheets, BTreeSet::from([2]));
+}
+
+/// An MS Graph chart, which Tika's detection of an embedded storage names a workbook, is read
+/// natively, as `OfficeParser` reads it once it detects the chart: its summary information
+/// only, where it was left to Tika (#119).
+#[test]
+fn reads_an_ms_graph_chart_as_office_parser_does_once_it_detects_one() {
+    let chart = crate::ole2::tests::compound(&["Workbook", "\u{1}CompObj"], b"..MSGraph.Chart.8..");
+    assert_eq!(
+        XlsParser.defers(&chart, &TikaMetadata::new(), &configs()),
+        None
+    );
 }

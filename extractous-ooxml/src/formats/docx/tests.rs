@@ -12,7 +12,10 @@ use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::ooxml::testing::relationship;
 use crate::formats::parity;
 #[cfg(feature = "tika")]
-use crate::formats::parity::assert_same_as_tika_with;
+use crate::formats::parity::{
+    assert_same_as_tika_delegating_departing_with, assert_same_as_tika_with, ANCHORED_BLOCKS,
+    ANCHORED_BLOCK_DOCUMENTS,
+};
 use crate::formats::{Chain, Output, StringOut};
 
 #[cfg(feature = "tika")]
@@ -99,7 +102,17 @@ fn word_documents(roots: &[&Path]) -> Vec<PathBuf> {
 
 #[cfg(feature = "tika")]
 fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
-    let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
+    let (anchored, documents): (Vec<&Path>, Vec<&Path>) = documents
+        .iter()
+        .map(PathBuf::as_path)
+        .partition(|path| ANCHORED_BLOCK_DOCUMENTS.contains(&file_name(path).as_str()));
+    assert_same_as_tika_delegating_departing_with(
+        &anchored,
+        TIKA_PARSER,
+        &[],
+        ANCHORED_BLOCKS,
+        configs,
+    );
     assert_same_as_tika_with(&documents, TIKA_PARSER, configs);
 }
 

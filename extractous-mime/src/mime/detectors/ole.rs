@@ -189,6 +189,21 @@ pub fn directory_type(file: &OleFile<'_>, directory: EntryId) -> MediaType {
     by_names(&upper_names(directory), directory)
 }
 
+/// `POIFSContainerDetector.detect` of a `TikaInputStream` holding a directory of an open compound
+/// document, as `handleEmbeddedOfficeDoc` hands a storage on: the directory's names alone, for
+/// the detector consults no streams of a container that is not a whole file system. It names
+/// a storage differently from [`directory_type`] only where the type rests on its streams, such
+/// as an MS Graph chart, which it names a workbook.
+pub fn container_type(file: &OleFile<'_>, directory: EntryId) -> MediaType {
+    by_names(
+        &upper_names(Some(Directory {
+            file,
+            id: directory,
+        })),
+        None,
+    )
+}
+
 /// `POIFSContainerDetector`: `None` for a document without the OLE2 signature.
 pub(crate) fn poifs(data: &[u8], file: Option<&OleFile<'_>>) -> Option<MediaType> {
     if !is_ole(data) {
@@ -235,6 +250,20 @@ mod tests {
             poifs(data, file.as_ref()).unwrap().to_string(),
             misc(data, file.as_ref()).unwrap().to_string(),
         )
+    }
+
+    #[test]
+    fn names_an_open_storage_by_its_names_alone() {
+        let data = compound(&["Workbook", "\u{1}CompObj"], b"..MSGraph.Chart.8..");
+        let file = OleFile::open(&data).unwrap();
+        assert_eq!(
+            directory_type(&file, file.root()).to_string(),
+            MS_GRAPH_CHART
+        );
+        assert_eq!(
+            container_type(&file, file.root()).to_string(),
+            "application/vnd.ms-excel"
+        );
     }
 
     #[test]

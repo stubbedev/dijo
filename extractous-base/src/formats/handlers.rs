@@ -29,6 +29,9 @@ const BLOCKS: [&str; 16] = [
     "title",
 ];
 const CELLS: [&str; 2] = ["td", "th"];
+/// The elements besides [`BLOCKS`] and [`CELLS`] that hold blocks, which [`AnchoredBlocks`]
+/// keeps the blocks it holds in.
+const BLOCK_GROUPS: [&str; 6] = ["tbody", "thead", "tfoot", "ul", "ol", "dl"];
 const PARAGRAPH: &str = "p";
 const MAX_HELD_CHARACTERS: usize = 1 << 20;
 
@@ -138,7 +141,10 @@ enum Held {
 
 /// Writes a block opened in the middle of a paragraph after that paragraph, as our Java
 /// `AnchoredBlockHandler`: OpenDocument comments and Word footnote references arrive inside the
-/// paragraph they are anchored in and would otherwise cut its sentence in two.
+/// paragraph they are anchored in and would otherwise cut its sentence in two. Unlike Java, it
+/// writes the held blocks before the innermost element that holds blocks around them closes,
+/// when that element lies within the paragraph, so a table's later rows stay in their table and
+/// a note's or an embedded document's paragraphs in its div (#136).
 pub struct AnchoredBlocks<H> {
     next: H,
     held: Vec<Held>,
@@ -147,6 +153,11 @@ pub struct AnchoredBlocks<H> {
     paragraph_depth: usize,
     paragraph_has_text: bool,
     holding_depth: usize,
+    /// The depths of the open elements that hold blocks, outermost first.
+    containers: Vec<usize>,
+    /// The depth of the element the held blocks are written in before it closes, or 0 to write
+    /// them after the paragraph.
+    held_container_depth: usize,
     after_held: bool,
 }
 
@@ -160,6 +171,8 @@ impl<H: ContentHandler> AnchoredBlocks<H> {
             paragraph_depth: 0,
             paragraph_has_text: false,
             holding_depth: 0,
+            containers: Vec::new(),
+            held_container_depth: 0,
             after_held: false,
         }
     }
@@ -183,6 +196,7 @@ impl<H: ContentHandler> AnchoredBlocks<H> {
             }
         }
         self.held_characters = 0;
+        self.held_container_depth = 0;
         Ok(())
     }
 }
@@ -211,6 +225,14 @@ impl<H: ContentHandler> ContentHandler for AnchoredBlocks<H> {
             && BLOCKS.contains(&name)
         {
             self.holding_depth = self.depth;
+            if self.held.is_empty() {
+                self.held_container_depth = self
+                    .containers
+                    .last()
+                    .copied()
+                    .filter(|&depth| depth > self.paragraph_depth)
+                    .unwrap_or(0);
+            }
         }
         if self.holding_depth != 0 {
             let owned = attributes
@@ -221,6 +243,9 @@ impl<H: ContentHandler> ContentHandler for AnchoredBlocks<H> {
             return Ok(());
         }
         self.next.start_element(name, attributes)?;
+        if BLOCKS.contains(&name) || CELLS.contains(&name) || BLOCK_GROUPS.contains(&name) {
+            self.containers.push(self.depth);
+        }
         if self.paragraph_depth == 0 && name == PARAGRAPH {
             self.paragraph_depth = self.depth;
             self.paragraph_has_text = false;
@@ -237,6 +262,12 @@ impl<H: ContentHandler> ContentHandler for AnchoredBlocks<H> {
             }
         } else {
             self.after_held = false;
+            if self.containers.last() == Some(&self.depth) {
+                self.containers.pop();
+                if self.depth == self.held_container_depth {
+                    self.release()?;
+                }
+            }
             self.next.end_element(name)?;
             if self.depth == self.paragraph_depth {
                 self.paragraph_depth = 0;
@@ -1248,6 +1279,51 @@ mod tests {
              <xhtml:div xmlns=\"urn:other\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">\
              <xhtml:p>text</xhtml:p></xhtml:div>\
              <h:p xmlns=\"urn:other\" xmlns:h=\"http://www.w3.org/1999/xhtml\" /></html>"
+        );
+    }
+
+    /// Blocks held in a paragraph are written before the innermost element that holds blocks
+    /// around them closes, so a table's later rows stay in their table, while a block anchored
+    /// in the paragraph's text, inline elements included, still follows the paragraph (#136).
+    #[test]
+    fn keeps_held_rows_in_their_table() {
+        use super::{AnchoredBlocks, ContentHandler, ToXml};
+        let mut out = StringOut::default();
+        {
+            let mut handler = AnchoredBlocks::new(ToXml::new(&mut out, None));
+            handler.start_document().unwrap();
+            handler
+                .start_prefix_mapping("", super::XHTML_NAMESPACE)
+                .unwrap();
+            handler.start_element("html", &[]).unwrap();
+            handler.start_element("p", &[]).unwrap();
+            handler.start_element("table", &[]).unwrap();
+            handler.start_element("tbody", &[]).unwrap();
+            for row in ["first", "second", "third"] {
+                handler.start_element("tr", &[]).unwrap();
+                handler.start_element("td", &[]).unwrap();
+                handler.characters(row).unwrap();
+                handler.end_element("td").unwrap();
+                handler.end_element("tr").unwrap();
+            }
+            handler.end_element("tbody").unwrap();
+            handler.end_element("table").unwrap();
+            handler.start_element("i", &[]).unwrap();
+            handler.characters("Anchored").unwrap();
+            handler.start_element("div", &[]).unwrap();
+            handler.characters("note").unwrap();
+            handler.end_element("div").unwrap();
+            handler.end_element("i").unwrap();
+            handler.characters(" here.").unwrap();
+            handler.end_element("p").unwrap();
+            handler.end_element("html").unwrap();
+            handler.end_document().unwrap();
+        }
+        assert_eq!(
+            out.0,
+            "<html xmlns=\"http://www.w3.org/1999/xhtml\"><p><table><tbody><tr><td>first</td></tr><tr><td>second</td></tr>\
+             <tr><td>third</td></tr></tbody></table><i>Anchored</i> here.</p>\
+             <div>note</div></html>"
         );
     }
 
