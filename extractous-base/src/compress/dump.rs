@@ -3,8 +3,11 @@
 //! compressed tape each zlib-compressed or not; the summary, the clear-inode and bitmap
 //! segments skipped; then each inode's header and its data records, the holes of a sparse file
 //! zeros, a directory's entries naming the inodes. An entry is named by the path of names up
-//! to the root; one whose path is not known yet waits until a later directory names it, and is
-//! then given, in the order of its path, with no data, as the stream's state has moved on.
+//! to the root; one whose path is not known yet when it is met is read all the same and named
+//! once a later directory names it, and the entries are given in the order they are met. The
+//! stream gives such an entry when it is named, in the order of its path and with no data, as
+//! its state has moved on (#184). An entry no directory names is left out, as the stream leaves
+//! it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -351,11 +354,12 @@ struct Dirent {
     name: String,
 }
 
-/// An entry waiting for its path, or given one.
-#[derive(Debug, Clone)]
-struct Named {
+/// An entry as it is met, with what the stream reads of its data, and its path once a
+/// directory names it.
+struct Met {
     header: Header,
-    path: String,
+    path: Option<String>,
+    content: Input<'static>,
 }
 
 /// `DumpArchiveInputStream`.
@@ -366,48 +370,67 @@ struct Stream<'a> {
     entry_size: i64,
     entry_offset: i64,
     names: HashMap<i32, Dirent>,
-    pending: BTreeMap<i32, Header>,
-    /// Entries named once their directory was read, given in the order of their paths.
-    queue: Vec<Named>,
+    /// The entries met without a path, by inode: the index each was met at.
+    pending: BTreeMap<i32, usize>,
+    /// The paths of the entries met, by the index each was met at, as they are found.
+    named: Vec<(usize, String)>,
     eof: bool,
 }
 
-/// The entries of the dump archive `data`, as `getNextEntry` gives them, with the data the
-/// stream reads for each but the directories, up to the decode limit of the archive, at which
-/// the entries end.
+/// The entries of the dump archive `data` named by its directories, in the order they are met,
+/// with the data the stream reads for each but the directories, up to the decode limit of the
+/// archive, at which the entries end.
 pub fn entries(data: &[u8]) -> Result<Limited<Vec<DumpEntry>>, Unread> {
     let mut stream =
         Stream::open(data).map_err(|undecoded| Unread::Unopened(undecoded.to_string()))?;
-    let mut entries = Vec::new();
-    while let Some(named) = stream.next_entry().map_err(Unread::Fails)? {
-        let directory = named.header.directory;
-        let mut name = named.path;
-        if directory && !name.ends_with('/') {
-            name.push('/');
-        }
-        if let Some(rest) = name.strip_prefix("./") {
-            name = rest.to_owned();
-        }
-        let mut decoding = Decoding::spooled(data.len(), u64::try_from(named.header.size).ok());
-        if !directory {
+    let mut met: Vec<Met> = Vec::new();
+    let mut cut = false;
+    while let Some(header) = stream.next_entry(met.len()).map_err(Unread::Fails)? {
+        let mut decoding = Decoding::spooled(data.len(), u64::try_from(header.size).ok());
+        if !header.directory {
             stream.read_data(&mut decoding).map_err(Unread::Fails)?;
         }
-        let cut = decoding.is_cut();
-        let entry = DumpEntry {
-            name,
-            directory,
-            size: if directory { -1 } else { named.header.size },
-            modified_millis: named.header.modified_millis,
-            content: match decoding.finish().map_err(Unread::Fails)? {
-                Limited::Whole(content) | Limited::Cut(content) => content,
-            },
+        cut = decoding.is_cut();
+        let content = match decoding.finish().map_err(Unread::Fails)? {
+            Limited::Whole(content) | Limited::Cut(content) => content,
         };
-        entries.push(entry);
+        met.push(Met {
+            header,
+            path: None,
+            content,
+        });
+        for (index, path) in stream.named.drain(..) {
+            met[index].path = Some(path);
+        }
         if cut {
-            return Ok(Limited::Cut(entries));
+            break;
         }
     }
-    Ok(Limited::Whole(entries))
+    let entries = met.into_iter().filter_map(entry).collect();
+    Ok(if cut {
+        Limited::Cut(entries)
+    } else {
+        Limited::Whole(entries)
+    })
+}
+
+/// The entry `met` is, where a directory names it.
+fn entry(met: Met) -> Option<DumpEntry> {
+    let directory = met.header.directory;
+    let mut name = met.path?;
+    if directory && !name.ends_with('/') {
+        name.push('/');
+    }
+    if let Some(rest) = name.strip_prefix("./") {
+        name = rest.to_owned();
+    }
+    Some(DumpEntry {
+        name,
+        directory,
+        size: if directory { -1 } else { met.header.size },
+        modified_millis: met.header.modified_millis,
+        content: met.content,
+    })
 }
 
 impl<'a> Stream<'a> {
@@ -438,7 +461,7 @@ impl<'a> Stream<'a> {
                 },
             )]),
             pending: BTreeMap::new(),
-            queue: Vec::new(),
+            named: Vec::new(),
             eof: false,
         };
         stream.skip_segment(Segment::Clri)?;
@@ -473,63 +496,58 @@ impl<'a> Stream<'a> {
         Ok(Header::parse(&record))
     }
 
-    /// `getNextEntry`, with the entry's path.
-    fn next_entry(&mut self) -> Result<Option<Named>, Undecoded> {
-        if let Some(index) =
-            (0..self.queue.len()).min_by(|&a, &b| self.queue[a].path.cmp(&self.queue[b].path))
-        {
-            return Ok(Some(self.queue.remove(index)));
+    /// `getNextEntry`, but for an entry whose path is not known yet, which it gives as well,
+    /// noting that it waits: the header of the next entry, to be met at `index`. The paths found
+    /// are noted in `named`.
+    fn next_entry(&mut self, index: usize) -> Result<Option<Header>, Undecoded> {
+        if self.eof {
+            return Ok(None);
         }
-        loop {
-            if self.eof {
-                return Ok(None);
+        while (self.read_index as i64) < i64::from(self.active.count) {
+            let sparse = self.active.is_sparse(self.read_index)?;
+            self.read_index += 1;
+            if !sparse && !self.tape.skip(1)? {
+                return Err(eof());
             }
-            while (self.read_index as i64) < i64::from(self.active.count) {
-                let sparse = self.active.is_sparse(self.read_index)?;
-                self.read_index += 1;
-                if !sparse && !self.tape.skip(1)? {
-                    return Err(eof());
-                }
+        }
+        self.read_index = 0;
+        self.active = self.header()?;
+        while self.active.segment == Some(Segment::Addr) {
+            let records = usize::try_from(self.active.count - self.active.holes).unwrap_or(0);
+            if !self.tape.skip(records)? {
+                return Err(eof());
             }
-            self.read_index = 0;
             self.active = self.header()?;
-            while self.active.segment == Some(Segment::Addr) {
-                let records = usize::try_from(self.active.count - self.active.holes).unwrap_or(0);
-                if !self.tape.skip(records)? {
-                    return Err(eof());
-                }
-                self.active = self.header()?;
-            }
-            if self.active.segment == Some(Segment::End) {
-                self.eof = true;
-                return Ok(None);
-            }
-            let header = self.active.clone();
-            if header.directory {
-                self.read_directory(header.clone())?;
-                self.entry_offset = 0;
-                self.entry_size = 0;
-                self.read_index = usize::try_from(self.active.count).unwrap_or(0);
-            } else {
-                self.entry_offset = 0;
-                self.entry_size = header.size;
-                self.read_index = 0;
-            }
-            match self.path(&header)? {
-                Some(path) => return Ok(Some(Named { header, path })),
-                None => {
-                    self.pending.insert(header.ino, header);
-                }
+        }
+        if self.active.segment == Some(Segment::End) {
+            self.eof = true;
+            return Ok(None);
+        }
+        let header = self.active.clone();
+        if header.directory {
+            self.read_directory(header.clone(), index)?;
+            self.entry_offset = 0;
+            self.entry_size = 0;
+            self.read_index = usize::try_from(self.active.count).unwrap_or(0);
+        } else {
+            self.entry_offset = 0;
+            self.entry_size = header.size;
+            self.read_index = 0;
+        }
+        match self.path(header.ino)? {
+            Some(path) => self.named.push((index, path)),
+            None => {
+                self.pending.insert(header.ino, index);
             }
         }
+        Ok(Some(header))
     }
 
     /// `getPath`: the names from the root down to the entry, none where an inode on the way
     /// has no name yet.
-    fn path(&self, header: &Header) -> Result<Option<String>, Undecoded> {
+    fn path(&self, mut ino: i32) -> Result<Option<String>, Undecoded> {
         let mut elements = Vec::new();
         let mut visited = HashSet::new();
-        let mut ino = header.ino;
         loop {
             let Some(dirent) = self.names.get(&ino) else {
                 return Ok(None);
@@ -549,9 +567,10 @@ impl<'a> Stream<'a> {
         Ok(Some(elements.join("/")))
     }
 
-    /// `readDirectoryEntry`: the directory's records and those of the address segments after
-    /// it read, each entry naming an inode, which may give a waiting entry its path.
-    fn read_directory(&mut self, mut header: Header) -> Result<(), Undecoded> {
+    /// `readDirectoryEntry`: the records of the directory met at `index` and those of the
+    /// address segments after it read, each entry naming an inode, which may give a waiting
+    /// entry its path.
+    fn read_directory(&mut self, mut header: Header, index: usize) -> Result<(), Undecoded> {
         let mut size = header.size;
         let mut first = true;
         while first || header.segment == Some(Segment::Addr) {
@@ -559,7 +578,7 @@ impl<'a> Stream<'a> {
                 self.tape.record()?;
             }
             if !self.names.contains_key(&header.ino) && header.segment == Some(Segment::Inode) {
-                self.pending.insert(header.ino, header.clone());
+                self.pending.insert(header.ino, index);
             }
             let records = usize::try_from(header.count).map_err(|_| eof())?;
             let block = self.tape.read(records)?.ok_or_else(eof)?;
@@ -592,14 +611,14 @@ impl<'a> Stream<'a> {
                     },
                 );
                 let mut named = Vec::new();
-                for (&waiting, pending) in &self.pending {
-                    if let Some(path) = self.path(pending)? {
-                        named.push((waiting, path));
+                for (&waiting, &met) in &self.pending {
+                    if let Some(path) = self.path(waiting)? {
+                        named.push((waiting, met, path));
                     }
                 }
-                for (waiting, path) in named {
-                    let header = self.pending.remove(&waiting).expect("the entry waits");
-                    self.queue.push(Named { header, path });
+                for (waiting, met, path) in named {
+                    self.pending.remove(&waiting);
+                    self.named.push((met, path));
                 }
             }
             let peeked = self
@@ -760,24 +779,33 @@ pub mod tests {
         assert_eq!(entries[1].modified_millis, 1_700_000_000_250);
     }
 
-    /// An inode met before the directory that names it waits, losing its data, and comes once
-    /// the directory has been read, in the order of its path.
+    /// An inode met before the directory that names it keeps its data and its place, where
+    /// the stream gives it once the directory is read, in the order of its path and without its
+    /// data (#184); one no directory names is left out.
     #[test]
-    fn gives_an_inode_named_late_once_its_directory_is_read_without_its_data() {
+    fn gives_an_inode_named_late_with_its_data_where_it_is_met() {
         let tape = dump(&[
             header(2, 2, DIRECTORY, 1024, 1),
-            directory(&[(2, "."), (2, ".."), (20, "sub")]),
-            header(2, 30, FILE, 4, 1),
-            data(b"late"),
+            directory(&[(2, "."), (2, ".."), (20, "sub"), (40, "a.txt")]),
+            header(2, 31, FILE, 6, 1),
+            data(b"second"),
+            header(2, 30, FILE, 5, 1),
+            data(b"first"),
+            header(2, 50, FILE, 8, 1),
+            data(b"unnamed!"),
+            header(2, 40, FILE, 5, 1),
+            data(b"after"),
             header(2, 20, DIRECTORY, 1024, 1),
-            directory(&[(20, "."), (2, ".."), (30, "b.txt")]),
+            directory(&[(20, "."), (2, ".."), (30, "a.txt"), (31, "b.txt")]),
         ]);
         assert_eq!(
             read(&tape),
             [
                 (String::new(), true, Vec::new()),
+                ("sub/b.txt".to_owned(), false, b"second".to_vec()),
+                ("sub/a.txt".to_owned(), false, b"first".to_vec()),
+                ("a.txt".to_owned(), false, b"after".to_vec()),
                 ("sub/".to_owned(), true, Vec::new()),
-                ("sub/b.txt".to_owned(), false, Vec::new()),
             ]
         );
     }
