@@ -24,6 +24,7 @@ mod old;
 mod records;
 mod stream;
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufWriter;
 
@@ -94,6 +95,13 @@ impl Parser for OldExcelParser {
         ]
     }
 
+    /// It reads the workbook's records in place, twice: once as far as deciding whether it
+    /// extracts the workbook, then as it writes it, the text of each record written as it
+    /// comes, where `OldExcelExtractor.getText` gives all of it together.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     /// Fails workbooks POI throws on, encrypted ones among them, which POI refuses.
     fn prepare<'a>(
         &self,
@@ -108,10 +116,8 @@ impl Parser for OldExcelParser {
             )
             .into());
         }
-        let text = old::text(input).map_err(Unread::declined)?;
-        Ok(Box::new(move |xhtml| {
-            write_old(&text, xhtml).map_err(Failure::from)
-        }))
+        plan_old(input)?;
+        Ok(Box::new(move |xhtml| write_old(input, xhtml)))
     }
 }
 
@@ -131,9 +137,9 @@ impl Parser for XlsParser {
     /// shared strings and of the drawing groups, the hyperlinks of the sheets and what the
     /// metadata records; once to write it, a sheet whose cells come in order as they come, and
     /// the pictures and embedded documents one at a time, each spooled. What still grows is
-    /// Tika's own: the text outside the cells of a sheet, until the sheet ends; the cells of a
-    /// sheet that come out of order, which Tika's listener sorts; and a workbook before BIFF8,
-    /// read whole as `OldExcelExtractor` reads it.
+    /// Tika's own: the text outside the cells of a sheet, until the sheet ends; and the cells of
+    /// a sheet that come out of order, which Tika's listener sorts. A workbook before BIFF8 is
+    /// read as [`OldExcelParser`] reads one.
     fn footprint(&self) -> Footprint {
         Footprint::Bounded
     }
@@ -190,8 +196,9 @@ struct Workbook<'a> {
 enum WorkbookContent<'a> {
     /// A BIFF8 workbook read through Tika's listener.
     Biff8(Box<Biff8<'a>>),
-    /// The text of a workbook before BIFF8, as `OldExcelExtractor.getText` gives it.
-    Old(String),
+    /// The workbook stream of a workbook before BIFF8, which `OldExcelExtractor.getText`
+    /// reads, in place where it lies in one run.
+    Old(Cow<'a, [u8]>),
 }
 
 /// A BIFF8 workbook planned through Tika's listener, to be written through it, with the
@@ -248,13 +255,17 @@ impl<'a> Workbook<'a> {
                 .child_ignoring_case(root, OLD_BOOK_ENTRY)
                 .filter(|&entry| file.kind(entry) == EntryKind::Document)
                 .ok_or_else(|| poi_throws("the old workbook entry is no stream"))?;
-            let stream = file.read(book).map_err(|Unreadable(reason)| {
-                poi_throws(&format!("cannot read the old workbook stream: {reason}"))
-            })?;
+            let stream = file
+                .content(book)
+                .map_err(|Unreadable(reason)| {
+                    poi_throws(&format!("cannot read the old workbook stream: {reason}"))
+                })?
+                .bytes();
+            plan_old(&stream)?;
             return Ok(Workbook {
                 summaries,
                 media_type,
-                content: WorkbookContent::Old(old::text(&stream).map_err(Unread::declined)?),
+                content: WorkbookContent::Old(stream),
             });
         };
         let entry = file
@@ -296,17 +307,32 @@ impl<'a> Workbook<'a> {
         xhtml.metadata_mut().set("Content-Type", self.media_type);
         match self.content {
             WorkbookContent::Biff8(workbook) => workbook.write(xhtml),
-            WorkbookContent::Old(text) => write_old(&text, xhtml).map_err(Failure::from),
+            WorkbookContent::Old(stream) => write_old(&stream, xhtml),
         }
     }
 }
 
-/// `OldExcelParser.parse`: each line of the text in a paragraph.
-fn write_old(text: &str, xhtml: &mut Xhtml) -> Result<(), Stop> {
-    for line in lines(text) {
-        xhtml.start_element("p")?;
-        xhtml.characters(line)?;
-        xhtml.end_element("p")?;
+/// `OldExcelExtractor.getText` of an old workbook stream read as far as its end, its text let
+/// go, as reading it decides whether it is extracted.
+fn plan_old(stream: &[u8]) -> Result<(), Decline<'static>> {
+    let mut texts = old::Texts::new(stream).map_err(Unread::declined)?;
+    while texts.next().map_err(Unread::declined)?.is_some() {}
+    Ok(())
+}
+
+/// `OldExcelParser.parse`: each line of the text in a paragraph, the text of each record read
+/// and written as it comes. A record's text ends with the line feed `getText` ends its line
+/// with, so that its lines are those of the whole text.
+fn write_old(stream: &[u8], xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let unplanned_old = |unread: Unread| unplanned(&format!("{unread:?}"));
+    let mut texts = old::Texts::new(stream).map_err(unplanned_old)?;
+    while let Some(mut text) = texts.next().map_err(unplanned_old)? {
+        text.push('\n');
+        for line in lines(&text) {
+            xhtml.start_element("p")?;
+            xhtml.characters(line)?;
+            xhtml.end_element("p")?;
+        }
     }
     Ok(())
 }

@@ -36,15 +36,43 @@ enum Biff {
     Five,
 }
 
-/// `OldExcelExtractor.getText` of a workbook stream, from its first record.
-pub(super) fn text(stream: &[u8]) -> Result<String, Unread> {
-    let mut stream = RecordStream::new(stream);
-    let biff = prepare(&mut stream)?;
-    let mut text = String::new();
-    let mut codepage = DEFAULT_CODEPAGE;
-    while stream.has_next_record()? {
-        stream.next_record()?;
-        let line = match stream.sid() {
+/// `OldExcelExtractor.getText` of a workbook stream, a record at a time: the text of each
+/// record it writes a line of, read as it comes.
+pub(super) struct Texts<'s> {
+    stream: RecordStream<'s>,
+    biff: Biff,
+    /// The code page the workbook last named.
+    codepage: i32,
+}
+
+impl<'s> Texts<'s> {
+    /// The texts of a workbook stream, from its first record, which `prepare` reads.
+    pub(super) fn new(stream: &'s [u8]) -> Result<Self, Unread> {
+        let mut stream = RecordStream::new(stream);
+        let biff = prepare(&mut stream)?;
+        Ok(Texts {
+            stream,
+            biff,
+            codepage: DEFAULT_CODEPAGE,
+        })
+    }
+
+    /// The text of the next record `getText` writes a line of, without the line feed it ends
+    /// the line with; `None` past the last record.
+    pub(super) fn next(&mut self) -> Result<Option<String>, Unread> {
+        while self.stream.has_next_record()? {
+            self.stream.next_record()?;
+            if let Some(line) = self.line()? {
+                return Ok(Some(line));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The text of the record the stream is at, if `getText` writes a line of it.
+    fn line(&mut self) -> Result<Option<String>, Unread> {
+        let (stream, biff, codepage) = (&mut self.stream, self.biff, self.codepage);
+        Ok(match stream.sid() {
             sid::FILE_PASS => {
                 return Err(Thrown(
                     "Encryption not supported for Old Excel files: an encrypted old workbook"
@@ -53,53 +81,48 @@ pub(super) fn text(stream: &[u8]) -> Result<String, Unread> {
                 .into())
             }
             old_sid::SHEET => {
-                let name = read_sheet_name(&mut stream)?;
+                let name = read_sheet_name(stream)?;
                 Some(format!("Sheet: {}", decode_codepage(&name, codepage)?))
             }
             kind @ (old_sid::LABEL_BIFF2 | old_sid::LABEL) => {
                 let biff2 = kind == old_sid::LABEL_BIFF2;
-                read_old_cell(&mut stream, biff2)?;
-                let bytes = read_string(&mut stream, biff2)?;
+                read_old_cell(stream, biff2)?;
+                let bytes = read_string(stream, biff2)?;
                 Some(decode_codepage(&bytes, codepage)?)
             }
             kind @ (old_sid::STRING_BIFF2 | old_sid::STRING) => {
-                let bytes = read_string(&mut stream, kind == old_sid::STRING_BIFF2)?;
+                let bytes = read_string(stream, kind == old_sid::STRING_BIFF2)?;
                 Some(decode_codepage(&bytes, codepage)?)
             }
             kind @ (sid::FORMULA | old_sid::FORMULA_BIFF3 | old_sid::FORMULA_BIFF4) => {
                 let number = if biff == Biff::Five {
-                    match read_formula(&mut stream)? {
+                    match read_formula(stream)? {
                         (_, Cached::Number(value)) => Some(value),
                         (_, Cached::Special(_)) => None,
                     }
                 } else {
-                    read_old_formula(&mut stream, kind == sid::FORMULA)?
+                    read_old_formula(stream, kind == sid::FORMULA)?
                 };
                 number.map(java_double_to_string)
             }
             sid::NUMBER => {
-                read_cell(&mut stream)?;
+                read_cell(stream)?;
                 Some(java_double_to_string(stream.read_f64()?))
             }
             sid::RK => {
-                read_cell(&mut stream)?;
+                read_cell(stream)?;
                 Some(java_double_to_string(decode_rk(stream.read_i32()?)))
             }
             old_sid::CODEPAGE => {
-                codepage = i32::from(stream.read_i16()? as u16);
+                self.codepage = i32::from(stream.read_i16()? as u16);
                 None
             }
             _ => {
                 stream.read_remainder()?;
                 None
             }
-        };
-        if let Some(line) = line {
-            text.push_str(&line);
-            text.push('\n');
-        }
+        })
     }
-    Ok(text)
 }
 
 /// `prepare`: the BIFF version of the first record, a BOF record.
