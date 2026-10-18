@@ -2,6 +2,10 @@
 obfuscation and with RC4 CryptoAPI ([MS-OFFCRYPTO] 2.3.5 to 2.3.7, [MS-DOC] 2.2.6, [MS-XLS]
 2.2.10), and checks every encryption msoffcrypto-tool decrypts against what it decrypts.
 
+It also writes the encryptions [MS-OFFCRYPTO] 2.3.1 does not allow, which no Office application
+writes and nothing decrypts: AES in a Word document and a workbook, their data left plain, and RC4
+CryptoAPI in an OOXML package.
+
 Usage: encrypt.py PLAIN.doc PLAIN.xls OUTPUT_DIRECTORY
 """
 
@@ -9,10 +13,12 @@ import hashlib
 import io
 import struct
 import sys
+import zipfile
 from pathlib import Path
 
 import msoffcrypto
 import olefile
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 PASSWORD = "tika"
 
@@ -267,10 +273,11 @@ def with_flags(main, flags, l_key):
     return out
 
 
-def doc_crypto_api(streams, api):
+def with_table_header(streams, header):
+    """The document with `header` at the start of its table stream, `lKey` its length and the
+    table's offsets in the FIB moved past it."""
     main = streams["WordDocument"]
     table = table_name(main)
-    header = api.info()
     main = with_flags(main, F_ENCRYPTED, len(header))
     count = struct.unpack_from("<H", main, FC_LCB_COUNT)[0]
     for pair in range(count):
@@ -278,13 +285,56 @@ def doc_crypto_api(streams, api):
         fc, lcb = struct.unpack_from("<II", main, at)
         if fc or lcb:
             struct.pack_into("<I", main, at, fc + len(header))
-    plain = {**streams, "WordDocument": bytes(main), table: header + streams[table]}
-    starts = {"WordDocument": FIB_BASE, table: len(header), "Data": 0}
+    return {**streams, "WordDocument": bytes(main), table: header + streams[table]}
+
+
+def doc_crypto_api(streams, api):
+    header = api.info()
+    plain = with_table_header(streams, header)
+    starts = {"WordDocument": FIB_BASE, table_name(plain["WordDocument"]): len(header), "Data": 0}
     encrypted = {
         name: api.encrypt(data, starts[name], 512) if name in starts else data
         for name, data in plain.items()
     }
     return plain, encrypted
+
+
+def aes_info(password):
+    """Standard encryption with AES-128 and SHA-1, [MS-OFFCRYPTO] 2.3.4.5 to 2.3.4.9."""
+    flags = 0x04 | 0x20
+    salt = hashlib.sha1(b"aes").digest()[:16]
+    hashed = hashlib.sha1(salt + password.encode("utf-16-le")).digest()
+    for iteration in range(50000):
+        hashed = hashlib.sha1(struct.pack("<I", iteration) + hashed).digest()
+    final = hashlib.sha1(hashed + struct.pack("<I", 0)).digest()
+    key = hashlib.sha1(bytes(0x36 ^ byte for byte in final.ljust(64, b"\0"))).digest()[:16]
+    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+    verifier = hashlib.sha1(salt[::-1]).digest()[:16]
+    encrypted = encryptor.update(verifier + hashlib.sha1(verifier).digest().ljust(32, b"\0"))
+    header = struct.pack("<iiiiiiii", flags, 0, 0x660E, 0x8004, 128, 0x18, 0, 0)
+    header += "Microsoft Enhanced RSA and AES Cryptographic Provider\0".encode("utf-16-le")
+    return (
+        struct.pack("<HHiI", 4, 2, flags, len(header))
+        + header
+        + struct.pack("<I", 16)
+        + salt
+        + encrypted[:16]
+        + struct.pack("<I", 20)
+        + encrypted[16:]
+    )
+
+
+def ooxml_crypto_api(api):
+    """A package of no parts but its content types, encrypted with RC4 CryptoAPI in blocks of 512
+    bytes as a binary document's streams are."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as package:
+        package.writestr(zipfile.ZipInfo("[Content_Types].xml"), "<Types/>")
+    package = buffer.getvalue()
+    return {
+        "EncryptionInfo": api.info(),
+        "EncryptedPackage": struct.pack("<Q", len(package)) + api.encrypt(package, 0, 512),
+    }
 
 
 def word_xor(data, start, array):
@@ -514,6 +564,13 @@ def main(doc_path, xls_path, out_directory):
     (out / "cryptoapi.doc").write_bytes(file)
 
     (out / "xor.doc").write_bytes(Compound(doc_xor(document, PASSWORD)).write())
+
+    aes = aes_info(PASSWORD)
+    (out / "aes.doc").write_bytes(Compound(with_table_header(document, aes)).write())
+    plain = with_file_pass(workbook["Workbook"], struct.pack("<H", 1) + aes)
+    (out / "aes.xls").write_bytes(Compound({**workbook, "Workbook": plain}).write())
+    api = CryptoApi(PASSWORD, 128, 4, "docx")
+    (out / "rc4.docx").write_bytes(Compound(ooxml_crypto_api(api)).write())
 
 
 if __name__ == "__main__":

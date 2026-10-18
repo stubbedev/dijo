@@ -125,6 +125,10 @@ pub enum Unopened {
     Thrown(String),
     /// An encryption this port does not open, which Tika's path opens.
     Unported(String),
+    /// An encryption [MS-OFFCRYPTO] 2.3.1 does not allow in the document, which no Office
+    /// application writes and no decryptor of POI's opens, whatever the password: AES in a
+    /// binary document, RC4 in an OOXML package.
+    Disallowed(&'static str),
 }
 
 impl Unopened {
@@ -134,6 +138,9 @@ impl Unopened {
                 "POI throws reading the document's encryption, which fails Tika's parse: {reason}"
             )),
             Unopened::Unported(reason) => Unported(reason),
+            Unopened::Disallowed(encryption) => Unported(format!(
+                "{encryption}, which [MS-OFFCRYPTO] does not allow and POI does not decrypt"
+            )),
         }
     }
 }
@@ -276,8 +283,12 @@ impl EncryptionInfo {
         match read_encryption(data, mode)? {
             AnyEncryption::BinaryRc4(rc4) => Ok(EncryptionInfo::BinaryRc4(rc4)),
             AnyEncryption::CryptoApi(api) => Ok(EncryptionInfo::CryptoApi(api)),
-            AnyEncryption::Standard(_) | AnyEncryption::Agile(_) => Err(Unopened::Unported(
-                "a binary document encrypted with AES, which this port does not decrypt".to_owned(),
+            AnyEncryption::Standard(_) => {
+                Err(Unopened::Disallowed("a binary document encrypted with AES"))
+            }
+            AnyEncryption::Agile(_) => Err(Unopened::Unported(
+                "a binary document with agile encryption, which this port does not decrypt"
+                    .to_owned(),
             )),
         }
     }
@@ -296,9 +307,9 @@ impl PackageEncryption {
         match read_encryption(data, Mode::Unset)? {
             AnyEncryption::Standard(standard) => Ok(PackageEncryption::Standard(standard)),
             AnyEncryption::Agile(agile) => Ok(PackageEncryption::Agile(agile)),
-            AnyEncryption::BinaryRc4(_) | AnyEncryption::CryptoApi(_) => Err(Unopened::Unported(
-                "an OOXML package encrypted with RC4, which this port does not decrypt".to_owned(),
-            )),
+            AnyEncryption::BinaryRc4(_) | AnyEncryption::CryptoApi(_) => {
+                Err(Unopened::Disallowed("an OOXML package encrypted with RC4"))
+            }
         }
     }
 
@@ -649,10 +660,7 @@ pub struct CryptoApi {
 impl CryptoApi {
     fn new(header: Header, verifier: Verifier) -> Result<CryptoApi, Unopened> {
         if header.cipher != Cipher::Rc4 {
-            return Err(Unopened::Unported(
-                "CryptoAPI encryption with a cipher other than RC4, which this port does not open"
-                    .to_owned(),
-            ));
+            return Err(Unopened::Disallowed("a binary document encrypted with AES"));
         }
         Ok(CryptoApi {
             hash: header.hash,

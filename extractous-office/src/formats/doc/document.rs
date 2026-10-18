@@ -19,7 +19,7 @@ use super::styles::StyleSheet;
 use super::text::{ComplexFileTable, Plex};
 use crate::config::ParserConfigs;
 use crate::formats::crypt::xor::{WordXorKey, Xor};
-use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Mode, Rc4Keys};
+use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Mode, Rc4Keys, Unopened};
 use crate::formats::escher::{self, Escher};
 use crate::formats::poi::{i16_at, i32_at, u16_at, u8_at, Read, Thrown};
 use crate::formats::{Decline, Unported};
@@ -43,6 +43,11 @@ const WRONG_PASSWORD: &str = "org.apache.poi.EncryptedDocumentException: documen
                               password is invalid - use \
                               Biff8EncryptionKey.setCurrentUserPasswort() to set password before \
                               opening";
+/// The exception POI throws on a document encrypted with AES, whatever the password: its
+/// standard decryptor takes no chunk size, which `getEncryptionInfo` sets before it checks the
+/// password.
+const UNCHUNKED_DECRYPTOR: &str = "org.apache.poi.EncryptedDocumentException: this decryptor \
+                                   doesn't support changing the chunk size";
 const DOP_SIZE: i32 = 500;
 const SED_SIZE: i32 = 12;
 const FSPA_SIZE: i32 = 26;
@@ -356,7 +361,10 @@ fn encryption(
     let header_length = encryption_header_length(main)?;
     let table = document_bytes(file, root, table_name)?;
     let header = &table[..header_length.min(table.len())];
-    let info = EncryptionInfo::read(header, Mode::Unset).map_err(|unopened| unopened.unported())?;
+    let info = EncryptionInfo::read(header, Mode::Unset).map_err(|unopened| match unopened {
+        Unopened::Disallowed(_) => Decline::Fails(crypt::encrypted(Some(UNCHUNKED_DECRYPTOR))),
+        unopened => unopened.unported().into(),
+    })?;
     info.verify(password)
         .map(|keys| {
             Some(DocumentKey::Rc4 {

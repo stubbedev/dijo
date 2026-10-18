@@ -13,7 +13,7 @@ use super::records::{read_record, sid, CellRef, Record};
 use super::stream::RecordStream;
 use crate::config::ParserConfigs;
 use crate::formats::crypt::xor::{ExcelXorKey, Xor};
-use crate::formats::crypt::{self, ChunkedKeyStream, EncryptionInfo, Mode, Rc4Keys};
+use crate::formats::crypt::{self, ChunkedKeyStream, EncryptionInfo, Mode, Rc4Keys, Unopened};
 use crate::formats::poi::{thrown, Read};
 use crate::formats::{Decline, Unported};
 
@@ -284,7 +284,11 @@ pub(super) enum WorkbookKey {
 }
 
 /// `FilePassRecord`'s encryption, which a workbook reads as CryptoAPI where its version allows.
-fn file_pass_encryption(data: &[u8]) -> Result<Encryption, Unported> {
+///
+/// A workbook encrypted with AES, which no Office application writes, fails as encrypted
+/// whatever the password. Tika's path fails on it with the `IllegalArgumentException` POI
+/// throws, in a message that names a Java object's hash (#166).
+fn file_pass_encryption(data: &[u8]) -> Result<Encryption, Decline<'static>> {
     let kind = data
         .get(..2)
         .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
@@ -297,10 +301,14 @@ fn file_pass_encryption(data: &[u8]) -> Result<Encryption, Unported> {
             return Err(Unported(
                 "a FILEPASS record of an encryption type POI throws on, which fails Tika's parse"
                     .to_owned(),
-            ))
+            )
+            .into())
         }
     }
-    .map_err(|unopened| unopened.unported())
+    .map_err(|unopened| match unopened {
+        Unopened::Disallowed(_) => Decline::Fails(crypt::encrypted(None)),
+        unopened => unopened.unported().into(),
+    })
 }
 
 /// The records of `data` from `start` decrypted in place as `Biff8DecryptingStream` reads them:
