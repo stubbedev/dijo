@@ -109,6 +109,11 @@ pub(crate) fn i32_at(data: &[u8], at: usize) -> Read<i32> {
 /// `IOUtils.safelyClone(data, offset, length, max)`: the bytes from `offset`, as many as there
 /// are up to `length`.
 pub(crate) fn safely_clone(data: &[u8], offset: i64, length: i64, max: i64) -> Read<Vec<u8>> {
+    safely_borrow(data, offset, length, max).map(<[u8]>::to_vec)
+}
+
+/// The bytes [`safely_clone`] copies, where they are.
+pub(crate) fn safely_borrow(data: &[u8], offset: i64, length: i64, max: i64) -> Read<&[u8]> {
     if offset < 0 || length < 0 {
         return thrown(format!(
             "Invalid offset/length specified: offset: {offset}, length: {length}"
@@ -119,7 +124,7 @@ pub(crate) fn safely_clone(data: &[u8], offset: i64, length: i64, max: i64) -> R
         return thrown(format!("Tried to allocate an array of length {real}"));
     }
     let start = offset as usize;
-    Ok(data[start..start + real as usize].to_vec())
+    Ok(&data[start..start + real as usize])
 }
 
 /// `InflaterInputStream` read to its end, or to `limit` bytes where a `BoundedInputStream` stops

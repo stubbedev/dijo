@@ -10,7 +10,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::Unread;
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::{Decline, Footprint, Parser, Prepared};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::Ole2;
 
@@ -82,6 +82,12 @@ impl Parser for CompoundDocumentParser {
 
     fn media_types_with_subtypes(&self) -> &'static [&'static str] {
         &[UNKNOWN_COMPOUND]
+    }
+
+    /// It reads only the directory of the compound document and its summary information, in
+    /// place.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     /// Defers macros extracted when asked to, and fails a document POI does not open, a DRM
@@ -230,5 +236,26 @@ mod tests {
                 if error.to_string() == crypt::encrypted_document(DRM_UNSUPPORTED).to_string()
         ));
         assert_fails_as_tika(&[&drm]);
+    }
+}
+
+#[cfg(test)]
+mod large {
+    use extractous_core::large::LargeFile;
+
+    use crate::input::MAX_READ_WHOLE;
+
+    /// A compound document too large to read whole is read as far as its directory and summary
+    /// information, in place, in memory that does not grow with it.
+    #[test]
+    fn reads_compound_documents_too_large_to_read_whole_in_bounded_memory() {
+        let content = vec![0x5A; MAX_READ_WHOLE as usize + 1];
+        let document = crate::ole2::tests::compound(&["Contents"], &content);
+        drop(content);
+        let file = LargeFile::new("large.ole", &document, 0, |_| Vec::new(), b"");
+        drop(document);
+        let (text, metadata) = file.extract("extractous::OfficeParser");
+        assert_eq!(text.trim(), "");
+        assert_eq!(metadata["Content-Type"], ["application/x-tika-msoffice"]);
     }
 }

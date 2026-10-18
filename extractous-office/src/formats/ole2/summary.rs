@@ -70,10 +70,10 @@ impl Summaries {
             if file.kind(entry) != EntryKind::Document {
                 continue;
             }
-            let Ok(stream) = file.read(entry) else {
+            let Ok(stream) = file.content(entry) else {
                 continue;
             };
-            if let Some(set) = property_set::read(&stream)? {
+            if let Some(set) = property_set::read(&stream.bytes())? {
                 sets.push(set);
             }
         }

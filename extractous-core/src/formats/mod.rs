@@ -1655,13 +1655,13 @@ mod tests {
     }
 
     /// Files too large to read whole, in a directory of their own removed when they are dropped:
-    /// a WAVE file, an MP4 file, a PDF and an RTF document of 2 GiB each.
+    /// a WAVE file, an MP4 file, a PDF and a Word document of 2 GiB each.
     struct LargeFiles {
         dir: std::path::PathBuf,
         wave: String,
         mp4: String,
         pdf: String,
-        rtf: String,
+        doc: String,
     }
 
     impl LargeFiles {
@@ -1671,11 +1671,11 @@ mod tests {
             std::fs::create_dir(&dir).unwrap();
             let large = 2u64 << 30;
             let path = |name: &str| dir.join(name).to_str().unwrap().to_owned();
-            let (wave, mp4, pdf, rtf) = (
+            let (wave, mp4, pdf, doc) = (
                 path("long.wav"),
                 path("long.mp4"),
                 path("long.pdf"),
-                path("long.rtf"),
+                path("long.doc"),
             );
             let samples = u32::try_from(large).unwrap() - 44;
             sparse(wave.as_ref(), &wave_header(samples), large);
@@ -1686,13 +1686,17 @@ mod tests {
                 large,
             );
             sparse(pdf.as_ref(), b"%PDF-1.4\n", large);
-            sparse(rtf.as_ref(), b"{\\rtf1 ", large);
+            sparse(
+                doc.as_ref(),
+                &crate::ole2::tests::compound(&["WordDocument"], b""),
+                large,
+            );
             Self {
                 dir,
                 wave,
                 mp4,
                 pdf,
-                rtf,
+                doc,
             }
         }
     }
@@ -1720,16 +1724,16 @@ mod tests {
         }
         #[cfg(feature = "tika")]
         assert!(matches!(
-            route_file(&files.rtf),
+            route_file(&files.doc),
             Err(Unsupported::TooLarge {
-                parser: "extractous::RTFParser",
+                parser: "extractous::OfficeParser",
                 limit: input::MAX_READ_WHOLE,
             })
         ));
         #[cfg(not(feature = "tika"))]
         {
-            let routed = route_file(&files.rtf).unwrap();
-            assert_eq!(routed.parser.name(), "extractous::RTFParser");
+            let routed = route_file(&files.doc).unwrap();
+            assert_eq!(routed.parser.name(), "extractous::OfficeParser");
             assert!(routed.input.is_mapped());
         }
     }

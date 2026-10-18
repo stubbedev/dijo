@@ -3,6 +3,8 @@
 //! directory entries, opened where POI opens one and failing where it fails. Tika's detectors
 //! name a document by its entries, and its Office parsers read the documents in them.
 
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::collections::HashSet;
 
 mod write;
@@ -73,27 +75,32 @@ fn int_at(bytes: &[u8], offset: usize) -> i32 {
 }
 
 /// POI's `ChainLoopDetector`: a block claimed twice is a loop; blocks past the data are not
-/// tracked.
+/// tracked. A bit per block.
 struct LoopDetector {
-    used: Vec<bool>,
+    used: Vec<u64>,
+    blocks: usize,
 }
 
 impl LoopDetector {
     fn new(raw_size: usize, block_size: usize) -> LoopDetector {
+        let blocks = raw_size.div_ceil(block_size);
         LoopDetector {
-            used: vec![false; raw_size.div_ceil(block_size)],
+            used: vec![0; blocks.div_ceil(64)],
+            blocks,
         }
     }
 
     fn claim(&mut self, block: i32) -> Result<()> {
-        if block >= 0 && block as usize >= self.used.len() {
+        if block >= 0 && block as usize >= self.blocks {
             return Ok(());
         }
         let slot =
             usize::try_from(block).map_err(|_| Unreadable("a chain names a negative block"))?;
-        if std::mem::replace(&mut self.used[slot], true) {
+        let (word, bit) = (slot / 64, 1u64 << (slot % 64));
+        if self.used[word] & bit != 0 {
             return Err(Unreadable("a chain loops"));
         }
+        self.used[word] |= bit;
         Ok(())
     }
 }
@@ -109,14 +116,27 @@ enum Source {
     Stream,
 }
 
-/// A compound document POI opened.
+/// The big blocks of the mini stream, as far as `StreamBlockOffsetIterator` walks its chain
+/// before it fails, and why it fails past them.
+#[derive(Debug)]
+struct MiniStream {
+    blocks: Vec<i32>,
+    past: Unreadable,
+}
+
+/// A compound document POI opened. Its blocks are read in place: the block allocation tables
+/// are kept as the blocks that hold them, and a document's content as the runs of the data it
+/// lies in.
 pub struct Ole2<'a> {
     data: &'a [u8],
     source: Source,
     block_size: usize,
-    bats: Vec<Vec<i32>>,
-    sbats: Vec<Vec<i32>>,
+    /// The blocks of the block allocation table, in its order.
+    bats: Vec<i32>,
+    /// The blocks of the small block allocation table, in its order.
+    sbats: Vec<i32>,
     properties: Vec<Option<Property>>,
+    mini_stream: OnceCell<MiniStream>,
 }
 
 impl<'a> Ole2<'a> {
@@ -157,6 +177,7 @@ impl<'a> Ole2<'a> {
             bats: Vec::new(),
             sbats: Vec::new(),
             properties: Vec::new(),
+            mini_stream: OnceCell::new(),
         };
         let property_start = int_at(&header, 0x30);
         let sbat_start = int_at(&header, 0x3C);
@@ -172,15 +193,16 @@ impl<'a> Ole2<'a> {
             let at = int_at(&header, 0x4C + 4 * i);
             file.read_bat(at, &mut detector)?;
         }
-        let entries = block_size / 4;
+        let entries = file.entries_per_block();
         let mut remaining = bat_count - in_header;
         let mut next = xbat_start;
         for _ in 0..xbat_count.max(0) {
             detector.claim(next)?;
             let xbat = file.int_block(next)?;
-            next = xbat[entries - 1];
+            next = file.table_entry(xbat, entries - 1);
             let count = remaining.min(entries as i32 - 1);
-            for &at in xbat.iter().take(count.max(0) as usize) {
+            for index in 0..count.max(0) as usize {
+                let at = file.table_entry(xbat, index);
                 if at == UNUSED_BLOCK || at == END_OF_CHAIN {
                     break;
                 }
@@ -208,56 +230,69 @@ impl<'a> Ole2<'a> {
         Ok(())
     }
 
-    /// A big block as POI's data source reads it: padded with zeros past the end of a file, short
-    /// past the end of a stream.
-    fn block(&self, index: i32) -> Result<Vec<u8>> {
+    fn entries_per_block(&self) -> usize {
+        self.block_size / 4
+    }
+
+    /// Where a big block starts in the data, if it starts inside it.
+    fn block_start(&self, index: i32) -> Result<usize> {
         let start = (i64::from(index) + 1) * self.block_size as i64;
         if start < 0 || start >= self.data.len() as i64 {
             return Err(Unreadable("a block lies outside the document"));
         }
-        let start = start as usize;
+        Ok(start as usize)
+    }
+
+    /// A big block as POI's data source reads it: padded with zeros past the end of a file, short
+    /// past the end of a stream.
+    fn block(&self, index: i32) -> Result<Cow<'a, [u8]>> {
+        let start = self.block_start(index)?;
         let end = (start + self.block_size).min(self.data.len());
-        let mut block = self.data[start..end].to_vec();
-        if self.source == Source::File {
-            block.resize(self.block_size, 0);
+        let block = &self.data[start..end];
+        if self.source == Source::Stream || block.len() == self.block_size {
+            return Ok(Cow::Borrowed(block));
         }
-        Ok(block)
+        let mut padded = block.to_vec();
+        padded.resize(self.block_size, 0);
+        Ok(Cow::Owned(padded))
     }
 
-    /// A big block whole, as `PropertyTable` copies a short one into a block of zeros.
-    fn padded_block(&self, index: i32) -> Result<Vec<u8>> {
-        let mut block = self.block(index)?;
-        block.resize(self.block_size, 0);
-        Ok(block)
-    }
-
-    /// A block of a block allocation table, which `BATBlock.createBATBlock` reads whole.
-    fn int_block(&self, index: i32) -> Result<Vec<i32>> {
-        let block = self.block(index)?;
-        if block.len() < self.block_size {
+    /// A block of a block allocation table, which `BATBlock.createBATBlock` reads whole: the
+    /// block, whose entries are then read in place.
+    fn int_block(&self, index: i32) -> Result<i32> {
+        let start = self.block_start(index)?;
+        if self.source == Source::Stream && start + self.block_size > self.data.len() {
             return Err(Unreadable(
                 "a block allocation table lies in the block the stream ends inside",
             ));
         }
-        Ok(block
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|c| i32::from_le_bytes(*c))
-            .collect())
+        Ok(index)
     }
 
-    fn next_in(table: &[Vec<i32>], entries: usize, block: i32) -> Result<i32> {
+    /// The `index`th entry of the block allocation table block `block`, zero past the end of a
+    /// file.
+    fn table_entry(&self, block: i32, index: usize) -> i32 {
+        let at = (block as usize + 1) * self.block_size + 4 * index;
+        let mut bytes = [0u8; 4];
+        if let Some(available) = self.data.get(at..) {
+            let length = available.len().min(4);
+            bytes[..length].copy_from_slice(&available[..length]);
+        }
+        i32::from_le_bytes(bytes)
+    }
+
+    fn next_in(&self, table: &[i32], block: i32) -> Result<i32> {
         let block =
             usize::try_from(block).map_err(|_| Unreadable("a chain names a negative block"))?;
+        let entries = self.entries_per_block();
         table
             .get(block / entries)
-            .map(|bat| bat[block % entries])
+            .map(|&bat| self.table_entry(bat, block % entries))
             .ok_or(Unreadable("a block lies outside the allocation table"))
     }
 
     fn next_block(&self, block: i32) -> Result<i32> {
-        Self::next_in(&self.bats, self.block_size / 4, block)
+        self.next_in(&self.bats, block)
     }
 
     /// The big blocks of a chain, as `POIFSStream` iterates them.
@@ -270,40 +305,53 @@ impl<'a> Ole2<'a> {
         let mut next = start;
         while next != END_OF_CHAIN {
             detector.claim(next)?;
-            self.block(next)?;
+            self.block_start(next)?;
             blocks.push(next);
             next = self.next_block(next)?;
         }
         Ok(blocks)
     }
 
-    /// The `n`th big block of a chain, walked as `StreamBlockOffsetIterator` walks it: each
-    /// block claimed and its successor looked up.
-    fn nth_in_chain(&self, start: i32, n: usize) -> Result<i32> {
-        let past = Unreadable("the mini stream ends before a small block");
-        if start == END_OF_CHAIN {
-            return Err(past);
-        }
-        let mut detector = LoopDetector::new(self.data.len(), self.block_size);
-        let mut next = start;
-        for _ in 0..n {
-            if next == END_OF_CHAIN {
-                return Err(past);
+    /// The big blocks of the mini stream as `StreamBlockOffsetIterator` walks them, each block
+    /// claimed and its successor looked up, up to the first it fails on: walked once, as every
+    /// walk of it from its start is alike.
+    fn mini_stream(&self) -> &MiniStream {
+        self.mini_stream.get_or_init(|| {
+            let past = Unreadable("the mini stream ends before a small block");
+            let mut detector = LoopDetector::new(self.data.len(), self.block_size);
+            let mut blocks = Vec::new();
+            let mut next = self.entry(self.root()).start;
+            loop {
+                if next == END_OF_CHAIN {
+                    return MiniStream { blocks, past };
+                }
+                let step = detector.claim(next).and_then(|()| self.next_block(next));
+                match step {
+                    Ok(successor) => {
+                        blocks.push(next);
+                        next = successor;
+                    }
+                    Err(unreadable) => {
+                        return MiniStream {
+                            blocks,
+                            past: unreadable,
+                        }
+                    }
+                }
             }
-            detector.claim(next)?;
-            next = self.next_block(next)?;
-        }
-        if next == END_OF_CHAIN {
-            return Err(past);
-        }
-        detector.claim(next)?;
-        self.next_block(next)?;
-        Ok(next)
+        })
+    }
+
+    /// The `n`th big block of the mini stream.
+    fn nth_in_mini_stream(&self, n: usize) -> Result<i32> {
+        let mini = self.mini_stream();
+        mini.blocks.get(n).copied().ok_or_else(|| mini.past.clone())
     }
 
     fn read_properties(&mut self, start: i32) -> Result<()> {
         for block in self.chain(start)? {
-            let data = self.padded_block(block)?;
+            let mut data = self.block(block)?.into_owned();
+            data.resize(self.block_size, 0);
             for raw in data.as_chunks::<PROPERTY_SIZE>().0 {
                 let kind = match raw[0x42] {
                     1 => EntryKind::Directory,
@@ -502,21 +550,26 @@ impl<'a> Ole2<'a> {
 
     /// The content of a document entry, read whole as `DocumentInputStream` reads it.
     pub fn read(&self, id: EntryId) -> Result<Vec<u8>> {
+        self.content(id).map(|content| content.to_vec())
+    }
+
+    /// The content of a document entry as `DocumentInputStream` reads it, in place: its chain
+    /// walked and checked as POI walks it, and its bytes left where they lie.
+    pub fn content(&self, id: EntryId) -> Result<Content<'a>> {
         let entry = self.entry(id);
         let size =
             usize::try_from(entry.size).map_err(|_| Unreadable("a document's size is negative"))?;
+        let mut runs = Runs::new(size);
         if size == 0 {
-            return Ok(Vec::new());
+            return Ok(runs.into_content(self.data));
         }
         let past = Unreadable("a document's chain ends before its size");
-        let mut content = Vec::with_capacity(size);
         if entry.size < BIG_BLOCK_MINIMUM_DOCUMENT_SIZE {
-            let root = self.entry(self.root());
-            let root_size = usize::try_from(root.size)
+            let root_size = usize::try_from(self.entry(self.root()).size)
                 .map_err(|_| Unreadable("the mini stream's size is negative"))?;
             let mut detector = LoopDetector::new(root_size, SMALL_BLOCK_SIZE);
             let mut next = entry.start;
-            while content.len() < size {
+            while !runs.is_full() {
                 if next == END_OF_CHAIN {
                     return Err(past);
                 }
@@ -525,29 +578,187 @@ impl<'a> Ole2<'a> {
                 let big = usize::try_from(byte_offset / self.block_size as i64)
                     .map_err(|_| Unreadable("a small block lies before the mini stream"))?;
                 let within = (byte_offset % self.block_size as i64) as usize;
-                let block = self.block(self.nth_in_chain(root.start, big)?)?;
-                let piece = block
-                    .get(within..within + SMALL_BLOCK_SIZE)
-                    .ok_or(Unreadable(
+                let at = self.block_start(self.nth_in_mini_stream(big)?)? + within;
+                let in_data = self.data.len().saturating_sub(at).min(SMALL_BLOCK_SIZE);
+                if self.source == Source::Stream && in_data < SMALL_BLOCK_SIZE {
+                    return Err(Unreadable(
                         "a small block lies past the end of the block the stream ends inside",
-                    ))?;
-                content.extend_from_slice(&piece[..piece.len().min(size - content.len())]);
-                next = Self::next_in(&self.sbats, self.block_size / 4, next)?;
+                    ));
+                }
+                runs.push(at, in_data, SMALL_BLOCK_SIZE - in_data);
+                next = self.next_in(&self.sbats, next)?;
             }
         } else {
             let mut detector = LoopDetector::new(self.data.len(), self.block_size);
             let mut next = entry.start;
-            while content.len() < size {
+            while !runs.is_full() {
                 if next == END_OF_CHAIN {
                     return Err(past);
                 }
                 detector.claim(next)?;
-                let block = self.block(next)?;
-                content.extend_from_slice(&block[..block.len().min(size - content.len())]);
+                let at = self.block_start(next)?;
+                let in_data = (self.data.len() - at).min(self.block_size);
+                let zeros = match self.source {
+                    Source::File => self.block_size - in_data,
+                    Source::Stream => 0,
+                };
+                runs.push(at, in_data, zeros);
                 next = self.next_block(next)?;
             }
         }
-        Ok(content)
+        Ok(runs.into_content(self.data))
+    }
+}
+
+/// Zeros, which a block read past the end of a file is padded with: as many as a block holds.
+static ZEROS: [u8; 4096] = [0; 4096];
+
+/// A run of a document's content: bytes of the compound document from `at`, or zeros.
+#[derive(Debug, Clone, Copy)]
+struct Run {
+    /// Where the run starts in the content.
+    start: usize,
+    /// Where its bytes start in the compound document, `None` for zeros.
+    at: Option<usize>,
+    length: usize,
+}
+
+/// A document's content being gathered, up to its size.
+struct Runs {
+    runs: Vec<Run>,
+    size: usize,
+    length: usize,
+}
+
+impl Runs {
+    fn new(size: usize) -> Self {
+        Self {
+            runs: Vec::new(),
+            size,
+            length: 0,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.length >= self.size
+    }
+
+    /// Adds `in_data` bytes of the compound document from `at` and `zeros` zeros after them, as
+    /// far as the size goes, the bytes joined to the run before where they follow on from it.
+    fn push(&mut self, at: usize, in_data: usize, zeros: usize) {
+        let in_data = in_data.min(self.size - self.length);
+        if in_data > 0 {
+            match self.runs.last_mut() {
+                Some(Run {
+                    at: Some(previous),
+                    length,
+                    ..
+                }) if *previous + *length == at => *length += in_data,
+                _ => self.runs.push(Run {
+                    start: self.length,
+                    at: Some(at),
+                    length: in_data,
+                }),
+            }
+            self.length += in_data;
+        }
+        let zeros = zeros.min(self.size - self.length);
+        if zeros > 0 {
+            self.runs.push(Run {
+                start: self.length,
+                at: None,
+                length: zeros,
+            });
+            self.length += zeros;
+        }
+    }
+
+    fn into_content(self, data: &[u8]) -> Content<'_> {
+        Content {
+            data,
+            runs: self.runs,
+            length: self.length,
+        }
+    }
+}
+
+/// The content of a document entry, in place in the compound document: the runs of its bytes in
+/// the order of its chain, and the zeros POI reads past the end of a file.
+#[derive(Debug, Clone)]
+pub struct Content<'a> {
+    data: &'a [u8],
+    runs: Vec<Run>,
+    length: usize,
+}
+
+/// Bytes in memory as a content of one run.
+impl<'a> From<&'a [u8]> for Content<'a> {
+    fn from(bytes: &'a [u8]) -> Self {
+        let mut runs = Runs::new(bytes.len());
+        runs.push(0, bytes.len(), 0);
+        runs.into_content(bytes)
+    }
+}
+
+impl<'a> Content<'a> {
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    fn bytes_of(&self, run: &Run) -> &'a [u8] {
+        match run.at {
+            Some(at) => &self.data[at..at + run.length],
+            None => &ZEROS[..run.length],
+        }
+    }
+
+    /// The content's pieces in order, each where it lies.
+    pub fn pieces(&self) -> impl Iterator<Item = &'a [u8]> + '_ {
+        self.runs.iter().map(|run| self.bytes_of(run))
+    }
+
+    /// `length` bytes from `offset`, in place where they lie in one run and copied together
+    /// otherwise, or `None` where they run past the end.
+    pub fn range(&self, offset: usize, length: usize) -> Option<Cow<'a, [u8]>> {
+        let end = offset
+            .checked_add(length)
+            .filter(|&end| end <= self.length)?;
+        if length == 0 {
+            return Some(Cow::Borrowed(&[]));
+        }
+        let first = self
+            .runs
+            .partition_point(|run| run.start + run.length <= offset);
+        let run = &self.runs[first];
+        if end <= run.start + run.length {
+            let bytes = self.bytes_of(run);
+            return Some(Cow::Borrowed(&bytes[offset - run.start..end - run.start]));
+        }
+        let mut gathered = Vec::with_capacity(length);
+        for run in &self.runs[first..] {
+            if run.start >= end {
+                break;
+            }
+            let bytes = self.bytes_of(run);
+            let from = offset.saturating_sub(run.start);
+            let to = (end - run.start).min(run.length);
+            gathered.extend_from_slice(&bytes[from..to]);
+        }
+        Some(Cow::Owned(gathered))
+    }
+
+    /// All of the content: in place where it lies in one run.
+    pub fn bytes(&self) -> Cow<'a, [u8]> {
+        self.range(0, self.length)
+            .expect("the content lies within itself")
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.bytes().into_owned()
     }
 }
 
@@ -718,6 +929,68 @@ pub mod tests {
             read(cut, Source::Stream),
             Err(Unreadable("a document's chain ends before its size"))
         );
+    }
+
+    /// A document of big blocks is read where it lies, its chain checked as POI checks it.
+    #[test]
+    fn reads_documents_in_place() {
+        let content: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        let mut data = compound(&["Big", "Small"], &content[..100]);
+        let file = Ole2::open(&data).unwrap();
+        let small = file
+            .content(file.child(file.root(), "Small").unwrap())
+            .unwrap();
+        assert_eq!(small.to_vec(), &content[..100]);
+        let data_range = data.as_ptr_range();
+        assert!(
+            matches!(small.bytes(), Cow::Borrowed(bytes) if data_range.contains(&bytes.as_ptr()))
+        );
+        drop(file);
+        data = compound(&["Big"], &content);
+        let file = Ole2::open(&data).unwrap();
+        let id = file.child(file.root(), "Big").unwrap();
+        let read = file.content(id).unwrap();
+        assert_eq!(read.len(), content.len());
+        assert_eq!(read.pieces().count(), 1);
+        let data_range = data.as_ptr_range();
+        assert!(
+            matches!(read.bytes(), Cow::Borrowed(bytes) if data_range.contains(&bytes.as_ptr()))
+        );
+        assert_eq!(read.range(9_990, 10).unwrap().as_ref(), &content[9_990..]);
+        assert_eq!(read.range(9_990, 11), None);
+        let start = file.entry(id).start;
+        let bat = file.bats[0] as usize;
+        drop(file);
+        let at = (bat + 1) * 512 + 4 * start as usize;
+        data[at..at + 4].copy_from_slice(&start.to_le_bytes());
+        let file = Ole2::open(&data).unwrap();
+        assert_eq!(
+            file.content(file.child(file.root(), "Big").unwrap())
+                .map(|_| ()),
+            Err(Unreadable("a chain loops"))
+        );
+    }
+
+    /// A content of runs gives a range in place where it lies in one run, and copied together
+    /// across runs and the zeros past the end of a file.
+    #[test]
+    fn gathers_ranges_across_runs() {
+        let data = b"abcdefghij";
+        let mut runs = Runs::new(9);
+        runs.push(0, 2, 0);
+        runs.push(2, 1, 0);
+        runs.push(6, 4, 2);
+        runs.push(0, 5, 0);
+        let content = runs.into_content(data);
+        assert_eq!(content.len(), 9);
+        assert_eq!(
+            content.pieces().collect::<Vec<_>>(),
+            [&b"abc"[..], b"ghij", b"\0\0"]
+        );
+        assert!(matches!(content.range(3, 4), Some(Cow::Borrowed(b"ghij"))));
+        assert_eq!(content.range(1, 7).unwrap().as_ref(), b"bcghij\0");
+        assert_eq!(content.to_vec(), b"abcghij\0\0");
+        assert_eq!(content.range(8, 2), None);
     }
 
     #[test]
