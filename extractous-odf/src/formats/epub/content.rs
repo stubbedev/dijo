@@ -2,10 +2,12 @@
 //! `EmbeddedContentHandler`, the `EpubNormalizingHandler`, which drops the prefixes of attribute
 //! names and keeps the elements it has open, and a `BodyContentHandler`, which keeps what lies
 //! inside the XHTML `html/body`, into the EPUB's own `XHTMLContentHandler`. The namespace
-//! prefixes the document maps reach the output wherever they are mapped.
+//! prefixes the document maps reach the output wherever they are mapped. An element outside
+//! XHTML in the body, such as an iBooks `svg`, is written by its local name in its own
+//! namespace: neither indented nor followed by a line break.
 
-use crate::formats::xhtml::{Stop, Xhtml, XHTML_NAMESPACE};
-use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
+use crate::formats::xhtml::{ExpandedName, Stop, Xhtml, XHTML_NAMESPACE};
+use crate::formats::xml::{Attribute, SaxHandler, StartTag};
 use crate::formats::Failure;
 
 /// Where an open element lies for the `BodyContentHandler`'s `/xhtml:html/xhtml:body/descendant::node()`.
@@ -76,10 +78,31 @@ fn normalized(attributes: &[Attribute]) -> Vec<(&str, &str)> {
     kept
 }
 
+/// An element the content document has open: where it lies, and its name as it is written,
+/// in no namespace as in XHTML.
+struct Open {
+    place: Place,
+    name: ExpandedName,
+}
+
+impl Open {
+    fn new(place: Place, namespace: &str, local_name: &str) -> Self {
+        let namespace = if is_xhtml(namespace) {
+            XHTML_NAMESPACE
+        } else {
+            namespace
+        };
+        Self {
+            place,
+            name: ExpandedName::new(namespace, local_name),
+        }
+    }
+}
+
 /// One content document written into the EPUB's XHTML.
 pub(super) struct ContentDocument<'a, 'x> {
     xhtml: &'a mut Xhtml<'x>,
-    open: Vec<(Place, String)>,
+    open: Vec<Open>,
 }
 
 impl<'a, 'x> ContentDocument<'a, 'x> {
@@ -93,10 +116,17 @@ impl<'a, 'x> ContentDocument<'a, 'x> {
     /// `XHTMLBalancingHandler.drainOpenElements`: ends the elements a failed parse left open,
     /// writing the ends of those inside the body.
     pub(super) fn drain_open_elements(&mut self) -> Result<(), Stop> {
-        while let Some((place, name)) = self.open.pop() {
-            if place == Place::Inside {
-                self.xhtml.end_element(&name)?;
-            }
+        while let Some(open) = self.open.pop() {
+            self.end(&open)?;
+        }
+        Ok(())
+    }
+
+    /// Ends `open`, written if it lies inside the body.
+    fn end(&mut self, open: &Open) -> Result<(), Stop> {
+        if open.place == Place::Inside {
+            self.xhtml
+                .end_element_in(open.name.namespace(), open.name.name())?;
         }
         Ok(())
     }
@@ -110,22 +140,19 @@ impl SaxHandler for ContentDocument<'_, '_> {
         attributes: &[Attribute],
     ) -> Result<(), Failure> {
         let place = Place::of(
-            self.open.last().map(|(place, _)| *place),
+            self.open.last().map(|open| open.place),
             namespace,
             local_name,
         );
-        if place == Place::Inside && !is_xhtml(namespace) {
-            return Err(Failure::Malformed(format!(
-                "The content document has the element {local_name} in {namespace:?}, outside \
-                 XHTML, which only Tika's path writes"
-            )));
+        let open = Open::new(place, namespace, local_name);
+        if place == Place::Inside {
+            self.xhtml.start_element_in(
+                open.name.namespace(),
+                local_name,
+                &normalized(attributes),
+            )?;
         }
-        self.open.push((place, local_name.to_owned()));
-        if place != Place::Inside {
-            return Ok(());
-        }
-        self.xhtml
-            .start_element_with(local_name, &normalized(attributes))?;
+        self.open.push(open);
         Ok(())
     }
 
@@ -137,14 +164,12 @@ impl SaxHandler for ContentDocument<'_, '_> {
         self.start_element(tag.namespace, tag.local_name, tag.attributes)
     }
 
-    fn end_element(&mut self, _namespace: &str, local_name: &str) -> Result<(), Failure> {
-        let (place, _) = self
+    fn end_element(&mut self, _namespace: &str, _local_name: &str) -> Result<(), Failure> {
+        let open = self
             .open
             .pop()
             .expect("the XML reader ends only the elements it started");
-        if place == Place::Inside {
-            self.xhtml.end_element(local_name)?;
-        }
+        self.end(&open)?;
         Ok(())
     }
 
@@ -152,83 +177,10 @@ impl SaxHandler for ContentDocument<'_, '_> {
         if self
             .open
             .last()
-            .is_some_and(|(place, _)| place.writes_text())
+            .is_some_and(|open| open.place.writes_text())
         {
             self.xhtml.characters(text)?;
         }
         Ok(())
     }
-}
-
-/// Whether a content document may have an element outside XHTML in its body: whether it maps a
-/// prefix an element uses or declares a default namespace more than once. A document in an
-/// encoding that does not spell markup in ASCII may.
-fn may_hold_foreign_elements(input: &[u8]) -> bool {
-    let ascii_markup = !matches!(
-        input,
-        [0xfe, 0xff, ..] | [0xff, 0xfe, ..] | [0, ..] | [_, 0, ..]
-    );
-    if !ascii_markup {
-        return true;
-    }
-    let default_declarations = input
-        .windows(6)
-        .filter(|window| *window == b"xmlns=")
-        .count();
-    let prefixed_element = input.windows(2).enumerate().any(|(index, window)| {
-        window[0] == b'<' && window[1] != b'/' && window[1] != b'!' && window[1] != b'?' && {
-            let name = &input[index + 1..];
-            let end = name
-                .iter()
-                .position(|&byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'/'))
-                .unwrap_or(name.len());
-            name[..end].contains(&b':')
-        }
-    });
-    default_declarations > 1 || prefixed_element
-}
-
-/// Whether the body of the content document `input` holds an element outside XHTML, before
-/// anything Java's parser would stop at, which this port does not write.
-pub(super) fn holds_foreign_elements(input: &[u8], what: &str) -> bool {
-    struct Finder {
-        open: Vec<Place>,
-        found: bool,
-    }
-
-    impl SaxHandler for Finder {
-        fn start_element(
-            &mut self,
-            namespace: &str,
-            local_name: &str,
-            _attributes: &[Attribute],
-        ) -> Result<(), Failure> {
-            let place = Place::of(self.open.last().copied(), namespace, local_name);
-            self.open.push(place);
-            if place == Place::Inside && !is_xhtml(namespace) {
-                self.found = true;
-                return Err(Failure::Malformed(format!("<{local_name}> found")));
-            }
-            Ok(())
-        }
-
-        fn end_element(&mut self, _namespace: &str, _local_name: &str) -> Result<(), Failure> {
-            self.open.pop();
-            Ok(())
-        }
-
-        fn characters(&mut self, _text: &str) -> Result<(), Failure> {
-            Ok(())
-        }
-    }
-
-    if !may_hold_foreign_elements(input) {
-        return false;
-    }
-    let mut finder = Finder {
-        open: Vec::new(),
-        found: false,
-    };
-    let stopped = xml::parse_sax(input, what, &mut finder).is_err();
-    stopped && finder.found
 }

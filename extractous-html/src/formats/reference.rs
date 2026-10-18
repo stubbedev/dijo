@@ -191,7 +191,12 @@ impl ContentHandler for Recorder {
         Ok(())
     }
 
-    fn start_element(&mut self, name: &str, attributes: &[(&str, &str)]) -> Result<(), Stop> {
+    fn start_element_in(
+        &mut self,
+        _namespace: &str,
+        name: &str,
+        attributes: &[(&str, &str)],
+    ) -> Result<(), Stop> {
         if name == "body" {
             self.in_body = true;
             return Ok(());
@@ -209,7 +214,7 @@ impl ContentHandler for Recorder {
         Ok(())
     }
 
-    fn end_element(&mut self, name: &str) -> Result<(), Stop> {
+    fn end_element_in(&mut self, _namespace: &str, name: &str) -> Result<(), Stop> {
         if !self.in_body {
             return Ok(());
         }
