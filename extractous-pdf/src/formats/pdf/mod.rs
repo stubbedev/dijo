@@ -511,6 +511,9 @@ fn refused(refusal: Refusal) -> Decline<'static> {
         Refusal::WrongPassword => Decline::Fails(crypt::encrypted(Some(&format!(
             "org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException: {WRONG_PASSWORD}"
         )))),
+        Refusal::NoSecurityHandler(filter) => Decline::Fails(crypt::encrypted(Some(&format!(
+            "java.io.IOException: No security handler for filter {filter}"
+        )))),
         Refusal::Unported(unported) => unported.into(),
     }
 }
@@ -1913,6 +1916,63 @@ mod tests {
     fn opens_documents_with_the_password_as_tikas_path_does() {
         let document = PathBuf::from("../test_files/documents/encrypted/user-password.pdf");
         assert_opens_as_tika(&[(document, "extractous")]);
+    }
+
+    /// A page encrypted, by its encryption dictionary, by a security handler PDFBox does not
+    /// have, named as a name, as a string, or not at all.
+    fn unknown_security_handlers() -> [(&'static str, Vec<u8>); 3] {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let plain = document(&objects, b"", &[]);
+        let encrypted = |encryption: &str| {
+            replace(
+                &plain,
+                b"/Root 1 0 R >>",
+                format!("/Root 1 0 R /Encrypt {encryption} >>").as_bytes(),
+            )
+        };
+        [
+            (
+                "MicrosoftIRMServices",
+                encrypted("<< /Filter /MicrosoftIRMServices /V 2 >>"),
+            ),
+            (
+                "Rettighedsstyring",
+                encrypted("<< /Filter (Rettighedsstyring) >>"),
+            ),
+            ("null", encrypted("<< /V 1 /R 2 >>")),
+        ]
+    }
+
+    #[test]
+    fn fails_documents_of_a_security_handler_pdfbox_does_not_have_as_encrypted() {
+        let configs = ParserConfigs::default();
+        for (filter, input) in unknown_security_handlers() {
+            let failure = PdfParser
+                .prepare(&input, &TikaMetadata::new(), &configs)
+                .err()
+                .unwrap_or_else(|| panic!("{filter} is read"));
+            let Decline::Fails(Error::Encrypted(message)) = failure else {
+                panic!("{filter}: {failure:?}");
+            };
+            assert!(
+                message.ends_with(&format!(
+                    "java.io.IOException: No security handler for filter {filter}"
+                )),
+                "{message}"
+            );
+        }
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn fails_documents_of_a_security_handler_pdfbox_does_not_have_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-security-handlers");
+        for (filter, input) in unknown_security_handlers() {
+            let path = scratch.write(&format!("{filter}.pdf"), &input);
+            let (native, tika) = crate::formats::parity::errors(&path, &ParserConfigs::default());
+            assert_eq!(native, tika, "{filter}");
+        }
     }
 
     #[cfg(feature = "tika")]

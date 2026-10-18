@@ -343,6 +343,74 @@ fn reads_local_webps_and_photoshop_images_as_tika_does() {
 }
 
 #[cfg(feature = "tika")]
+#[test]
+fn reads_portable_maps_as_tika_does() {
+    let scratch = crate::formats::parity::Scratch::new("image-pnm");
+    scratch.write(
+        "commented.ppm",
+        &[&b"P6\n# made by hand\n#second  \n2 1\n255\n"[..], &[0; 6]].concat(),
+    );
+    scratch.write("header-on-one-line.ppm", b"P3 4 4 255\n1 x 1\n15\n0 0 0\n");
+    scratch.write(
+        "carriage-returns.ppm",
+        b"P3\r\n2 2\r\n7\r\n0 0 0 0 0 0 0 0 0 0 0 0\r\n",
+    );
+    scratch.write("size-commented.ppm", b"P3\n1 12# size\n300\n0 0 0\n");
+    scratch.write(
+        "wide.pgm",
+        &[&b"P5\n3 2 # size\n65535\n"[..], &[0; 12]].concat(),
+    );
+    scratch.write("raw.pbm", b"P4\n# bits\n8 1\n\xff");
+    let (parsed, deferred) = documents_with(
+        &RecognizedImageParser,
+        &[scratch.directory()],
+        &skipping_ocr(),
+    );
+    assert_eq!(
+        (parsed.len(), deferred.len()),
+        (6, 0),
+        "{parsed:?} {deferred:?}"
+    );
+    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    assert_same_as_tika_reading_images(&paths, "ai.yobix.RecognizedImageParser", &skipping_ocr());
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn fails_on_portable_pixmaps_without_a_header_as_tika_does() {
+    let scratch = crate::formats::parity::Scratch::new("image-pnm-fails");
+    scratch.write("no-magic.ppm", b"\x00\xff\x10Q3\n1 1\n");
+    scratch.write("unknown-variant.ppm", b"P9\x00\xff\x10\n1 1\n");
+    let (parsed, deferred) = documents_with(
+        &RecognizedImageParser,
+        &[scratch.directory()],
+        &skipping_ocr(),
+    );
+    assert_eq!(
+        (parsed.len(), deferred.len()),
+        (2, 0),
+        "{parsed:?} {deferred:?}"
+    );
+    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
+    assert_fails_as_tika_with(&paths, &skipping_ocr());
+}
+
+#[cfg(feature = "tika")]
+#[test]
+#[ignore = "needs the conformance corpus: eval \"$(conformance/prepare.sh target/conformance)\""]
+fn reads_tikas_test_portable_maps_as_tika_does() {
+    let corpus = conformance_corpus().join("tika-parsers-standard");
+    let paths = [
+        "tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPM.ppm",
+        "tika-parsers-standard-integration-tests/src/test/resources/test-documents/testPGM.pgm",
+        "tika-parsers-standard-integration-tests/src/test/resources/test-documents/testPBM.pbm",
+    ]
+    .map(|path| corpus.join(path));
+    let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    assert_same_as_tika_reading_images(&paths, "ai.yobix.RecognizedImageParser", &skipping_ocr());
+}
+
+#[cfg(feature = "tika")]
 /// Whether Tika's path reads the image at `path` with a reader its registry picks in an order
 /// nothing defines, a BMP or WBMP (#114), which [`reads_bmps_and_wbmps_as_the_jdks_readers_do`] and
 /// [`reads_tikas_test_bmp_as_the_jdks_reader_does`] compare with the JDK's reader instead.

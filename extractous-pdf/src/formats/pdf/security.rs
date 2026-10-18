@@ -14,6 +14,7 @@ use lopdf::{Dictionary, Document, Object};
 use md5::{Digest, Md5};
 use rc4::{KeyInit, Rc4, StreamCipher};
 
+use super::cos::{name_string, text_string};
 use super::Unported;
 
 /// What a document lets the one who opened it do, as PDFBox's `AccessPermission` holds it.
@@ -41,8 +42,16 @@ impl Access {
 pub(super) enum Refusal {
     /// The password is neither the owner's nor the user's: PDFBox's `InvalidPasswordException`.
     WrongPassword,
+    /// PDFBox has no security handler of this filter name, `null` for none: its `IOException`,
+    /// which Tika's `PDFParser` throws as an `EncryptedDocumentException`.
+    NoSecurityHandler(String),
     Unported(Unported),
 }
+
+/// The filter of the standard security handler.
+const STANDARD_FILTER: &str = "Standard";
+/// The filter of the public-key security handler.
+const PUBLIC_KEY_FILTER: &str = "Adobe.PubSec";
 
 impl From<Unported> for Refusal {
     fn from(unported: Unported) -> Self {
@@ -83,11 +92,20 @@ impl Opening {
         let Some((dictionary, id)) = encryption else {
             return Ok(Self::Unencrypted);
         };
-        if !matches!(dictionary.get(b"Filter"), Ok(Object::Name(name)) if name == b"Standard") {
-            return Err(Unported(
-                "encryption by a security handler other than the standard one".to_owned(),
-            )
-            .into());
+        match filter(&dictionary)?.as_deref() {
+            Some(STANDARD_FILTER) => {}
+            Some(PUBLIC_KEY_FILTER) => {
+                return Err(Unported(
+                    "encryption by the public-key security handler, which needs a key store"
+                        .to_owned(),
+                )
+                .into())
+            }
+            filter => {
+                return Err(Refusal::NoSecurityHandler(
+                    filter.unwrap_or("null").to_owned(),
+                ))
+            }
         }
         match int(&dictionary, b"R", 2)? {
             2..=4 => Rc4Handler::read(&dictionary, id)?.opening(password),
@@ -318,6 +336,18 @@ fn rc4(key: &[u8], data: &[u8]) -> Vec<u8> {
 }
 
 /// `COSDictionary.getInt`: an integer entry as Java's `int` holds it, or `default`.
+/// `PDEncryption.getFilter`: the security handler's name, a name or a text string.
+fn filter(dictionary: &Dictionary) -> Result<Option<String>, Unported> {
+    match dictionary.get(b"Filter") {
+        Ok(Object::Name(name)) => Ok(Some(name_string(name))),
+        Ok(Object::String(bytes, _)) => Ok(Some(text_string(bytes))),
+        Ok(Object::Reference(_)) => Err(Unported(
+            "an encryption filter given by reference".to_owned(),
+        )),
+        _ => Ok(None),
+    }
+}
+
 fn int(dictionary: &Dictionary, key: &[u8], default: i32) -> Result<i32, Refusal> {
     match dictionary.get(key) {
         Err(_) => Ok(default),
@@ -450,7 +480,7 @@ mod tests {
             }) => Some((access, user_password)),
             Ok(_) => unreachable!("RC4 encryption"),
             Err(Refusal::WrongPassword) => None,
-            Err(Refusal::Unported(unported)) => panic!("{unported:?}"),
+            Err(refusal) => panic!("{refusal:?}"),
         }
     }
 
