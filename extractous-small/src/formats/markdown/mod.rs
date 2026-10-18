@@ -4,9 +4,12 @@
 //! visitor's walk of commonmark-java's tree writes; adjacent text is written in one piece, as
 //! commonmark-java merges adjacent text nodes.
 //!
-//! A document with a data URI, which Tika hands to the embedded document extractor, is left to
-//! Tika, as is one whose blocks nest deeper than commonmark-java opens them, where it flattens
-//! the rest into paragraph text.
+//! The data URI a link or image leads to, and each one found in HTML that a quote ends, is
+//! parsed as an inline document embedded after it ([`data_uri`]); a document with one of text in
+//! a charset this port does not encode is left to Tika, as is one whose blocks nest deeper than
+//! commonmark-java opens them, where it flattens the rest into paragraph text.
+
+mod data_uri;
 
 use std::ops::Range;
 
@@ -16,6 +19,7 @@ use pulldown_cmark::{
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
+use crate::formats::embedded::{ResourceType, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Declined, Failure, Parser, Prepared};
@@ -101,18 +105,30 @@ fn parse(text: &str) -> Result<Vec<Item>, Declined> {
     let definitions = iterator.reference_definitions();
     let mut items = Vec::with_capacity(events.len());
     let mut depth = 0usize;
+    let mut html_block: Option<String> = None;
     for (event, range) in events {
-        let data_uri = match &event {
+        let unported = match &event {
             Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) => {
-                dest_url.starts_with("data:")
+                destination_uri(dest_url).and_then(|uri| uri.unported())
             }
-            Event::Html(html) | Event::InlineHtml(html) => html.contains("data:"),
-            _ => false,
+            Event::InlineHtml(html) => unported_in(html),
+            Event::Start(Tag::HtmlBlock) => {
+                html_block = Some(String::new());
+                None
+            }
+            Event::Text(text) | Event::Html(text) => {
+                if let Some(literal) = &mut html_block {
+                    literal.push_str(text);
+                }
+                None
+            }
+            Event::End(TagEnd::HtmlBlock) => html_block
+                .take()
+                .and_then(|literal| unported_in(block_literal(&literal))),
+            _ => None,
         };
-        if data_uri {
-            return Err(Declined::Deferred(
-                "a data URI, which Tika parses as an embedded document".to_owned(),
-            ));
+        if let Some(reason) = unported {
+            return Err(Declined::Deferred(reason));
         }
         match &event {
             Event::Start(tag) if is_block(tag) => {
@@ -155,6 +171,26 @@ fn parse(text: &str) -> Result<Vec<Item>, Declined> {
         items.push(item);
     }
     Ok(items)
+}
+
+/// The data URI a link or image leads to, as `maybeEmbedDataURI` reads it.
+fn destination_uri(destination: &str) -> Option<data_uri::DataUri> {
+    destination
+        .starts_with("data:")
+        .then(|| data_uri::parse(destination))
+        .flatten()
+}
+
+/// Why the native parser leaves a document with the HTML `html` to Tika, if it does.
+fn unported_in(html: &str) -> Option<String> {
+    data_uri::extract(html)
+        .iter()
+        .find_map(data_uri::DataUri::unported)
+}
+
+/// An HTML block's literal as commonmark-java holds it, without the line break that ends it.
+fn block_literal(literal: &str) -> &str {
+    literal.strip_suffix('\n').unwrap_or(literal)
 }
 
 /// The title commonmark-java gives a link or image whose `source` the parser read as
@@ -326,6 +362,8 @@ struct Visitor<'x, 'h> {
     images: Vec<(String, String, Option<String>)>,
     /// The alignments of the open table's columns, and whether its body has started.
     table: Option<(Vec<Alignment>, bool)>,
+    /// The destinations of the open links, the outermost first.
+    links: Vec<String>,
     in_head: bool,
     column: usize,
 }
@@ -338,6 +376,7 @@ impl<'x, 'h> Visitor<'x, 'h> {
             block: None,
             images: Vec::new(),
             table: None,
+            links: Vec::new(),
             in_head: false,
             column: 0,
         }
@@ -355,6 +394,7 @@ impl<'x, 'h> Visitor<'x, 'h> {
                             attributes.push(("title", title.as_str()));
                         }
                         self.xhtml.start_element_with("a", &attributes)?;
+                        self.links.push(href);
                     }
                     continue;
                 }
@@ -407,7 +447,37 @@ impl<'x, 'h> Visitor<'x, 'h> {
         }
         self.xhtml.start_element_with("img", &attributes)?;
         self.xhtml.end_element("img")?;
+        self.embed_destination(&source)
+    }
+
+    /// `maybeEmbedDataURI`: the document of the data URI a link or image leads to.
+    fn embed_destination(&mut self, destination: &str) -> Result<(), Failure> {
+        match destination_uri(destination) {
+            Some(uri) => self.embed(&uri),
+            None => Ok(()),
+        }
+    }
+
+    /// `extractDataURIs`: the documents of the data URIs in HTML.
+    fn embed_all(&mut self, html: &str) -> Result<(), Failure> {
+        for uri in data_uri::extract(html) {
+            self.embed(&uri)?;
+        }
         Ok(())
+    }
+
+    /// `embed`: the document a data URI holds, inline, of its media type, if it has one.
+    fn embed(&mut self, uri: &data_uri::DataUri) -> Result<(), Failure> {
+        let data = uri.bytes().map_err(|thrown| {
+            Failure::Malformed(thrown.into_error(MarkdownParser.tika_name()).to_string())
+        })?;
+        let mut metadata = TikaMetadata::new();
+        ResourceType::Inline.set(&mut metadata);
+        if let Some(content_type) = uri.content_type() {
+            metadata.set("Content-Type", content_type);
+        }
+        self.xhtml
+            .parse_embedded(&data, &metadata, Wrapping::PackageEntry)
     }
 
     fn flush(&mut self) -> Result<(), Failure> {
@@ -427,7 +497,11 @@ impl<'x, 'h> Visitor<'x, 'h> {
                 self.xhtml.characters(&code)?;
                 self.xhtml.end_element("code")?;
             }
-            Event::InlineHtml(html) | Event::Html(html) => self.xhtml.characters(&html)?,
+            Event::InlineHtml(html) => {
+                self.xhtml.characters(&html)?;
+                self.embed_all(&html)?;
+            }
+            Event::Html(html) => self.xhtml.characters(&html)?,
             Event::SoftBreak => self.xhtml.characters("\n")?,
             Event::HardBreak => self.empty("br")?,
             Event::Rule => self.empty("hr")?,
@@ -527,10 +601,11 @@ impl<'x, 'h> Visitor<'x, 'h> {
             }
             TagEnd::HtmlBlock => {
                 let (literal, _) = self.block.take().expect("an HTML block is open");
-                let literal = literal.strip_suffix('\n').unwrap_or(&literal);
+                let literal = block_literal(&literal);
                 self.xhtml.start_element("p")?;
                 self.xhtml.characters(literal)?;
                 self.xhtml.end_element("p")?;
+                self.embed_all(literal)?;
             }
             TagEnd::List(true) => self.xhtml.end_element("ol")?,
             TagEnd::List(false) => self.xhtml.end_element("ul")?,
@@ -555,7 +630,11 @@ impl<'x, 'h> Visitor<'x, 'h> {
             TagEnd::Emphasis => self.xhtml.end_element("em")?,
             TagEnd::Strong => self.xhtml.end_element("strong")?,
             TagEnd::Strikethrough => self.xhtml.end_element("del")?,
-            TagEnd::Link => self.xhtml.end_element("a")?,
+            TagEnd::Link => {
+                self.xhtml.end_element("a")?;
+                let destination = self.links.pop().expect("a link is open");
+                self.embed_destination(&destination)?;
+            }
             TagEnd::Image => {}
             TagEnd::FootnoteDefinition
             | TagEnd::DefinitionList
