@@ -1,7 +1,7 @@
 //! Tika's `OneNotePtr`: the header of a OneNote file and the MS-ONESTORE file node lists from
-//! its root on, with the property sets of the objects they declare, read as Tika reads them:
-//! every number read where the pointer is, but a GUID read where the file's position is, and a
-//! byte read past the end read as -1.
+//! its root on, with what each node declares of the revision store, read as Tika reads them,
+//! a byte read past the end read as -1; but each GUID read where the pointer is, and the IDs of
+//! an object's streams taken by its properties in order, as MS-ONESTORE says (#122).
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,6 +27,7 @@ const REVISION_MANIFEST_LIST_START_FND: i64 = 0x14;
 const REVISION_MANIFEST_START4_FND: i64 = 0x1b;
 const REVISION_MANIFEST_START6_FND: i64 = 0x1e;
 const REVISION_MANIFEST_START7_FND: i64 = 0x1f;
+const REVISION_MANIFEST_END_FND: i64 = 0x1c;
 const GLOBAL_ID_TABLE_START_FNDX: i64 = 0x21;
 const GLOBAL_ID_TABLE_ENTRY_FNDX: i64 = 0x24;
 const GLOBAL_ID_TABLE_ENTRY2_FNDX: i64 = 0x25;
@@ -46,6 +47,7 @@ const DATA_SIGNATURE_GROUP_DEFINITION_FND: i64 = 0x8c;
 const FILE_DATA_STORE_OBJECT_REFERENCE_FND: i64 = 0x94;
 const OBJECT_DECLARATION2_REF_COUNT_FND: i64 = 0xa4;
 const OBJECT_DECLARATION2_LARGE_REF_COUNT_FND: i64 = 0xa5;
+const FILE_DATA_STORE_LIST_REFERENCE_FND: i64 = 0x90;
 const OBJECT_GROUP_LIST_REFERENCE_FND: i64 = 0xb0;
 const OBJECT_GROUP_START_FND: i64 = 0xb4;
 const READ_ONLY_OBJECT_DECLARATION2_REF_COUNT_FND: i64 = 0xc4;
@@ -104,27 +106,68 @@ pub(super) struct FileNodeList {
     pub(super) children: Vec<FileNode>,
 }
 
-/// What a `FileNode` holds that the tree walk reads.
-#[derive(Debug)]
+/// A `FileNode`: its type, the file node list it references, and what it declares.
+#[derive(Debug, Default)]
 pub(super) struct FileNode {
     pub(super) id: i64,
-    pub(super) gosid: ExtendedGuid,
     pub(super) child_list: FileNodeList,
-    pub(super) property_set: Option<Vec<PropertyValue>>,
-    /// The data of a `FileDataStoreObjectReferenceFND`'s file data store object.
-    pub(super) file_data: Option<Chunk>,
+    pub(super) declares: Declares,
 }
 
-impl Default for FileNode {
-    fn default() -> Self {
-        FileNode {
-            id: 0,
-            gosid: ExtendedGuid::NIL,
-            child_list: FileNodeList::default(),
-            property_set: None,
-            file_data: None,
-        }
+impl FileNode {
+    /// Whether it is a `RevisionManifestEndFND`, which ends the revision manifest it is in.
+    pub(super) fn ends_revision_manifest(&self) -> bool {
+        self.id == REVISION_MANIFEST_END_FND
     }
+}
+
+/// What a file node declares of the revision store: its object spaces, their revisions and the
+/// objects and roots of those, and the file data the objects refer to.
+#[derive(Debug, Default)]
+pub(super) enum Declares {
+    #[default]
+    Nothing,
+    /// `ObjectSpaceManifestRootFND`: the object space the section starts from.
+    RootObjectSpace(ExtendedGuid),
+    /// `ObjectSpaceManifestListReferenceFND`: an object space, its manifest list the node's.
+    ObjectSpace(ExtendedGuid),
+    /// `RevisionManifestListReferenceFND`: the revision manifest list of an object space, the
+    /// node's, the last one of which is in use.
+    RevisionManifestList,
+    /// `RevisionManifestStart4FND`, `6FND` or `7FND`: the start of a revision, its role, and the
+    /// revision it is based on, nil for none.
+    Revision {
+        role: RevisionRole,
+        dependent: ExtendedGuid,
+    },
+    /// `RevisionRoleDeclarationFND` or `RevisionRoleAndContextDeclarationFND`: a role a revision
+    /// declared earlier takes in a context.
+    RevisionRole(RevisionRole),
+    /// `RootObjectReference2FNDX` or `3FND`: the root object of a role in the revision.
+    Root { object: ExtendedGuid, role: i64 },
+    /// An object declaration with a property set.
+    Object {
+        id: ExtendedGuid,
+        properties: Vec<PropertyValue>,
+    },
+    /// An object declaration of file data, with the file data store object its reference
+    /// names, if it names one.
+    FileDataObject {
+        id: ExtendedGuid,
+        store: Option<Guid>,
+    },
+    /// `FileDataStoreListReferenceFND`: the file data store objects, its list the node's.
+    FileDataStoreList,
+    /// `FileDataStoreObjectReferenceFND`: where the data of a file data store object is.
+    FileDataStoreObject { id: Guid, data: Chunk },
+}
+
+/// A revision, its role and its context, the nil context for the default one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct RevisionRole {
+    pub(super) revision: ExtendedGuid,
+    pub(super) role: i64,
+    pub(super) context: ExtendedGuid,
 }
 
 /// A `OneNotePropertyId`.
@@ -180,37 +223,16 @@ struct Revision {
     dependent: ExtendedGuid,
 }
 
-/// A `OneNoteDocument`: the root file node list and where each object was declared.
+/// A `OneNoteDocument`: the root file node list, and the global ID tables of the revisions
+/// read so far.
 #[derive(Debug, Default)]
 pub(super) struct Document {
     pub(super) root: FileNodeList,
-    /// `guidToObject`: the path of node positions to each object's latest declaration.
-    pub(super) guid_to_object: HashMap<ExtendedGuid, Vec<usize>>,
     revisions: HashMap<ExtendedGuid, Revision>,
     current_revision: ExtendedGuid,
 }
 
 impl Document {
-    /// `FileNodePtr.dereference`: the node at `path`, none for an empty path.
-    pub(super) fn dereference(&self, path: &[usize]) -> Result<Option<&FileNode>, Thrown> {
-        let Some((&first, rest)) = path.split_first() else {
-            return Ok(None);
-        };
-        let mut node = self
-            .root
-            .children
-            .get(first)
-            .ok_or_else(|| tika("Exceeded root child size"))?;
-        for &position in rest {
-            node = node
-                .child_list
-                .children
-                .get(position)
-                .ok_or_else(|| tika("Exceeded child file node size"))?;
-        }
-        Ok(Some(node))
-    }
-
     fn current_revision(&mut self) -> Result<&mut Revision, Thrown> {
         self.revisions
             .get_mut(&self.current_revision)
@@ -283,12 +305,28 @@ fn checked_count(count: i64, description: &str) -> Result<i64, Thrown> {
     Ok(count)
 }
 
-/// `ObjectSpaceObjectStreamOfOIDsOSIDsOrContextIDs`.
+/// `ObjectSpaceObjectStreamOfOIDsOSIDsOrContextIDs`, and how many of its IDs the properties
+/// read so far took.
 #[derive(Default)]
 struct IdStream {
     extended_streams_present: i64,
     osids_stream_not_present: i64,
     data: Vec<ExtendedGuid>,
+    taken: usize,
+}
+
+impl IdStream {
+    /// The next `count` IDs, as MS-ONESTORE gives them to the properties in order, where Tika
+    /// gives each property the stream's first IDs again (#122).
+    fn take(&mut self, count: i64) -> Result<Vec<ExtendedGuid>, Thrown> {
+        let ids = usize::try_from(count)
+            .ok()
+            .and_then(|count| self.data.get(self.taken..self.taken.checked_add(count)?))
+            .ok_or_else(|| tika("SEGV"))?
+            .to_vec();
+        self.taken += ids.len();
+        Ok(ids)
+    }
 }
 
 /// `ObjectSpaceObjectPropSet`'s streams of object, object space and context IDs.
@@ -522,21 +560,15 @@ impl<'a, 'd> Reader<'a, 'd> {
     pub(super) fn root(&mut self, chunk: Chunk) -> Result<(), Thrown> {
         let mut ptr = Ptr::at(&self.dif);
         ptr.reposition(&mut self.dif, chunk)?;
-        let mut path = Vec::new();
         let mut root = FileNodeList::default();
-        let read = self.file_node_list(ptr, &mut root, &mut path);
+        let read = self.file_node_list(ptr, &mut root);
         self.document.root = root;
         read
     }
 
     /// `deserializeFileNodeList`: a list of one fragment or more, with a fresh property value
     /// budget.
-    fn file_node_list(
-        &mut self,
-        ptr: Ptr,
-        list: &mut FileNodeList,
-        path: &mut Vec<usize>,
-    ) -> Result<(), Thrown> {
+    fn file_node_list(&mut self, ptr: Ptr, list: &mut FileNodeList) -> Result<(), Thrown> {
         if self.depth >= MAX_FILE_NODE_LIST_DEPTH {
             return Err(memory_limit(format!(
                 "OneNote file node list nesting exceeds depth limit {MAX_FILE_NODE_LIST_DEPTH}"
@@ -552,9 +584,7 @@ impl<'a, 'd> Reader<'a, 'd> {
         let mut budget = Budget {
             remaining: MAX_PROPERTY_VALUES,
         };
-        path.push(0);
-        let read = self.fragments(ptr, list, path, &mut budget);
-        path.pop();
+        let read = self.fragments(ptr, list, &mut budget);
         self.depth -= 1;
         self.active_lists.remove(&list_offset);
         read
@@ -564,14 +594,13 @@ impl<'a, 'd> Reader<'a, 'd> {
         &mut self,
         ptr: Ptr,
         list: &mut FileNodeList,
-        path: &mut Vec<usize>,
         budget: &mut Budget,
     ) -> Result<(), Thrown> {
         let mut seen = HashSet::from([ptr.offset]);
         let mut current = ptr;
         let local = ptr;
         loop {
-            let next = self.fragment(&mut current, list, path, budget)?;
+            let next = self.fragment(&mut current, list, budget)?;
             if next == Chunk::NIL {
                 return Ok(());
             }
@@ -592,7 +621,6 @@ impl<'a, 'd> Reader<'a, 'd> {
         &mut self,
         ptr: &mut Ptr,
         list: &mut FileNodeList,
-        path: &mut Vec<usize>,
         budget: &mut Budget,
     ) -> Result<Chunk, Thrown> {
         let magic = self.long(ptr)?;
@@ -613,7 +641,7 @@ impl<'a, 'd> Reader<'a, 'd> {
         while ptr.offset + 24 <= ptr.end {
             let initial = ptr.offset;
             let mut node = FileNode::default();
-            self.file_node(ptr, &mut node, path, budget)?;
+            self.file_node(ptr, &mut node, budget)?;
             if initial == ptr.offset {
                 break;
             }
@@ -621,9 +649,6 @@ impl<'a, 'd> Reader<'a, 'd> {
                 break;
             }
             list.children.push(node);
-            if let Some(last) = path.last_mut() {
-                *last += 1;
-            }
         }
         ptr.offset = ptr.end - 20;
         self.dif.seek(ptr.offset)?;
@@ -642,7 +667,6 @@ impl<'a, 'd> Reader<'a, 'd> {
         &mut self,
         ptr: &mut Ptr,
         data: &mut FileNode,
-        path: &mut Vec<usize>,
         budget: &mut Budget,
     ) -> Result<(), Thrown> {
         let backup = *ptr;
@@ -665,12 +689,12 @@ impl<'a, 'd> Reader<'a, 'd> {
             let mut content = *ptr;
             content.reposition(&mut self.dif, reference)?;
         }
-        self.file_node_body(ptr, data, reference, path, budget)?;
+        self.file_node_body(ptr, data, reference, budget)?;
         if base_type == 2 {
             let mut sub_list = *ptr;
             sub_list.reposition(&mut self.dif, reference)?;
             let mut child_list = std::mem::take(&mut data.child_list);
-            let read = self.file_node_list(sub_list, &mut child_list, path);
+            let read = self.file_node_list(sub_list, &mut child_list);
             data.child_list = child_list;
             read?;
         }
@@ -692,39 +716,60 @@ impl<'a, 'd> Reader<'a, 'd> {
         ptr: &mut Ptr,
         data: &mut FileNode,
         reference: Chunk,
-        path: &[usize],
         budget: &mut Budget,
     ) -> Result<(), Thrown> {
         match data.id {
+            OBJECT_SPACE_MANIFEST_ROOT_FND => {
+                data.declares = Declares::RootObjectSpace(self.extended_guid(ptr)?);
+            }
+            OBJECT_SPACE_MANIFEST_LIST_REFERENCE_FND => {
+                data.declares = Declares::ObjectSpace(self.extended_guid(ptr)?);
+            }
             OBJECT_GROUP_START_FND
-            | OBJECT_SPACE_MANIFEST_ROOT_FND
             | OBJECT_SPACE_MANIFEST_LIST_START_FND
-            | OBJECT_SPACE_MANIFEST_LIST_REFERENCE_FND
             | OBJECT_GROUP_LIST_REFERENCE_FND
             | DATA_SIGNATURE_GROUP_DEFINITION_FND => {
-                data.gosid = self.extended_guid(ptr)?;
+                self.extended_guid(ptr)?;
             }
             REVISION_MANIFEST_LIST_START_FND => {
-                data.gosid = self.extended_guid(ptr)?;
+                self.extended_guid(ptr)?;
                 self.int(ptr)?;
             }
             REVISION_MANIFEST_START4_FND => {
-                data.gosid = self.extended_guid(ptr)?;
+                let revision = self.extended_guid(ptr)?;
                 let dependent = self.extended_guid(ptr)?;
                 self.long(ptr)?;
-                self.int(ptr)?;
+                let role = self.int(ptr)?;
                 self.short(ptr)?;
-                self.register_revision_manifest(data.gosid, dependent);
+                self.register_revision_manifest(revision, dependent);
+                data.declares = Declares::Revision {
+                    role: RevisionRole {
+                        revision,
+                        role,
+                        context: ExtendedGuid::NIL,
+                    },
+                    dependent,
+                };
             }
             REVISION_MANIFEST_START6_FND | REVISION_MANIFEST_START7_FND => {
-                data.gosid = self.extended_guid(ptr)?;
+                let revision = self.extended_guid(ptr)?;
                 let dependent = self.extended_guid(ptr)?;
-                self.int(ptr)?;
+                let role = self.int(ptr)?;
                 self.short(ptr)?;
-                if data.id == REVISION_MANIFEST_START7_FND {
-                    self.extended_guid(ptr)?;
-                }
-                self.register_revision_manifest(data.gosid, dependent);
+                let context = if data.id == REVISION_MANIFEST_START7_FND {
+                    self.extended_guid(ptr)?
+                } else {
+                    ExtendedGuid::NIL
+                };
+                self.register_revision_manifest(revision, dependent);
+                data.declares = Declares::Revision {
+                    role: RevisionRole {
+                        revision,
+                        role,
+                        context,
+                    },
+                    dependent,
+                };
             }
             GLOBAL_ID_TABLE_START_FNDX => {
                 self.char(ptr)?;
@@ -769,20 +814,28 @@ impl<'a, 'd> Reader<'a, 'd> {
                     self.int(ptr)?;
                 }
             }
-            ROOT_OBJECT_REFERENCE2_FNDX => {
-                data.gosid = self.compact_id(ptr)?;
-                self.int(ptr)?;
-            }
-            ROOT_OBJECT_REFERENCE3_FND => {
-                data.gosid = self.extended_guid(ptr)?;
-                self.int(ptr)?;
+            ROOT_OBJECT_REFERENCE2_FNDX | ROOT_OBJECT_REFERENCE3_FND => {
+                let object = if data.id == ROOT_OBJECT_REFERENCE2_FNDX {
+                    self.compact_id(ptr)?
+                } else {
+                    self.extended_guid(ptr)?
+                };
+                let role = self.int(ptr)?;
+                data.declares = Declares::Root { object, role };
             }
             REVISION_ROLE_DECLARATION_FND | REVISION_ROLE_AND_CONTEXT_DECLARATION_FND => {
-                data.gosid = self.extended_guid(ptr)?;
-                self.int(ptr)?;
-                if data.id == REVISION_ROLE_AND_CONTEXT_DECLARATION_FND {
-                    self.extended_guid(ptr)?;
-                }
+                let revision = self.extended_guid(ptr)?;
+                let role = self.int(ptr)?;
+                let context = if data.id == REVISION_ROLE_AND_CONTEXT_DECLARATION_FND {
+                    self.extended_guid(ptr)?
+                } else {
+                    ExtendedGuid::NIL
+                };
+                data.declares = Declares::RevisionRole(RevisionRole {
+                    revision,
+                    role,
+                    context,
+                });
             }
             OBJECT_INFO_DEPENDENCY_OVERRIDES_FND => {
                 let mut content = *ptr;
@@ -799,12 +852,16 @@ impl<'a, 'd> Reader<'a, 'd> {
                     self.int(&mut content)?;
                 }
             }
+            FILE_DATA_STORE_LIST_REFERENCE_FND => data.declares = Declares::FileDataStoreList,
             FILE_DATA_STORE_OBJECT_REFERENCE_FND => {
-                self.chunk64(ptr)?;
-                self.guid(ptr)?;
+                let id = self.guid(ptr)?;
                 let mut store = *ptr;
                 store.reposition(&mut self.dif, reference)?;
-                data.file_data = Some(self.file_data_store_object(&mut store)?);
+                let data_chunk = self.file_data_store_object(&mut store)?;
+                data.declares = Declares::FileDataStoreObject {
+                    id,
+                    data: data_chunk,
+                };
             }
             OBJECT_DECLARATION_WITH_REF_COUNT_FNDX
             | OBJECT_DECLARATION_WITH_REF_COUNT2_FNDX
@@ -836,15 +893,20 @@ impl<'a, 'd> Reader<'a, 'd> {
                 ) {
                     self.bytes(ptr, 16)?;
                 }
-                data.gosid = oid;
-                self.document.guid_to_object.insert(oid, path.to_vec());
                 if jcid.is_object_space_object_prop_set() {
                     let mut prop_set = *ptr;
                     prop_set.reposition(&mut self.dif, reference)?;
-                    let streams = self.object_space_object_prop_set(&mut prop_set)?;
-                    data.property_set =
-                        Some(self.property_set(&mut prop_set, &streams, 0, budget)?);
-                } else if !jcid.is_file_data {
+                    let mut streams = self.object_space_object_prop_set(&mut prop_set)?;
+                    data.declares = Declares::Object {
+                        id: oid,
+                        properties: self.property_set(&mut prop_set, &mut streams, 0, budget)?,
+                    };
+                } else if jcid.is_file_data {
+                    data.declares = Declares::FileDataObject {
+                        id: oid,
+                        store: None,
+                    };
+                } else {
                     return Err(tika(
                         "JCID must be file data when !isObjectSpaceObjectPropSet.",
                     ));
@@ -852,7 +914,7 @@ impl<'a, 'd> Reader<'a, 'd> {
             }
             OBJECT_DECLARATION_FILE_DATA3_REF_COUNT_FND
             | OBJECT_DECLARATION_FILE_DATA3_LARGE_REF_COUNT_FND => {
-                self.compact_id(ptr)?;
+                let oid = self.compact_id(ptr)?;
                 let jcid = self.int(ptr)?;
                 Jcid::from_32bit_index(jcid)?;
                 if data.id == OBJECT_DECLARATION_FILE_DATA3_REF_COUNT_FND {
@@ -875,13 +937,19 @@ impl<'a, 'd> Reader<'a, 'd> {
                 }
                 let name = self.dif.read(cch as usize * 2)?;
                 ptr.offset += name.len() as i64;
-                if name.len() == IFNDF_GUID_LENGTH * 2 + IFNDF.len() && name.starts_with(&IFNDF) {
-                    Guid::from_curly_brace_utf16(&name[IFNDF.len()..])?;
-                }
+                let store = if name.len() == IFNDF_GUID_LENGTH * 2 + IFNDF.len()
+                    && name.starts_with(&IFNDF)
+                {
+                    Some(Guid::from_curly_brace_utf16(&name[IFNDF.len()..])?)
+                } else {
+                    None
+                };
+                data.declares = Declares::FileDataObject { id: oid, store };
             }
             REVISION_MANIFEST_LIST_REFERENCE_FND => {
                 let current = self.document.current_revision;
                 self.document.revisions.entry(current).or_default();
+                data.declares = Declares::RevisionManifestList;
             }
             _ => {}
         }
@@ -974,7 +1042,7 @@ impl<'a, 'd> Reader<'a, 'd> {
         if streams.oids.osids_stream_not_present == 0 {
             streams.osids = self.id_stream(ptr)?;
         }
-        if streams.oids.extended_streams_present != 0 {
+        if streams.osids.extended_streams_present != 0 {
             streams.context_ids = self.id_stream(ptr)?;
         }
         Ok(streams)
@@ -987,6 +1055,7 @@ impl<'a, 'd> Reader<'a, 'd> {
             osids_stream_not_present: (header >> 31) & 0x1,
             extended_streams_present: (header >> 30) & 0x1,
             data: Vec::new(),
+            taken: 0,
         };
         for _ in 0..count {
             stream.data.push(self.compact_id(ptr)?);
@@ -1009,7 +1078,7 @@ impl<'a, 'd> Reader<'a, 'd> {
     fn property_set(
         &mut self,
         ptr: &mut Ptr,
-        streams: &PropSetStreams,
+        streams: &mut PropSetStreams,
         depth: usize,
         budget: &mut Budget,
     ) -> Result<Vec<PropertyValue>, Thrown> {
@@ -1034,7 +1103,7 @@ impl<'a, 'd> Reader<'a, 'd> {
         &mut self,
         ptr: &mut Ptr,
         id: PropertyId,
-        streams: &PropSetStreams,
+        streams: &mut PropSetStreams,
         depth: usize,
         budget: &mut Budget,
     ) -> Result<PropertyValue, Thrown> {
@@ -1067,17 +1136,11 @@ impl<'a, 'd> Reader<'a, 'd> {
                     1
                 };
                 let stream = match id.kind {
-                    0x8 | 0x9 => &streams.oids.data,
-                    0xa | 0xb => &streams.osids.data,
-                    _ => &streams.context_ids.data,
+                    0x8 | 0x9 => &mut streams.oids,
+                    0xa | 0xb => &mut streams.osids,
+                    _ => &mut streams.context_ids,
                 };
-                for index in 0..count {
-                    let guid = usize::try_from(index)
-                        .ok()
-                        .and_then(|index| stream.get(index))
-                        .ok_or_else(|| tika("SEGV"))?;
-                    data.compact_ids.push(*guid);
-                }
+                data.compact_ids = stream.take(count)?;
             }
             0x10 => {
                 let count = self.int(ptr)?;
@@ -1095,5 +1158,24 @@ impl<'a, 'd> Reader<'a, 'd> {
             kind => return Err(tika(format!("Invalid type: {kind}"))),
         }
         Ok(data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gives_the_properties_the_ids_of_a_stream_in_order() {
+        let id = |n| ExtendedGuid { guid: Guid::NIL, n };
+        let mut stream = IdStream {
+            data: vec![id(1), id(2), id(3)],
+            ..IdStream::default()
+        };
+        assert_eq!(stream.take(1), Ok(vec![id(1)]));
+        assert_eq!(stream.take(2), Ok(vec![id(2), id(3)]));
+        assert_eq!(stream.take(0), Ok(vec![]));
+        assert_eq!(stream.take(1), Err(tika("SEGV")));
+        assert_eq!(stream.take(-1), Err(tika("SEGV")));
     }
 }

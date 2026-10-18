@@ -1159,7 +1159,8 @@ fn without_departures(
             Departure::Unset(..)
             | Departure::LineBreaks(_)
             | Departure::BlankLines(_)
-            | Departure::PngImages(_) => None,
+            | Departure::PngImages(_)
+            | Departure::Paragraphs(..) => None,
         })
         .collect();
     let unset: Vec<&str> = departures
@@ -1171,9 +1172,7 @@ fn without_departures(
         .collect();
     for (name, values) in &mut extracted.metadata {
         if names.contains(&name.as_str()) {
-            values
-                .iter_mut()
-                .for_each(|value| *value = DEPARTED.to_owned());
+            *values = vec![DEPARTED.to_owned()];
         }
     }
     let Some(mut text) = decoded(&extracted.text, char_set) else {
@@ -1217,6 +1216,94 @@ fn without_departures(
     formats::encode(&text, char_set, &mut encoded);
     extracted.text = encoded;
     extracted
+}
+
+/// Both results as a [`Departure::Paragraphs`] compares them, given whether the length limit of
+/// a string cut them: with Tika's text the native one where the native text has each line of
+/// Tika's but the superseded paragraphs, else the lines it misses. The start tag of the body
+/// ends a line, as the paragraph after it starts one. Where cut, both are without their texts,
+/// and without the metadata only one of them has: a parser that sets metadata at the end of the
+/// document sets it where the limit stopped only the longer text before its end.
+#[cfg(feature = "tika")]
+fn as_paragraphs(
+    mut tika: Extracted,
+    mut native: Extracted,
+    char_set: CharSet,
+    departures: Departures,
+    cut: bool,
+) -> (Extracted, Extracted) {
+    let Some(superseded) = departures.iter().find_map(|departure| match departure {
+        Departure::Paragraphs(_, superseded) => Some(*superseded),
+        _ => None,
+    }) else {
+        return (tika, native);
+    };
+    if cut {
+        tika.text.clear();
+        native.text.clear();
+        let names = |extracted: &Extracted| -> Vec<String> {
+            extracted
+                .metadata
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+        let (tika_names, native_names) = (names(&tika), names(&native));
+        tika.metadata
+            .retain(|(name, _)| native_names.contains(name));
+        native
+            .metadata
+            .retain(|(name, _)| tika_names.contains(name));
+        return (tika, native);
+    }
+    let (Some(tika_text), Some(native_text)) = (
+        decoded(&tika.text, char_set),
+        decoded(&native.text, char_set),
+    ) else {
+        return (tika, native);
+    };
+    let superseded: std::collections::HashSet<String> = superseded
+        .iter()
+        .flat_map(|paragraph| {
+            let escaped = paragraph
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            [paragraph.to_string(), escaped]
+        })
+        .collect();
+    let (tika_text, native_text) = (
+        tika_text.replace("<body>", "<body>\n"),
+        native_text.replace("<body>", "<body>\n"),
+    );
+    let written: std::collections::HashSet<&str> = native_text.lines().collect();
+    let missed: Vec<&str> = tika_text
+        .lines()
+        .filter(|line| !written.contains(line) && !superseded.contains(&without_tags(line)))
+        .collect();
+    tika.text = match missed.is_empty() {
+        true => native.text.clone(),
+        false => encoded_as(
+            &format!("lines the native text misses:\n{}", missed.join("\n")),
+            char_set,
+        ),
+    };
+    (tika, native)
+}
+
+/// A line of XHTML without its tags.
+#[cfg(feature = "tika")]
+fn without_tags(line: &str) -> String {
+    let mut text = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find('<') {
+        text.push_str(&rest[..start]);
+        rest = rest[start..]
+            .find('>')
+            .map_or("", |end| &rest[start + end + 1..]);
+    }
+    text.push_str(rest);
+    text
 }
 
 /// `text` as a [`Departure::BlankLines`] compares it: without the white space that ends the
@@ -2117,13 +2204,36 @@ fn compare(
             }
             _ => 0,
         };
+        let in_any_order = match expected {
+            Expected::Same(naming) => naming
+                .departures
+                .iter()
+                .any(|departure| matches!(departure, Departure::Paragraphs(..))),
+            Expected::Failure => false,
+        };
         if let Some((tika, native)) = &ocr {
-            for (tika, native) in tika.iter().zip(native) {
-                if !tika.trim().is_empty() && native.trim().is_empty() {
+            if in_any_order {
+                for native in native.iter().filter(|native| !tika.contains(native)) {
+                    differences.push(format!(
+                        "{path}: the native parser's OCR read {native:?}, which Tika's path did \
+                         not"
+                    ));
+                }
+                let read = |reads: &[String]| reads.iter().any(|read| !read.trim().is_empty());
+                if read(tika) && !read(native) {
                     differences.push(format!(
                         "{path}: the native parser's OCR read nothing where Tika's path read \
                          {tika:?}"
                     ));
+                }
+            } else {
+                for (tika, native) in tika.iter().zip(native) {
+                    if !tika.trim().is_empty() && native.trim().is_empty() {
+                        differences.push(format!(
+                            "{path}: the native parser's OCR read nothing where Tika's path \
+                             read {tika:?}"
+                        ));
+                    }
                 }
             }
         }
@@ -2175,6 +2285,8 @@ fn compare(
                         }
                         None => (tika, native),
                     };
+                    let (tika, native) =
+                        as_paragraphs(tika, native, char_set, naming.departures, entry == "string");
                     let tika = match output {
                         Output::Text if unset_breaks > 0 => without_nested_head_breaks(
                             tika,

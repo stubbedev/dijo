@@ -1,7 +1,8 @@
 //! Tika's `OneNoteParser` over OneNote 2010 and later sections in the MS-ONESTORE format: the
-//! header's numbers as metadata, then the file node lists walked from the root
-//! ([`structure`], [`walker`]), the text of their objects written and their file data handed
-//! to the embedded document extractor. Where the structure or the walk throws, Tika records the
+//! header's numbers as metadata, then the file node lists read from the root ([`structure`]),
+//! and the current revision of the section walked from its root object space ([`walker`]), the
+//! text of its objects written and their file data handed to the embedded document extractor,
+//! where Tika walks every revision (#122). Where the structure or the walk throws, Tika records the
 //! exception and falls back to dumping the file's runs of printable characters ([`legacy`]),
 //! after anything the walk wrote. Sections in the alternative packaging of MS-FSSHTTPB, which
 //! OneNote writes for files from OneDrive, are read as Tika reads them ([`fsshttpb`]), and
