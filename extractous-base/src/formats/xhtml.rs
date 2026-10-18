@@ -8,6 +8,7 @@ use crate::formats::embedded::{
 };
 use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::secure::ZipBomb;
 use crate::formats::{self, Bridged, Declined, EmbeddedRoute, Failure, Opened, Unrouted};
 use crate::memory;
 #[cfg(feature = "tika")]
@@ -72,6 +73,8 @@ pub enum Stop {
     ReaderGone,
     /// The extraction holds more memory than its budget of this many bytes.
     MemoryLimit(u64),
+    /// Tika's `SecureContentHandler` takes the document for a zip bomb.
+    ZipBomb(ZipBomb),
 }
 
 /// Where the XHTML of a document goes: the SAX events Tika's handlers receive, all in the XHTML
@@ -938,7 +941,9 @@ impl<'h> Xhtml<'h> {
     }
 
     /// Tika's path's parse of an embedded document `bridged` to it, its events and how it ended,
-    /// which this document has not taken in yet.
+    /// which this document has not taken in yet. It is parsed with the extraction's password,
+    /// as Tika's path parses every embedded document under the password its parse context
+    /// provides.
     #[cfg(feature = "tika")]
     fn parse_with_tika_quietly(
         &self,
@@ -950,7 +955,7 @@ impl<'h> Xhtml<'h> {
             bridged,
             data,
             &metadata.pairs(),
-            &self.embedding.context().configs().with_password(None),
+            self.embedding.context().configs(),
         )
         .map_err(Failure::Embedded)
     }

@@ -16,6 +16,17 @@ pub fn open<'a>(
     media_type: &str,
     kind: &str,
 ) -> Result<Ole2<'a>, Unported> {
+    open_as(input, configs, &[media_type], kind).map(|(file, _)| file)
+}
+
+/// [`open`] of a compound document of any of `media_types`, the types of a `kind` of document:
+/// the file, and which of them its container detection names it.
+pub fn open_as<'a, 't>(
+    input: &'a [u8],
+    configs: &ParserConfigs,
+    media_types: &[&'t str],
+    kind: &str,
+) -> Result<(Ole2<'a>, &'t str), Unported> {
     if configs.office.extracts_macros() {
         return Err(Unported(
             "macros are extracted, which this port does not do".to_owned(),
@@ -29,10 +40,14 @@ pub fn open<'a>(
             "POI reads the compound document from a stream differently: {reason}"
         )));
     }
-    if ole_directory_type(&file, file.root()) != MediaType::named(media_type) {
-        return Err(Unported(format!(
-            "the compound document is no {kind} to POI's container detection"
-        )));
-    }
-    Ok(file)
+    let detected = ole_directory_type(&file, file.root());
+    let media_type = media_types
+        .iter()
+        .find(|&&media_type| detected == MediaType::named(media_type))
+        .ok_or_else(|| {
+            Unported(format!(
+                "the compound document is no {kind} to POI's container detection"
+            ))
+        })?;
+    Ok((file, media_type))
 }

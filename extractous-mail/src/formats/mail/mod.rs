@@ -330,20 +330,38 @@ pub(crate) mod tests {
         };
         let (excepted, parsed): (Vec<PathBuf>, Vec<PathBuf>) =
             parsed.into_iter().partition(|path| named(except, path));
-        let (other, paths): (Vec<&Path>, Vec<&Path>) = parsed
-            .iter()
-            .map(PathBuf::as_path)
-            .partition(|path| named(&OTHER_SENDER_NAMES, path));
-        let (anchored, paths): (Vec<&Path>, Vec<&Path>) = paths
-            .into_iter()
-            .partition(|path| named(&crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS, path));
-        assert_same_as_tika_departing(&paths, tika_name, DEPARTURES);
-        let mut departures = DEPARTURES.to_vec();
-        departures.push(Departure::Values("message:from-name", "#77"));
-        assert_same_as_tika_departing(&other, tika_name, &departures);
-        let departures = [DEPARTURES, crate::formats::parity::ANCHORED_BLOCKS].concat();
-        assert_same_as_tika_departing(&anchored, tika_name, &departures);
+        let mut groups: Vec<(Vec<Departure>, Vec<&Path>)> = Vec::new();
+        for path in parsed.iter().map(PathBuf::as_path) {
+            let mut departures = DEPARTURES.to_vec();
+            if named(&OTHER_SENDER_NAMES, path) {
+                departures.push(Departure::Values("message:from-name", "#77"));
+            }
+            if named(&crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS, path) {
+                departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
+            }
+            if holds_html(path) {
+                departures.extend_from_slice(crate::formats::html::DEPARTURES);
+            }
+            match groups.iter_mut().find(|(group, _)| *group == departures) {
+                Some((_, paths)) => paths.push(path),
+                None => groups.push((departures, vec![path])),
+            }
+        }
+        for (departures, paths) in &groups {
+            assert_same_as_tika_departing(paths, tika_name, departures);
+        }
         excepted
+    }
+
+    /// Whether the message at `path` has a part typed `text/html`, which the parser hands the
+    /// native HTML parser, whose white space departs from Tika's jsoup (#84).
+    #[cfg(feature = "tika")]
+    fn holds_html(path: &Path) -> bool {
+        let message = std::fs::read(path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+        message
+            .windows(b"text/html".len())
+            .any(|window| window.eq_ignore_ascii_case(b"text/html"))
     }
 
     #[test]
@@ -422,8 +440,9 @@ pub(crate) mod tests {
 
     /// MHTML documents, typed `multipart/related`, which Tika's composite parser hands the
     /// parser of `message/rfc822`, its supertype, spool their parts as Tika's path does, once
-    /// the line breaks of their quoted-printable parts are taken alike (#73). Where a budget
-    /// cuts the spool, the departure moves the cut.
+    /// the line breaks of their quoted-printable parts, and the white space the HTML parser
+    /// writes of their pages, are taken alike (#73, #84). Where a budget cuts the spool, the
+    /// departure moves the cut.
     #[cfg(feature = "tika")]
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
@@ -437,10 +456,11 @@ pub(crate) mod tests {
             })
             .collect();
         assert_eq!(mhtml.len(), 2, "{mhtml:?}");
+        let departures = [DEPARTURES, crate::formats::html::DEPARTURES].concat();
         let spooled: usize = mhtml
             .iter()
             .map(|path| {
-                crate::formats::parity::spools_as_tika_rewriting(path, u64::MAX, None, DEPARTURES)
+                crate::formats::parity::spools_as_tika_rewriting(path, u64::MAX, None, &departures)
                     .unwrap_or_else(|difference| panic!("{difference}"))
             })
             .sum();

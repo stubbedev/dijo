@@ -932,6 +932,7 @@ version = "0.2.1"
 dependencies = [
  "extractous-base",
  "extractous-core",
+ "extractous-html",
  "extractous-image",
  "extractous-mime",
  "extractous-office",

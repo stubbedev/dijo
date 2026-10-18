@@ -8,6 +8,16 @@ mod parsers;
 use crate::mime::MediaType;
 use parsers::TIKA_PARSERS;
 
+/// The types Tika's container detection names that its default types do not declare and that no
+/// parser of Tika's reads, so that its composite parser falls back to its `EmptyParser`: an MS
+/// Graph chart or an equation an Office document embeds.
+const UNPARSED_UNDECLARED: [&str; 2] = ["application/vnd.ms-equation", "application/vnd.ms-graph"];
+
+/// Whether `kind` is one of the [`UNPARSED_UNDECLARED`] types.
+pub(super) fn is_unparsed_undeclared(kind: &MediaType) -> bool {
+    UNPARSED_UNDECLARED.contains(&kind.as_str())
+}
+
 /// Whether Tika's composite parser has a parser of its own for `kind`, rather than the one of a
 /// type `kind` specializes.
 pub(super) fn tika_reads(kind: &MediaType) -> bool {
@@ -33,7 +43,6 @@ mod tests {
     use crate::formats::{self, PARSERS};
     #[cfg(feature = "tika")]
     use crate::isolate::isolate;
-    #[cfg(feature = "tika")]
     use crate::mime;
     #[cfg(feature = "tika")]
     use crate::tika::{self, EmbeddedOutcome};
@@ -171,6 +180,18 @@ mod tests {
         assert!(PARSERS
             .iter()
             .any(|parser| parser.tika_name() == EMPTY_PARSER));
+    }
+
+    /// The undeclared types Tika's detection names that no parser of Tika's reads fall back to
+    /// the empty parser, as Tika's composite parser does, rather than go to Tika's path (#119).
+    #[test]
+    fn falls_back_to_the_empty_parser_for_an_undeclared_type_tika_detects() {
+        for kind in UNPARSED_UNDECLARED {
+            assert!(!mime::declares(&MediaType::named(kind)), "{kind}");
+            assert_eq!(formats::parser_for(kind).unwrap().tika_name(), EMPTY_PARSER);
+            #[cfg(feature = "tika")]
+            assert_eq!(tika_class(kind), EMPTY_PARSER, "{kind}");
+        }
     }
 
     #[test]

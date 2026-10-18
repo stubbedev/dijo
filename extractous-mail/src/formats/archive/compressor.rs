@@ -3,6 +3,7 @@
 //! as one entry, named by the gzip header or after the compressed file.
 
 use super::nesting::Scan;
+use super::undecoded;
 use crate::compress::compressor::Compressor;
 use crate::compress::gzip;
 use crate::config::ParserConfigs;
@@ -66,7 +67,7 @@ impl Parser for CompressorParser {
         };
         let decoded = compressor
             .decode(input)
-            .map_err(|undecoded| format!("the {compressor:?} stream: {undecoded}"))?;
+            .map_err(|reason| undecoded(&format!("the {compressor:?} stream"), reason))?;
         let mut scan = Scan::new();
         if let Some(reason) = scan.entry(&decoded.content) {
             return Err(Declined::Deferred(reason));
@@ -178,6 +179,7 @@ mod tests {
         assert_eq!(defers(&data, "application/gzip", Some("\u{130}.Z")), None);
     }
 
+    #[cfg(feature = "tika")]
     #[test]
     fn defers_what_tika_may_take_for_a_zip_bomb() {
         let bomb = gzip(&vec![b'a'; 600_000], None);
