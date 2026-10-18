@@ -386,6 +386,7 @@ fn extracts_compressed_files_as_tikas_path_does() {
             ("latin1-name.gz", latin1_name),
             ("two-members.gz", two_members),
             ("drawing.svgz", gzip(svg, None)),
+            ("drawing.emz", gzip(text, None)),
             ("page.html-gz", gzip(html, None)),
             ("notes.txt.bz2", bzip2(text)),
             ("notes.zlib", zlib(text)),

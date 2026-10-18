@@ -1,6 +1,7 @@
-//! Tika's `CompressorParser` over the compressed files whose content type names the compressor
-//! it decodes them with: the content, decoded whole, handed to the embedded document extractor
-//! as one entry, named by the gzip header or after the compressed file.
+//! Tika's `CompressorParser` over compressed files: the content, decoded whole with the
+//! compressor their content type names or, failing that, the one their first bytes show,
+//! handed to the embedded document extractor as one entry, named by the gzip header or after
+//! the compressed file.
 
 use super::nesting::Scan;
 use super::undecoded;
@@ -11,6 +12,7 @@ use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Declined, Failure, Parser, Prepared};
 use crate::java::is_blank;
+use crate::Error;
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
 const NATIVE: [Compressor; 10] = [
@@ -39,6 +41,10 @@ const MEDIA_TYPES: [&str; NATIVE.len()] = [
     NATIVE[9].media_type(),
 ];
 
+/// The types whose subtypes without parsers of their own Tika reads as the compressed files
+/// they are, such as EMZ, a gzip stream holding an EMF picture.
+const WITH_SUBTYPES: [&str; 1] = [Compressor::Gzip.media_type()];
+
 /// Tika's `CompressorParser`.
 pub struct CompressorParser;
 
@@ -54,6 +60,10 @@ impl Parser for CompressorParser {
         &MEDIA_TYPES
     }
 
+    fn media_types_with_subtypes(&self) -> &'static [&'static str] {
+        &WITH_SUBTYPES
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -61,11 +71,17 @@ impl Parser for CompressorParser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
         let content_type = metadata.get("Content-Type").unwrap_or_default();
-        let Some(compressor) = Compressor::named(content_type) else {
-            return Err(Declined::Deferred(format!(
-                "the content type {content_type} names no compressor, which commons-compress \
-                 then detects"
-            )));
+        let (compressor, detected) = match Compressor::named(content_type) {
+            Some(compressor) => (compressor, None),
+            None => {
+                let compressor = Compressor::detect(input).ok_or_else(|| {
+                    Declined::Fails(Error::ParseError(format!(
+                        "Unable to uncompress document stream: the {content_type} document \
+                         starts with no compressor's signature"
+                    )))
+                })?;
+                (compressor, detected_media_type(compressor))
+            }
         };
         let decoded = compressor
             .decode(input)
@@ -82,12 +98,24 @@ impl Parser for CompressorParser {
         // The document ends whatever the entry's parse does, short of the output stopping:
         // Tika leaves it open when the parse fails (#100).
         Ok(Box::new(move |xhtml| {
+            if let Some(media_type) = detected {
+                xhtml.metadata_mut().set("Content-Type", media_type);
+            }
             let parsed = xhtml.parse_embedded(&content, &entry, Wrapping::PackageEntry);
             if !matches!(parsed, Err(Failure::Stopped(_))) {
                 xhtml.end_document()?;
             }
             parsed
         }))
+    }
+}
+
+/// The content type `getMediaType` gives the document of a compressor commons-compress detects,
+/// none for those it leaves unnamed.
+fn detected_media_type(compressor: Compressor) -> Option<&'static str> {
+    match compressor {
+        Compressor::Lz4Framed | Compressor::Zstd | Compressor::Brotli => None,
+        named => Some(named.media_type()),
     }
 }
 
@@ -173,12 +201,40 @@ mod tests {
     #[test]
     fn decodes_what_commons_compress_decodes_whole() {
         assert_eq!(defers(&gzip(b"text", None), "application/gzip", None), None);
-        let reason = defers(&gzip(b"text", None), "application/gzip; x=y", None).unwrap();
-        assert!(reason.contains("names no compressor"), "{reason}");
+        assert_eq!(
+            defers(&gzip(b"text", None), "application/gzip; x=y", None),
+            None
+        );
+        assert_eq!(
+            defers(&gzip(b"text", None), "image/x-emf-compressed", None),
+            None
+        );
         let data = gzip(b"text", None);
         let reason = defers(&data[..data.len() - 3], "application/gzip", None).unwrap();
         assert!(reason.contains("reading it fails"), "{reason}");
         assert_eq!(defers(&data, "application/gzip", Some("\u{130}.Z")), None);
+    }
+
+    #[test]
+    fn fails_documents_whose_compressor_it_cannot_detect_as_tika_does() {
+        let mut metadata = TikaMetadata::new();
+        metadata.set("Content-Type", "image/x-emf-compressed");
+        let configs = ParserConfigs::default();
+        let declined = CompressorParser.prepare(b"no signature", &metadata, &configs);
+        let Err(Declined::Fails(Error::ParseError(reason))) = declined else {
+            panic!("a document without a compressor's signature is not failed");
+        };
+        assert!(reason.contains("Unable to uncompress"), "{reason}");
+    }
+
+    #[test]
+    fn names_only_the_detected_compressors_get_media_type_names() {
+        assert_eq!(
+            detected_media_type(Compressor::Gzip),
+            Some("application/gzip")
+        );
+        assert_eq!(detected_media_type(Compressor::Zstd), None);
+        assert_eq!(detected_media_type(Compressor::Lz4Framed), None);
     }
 
     #[test]
