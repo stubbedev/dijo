@@ -1,4 +1,5 @@
-//! Tika's `RarParser`, which reads RAR 1.5 to 4 archives with junrar 8.1.1 and fails on RAR 5:
+//! Tika's `RarParser`, which reads RAR 1.4 to 4 archives with junrar 8.1.1, at the start of
+//! the file or after a self-extractor's code, and fails on RAR 5:
 //! each file but a directory, in archive order, handed to the embedded document extractor
 //! with the metadata `handleEntryMetadata` gives it. The parser hands the extractor the
 //! content handler it was given rather than its `XHTMLContentHandler`, so the `package-entry`
@@ -9,8 +10,7 @@
 //! so an entry's data is junrar's, checked against its CRC, but where junrar slips (#122). An
 //! entry the port cannot give whole, one whose data does not match its CRC, is compressed for
 //! an unknown RAR version, continues in another volume or fails to unpack, is recorded as a
-//! failure where Tika's path gives it empty. What junrar reads that the port does not, RAR 1.4
-//! archives and self-extractors, is left to Tika.
+//! failure where Tika's path gives it empty.
 
 mod extract;
 mod headers;
@@ -79,14 +79,11 @@ impl Parser for RarParser {
             )));
         }
         let headers = headers::read(input).map_err(|unopened| match unopened {
-            Unopened::Fails {
+            Unopened {
                 encrypted: true,
                 reason,
             } => Decline::Fails(Error::Encrypted(reason)),
-            Unopened::Fails { reason, .. } => Decline::Fails(Error::ParseError(reason)),
-            Unopened::Unported(what) => {
-                Decline::Deferred(format!("junrar reads {what}, which the port does not"))
-            }
+            Unopened { reason, .. } => Decline::Fails(Error::ParseError(reason)),
         })?;
         let (names, difference) = names(&headers);
         if DEFERS {

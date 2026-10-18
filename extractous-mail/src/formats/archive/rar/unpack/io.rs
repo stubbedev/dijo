@@ -1,6 +1,6 @@
-//! The parts of junrar's `ComprDataIO` a RAR 1.5 to 4 entry of one volume is extracted
+//! The parts of junrar's `ComprDataIO` a RAR 1.4 to 4 entry of one volume is extracted
 //! through: its packed data read from the archive, its unpacked data written out with their
-//! CRC-32.
+//! checksum, a CRC-32, or RAR 1.4's 16-bit sum.
 
 use flate2::Crc;
 
@@ -9,6 +9,48 @@ use super::{Thrown, OUT_OF_BOUNDS};
 use crate::compress::{Decoding, Limited};
 use crate::input::{self, Spool};
 
+/// How an entry's unpacked data is checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in super::super) enum Sum {
+    /// A CRC-32, as RAR 1.5 and later check it.
+    Crc32,
+    /// `RarCRC.checkOldCrc`, RAR 1.4's 16-bit sum, each byte added, then rotated left by one.
+    Rar14,
+}
+
+/// The checksum of what an entry wrote so far.
+enum Checksum {
+    Crc32(Crc),
+    Rar14(u16),
+}
+
+impl Checksum {
+    fn new(sum: Sum) -> Self {
+        match sum {
+            Sum::Crc32 => Checksum::Crc32(Crc::new()),
+            Sum::Rar14 => Checksum::Rar14(0),
+        }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        match self {
+            Checksum::Crc32(crc) => crc.update(bytes),
+            Checksum::Rar14(sum) => {
+                for &byte in bytes {
+                    *sum = sum.wrapping_add(u16::from(byte)).rotate_left(1);
+                }
+            }
+        }
+    }
+
+    fn value(&self) -> u32 {
+        match self {
+            Checksum::Crc32(crc) => crc.sum(),
+            Checksum::Rar14(sum) => u32::from(*sum),
+        }
+    }
+}
+
 /// `ComprDataIO` over the archive's bytes, which spools what an entry unpacks into, up to the
 /// archive's decode limit.
 pub(super) struct DataIo<'a> {
@@ -16,7 +58,7 @@ pub(super) struct DataIo<'a> {
     position: u64,
     packed_left: i64,
     unpacked: Option<Decoding<Spool>>,
-    crc: Crc,
+    checksum: Checksum,
 }
 
 impl<'a> DataIo<'a> {
@@ -26,17 +68,17 @@ impl<'a> DataIo<'a> {
             position: 0,
             packed_left: 0,
             unpacked: None,
-            crc: Crc::new(),
+            checksum: Checksum::new(Sum::Crc32),
         }
     }
 
     /// `init(OutputStream)` and `init(FileHeader)`: the packed data of `packed` bytes from
-    /// `start` on, unpacked afresh, with a fresh CRC.
-    pub(super) fn start(&mut self, start: u64, packed: i64) {
+    /// `start` on, unpacked afresh, with a fresh checksum of the kind `sum`.
+    pub(super) fn start(&mut self, start: u64, packed: i64, sum: Sum) {
         self.unpacked = Some(Decoding::spooled(self.archive.len()));
         self.position = start;
         self.packed_left = packed;
-        self.crc = Crc::new();
+        self.checksum = Checksum::new(sum);
     }
 
     /// What the extraction unpacked, once it is over.
@@ -49,9 +91,9 @@ impl<'a> DataIo<'a> {
         }
     }
 
-    /// The CRC-32 of the data written since [`DataIo::start`].
+    /// The checksum of the data written since [`DataIo::start`].
     pub(super) fn crc(&self) -> u32 {
-        self.crc.sum()
+        self.checksum.value()
     }
 
     /// `unpRead`: up to `count` packed bytes into `buf` from `offset` on, no more than the
@@ -97,7 +139,7 @@ impl<'a> DataIo<'a> {
         if decoding.is_cut() {
             return Err(TOO_LARGE);
         }
-        self.crc.update(unpacked);
+        self.checksum.update(unpacked);
         Ok(())
     }
 }
