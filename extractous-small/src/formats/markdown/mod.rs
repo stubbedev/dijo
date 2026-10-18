@@ -5,13 +5,11 @@
 //! commonmark-java merges adjacent text nodes.
 //!
 //! The data URI a link or image leads to, and each one found in HTML that a quote ends, is
-//! parsed as an inline document embedded after it ([`data_uri`]). The parser reads differently
+//! parsed as an inline document embedded after it ([`data_uri`](crate::formats::data_uri)). The parser reads differently
 //! from Tika a document with a data URI of text in a charset this port does not encode, which it
 //! encodes in UTF-8, one whose blocks nest deeper than commonmark-java opens them, where it
 //! flattens the rest into paragraph text, a table commonmark-java reads leniently and a link
 //! whose title is ambiguous to the parser: a build with Tika leaves them to Tika's path.
-
-mod data_uri;
 
 use std::ops::Range;
 
@@ -21,7 +19,7 @@ use pulldown_cmark::{
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
-use crate::formats::embedded::{ResourceType, Wrapping};
+use crate::formats::data_uri;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
@@ -487,16 +485,7 @@ impl<'x, 'h> Visitor<'x, 'h> {
 
     /// `embed`: the document a data URI holds, inline, of its media type, if it has one.
     fn embed(&mut self, uri: &data_uri::DataUri) -> Result<(), Failure> {
-        let data = uri.bytes().map_err(|thrown| {
-            Failure::Malformed(thrown.into_error(MarkdownParser.tika_name()).to_string())
-        })?;
-        let mut metadata = TikaMetadata::new();
-        ResourceType::Inline.set(&mut metadata);
-        if let Some(content_type) = uri.content_type() {
-            metadata.set("Content-Type", content_type);
-        }
-        self.xhtml
-            .parse_embedded(&data, &metadata, Wrapping::PackageEntry)
+        uri.embed(self.xhtml, MarkdownParser.tika_name())
     }
 
     fn flush(&mut self) -> Result<(), Failure> {

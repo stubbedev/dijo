@@ -1,11 +1,16 @@
-//! Tika's `DataURISchemeUtil`: a data URI read from a link's destination, or each one found in
-//! HTML, ended by a quote, and the document it holds.
+//! Tika's `DataURISchemeUtil`: a data URI read from an attribute or a link's destination, or each
+//! one found in HTML, ended by a quote, and the document it holds, which the HTML and Markdown
+//! parsers embed inline.
 
 use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
 
+use crate::formats::embedded::{ResourceType, Wrapping};
+use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
+use crate::formats::xhtml::Xhtml;
+use crate::formats::Failure;
 use crate::java;
 use crate::mime::MediaType;
 use crate::text::charset::Charset;
@@ -23,7 +28,7 @@ static EXTRACT: LazyLock<Regex> = LazyLock::new(|| {
 /// A data URI: its media type as written, whether its data is in base 64, and its data, each
 /// backslash a space, as `DataURISchemeUtil.build` takes them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct DataUri {
+pub struct DataUri {
     media_type: String,
     base64: bool,
     data: String,
@@ -31,12 +36,12 @@ pub(super) struct DataUri {
 
 /// `DataURISchemeUtil.parse`: the data URI `destination` holds, or none, where Tika's parse
 /// throws the `DataURISchemeParseException` the Markdown parser ignores.
-pub(super) fn parse(destination: &str) -> Option<DataUri> {
+pub fn parse(destination: &str) -> Option<DataUri> {
     PARSE.captures(destination).map(|found| DataUri::of(&found))
 }
 
 /// `DataURISchemeUtil.extract`: each data URI in `html` that a quote ends.
-pub(super) fn extract(html: &str) -> Vec<DataUri> {
+pub fn extract(html: &str) -> Vec<DataUri> {
     EXTRACT
         .captures_iter(html)
         .map(|found| DataUri::of(&found))
@@ -63,13 +68,28 @@ impl DataUri {
     }
 
     /// `getMediaType().toString()`, where the media type parses.
-    pub(super) fn content_type(&self) -> Option<String> {
+    pub fn content_type(&self) -> Option<String> {
         MediaType::parse(&self.media_type).map(|parsed| parsed.to_string())
+    }
+
+    /// The document it holds, parsed as an inline document of its media type, if it has one, in
+    /// a `package-entry` div, as the parser Tika names `tika_name` hands it to the embedded
+    /// document extractor; what `build` throws fails that parser.
+    pub fn embed(&self, xhtml: &mut Xhtml, tika_name: &str) -> Result<(), Failure> {
+        let data = self
+            .bytes()
+            .map_err(|thrown| Failure::Malformed(thrown.into_error(tika_name).to_string()))?;
+        let mut metadata = TikaMetadata::new();
+        ResourceType::Inline.set(&mut metadata);
+        if let Some(content_type) = self.content_type() {
+            metadata.set("Content-Type", content_type);
+        }
+        xhtml.parse_embedded(&data, &metadata, Wrapping::PackageEntry)
     }
 
     /// How the native parser reads it differently from Tika: text data in a charset this port
     /// does not encode, which it encodes in UTF-8.
-    pub(super) fn difference(&self) -> Option<String> {
+    pub fn difference(&self) -> Option<String> {
         match self.encoding() {
             Ok(Encoding::Unencoded(charset)) => Some(format!(
                 "a data URI of text in {charset}, which the native parser encodes in UTF-8"
@@ -82,7 +102,7 @@ impl DataUri {
     /// charset its media type names, UTF-8 where it names none or one Java does not know, and
     /// where this port does not encode it; or what `build` throws on a media type that does not
     /// parse or a charset name Java rejects.
-    pub(super) fn bytes(&self) -> Result<Vec<u8>, Thrown> {
+    pub fn bytes(&self) -> Result<Vec<u8>, Thrown> {
         if self.data.is_empty() {
             return Ok(Vec::new());
         }

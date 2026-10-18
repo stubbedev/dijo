@@ -836,6 +836,7 @@ dependencies = [
  "extractous-mime",
  "flate2",
  "html5ever",
+ "regex",
 ]
 
 [[package]]

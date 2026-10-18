@@ -18,6 +18,7 @@ pub mod formats {
     #[cfg(all(test, feature = "tika"))]
     pub(crate) use extractous_core::parity;
 
+    pub mod data_uri;
     pub mod html;
     #[cfg(test)]
     pub mod reference;
