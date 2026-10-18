@@ -24,10 +24,11 @@ mod text;
 
 use std::convert::Infallible;
 
-use extractor::{extract, Flush, Halt, Out};
+use extractor::{extract, Flush, Out};
 
 use crate::config::ParserConfigs;
-use crate::errors::Error;
+use crate::formats::poi::{planned, written, Halt};
+
 use crate::formats::embedded::{record_exception, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
@@ -89,13 +90,7 @@ impl Parser for PptParser {
             Box::new(move |xhtml| {
                 summaries.write(xhtml.metadata_mut());
                 xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-                match read(&file, configs, &mut |out| write(out, xhtml)) {
-                    Ok(_) => Ok(()),
-                    Err(Halt::Written(failure)) => Err(failure),
-                    Err(Halt::Declined(declined)) => Err(Failure::Extraction(Error::ParseError(
-                        format!("the presentation reads otherwise the second time: {declined:?}"),
-                    ))),
-                }
+                written(read(&file, configs, &mut |out| write(out, xhtml))).map(|_| ())
             }),
             difference,
         )
@@ -111,11 +106,7 @@ fn plan<'a>(
 ) -> Result<(Ole2<'a>, Summaries, Option<Difference>), Decline<'static>> {
     let file = office::open(input, configs, MEDIA_TYPE, "presentation")?;
     let summaries = Summaries::read(&file, file.root())?;
-    let difference =
-        read(&file, configs, &mut |_| Ok::<(), Infallible>(())).map_err(|halt| match halt {
-            Halt::Declined(declined) => declined,
-            Halt::Written(never) => match never {},
-        })?;
+    let difference = planned(read(&file, configs, &mut |_| Ok::<(), Infallible>(())))?;
     Ok((file, summaries, difference))
 }
 

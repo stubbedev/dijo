@@ -1,6 +1,12 @@
 //! What the ports of POI's readers share: the Java exception POI throws reading a document,
-//! which fails Tika's parse, and little-endian reads that fail where Java's array bounds do.
+//! which fails Tika's parse, and little-endian reads that fail where Java's array bounds do;
+//! and how a parser that reads a document twice, once to decide whether it extracts it and once
+//! as it writes it, stops.
 
+use std::borrow::Cow;
+use std::convert::Infallible;
+
+use crate::errors::Error;
 use crate::formats::{Decline, Difference, Failure, Unported};
 
 /// A Java exception POI throws reading a document.
@@ -71,6 +77,65 @@ impl Unread {
                 }),
             },
         }
+    }
+}
+
+/// Why a parser reading a document as it hands its content on stops: it declines the
+/// document, or handing its content on failed.
+pub(crate) enum Halt<E> {
+    Declined(Decline<'static>),
+    Written(E),
+}
+
+impl<E> From<Decline<'static>> for Halt<E> {
+    fn from(declined: Decline<'static>) -> Self {
+        Halt::Declined(declined)
+    }
+}
+
+impl<E> From<Unread> for Halt<E> {
+    fn from(unread: Unread) -> Self {
+        Halt::Declined(unread.into())
+    }
+}
+
+impl<E> From<Thrown> for Halt<E> {
+    fn from(thrown: Thrown) -> Self {
+        Halt::Declined(thrown.into())
+    }
+}
+
+impl<E> From<Unported> for Halt<E> {
+    fn from(unported: Unported) -> Self {
+        Halt::Declined(unported.into())
+    }
+}
+
+/// What reading a document as far as deciding whether it is extracted, its content let go,
+/// came to.
+pub(crate) fn planned<T>(read: Result<T, Halt<Infallible>>) -> Result<T, Decline<'static>> {
+    read.map_err(|halt| match halt {
+        Halt::Declined(declined) => declined,
+        Halt::Written(never) => match never {},
+    })
+}
+
+/// What reading a document again as it is written came to: where it declines the document,
+/// which reading it before did not, it fails.
+pub(crate) fn written<T>(read: Result<T, Halt<Failure>>) -> Result<T, Failure> {
+    read.map_err(|halt| match halt {
+        Halt::Written(failure) => failure,
+        Halt::Declined(declined) => Failure::Extraction(Error::ParseError(format!(
+            "the document reads otherwise the second time it is read: {declined:?}"
+        ))),
+    })
+}
+
+/// The part `part` takes of bytes, in place where they are borrowed.
+pub(crate) fn narrowed<'a>(bytes: &Cow<'a, [u8]>, part: impl Fn(&[u8]) -> &[u8]) -> Cow<'a, [u8]> {
+    match *bytes {
+        Cow::Borrowed(bytes) => Cow::Borrowed(part(bytes)),
+        Cow::Owned(ref bytes) => Cow::Owned(part(bytes).to_vec()),
     }
 }
 

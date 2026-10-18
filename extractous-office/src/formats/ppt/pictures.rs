@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 
 use crate::formats::escher::{kind as escher_kind, Content as EscherContent, Escher};
-use crate::formats::poi::{i32_at, inflate, Thrown, Unread};
+use crate::formats::poi::{i32_at, inflate, narrowed, Thrown, Unread};
 use crate::formats::{wmf_placeable, Unported};
 use crate::ole2::{Content, EntryId, EntryKind, Ole2, Unreadable};
 
@@ -524,14 +524,6 @@ fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Resu
     Ok(())
 }
 
-/// The part `part` takes of bytes, in place where they are.
-fn narrowed<'p>(bytes: Cow<'p, [u8]>, part: impl Fn(&[u8]) -> &[u8]) -> Cow<'p, [u8]> {
-    match bytes {
-        Cow::Borrowed(bytes) => Cow::Borrowed(part(bytes)),
-        Cow::Owned(bytes) => Cow::Owned(part(&bytes).to_vec()),
-    }
-}
-
 impl Picture {
     /// `getData` of the picture's `raw` bytes: its data as its type gives it, in place where it
     /// is stored as it is, or why POI fails, which Tika records.
@@ -543,11 +535,11 @@ impl Picture {
                     return Err(UnreadData::Recorded("a bitmap shorter than its header"));
                 }
                 Ok(match self.kind {
-                    PictureType::Png => narrowed(raw, |raw| {
+                    PictureType::Png => narrowed(&raw, |raw| {
                         crate::formats::escher::picture_data(&raw[prefix..])
                     }),
                     PictureType::Dib => Cow::Owned(bmp(&raw[prefix..])?),
-                    _ => narrowed(raw, |raw| &raw[prefix..]),
+                    _ => narrowed(&raw, |raw| &raw[prefix..]),
                 })
             }
             PictureType::Emf => {

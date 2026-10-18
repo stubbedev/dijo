@@ -13,8 +13,8 @@ use crate::formats::metadata::office::{
 };
 use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
 use crate::formats::ole2::{office_document, Embedded, Handed};
-use crate::formats::poi::{Thrown, Unread};
-use crate::formats::{Decline, Difference, Unported};
+use crate::formats::poi::{Halt, Thrown, Unread};
+use crate::formats::{Difference, Unported};
 use crate::java::is_blank;
 use crate::mime::{self, MediaType, Origin};
 use crate::ole2::Node;
@@ -63,31 +63,6 @@ fn recorded(reason: &str) -> Unported {
         "an embedded object or picture Tika fails on and records with Java's stack trace: \
          {reason}"
     ))
-}
-
-/// Why the extraction stops: POI reads the presentation otherwise than Tika's path, or the
-/// events handed on fail to be written.
-pub(super) enum Halt<E> {
-    Declined(Decline<'static>),
-    Written(E),
-}
-
-impl<E> From<Unread> for Halt<E> {
-    fn from(unread: Unread) -> Self {
-        Halt::Declined(unread.into())
-    }
-}
-
-impl<E> From<Unported> for Halt<E> {
-    fn from(unported: Unported) -> Self {
-        Halt::Declined(unported.into())
-    }
-}
-
-impl<E> From<Decline<'static>> for Halt<E> {
-    fn from(declined: Decline<'static>) -> Self {
-        Halt::Declined(declined)
-    }
 }
 
 /// Where the extractor hands its events on, whatever they borrow.
