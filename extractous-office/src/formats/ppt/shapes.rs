@@ -69,7 +69,7 @@ pub(super) enum Text<'a> {
 /// A shape.
 #[derive(Debug)]
 pub(super) struct Shape<'a> {
-    pub(super) node: &'a Node,
+    pub(super) node: &'a Node<'a>,
     pub(super) kind: Kind,
     /// A text shape's paragraphs, and its run type (`getRunType`), `None` where POI throws
     /// finding it.

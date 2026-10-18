@@ -1,6 +1,6 @@
 //! Tika's `HSLFExtractor`: the slides with their headers, master text, text, tables, grouped
 //! text, footers, comments, notes and embedded objects, then the pictures and the objects no
-//! shape showed, as the events it writes, decided before any is written.
+//! shape showed, as the events it writes, handed on a slide, a picture or an object at a time.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -14,16 +14,17 @@ use crate::formats::metadata::office::{
 use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
 use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::formats::poi::{Thrown, Unread};
-use crate::formats::{Difference, Unported};
+use crate::formats::{Decline, Difference, Unported};
 use crate::java::is_blank;
 use crate::mime::{self, MediaType, Origin};
+use crate::ole2::Node;
 use crate::ole2::{self, Ole2, Unreadable};
 
 use super::headers::{notes_sheet, HeadersFooters, Part, Scope};
 use super::pictures::{Object, Pictures, StoreEntry, UnreadData};
 use super::records::kind;
 use super::shapes::{sheet_shapes, Kind, Shape, BLIP_TO_DISPLAY, PICTURE_ID};
-use super::show::{Sheet, Show};
+use super::show::{Records, Sheet, Show};
 use super::text::Paragraph;
 
 const CONTENT_TYPE: &str = "Content-Type";
@@ -38,17 +39,17 @@ const MSOFFICE: &str = "application/x-tika-msoffice";
 
 /// An event of the extractor's output.
 #[derive(Debug)]
-pub(super) enum Out {
+pub(super) enum Out<'a> {
     Start(&'static str),
     StartClass(&'static str, &'static str),
     StartWith(&'static str, Vec<(&'static str, String)>),
     End(&'static str),
     /// Characters, never empty.
     Text(Vec<u16>),
-    Embedded(Handed<'static>, Wrapping),
+    Embedded(Handed<'a>, Wrapping),
     /// An object of a shape, handed on bare by `handleDataStream`, which catches what its parse
     /// throws and records it.
-    Object(Handed<'static>),
+    Object(Handed<'a>),
     /// A value added to the presentation's metadata.
     Add(&'static str, String),
     /// A value set in the presentation's metadata.
@@ -64,50 +65,87 @@ fn recorded(reason: &str) -> Unported {
     ))
 }
 
-/// The extractor's state while it runs: its events, the comment authors met and the objects
-/// shapes showed.
+/// Why the extraction stops: POI reads the presentation otherwise than Tika's path, or the
+/// events handed on fail to be written.
+pub(super) enum Halt<E> {
+    Declined(Decline<'static>),
+    Written(E),
+}
+
+impl<E> From<Unread> for Halt<E> {
+    fn from(unread: Unread) -> Self {
+        Halt::Declined(unread.into())
+    }
+}
+
+impl<E> From<Unported> for Halt<E> {
+    fn from(unported: Unported) -> Self {
+        Halt::Declined(unported.into())
+    }
+}
+
+impl<E> From<Decline<'static>> for Halt<E> {
+    fn from(declined: Decline<'static>) -> Self {
+        Halt::Declined(declined)
+    }
+}
+
+/// Where the extractor hands its events on, whatever they borrow.
+pub(super) type Flush<'f, E> = dyn for<'x> FnMut(Vec<Out<'x>>) -> Result<(), E> + 'f;
+
+/// The extractor's state while it runs: its events not handed on yet, the comment authors met
+/// and the objects shapes showed.
 struct Extractor<'s, 'a> {
     show: &'s Show<'a>,
+    records: &'s Records,
+    pictures: &'s Pictures<'a>,
+    objects: &'s [Object],
     config: &'s OfficeParserConfig,
     configs: &'s ParserConfigs,
-    out: Vec<Out>,
+    out: Vec<Out<'a>>,
     authors: HashSet<String>,
     processed: HashSet<i32>,
-    objects: Vec<Object<'a>>,
     has_animations: bool,
     /// The first picture or object whose data POI fails to read, which Tika records before it
     /// goes on and the native reading leaves out.
     difference: Option<Difference>,
 }
 
-/// `HSLFExtractor.parse`: the presentation's events, and where they differ from Tika's, if they
-/// do.
-pub(super) fn extract<'a>(
-    show: &Show<'a>,
-    objects: Vec<Object<'a>>,
-    pictures: &Pictures,
-    configs: &ParserConfigs,
-) -> Result<(Vec<Out>, Option<Difference>), Unread> {
-    let config = &configs.office;
+/// `HSLFExtractor.parse`: the presentation's events, handed to `flush` a slide, a picture or an
+/// object at a time, each slide's sheet built from its record as it is written; and where they
+/// differ from Tika's, if they do.
+pub(super) fn extract<'s, 'a, E>(
+    show: &'s Show<'a>,
+    records: &'s Records,
+    objects: &'s [Object],
+    pictures: &'s Pictures<'a>,
+    configs: &'s ParserConfigs,
+    flush: &mut Flush<'_, E>,
+) -> Result<Option<Difference>, Halt<E>> {
     let mut extractor = Extractor {
         show,
-        config,
+        records,
+        pictures,
+        objects,
+        config: &configs.office,
         configs,
         out: Vec::new(),
         authors: HashSet::new(),
         processed: HashSet::new(),
-        objects,
         has_animations: false,
         difference: None,
     };
     extractor.out.push(Out::StartClass("div", "slideShow"));
     let mut hidden = 0;
     for slide in &show.slides {
-        extractor.slide(&slide.sheet, slide.notes)?;
-        if is_hidden(slide.sheet.container)? {
+        let record = show.slide_record(slide)?;
+        let sheet = show.slide_sheet(slide, &record)?;
+        extractor.slide(&sheet, slide.notes)?;
+        if is_hidden(sheet.container)? {
             hidden += 1;
         }
-        extractor.find_animations(slide.sheet.container);
+        extractor.find_animations(sheet.container);
+        extractor.flush(flush)?;
     }
     if hidden > 0 {
         extractor
@@ -117,10 +155,11 @@ pub(super) fn extract<'a>(
             .out
             .push(Out::Set(HAS_HIDDEN_SLIDES, "true".to_owned()));
     }
-    extractor.pictures(pictures)?;
-    extractor.show_objects()?;
+    extractor.pictures(flush)?;
+    extractor.show_objects(flush)?;
     extractor.out.push(Out::End("div"));
-    Ok((extractor.out, extractor.difference))
+    extractor.flush(flush)?;
+    Ok(extractor.difference)
 }
 
 /// `HSLFSlide.isHidden`.
@@ -135,6 +174,10 @@ fn is_hidden(container: &super::records::Record) -> Result<bool, Unread> {
 }
 
 impl<'s, 'a> Extractor<'s, 'a> {
+    /// Hands the events so far on.
+    fn flush<E>(&mut self, flush: &mut Flush<'_, E>) -> Result<(), Halt<E>> {
+        flush(std::mem::take(&mut self.out)).map_err(Halt::Written)
+    }
     fn start_class(&mut self, tag: &'static str, class: &'static str) {
         self.out.push(Out::StartClass(tag, class));
     }
@@ -160,20 +203,31 @@ impl<'s, 'a> Extractor<'s, 'a> {
         self.end(tag);
     }
 
-    fn slide(&mut self, sheet: &Sheet<'a>, notes: Option<usize>) -> Result<(), Unread> {
+    fn slide(&mut self, sheet: &Sheet<'_>, notes: Option<usize>) -> Result<(), Unread> {
+        let show = self.show;
         self.start_class("div", "slide");
         let headers = self.config.includes_headers_and_footers();
-        let (slide_headers, notes_headers) = if headers {
-            (
-                Some(HeadersFooters::new(self.show, sheet, Scope::Slide)?),
-                Some(HeadersFooters::new(
-                    self.show,
-                    notes_sheet(self.show)?,
-                    Scope::Notes,
-                )?),
-            )
+        let slide_headers = if headers {
+            Some(HeadersFooters::new(show, sheet, Scope::Slide)?)
         } else {
-            (None, None)
+            None
+        };
+        let first_notes = match show.notes.first().filter(|_| headers) {
+            Some(entry) => Some((entry, show.notes_record(entry)?)),
+            None => None,
+        };
+        let first_notes = match &first_notes {
+            Some((entry, record)) => Some(show.notes_sheet(entry, record)?),
+            None => None,
+        };
+        let notes_headers = if headers {
+            Some(HeadersFooters::new(
+                show,
+                notes_sheet(show, first_notes.as_ref())?,
+                Scope::Notes,
+            )?)
+        } else {
+            None
         };
         if let Some(headers) = &slide_headers {
             self.header_or_footer(headers, Part::Header, "slide-header")?;
@@ -192,7 +246,10 @@ impl<'s, 'a> Extractor<'s, 'a> {
         }
         self.comments(sheet);
         if let Some(index) = notes.filter(|_| self.config.includes_slide_notes()) {
-            self.notes(&self.show.notes[index], notes_headers.as_ref())?;
+            let entry = &show.notes[index];
+            let record = show.notes_record(entry)?;
+            let notes = show.notes_sheet(entry, &record)?;
+            self.notes(&notes, notes_headers.as_ref())?;
         }
         self.embedded_objects(&shapes)?;
         self.end("div");
@@ -202,7 +259,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
     /// A header or footer in a paragraph of its class, where it is visible and has text.
     fn header_or_footer(
         &mut self,
-        headers: &HeadersFooters,
+        headers: &HeadersFooters<'_, '_>,
         part: Part,
         class: &'static str,
     ) -> Result<(), Unread> {
@@ -219,7 +276,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// The text of a slide's or notes' lists, tables and groups.
-    fn sheet_text(&mut self, sheet: &Sheet<'a>, shapes: &[Shape<'a>]) -> Result<(), Unread> {
+    fn sheet_text<'r>(&mut self, sheet: &Sheet<'r>, shapes: &[Shape<'r>]) -> Result<(), Unread> {
         let lists: Vec<Vec<&Paragraph>> = sheet
             .lists
             .iter()
@@ -235,7 +292,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// `extractMaster`: the text of the master's shapes that are no placeholders.
-    fn master(&mut self, master: &Sheet<'a>) -> Result<(), Unread> {
+    fn master(&mut self, master: &Sheet<'_>) -> Result<(), Unread> {
         let shapes = sheet_shapes(master)?;
         if shapes.is_empty() {
             return Ok(());
@@ -252,7 +309,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// `extractTableText`.
-    fn table(&mut self, sheet: &Sheet<'a>, table: &Shape<'a>) -> Result<(), Unread> {
+    fn table<'r>(&mut self, sheet: &Sheet<'r>, table: &Shape<'r>) -> Result<(), Unread> {
         self.out.push(Out::Start("table"));
         let columns = table.cells.iter().map(Vec::len).max().unwrap_or(0);
         for row in &table.cells {
@@ -271,10 +328,10 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// `extractGroupText`: the text of the text shapes in groups, the deepest first.
-    fn group_text(
+    fn group_text<'r>(
         &mut self,
-        sheet: &Sheet<'a>,
-        shapes: &[Shape<'a>],
+        sheet: &Sheet<'r>,
+        shapes: &[Shape<'r>],
         depth: usize,
     ) -> Result<(), Unread> {
         let mut lists = Vec::new();
@@ -289,7 +346,11 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// `textRunsToText`.
-    fn runs_to_text(&mut self, sheet: &Sheet<'a>, lists: &[Vec<&Paragraph>]) -> Result<(), Unread> {
+    fn runs_to_text(
+        &mut self,
+        sheet: &Sheet<'_>,
+        lists: &[Vec<&Paragraph<'_>>],
+    ) -> Result<(), Unread> {
         for list in lists {
             let mut is_bullet = false;
             for paragraph in list {
@@ -348,7 +409,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// `handleComments`.
-    fn comments(&mut self, sheet: &Sheet<'a>) {
+    fn comments(&mut self, sheet: &Sheet<'_>) {
         let comments: Vec<&super::records::Record> = sheet
             .container
             .first(kind::PROG_TAGS)
@@ -408,7 +469,11 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// `handleNotes`.
-    fn notes(&mut self, notes: &Sheet<'a>, headers: Option<&HeadersFooters>) -> Result<(), Unread> {
+    fn notes(
+        &mut self,
+        notes: &Sheet<'_>,
+        headers: Option<&HeadersFooters<'_, '_>>,
+    ) -> Result<(), Unread> {
         self.start_class("div", "notes");
         if let Some(headers) = headers {
             self.header_or_footer(headers, Part::Header, "slide-note-header")?;
@@ -441,7 +506,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// `handleSlideEmbeddedResources`: a marker for each OLE object shape, and its object.
-    fn embedded_objects(&mut self, shapes: &[Shape<'a>]) -> Result<(), Unread> {
+    fn embedded_objects(&mut self, shapes: &[Shape<'_>]) -> Result<(), Unread> {
         for shape in shapes {
             if shape.kind != Kind::Object {
                 continue;
@@ -457,7 +522,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
             ));
             self.end("div");
             let prog_id = self.prog_id(shape)?;
-            let Some(data) = self.readable(self.objects[object].data())? else {
+            let Some(data) = self.readable(self.objects[object].data(self.show)?)? else {
                 continue;
             };
             self.data_stream(data, &id, prog_id.as_deref())?;
@@ -467,7 +532,10 @@ impl<'s, 'a> Extractor<'s, 'a> {
 
     /// The data of a picture or an object, or none where POI fails reading it, which Tika
     /// records before it goes on, where the native reading leaves the picture or object out.
-    fn readable(&mut self, data: Result<Vec<u8>, UnreadData>) -> Result<Option<Vec<u8>>, Unread> {
+    fn readable(
+        &mut self,
+        data: Result<Cow<'a, [u8]>, UnreadData>,
+    ) -> Result<Option<Cow<'a, [u8]>>, Unread> {
         match data {
             Ok(data) => Ok(Some(data)),
             Err(UnreadData::Thrown(exception)) => {
@@ -484,7 +552,10 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// `getExEmbed`: the last embedding of the document's objects with the shape's object id.
-    fn embedding(&self, shape: &Shape<'a>) -> Result<Option<&'a super::records::Record>, Unread> {
+    fn embedding(
+        &self,
+        shape: &Shape<'_>,
+    ) -> Result<Option<&'s super::records::Record<'a>>, Unread> {
         let Some(objects) = self.show.objects() else {
             return Ok(None);
         };
@@ -511,7 +582,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// `getObjectData`: the last object whose persist id the shape's embedding names.
-    fn object_of(&self, shape: &Shape<'a>) -> Result<Option<usize>, Unread> {
+    fn object_of(&self, shape: &Shape<'_>) -> Result<Option<usize>, Unread> {
         let Some(embedding) = self.embedding(shape)? else {
             return Ok(None);
         };
@@ -525,7 +596,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 
     /// `getProgId`: the program id of the shape's embedding.
-    fn prog_id(&self, shape: &Shape<'a>) -> Result<Option<String>, Unread> {
+    fn prog_id(&self, shape: &Shape<'_>) -> Result<Option<String>, Unread> {
         Ok(self.embedding(shape)?.and_then(|embedding| {
             embedding
                 .children()
@@ -541,7 +612,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
     /// it, or as itself.
     fn data_stream(
         &mut self,
-        data: Vec<u8>,
+        data: Cow<'a, [u8]>,
         id: &str,
         prog_id: Option<&str>,
     ) -> Result<(), Unread> {
@@ -554,7 +625,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
             || media_type == MediaType::named(MSOFFICE)
         {
             if let Some(embedded) =
-                embedded_office_document(&data, TikaMetadata::new(), id, self.configs)?
+                embedded_office_document(data, TikaMetadata::new(), id, self.configs)?
             {
                 self.out.push(Out::Object(embedded));
             }
@@ -564,23 +635,29 @@ impl<'s, 'a> Extractor<'s, 'a> {
         metadata.set(RESOURCE_NAME, id);
         metadata.set(RELATIONSHIP_ID, id);
         metadata.set(CONTENT_TYPE, media_type.to_string());
-        self.out.push(Out::Object(Handed::Document(Embedded::owned(
-            data, metadata,
-        ))));
+        self.out.push(Out::Object(Handed::Document(Embedded {
+            data: Node::from(data),
+            metadata,
+        })));
         Ok(())
     }
 
-    /// `handleSlideEmbeddedPictures`: each picture, with the slides that show it.
-    fn pictures(&mut self, pictures: &Pictures) -> Result<(), Unread> {
-        let store = self.lookup_store(pictures)?;
+    /// `handleSlideEmbeddedPictures`: each picture, with the slides that show it, read from the
+    /// stream and handed on one at a time.
+    fn pictures<E>(&mut self, flush: &mut Flush<'_, E>) -> Result<(), Halt<E>> {
+        let show = self.show;
+        let pictures = self.pictures;
+        let store = self.lookup_store()?;
         let mut slides_of: BTreeMap<usize, BTreeSet<i32>> = BTreeMap::new();
-        for slide in &self.show.slides {
-            let shapes = sheet_shapes(&slide.sheet)?;
+        for slide in &show.slides {
+            let record = show.slide_record(slide)?;
+            let sheet = show.slide_sheet(slide, &record)?;
+            let shapes = sheet_shapes(&sheet)?;
             collect_picture_slides(&shapes, slide.number, pictures, &store, &mut slides_of)?;
         }
         for picture in &pictures.pictures {
             let media_type = picture.kind.media_type();
-            let Some(data) = self.readable(picture.data())? else {
+            let Some(data) = self.readable(pictures.data(picture))? else {
                 continue;
             };
             let name = format!(
@@ -597,26 +674,29 @@ impl<'s, 'a> Extractor<'s, 'a> {
             metadata.set(RESOURCE_NAME, name);
             metadata.set(CONTENT_TYPE, media_type);
             self.out.push(Out::Embedded(
-                Handed::Document(Embedded::owned(data, metadata)),
+                Handed::Document(Embedded {
+                    data: Node::from(data),
+                    metadata,
+                }),
                 Wrapping::Bare,
             ));
+            self.flush(flush)?;
         }
         Ok(())
     }
 
     /// The blip store picture shapes look their pictures up in: the current document's, which
     /// matching the pictures changed where it is the first document.
-    fn lookup_store(&self, pictures: &Pictures) -> Result<LookupStore, Unread> {
+    fn lookup_store(&self) -> Result<LookupStore, Unread> {
         let first_document = self
-            .show
             .records
+            .tops
             .iter()
-            .filter_map(|top| top.record.as_ref())
-            .find(|record| record.kind == kind::DOCUMENT);
-        if pictures.store.is_some()
-            && first_document.is_some_and(|first| std::ptr::eq(first, self.show.document))
+            .find(|top| top.kind == Some(kind::DOCUMENT));
+        if self.pictures.store.is_some()
+            && first_document.is_some_and(|first| first.offset == self.show.document_offset)
         {
-            return Ok(LookupStore::Group(pictures.store.clone()));
+            return Ok(LookupStore::Group(self.pictures.store.clone()));
         }
         let Some(group) = self
             .show
@@ -629,14 +709,15 @@ impl<'s, 'a> Extractor<'s, 'a> {
         Ok(LookupStore::Group(super::pictures::store_of(group)?))
     }
 
-    /// `handleShowEmbeddedResources`: the objects no shape showed.
-    fn show_objects(&mut self) -> Result<(), Unread> {
+    /// `handleShowEmbeddedResources`: the objects no shape showed, read and handed on one at a
+    /// time.
+    fn show_objects<E>(&mut self, flush: &mut Flush<'_, E>) -> Result<(), Halt<E>> {
         let mut index = 0;
         for at in 0..self.objects.len() {
             if self.processed.contains(&self.objects[at].persist_id) {
                 continue;
             }
-            let Some(data) = self.readable(self.objects[at].data())? else {
+            let Some(data) = self.readable(self.objects[at].data(self.show)?)? else {
                 index += 1;
                 continue;
             };
@@ -657,7 +738,7 @@ impl<'s, 'a> Extractor<'s, 'a> {
                     return Ok(());
                 }
                 if let Some(embedded) =
-                    embedded_office_document(&data, metadata, &name, self.configs)?
+                    embedded_office_document(data, metadata, &name, self.configs)?
                 {
                     self.out
                         .push(Out::Embedded(embedded, Wrapping::PackageEntry));
@@ -665,10 +746,14 @@ impl<'s, 'a> Extractor<'s, 'a> {
             } else if !data.is_empty() {
                 metadata.set(RESOURCE_NAME, name);
                 self.out.push(Out::Embedded(
-                    Handed::Document(Embedded::owned(data, metadata)),
+                    Handed::Document(Embedded {
+                        data: Node::from(data),
+                        metadata,
+                    }),
                     Wrapping::PackageEntry,
                 ));
             }
+            self.flush(flush)?;
             index += 1;
         }
         Ok(())
@@ -676,19 +761,39 @@ impl<'s, 'a> Extractor<'s, 'a> {
 }
 
 /// `handleEmbeddedOfficeDoc` of the root of a compound document read from a stream: the document
-/// Tika hands on, if any.
-fn embedded_office_document(
-    data: &[u8],
+/// Tika hands on, if any, its streams in place where the compound document is.
+fn embedded_office_document<'a>(
+    data: Cow<'a, [u8]>,
     metadata: TikaMetadata,
     name: &str,
     configs: &ParserConfigs,
-) -> Result<Option<Handed<'static>>, Unread> {
+) -> Result<Option<Handed<'a>>, Unread> {
+    match data {
+        Cow::Borrowed(data) => office_document_of(data, metadata, name, configs),
+        Cow::Owned(data) => {
+            Ok(office_document_of(&data, metadata, name, configs)?.map(Handed::into_owned))
+        }
+    }
+}
+
+fn office_document_of<'a>(
+    data: &'a [u8],
+    metadata: TikaMetadata,
+    name: &str,
+    configs: &ParserConfigs,
+) -> Result<Option<Handed<'a>>, Unread> {
     let file = Ole2::open_stream(data).map_err(|Unreadable(reason)| {
         recorded(&format!(
             "POI cannot open an embedded compound document: {reason}"
         ))
     })?;
-    Ok(office_document(&file, file.root(), metadata, Some(name), configs)?.map(Handed::into_owned))
+    Ok(office_document(
+        &file,
+        file.root(),
+        metadata,
+        Some(name),
+        configs,
+    )?)
 }
 
 /// The blip store picture shapes look their pictures up in, or none where the document has no
@@ -700,9 +805,10 @@ enum LookupStore {
 
 /// `collectPictureSlides`: the slide number of each picture the shapes show, in groups too.
 fn collect_picture_slides(
-    shapes: &[Shape],
+    shapes: &[Shape<'_>],
     slide: i32,
-    pictures: &Pictures,
+    pictures: &Pictures<'_>,
+
     store: &LookupStore,
     slides_of: &mut BTreeMap<usize, BTreeSet<i32>>,
 ) -> Result<(), Unread> {

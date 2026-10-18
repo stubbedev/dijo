@@ -330,7 +330,7 @@ pub(super) fn internal(text: &[u16]) -> Vec<u16> {
 #[derive(Debug, Clone)]
 pub(super) struct Paragraph<'a> {
     /// The children of its text header's parent, a slide list or a text box.
-    pub(super) parent: &'a [Record],
+    pub(super) parent: &'a [Record<'a>],
     /// Where its text header is among them.
     pub(super) header: usize,
     /// `getIndex`: the text's index in its slide list, -1 for a drawing's text.
@@ -347,7 +347,7 @@ impl Paragraph<'_> {
     }
 
     /// `getRecords`: the records from its text header up to the next text header or slide.
-    fn records(&self) -> &[Record] {
+    fn records(&self) -> &[Record<'_>] {
         let rest = &self.parent[self.header..];
         let end = rest
             .iter()
@@ -640,7 +640,10 @@ fn find_links(records: &[Record], objects: Option<&Record>) -> Result<Vec<TextLi
 }
 
 /// `ExObjList.get(id)`: the first hyperlink of the document's objects numbered `id`.
-pub(super) fn find_hyperlink(objects: &Record, id: i32) -> Read<Option<&Record>> {
+pub(super) fn find_hyperlink<'r, 'd>(
+    objects: &'r Record<'d>,
+    id: i32,
+) -> Read<Option<&'r Record<'d>>> {
     for child in objects.children() {
         if child.kind != kind::EX_HYPERLINK {
             continue;
@@ -761,10 +764,15 @@ mod tests {
         text.encode_utf16().collect()
     }
 
-    fn atoms(records: &[Vec<u8>]) -> Vec<Record> {
+    fn atoms(records: &[Vec<u8>]) -> Vec<Record<'static>> {
         let data = records.concat();
         let container = record(0x0F, kind::LIST, &data);
-        match build_at(&container, 0, Depth::TOP).unwrap().unwrap().body {
+        match build_at(&container, 0, Depth::TOP)
+            .unwrap()
+            .unwrap()
+            .into_owned()
+            .body
+        {
             Body::Container(children) => children,
             _ => unreachable!(),
         }

@@ -347,11 +347,10 @@ fn ole_native<'a>(
         metadata.add(ORIGINAL_RESOURCE_NAME, name.clone());
     }
     metadata.set(CONTENT_LENGTH, native.data.len().to_string());
-    let data = match native.data {
-        Cow::Borrowed(bytes) => Node::Document(Content::from(bytes)),
-        Cow::Owned(bytes) => Node::Owned(bytes),
-    };
-    Ok(Some(Embedded { data, metadata }))
+    Ok(Some(Embedded {
+        data: native.data.into(),
+        metadata,
+    }))
 }
 
 /// `handleCompObj`: an object's `CONTENTS` stream, named by the type Tika detects in it.

@@ -2,14 +2,16 @@
 //! "Pictures" stream, matched to the records of its blip store, and the picture data each type
 //! gives (`getData`); and the data of its embedded OLE objects (`ExOleObjStg.getData`).
 
-use crate::formats::escher::{kind as escher_kind, Content, Escher};
+use std::borrow::Cow;
+
+use crate::formats::escher::{kind as escher_kind, Content as EscherContent, Escher};
 use crate::formats::poi::{i32_at, inflate, Thrown, Unread};
 use crate::formats::{wmf_placeable, Unported};
-use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
+use crate::ole2::{Content, EntryId, EntryKind, Ole2, Unreadable};
 
 use super::encryption::Encryption;
 use super::records::{kind, Record};
-use super::show::Top;
+use super::show::{build, Records, Show};
 
 const PICTURES: &str = "Pictures";
 /// `HSLFSlideShowImpl.MAX_IMAGE_LENGTH`.
@@ -125,26 +127,40 @@ pub(super) struct StoreEntry {
     pub(super) offset: i32,
 }
 
-/// A picture of the stream (`HSLFPictureData`).
+/// A picture of the stream (`HSLFPictureData`), by where its data is.
 #[derive(Debug, Clone)]
 pub(super) struct Picture {
     /// `getIndex`: its number among the pictures POI built, from one.
     pub(super) index: usize,
     pub(super) kind: PictureType,
     checksums: usize,
-    raw: Vec<u8>,
+    /// Where its data starts in the stream.
+    at: usize,
+    size: usize,
     /// The entry of the blip store matched to it.
     pub(super) entry: usize,
 }
 
-/// The pictures, and the blip store as matching them left it.
-#[derive(Debug, Default)]
-pub(super) struct Pictures {
+/// The pictures, the stream they are read from where they are written, and the blip store as
+/// matching them left it.
+#[derive(Debug)]
+pub(super) struct Pictures<'p> {
+    stream: Content<'p>,
     pub(super) pictures: Vec<Picture>,
     pub(super) store: Option<Vec<StoreEntry>>,
 }
 
-impl Pictures {
+impl Pictures<'_> {
+    fn none() -> Self {
+        Self {
+            stream: Content::from(&[][..]),
+            pictures: Vec::new(),
+            store: None,
+        }
+    }
+}
+
+impl<'p> Pictures<'p> {
     /// `HSLFPictureShape.getPictureData`: the first picture whose entry's offset is that of the
     /// blip store's entry `index` names, from one; `Err` where POI's lookup throws.
     pub(super) fn of_entry(
@@ -168,6 +184,16 @@ impl Pictures {
             .iter()
             .find(|picture| mine[picture.entry].offset == entry.offset))
     }
+
+    /// `getData` of a picture: its data as its type gives it, read from the stream where it is
+    /// written, or why POI fails, which Tika records.
+    pub(super) fn data(&self, picture: &Picture) -> Result<Cow<'p, [u8]>, UnreadData> {
+        let raw = self
+            .stream
+            .range(picture.at, picture.size)
+            .expect("a picture lies within the stream it was found in");
+        picture.data(raw)
+    }
 }
 
 /// The entries of a drawing group's blip store, `None` where it has none.
@@ -183,10 +209,12 @@ pub(super) fn store_of(group: &Escher) -> Result<Option<Vec<StoreEntry>>, Unread
         .children
         .iter()
         .map(|child| match &child.content {
-            Content::Stored(stored) if child.record_id == escher_kind::BSE => Ok(StoreEntry {
-                uid: stored.uid,
-                offset: stored.offset,
-            }),
+            EscherContent::Stored(stored) if child.record_id == escher_kind::BSE => {
+                Ok(StoreEntry {
+                    uid: stored.uid,
+                    offset: stored.offset,
+                })
+            }
             _ => Err(poi_throws("Did not have a EscherBSERecord")),
         })
         .collect::<Result<Vec<_>, _>>()
@@ -196,53 +224,93 @@ pub(super) fn store_of(group: &Escher) -> Result<Option<Vec<StoreEntry>>, Unread
 /// A picture of the stream before it is matched: `PictureFactory`.
 struct Factory {
     native: i32,
-    data: Vec<u8>,
+    /// Where its data starts in the stream.
+    at: usize,
+    size: usize,
     offset: i32,
     signature: u16,
+    /// The first 16 bytes of its data.
+    uid: [u8; 16],
     entry: Option<usize>,
 }
 
-impl Factory {
-    fn uid(&self) -> [u8; 16] {
-        let mut uid = [0; 16];
-        let length = self.data.len().min(16);
-        uid[..length].copy_from_slice(&self.data[..length]);
-        uid
+/// A "Pictures" stream as `readPictures` walks it: its pictures' preambles, each decrypted in
+/// place first where the presentation is encrypted.
+trait Walked {
+    fn len(&self) -> usize;
+    /// The preamble at `at`, which runs within the stream.
+    fn preamble(&mut self, at: usize) -> Result<[u8; PREAMBLE], Unread>;
+    /// The first 16 bytes of `size` bytes of data at `at`, which run within the stream.
+    fn uid(&self, at: usize, size: usize) -> [u8; 16];
+}
+
+/// A stream read in place.
+struct InPlace<'c, 'p>(&'c Content<'p>);
+
+impl Walked for InPlace<'_, '_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn preamble(&mut self, at: usize) -> Result<[u8; PREAMBLE], Unread> {
+        let bytes = self
+            .0
+            .range(at, PREAMBLE)
+            .expect("a preamble within the stream");
+        Ok(bytes[..].try_into().expect("a preamble's bytes"))
+    }
+
+    fn uid(&self, at: usize, size: usize) -> [u8; 16] {
+        uid_of(
+            &self
+                .0
+                .range(at, size.min(16))
+                .expect("data within the stream"),
+        )
     }
 }
 
-/// `readPictures`: the pictures of the "Pictures" stream of `directory`, each decrypted in place
-/// where the presentation is encrypted, matched to the blip store of the first document record.
-pub(super) fn read(
-    file: &Ole2<'_>,
-    directory: EntryId,
-    records: &[Top],
-    encryption: Option<&Encryption>,
-) -> Result<Pictures, Unread> {
-    let Some(entry) = file.child_ignoring_case(directory, PICTURES) else {
-        return Ok(Pictures::default());
-    };
-    if file.kind(entry) != EntryKind::Document {
-        return Err(poi_throws("the Pictures entry is no document"));
+/// A stream copied, its pictures decrypted in place as they are walked.
+struct Decrypting<'s> {
+    stream: &'s mut [u8],
+    encryption: &'s Encryption,
+}
+
+impl Walked for Decrypting<'_> {
+    fn len(&self) -> usize {
+        self.stream.len()
     }
-    let mut store = first_document_store(records)?;
-    let encryption = pictures_encryption(records, encryption)?;
-    let mut stream = file.read(entry).map_err(|Unreadable(reason)| {
-        poi_throws(&format!("cannot read the Pictures stream: {reason}"))
-    })?;
-    if stream.len() > MAX_IMAGE {
-        return Err(poi_throws("the Pictures stream is longer than POI reads"));
+
+    fn preamble(&mut self, at: usize) -> Result<[u8; PREAMBLE], Unread> {
+        self.encryption.decrypt_picture(self.stream, at)?;
+        Ok(self.stream[at..at + PREAMBLE]
+            .try_into()
+            .expect("a preamble's bytes"))
     }
+
+    fn uid(&self, at: usize, size: usize) -> [u8; 16] {
+        uid_of(&self.stream[at..at + size.min(16)])
+    }
+}
+
+/// A checksum of up to 16 bytes, zeros after them.
+fn uid_of(bytes: &[u8]) -> [u8; 16] {
+    let mut uid = [0; 16];
+    uid[..bytes.len()].copy_from_slice(bytes);
+    uid
+}
+
+/// `readPictures`' walk of a stream: each picture after its preamble, up to the first that is
+/// no picture or runs past the stream.
+fn walk(stream: &mut impl Walked) -> Result<Vec<Factory>, Unread> {
     let mut factories = Vec::new();
     let mut position = 0usize;
     while position + PREAMBLE <= stream.len() {
-        if let Some(encryption) = encryption {
-            encryption.decrypt_picture(&mut stream, position)?;
-        }
+        let preamble = stream.preamble(position)?;
         let offset = position as i32;
-        let signature = u16::from_le_bytes([stream[position], stream[position + 1]]);
-        let record_type = u16::from_le_bytes([stream[position + 2], stream[position + 3]]);
-        let size = i32_at(&stream, position + 4).expect("a preamble");
+        let signature = u16::from_le_bytes([preamble[0], preamble[1]]);
+        let record_type = u16::from_le_bytes([preamble[2], preamble[3]]);
+        let size = i32::from_le_bytes([preamble[4], preamble[5], preamble[6], preamble[7]]);
         position += PREAMBLE;
         if !(record_type == 0xF007 || (0xF018..=0xF117).contains(&record_type)) {
             break;
@@ -256,13 +324,57 @@ pub(super) fn read(
         }
         factories.push(Factory {
             native: i32::from(record_type) - 0xF018,
-            data: stream[position..position + size].to_vec(),
+            at: position,
+            size,
             offset,
             signature,
+            uid: stream.uid(position, size),
             entry: None,
         });
         position += size;
     }
+    Ok(factories)
+}
+
+/// `readPictures`: the pictures of the "Pictures" stream of `directory`, matched to the blip
+/// store of the first document record, read in place, or copied into `decrypted` and each
+/// decrypted in place where the presentation is encrypted.
+pub(super) fn read<'p>(
+    file: &Ole2<'p>,
+    directory: EntryId,
+    records: &Records,
+    source: &[u8],
+    encryption: Option<&Encryption>,
+    decrypted: &'p mut Vec<u8>,
+) -> Result<Pictures<'p>, Unread> {
+    let Some(entry) = file.child_ignoring_case(directory, PICTURES) else {
+        return Ok(Pictures::none());
+    };
+    if file.kind(entry) != EntryKind::Document {
+        return Err(poi_throws("the Pictures entry is no document"));
+    }
+    let mut store = first_document_store(records, source)?;
+    let encryption = pictures_encryption(records, encryption)?;
+    let content = file.content(entry).map_err(|Unreadable(reason)| {
+        poi_throws(&format!("cannot read the Pictures stream: {reason}"))
+    })?;
+    if content.len() > MAX_IMAGE {
+        return Err(poi_throws("the Pictures stream is longer than POI reads"));
+    }
+    let (stream, mut factories) = match encryption {
+        None => {
+            let factories = walk(&mut InPlace(&content))?;
+            (content, factories)
+        }
+        Some(encryption) => {
+            *decrypted = content.to_vec();
+            let factories = walk(&mut Decrypting {
+                stream: decrypted,
+                encryption,
+            })?;
+            (Content::from(&decrypted[..]), factories)
+        }
+    };
     match_records(&mut factories, &mut store)?;
     let mut pictures = Vec::new();
     for factory in factories {
@@ -276,11 +388,13 @@ pub(super) fn read(
             index: pictures.len() + 1,
             kind,
             checksums,
-            raw: factory.data,
+            at: factory.at,
+            size: factory.size,
             entry: factory.entry.expect("every factory is matched"),
         });
     }
     Ok(Pictures {
+        stream,
         pictures,
         store: Some(store),
     })
@@ -290,14 +404,13 @@ pub(super) fn read(
 /// `DocumentEncryptionAtom` of the records (`getDocumentEncryptionAtom`), which must be the one
 /// opened, as POI's decryptor of any other has no key.
 fn pictures_encryption<'e>(
-    records: &[Top],
+    records: &Records,
     encryption: Option<&'e Encryption>,
 ) -> Result<Option<&'e Encryption>, Unread> {
-    let first = records.iter().find(|top| {
-        top.record
-            .as_ref()
-            .is_some_and(|record| record.encryption().is_some())
-    });
+    let first = records
+        .tops
+        .iter()
+        .find(|top| top.kind == Some(kind::DOCUMENT_ENCRYPTION_ATOM));
     match (first, encryption) {
         (None, _) => Ok(None),
         (Some(top), Some(encryption)) if top.offset == encryption.atom => Ok(Some(encryption)),
@@ -309,14 +422,14 @@ fn pictures_encryption<'e>(
 
 /// `getBlipStore`: the blip store of the first document record by offset, failing where a
 /// record before it is missing or it has no drawing group.
-fn first_document_store(records: &[Top]) -> Result<Vec<StoreEntry>, Unread> {
+fn first_document_store(records: &Records, source: &[u8]) -> Result<Vec<StoreEntry>, Unread> {
     let mut document = None;
-    for top in records {
-        let Some(record) = &top.record else {
+    for top in &records.tops {
+        let Some(record_kind) = top.kind else {
             return Err(poi_throws("Did not have a valid record"));
         };
-        if record.kind == kind::DOCUMENT {
-            document = Some(record);
+        if record_kind == kind::DOCUMENT {
+            document = Some(build(source, top.offset)?);
             break;
         }
     }
@@ -360,7 +473,7 @@ fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Resu
                 false
             }
             _ => {
-                let uid = factory.uid();
+                let uid = factory.uid;
                 match entries.iter().position(|&entry| store[entry].uid == uid) {
                     Some(found) => {
                         factory.entry = Some(entries.remove(found));
@@ -380,7 +493,7 @@ fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Resu
         .flat_map(|(_, entries)| entries)
         .collect();
     for at in unmatched {
-        let uid = factories[at].uid();
+        let uid = factories[at].uid;
         let mut matched = false;
         let mut i = remaining.len();
         while i > 0 {
@@ -411,49 +524,60 @@ fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Resu
     Ok(())
 }
 
+/// The part `part` takes of bytes, in place where they are.
+fn narrowed<'p>(bytes: Cow<'p, [u8]>, part: impl Fn(&[u8]) -> &[u8]) -> Cow<'p, [u8]> {
+    match bytes {
+        Cow::Borrowed(bytes) => Cow::Borrowed(part(bytes)),
+        Cow::Owned(bytes) => Cow::Owned(part(&bytes).to_vec()),
+    }
+}
+
 impl Picture {
-    /// `getData`: the picture's data as its type gives it, or why POI fails, which Tika records.
-    pub(super) fn data(&self) -> Result<Vec<u8>, UnreadData> {
-        let raw = &self.raw;
+    /// `getData` of the picture's `raw` bytes: its data as its type gives it, in place where it
+    /// is stored as it is, or why POI fails, which Tika records.
+    fn data<'p>(&self, raw: Cow<'p, [u8]>) -> Result<Cow<'p, [u8]>, UnreadData> {
         match self.kind {
             PictureType::Jpeg | PictureType::Png | PictureType::Dib => {
                 let prefix = CHECKSUM * self.checksums + 1;
                 if raw.len() < prefix {
                     return Err(UnreadData::Recorded("a bitmap shorter than its header"));
                 }
-                let data = &raw[prefix..];
                 Ok(match self.kind {
-                    PictureType::Png => crate::formats::escher::picture_data(data).to_vec(),
-                    PictureType::Dib => bmp(data)?,
-                    _ => data.to_vec(),
+                    PictureType::Png => narrowed(raw, |raw| {
+                        crate::formats::escher::picture_data(&raw[prefix..])
+                    }),
+                    PictureType::Dib => Cow::Owned(bmp(&raw[prefix..])?),
+                    _ => narrowed(raw, |raw| &raw[prefix..]),
                 })
             }
             PictureType::Emf => {
-                let header = MetafileHeader::read(raw, CHECKSUM)?;
+                let header = MetafileHeader::read(&raw, CHECKSUM)?;
+
                 let _ = header;
                 inflate(raw.get(CHECKSUM + 34..).unwrap_or_default(), None)
+                    .map(Cow::Owned)
                     .map_err(|_| UnreadData::Recorded("an EMF picture that does not inflate"))
             }
             PictureType::Wmf => {
                 let at = CHECKSUM * self.checksums;
-                let header = MetafileHeader::read(raw, at)?;
+                let header = MetafileHeader::read(&raw, at)?;
                 let mut data = header.placeable()?;
                 data.extend(
                     inflate(raw.get(at + 34..).unwrap_or_default(), None)
                         .map_err(|_| UnreadData::Recorded("a WMF picture that does not inflate"))?,
                 );
-                Ok(data)
+                Ok(Cow::Owned(data))
             }
             PictureType::Pict => {
                 let at = CHECKSUM * self.checksums;
-                MetafileHeader::read(raw, at)?;
+                MetafileHeader::read(&raw, at)?;
                 let mut data = vec![0; 512];
                 data.extend(
                     inflate(raw.get(at + 34..).unwrap_or_default(), None).map_err(|_| {
                         UnreadData::Recorded("a PICT picture that does not inflate")
                     })?,
                 );
-                Ok(data)
+                Ok(Cow::Owned(data))
             }
         }
     }
@@ -534,39 +658,53 @@ impl MetafileHeader {
     }
 }
 
-/// An embedded OLE object of the document stream (`HSLFObjectData`): its persist id and data.
+/// An embedded OLE object of the document stream (`HSLFObjectData`): its persist id, and where
+/// its storage is.
 #[derive(Debug)]
-pub(super) struct Object<'a> {
+pub(super) struct Object {
     pub(super) persist_id: i32,
-    pub(super) record: &'a Record,
+    offset: i32,
 }
 
-impl Object<'_> {
-    /// `ExOleObjStg.getData` read whole: a compressed object inflated to the length it gives, or
-    /// why Java's stream fails reading it.
-    pub(super) fn data(&self) -> Result<Vec<u8>, UnreadData> {
-        let data = self.record.data();
-        if self.record.options == 0 {
-            return Ok(data.to_vec());
+impl Object {
+    /// `ExOleObjStg.getData` read whole, its storage built from the document stream: the object
+    /// in place where it is stored as it is, a compressed object inflated to the length it
+    /// gives, or why Java's stream fails reading it.
+    pub(super) fn data<'a>(
+        &self,
+        show: &Show<'a>,
+    ) -> Result<Result<Cow<'a, [u8]>, UnreadData>, Unread> {
+        let record = show.build(self.offset)?;
+        let data = record
+            .in_place()
+            .expect("an object's storage is an atom of the document stream");
+        if record.options == 0 {
+            return Ok(Ok(Cow::Borrowed(data)));
         }
-        let size = i32_at(data, 0)
-            .map_err(|_| UnreadData::Recorded("a compressed object without its length"))?;
-        let size = usize::try_from(size)
-            .map_err(|_| UnreadData::Recorded("a compressed object of a negative length"))?;
-        inflate(&data[4..], Some(size)).map_err(|Thrown(exception)| UnreadData::Thrown(exception))
+        Ok(inflated(data))
     }
 }
 
+/// The data of a compressed object, or why it does not inflate.
+fn inflated(data: &[u8]) -> Result<Cow<'static, [u8]>, UnreadData> {
+    let size = i32_at(data, 0)
+        .map_err(|_| UnreadData::Recorded("a compressed object without its length"))?;
+    let size = usize::try_from(size)
+        .map_err(|_| UnreadData::Recorded("a compressed object of a negative length"))?;
+    inflate(&data[4..], Some(size))
+        .map(Cow::Owned)
+        .map_err(|Thrown(exception)| UnreadData::Thrown(exception))
+}
+
 /// `getEmbeddedObjects`: the storages of embedded objects among the stream's records.
-pub(super) fn objects(records: &[Top]) -> Vec<Object<'_>> {
+pub(super) fn objects(records: &Records) -> Vec<Object> {
     records
+        .tops
         .iter()
-        .filter_map(|top| {
-            let record = top.record.as_ref()?;
-            (record.kind == kind::EX_OLE_OBJ_STG).then_some(Object {
-                persist_id: top.persist_id.unwrap_or_default(),
-                record,
-            })
+        .filter(|top| top.kind == Some(kind::EX_OLE_OBJ_STG))
+        .map(|top| Object {
+            persist_id: top.persist_id.unwrap_or_default(),
+            offset: top.offset,
         })
         .collect()
 }
@@ -585,9 +723,11 @@ mod tests {
     fn factory(uid: u8, offset: i32) -> Factory {
         Factory {
             native: 5,
-            data: vec![uid; 20],
+            at: 0,
+            size: 20,
             offset,
             signature: 0x46A0,
+            uid: [uid; 16],
             entry: None,
         }
     }

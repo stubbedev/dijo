@@ -6,7 +6,9 @@
 //! which POI does not require. The documents are written from where they lie, a piece at a
 //! time, so that writing a storage holds no more than its directory.
 
+use std::borrow::Cow;
 use std::io::{self, Write};
+
 use std::sync::Arc;
 
 use super::{Content, EntryId, EntryKind, Ole2, Result, Unreadable};
@@ -58,6 +60,16 @@ impl Eq for Node<'_> {}
 impl From<Vec<u8>> for Node<'_> {
     fn from(bytes: Vec<u8>) -> Self {
         Node::Owned(bytes)
+    }
+}
+
+/// A document of bytes borrowed where they lie, or of bytes of its own.
+impl<'a> From<Cow<'a, [u8]>> for Node<'a> {
+    fn from(bytes: Cow<'a, [u8]>) -> Self {
+        match bytes {
+            Cow::Borrowed(bytes) => Node::Document(Content::from(bytes)),
+            Cow::Owned(bytes) => Node::Owned(bytes),
+        }
     }
 }
 
