@@ -1,5 +1,5 @@
 //! The encrypted Word documents and workbooks `tests/fixtures/crypt/encrypt.py` writes from the
-//! plain ones LibreOffice writes, with XOR obfuscation, opened with their
+//! plain ones LibreOffice writes, with XOR obfuscation and with RC4 CryptoAPI, opened with their
 //! password as Tika's path opens them, and failing without it as Tika's path fails.
 
 use std::path::PathBuf;
@@ -11,7 +11,12 @@ use crate::Extractor;
 const PASSWORD: &str = "tika";
 
 /// The encrypted fixtures, each with the plain document it is encrypted from.
-const ENCRYPTED: [(&str, &str); 2] = [("xor.doc", "plain.doc"), ("xor.xls", "plain.xls")];
+const ENCRYPTED: [(&str, &str); 4] = [
+    ("cryptoapi.doc", "plain.doc"),
+    ("xor.doc", "plain.doc"),
+    ("cryptoapi.xls", "plain.xls"),
+    ("xor.xls", "plain.xls"),
+];
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from("tests/fixtures/crypt").join(name)
@@ -64,6 +69,15 @@ mod tika {
         }
     }
 
+    #[test]
+    fn opens_a_word_document_encrypted_with_crypto_api_as_tikas_path_does() {
+        parity::assert_same_as_tika_with_passwords(
+            &[fixture("cryptoapi.doc")],
+            TIKA_PARSER,
+            &[("cryptoapi.doc", PASSWORD)],
+        );
+    }
+
     /// Tika's XHTML of the workbooks with the header and footer LibreOffice writes without
     /// their codes, as the native parser writes them (#107).
     fn without_header_and_footer_codes(xhtml: &str) -> String {
@@ -79,8 +93,8 @@ mod tika {
     }
 
     #[test]
-    fn opens_workbooks_encrypted_with_xor_as_tikas_path_does() {
-        let names = ["xor.xls"];
+    fn opens_workbooks_encrypted_with_crypto_api_and_xor_as_tikas_path_does() {
+        let names = ["cryptoapi.xls", "xor.xls"];
         let documents: Vec<PathBuf> = names.into_iter().map(fixture).collect();
         let documents: Vec<&std::path::Path> = documents.iter().map(PathBuf::as_path).collect();
         parity::assert_same_xhtml_as_tika_with(
