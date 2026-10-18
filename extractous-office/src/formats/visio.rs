@@ -4,12 +4,16 @@
 //! more streams or hold chunks, among them the text chunks. A drawing POI throws on is left to
 //! Tika, as are macros extracted when asked to.
 
+use std::borrow::Cow;
+
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
-use crate::formats::poi::{i16_at, i32_at, safely_clone, thrown, u8_at, Lzw, Read, Thrown, Unread};
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::poi::{
+    i16_at, i32_at, safely_borrow, safely_clone, thrown, u8_at, Lzw, Read, Thrown, Unread,
+};
+use crate::formats::{Decline, Footprint, Parser, Prepared};
 use crate::ole2::{EntryId, EntryKind, Ole2};
 
 const MEDIA_TYPE: &str = "application/vnd.visio";
@@ -62,6 +66,13 @@ impl Parser for VisioParser {
         &[MEDIA_TYPE]
     }
 
+    /// It reads the document stream in place, an uncompressed stream where it lies and a
+    /// compressed one decompressed, at most ten megabytes, while its children are read. What it
+    /// holds is the texts, which `VisioTextExtractor.getAllText` gives together.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     /// Defers macros extracted when asked to, and fails drawings POI throws on.
     fn prepare<'a>(
         &self,
@@ -100,8 +111,9 @@ fn texts(file: &Ole2<'_>, root: EntryId) -> Read<Vec<String>> {
         return thrown(format!("Entry '{DOCUMENT_STREAM}' is not a DocumentEntry"));
     }
     let document = file
-        .read(entry)
-        .map_err(|reason| Thrown(format!("cannot read {DOCUMENT_STREAM}: {}", reason.0)))?;
+        .content(entry)
+        .map_err(|reason| Thrown(format!("cannot read {DOCUMENT_STREAM}: {}", reason.0)))?
+        .bytes();
     if document.get(..VISIO_HEADER.len()) != Some(VISIO_HEADER.as_slice()) {
         return thrown("Wasn't a valid visio document");
     }
@@ -218,17 +230,17 @@ impl Pointer {
     }
 }
 
-/// A stream's contents, as its `StreamStore` holds them, and the block header a compressed
-/// stream starts with.
-struct Store {
-    contents: Vec<u8>,
+/// A stream's contents, as its `StreamStore` holds them, in place where the stream is not
+/// compressed, and the block header a compressed stream starts with.
+struct Store<'d> {
+    contents: Cow<'d, [u8]>,
     block_header: Option<[u8; 4]>,
 }
 
-impl Store {
+impl<'d> Store<'d> {
     /// `copyBlockHeaderToContents`: the contents of a chunk stream, a compressed one's after its
     /// block header.
-    fn with_block_header(self) -> Read<Vec<u8>> {
+    fn with_block_header(self) -> Read<Cow<'d, [u8]>> {
         let Some(header) = self.block_header else {
             return Ok(self.contents);
         };
@@ -238,7 +250,7 @@ impl Store {
                 self.contents.len() + 4
             ));
         }
-        Ok([header.as_slice(), &self.contents].concat())
+        Ok(Cow::Owned([header.as_slice(), &self.contents].concat()))
     }
 }
 
@@ -248,14 +260,14 @@ struct Reader<'d> {
     version: Version,
 }
 
-impl Reader<'_> {
-    /// `Stream.createStream`'s store: the bytes the pointer points to, decompressed where they
-    /// are compressed.
-    fn store(&self, pointer: &Pointer) -> Read<Store> {
+impl<'d> Reader<'d> {
+    /// `Stream.createStream`'s store: the bytes the pointer points to, in place, decompressed
+    /// where they are compressed.
+    fn store(&self, pointer: &Pointer) -> Read<Store<'d>> {
         let (offset, length) = (i64::from(pointer.offset), i64::from(pointer.length));
         if !pointer.compressed() {
             return Ok(Store {
-                contents: safely_clone(self.document, offset, length, MAX_STREAM)?,
+                contents: Cow::Borrowed(safely_borrow(self.document, offset, length, MAX_STREAM)?),
                 block_header: None,
             });
         }
@@ -276,9 +288,9 @@ impl Reader<'_> {
             ));
         };
         let contents = safely_clone(contents, 0, contents.len() as i64, MAX_STREAM)?;
-        safely_clone(self.document, offset, length, MAX_COMPRESSED_STREAM)?;
+        safely_borrow(self.document, offset, length, MAX_COMPRESSED_STREAM)?;
         Ok(Store {
-            contents,
+            contents: Cow::Owned(contents),
             block_header: Some(*header),
         })
     }
@@ -549,7 +561,6 @@ mod tests {
     }
 
     /// `data` compressed as HDGF reads it: every byte a literal.
-    #[cfg(feature = "tika")]
     fn literally(data: &[u8]) -> Vec<u8> {
         data.chunks(8)
             .flat_map(|chunk| std::iter::once(0xFF).chain(chunk.iter().copied()))
@@ -557,7 +568,6 @@ mod tests {
     }
 
     /// A Visio 2003 pointer: its type, offset, length and format.
-    #[cfg(feature = "tika")]
     fn pointer(kind: u32, offset: usize, length: usize, format: u16) -> Vec<u8> {
         let mut bytes = kind.to_le_bytes().to_vec();
         bytes.extend(0u32.to_le_bytes());
@@ -568,7 +578,6 @@ mod tests {
     }
 
     /// A text chunk of Visio 2003 holding `text`, and a chunk of type 0x2c with a trailer.
-    #[cfg(feature = "tika")]
     fn chunks(text: &str) -> Vec<u8> {
         let mut contents = vec![0u8; TEXT_START];
         contents.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
@@ -588,9 +597,9 @@ mod tests {
     }
 
     /// A Visio 2003 drawing whose trailer points to a compressed stream of chunks holding
-    /// `first` and an uncompressed stream of pointers to one holding `second`.
-    #[cfg(feature = "tika")]
-    fn drawing(first: &str, second: &str) -> Vec<u8> {
+    /// `first` and an uncompressed stream of pointers to one holding `second`, its document
+    /// stream ending in `padding` bytes no stream holds.
+    fn drawing(first: &str, second: &str, padding: usize) -> Vec<u8> {
         use crate::ole2::{write, Node, Storage};
         let mut document = VISIO_HEADER.to_vec();
         document.resize(0x1a, 0);
@@ -618,6 +627,7 @@ mod tests {
         document.extend(&trailer);
         let trailer_pointer = pointer(20, trailer_at, trailer.len(), 0);
         document[0x24..0x24 + 18].copy_from_slice(&trailer_pointer);
+        document.resize(document.len() + padding, 0);
         write(&Storage {
             class_id: [0; 16],
             entries: vec![(
@@ -632,7 +642,7 @@ mod tests {
     #[test]
     fn extracts_the_texts_of_compressed_and_nested_streams_as_tikas_path_does() {
         let scratch = crate::formats::parity::Scratch::new("visio");
-        let path = scratch.write("havn.vsd", &drawing("Havnen i \u{c5}lborg", "Fjorden"));
+        let path = scratch.write("havn.vsd", &drawing("Havnen i \u{c5}lborg", "Fjorden", 0));
         assert_eq!(crate::formats::parity::deferral(&VisioParser, &path), None);
         assert_same_as_tika(&[&path], VisioParser.tika_name());
         let (text, _) = crate::Extractor::new()
@@ -642,6 +652,25 @@ mod tests {
             text.contains("Havnen i \u{c5}lborg") && text.contains("Fjorden"),
             "{text}"
         );
+    }
+
+    /// A drawing too large to read whole is read in place, its streams where they lie, in
+    /// memory that does not grow with it.
+    #[test]
+    fn extracts_drawings_too_large_to_read_whole_in_bounded_memory() {
+        use crate::input::MAX_READ_WHOLE;
+        use extractous_core::large::LargeFile;
+
+        let padding = MAX_READ_WHOLE as usize + 1;
+        let document = drawing("Havnen i \u{c5}lborg", "Fjorden", padding);
+        let file = LargeFile::new("large.vsd", &document, 0, |_| Vec::new(), b"");
+        drop(document);
+        let (text, metadata) = file.extract("extractous::OfficeParser");
+        assert!(
+            text.contains("Havnen i \u{c5}lborg") && text.contains("Fjorden"),
+            "{text}"
+        );
+        assert_eq!(metadata["Content-Type"], ["application/vnd.visio"]);
     }
 
     /// A drawing POI throws on fails without Tika, as it fails Tika's parse, though with the
