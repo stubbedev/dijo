@@ -125,3 +125,13 @@ fn reads_tikas_test_files_which_tikas_path_leaves_empty() {
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
     assert_read_where_tika_reads_nothing(&paths, WITHOUT_SCIENTIFIC_MODULE);
 }
+
+#[test]
+fn reads_the_messages_of_a_file_too_large_to_read_whole() {
+    let file = extractous_core::large::LargeFile::padded("forecast.grib2", &grib2(50_000));
+    let (text, _) = file.extract(GribParser.name());
+    assert!(
+        text.contains("float VAR_0-0-0_L100(time=1, lat=3, lon=4);"),
+        "{text}"
+    );
+}

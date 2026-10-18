@@ -109,3 +109,12 @@ fn fails_on_an_object_header_cut_short() {
         "{unread:?}"
     );
 }
+
+#[test]
+fn reads_the_headers_of_a_file_too_large_to_read_whole() {
+    use crate::formats::Parser;
+    let file = extractous_core::large::LargeFile::padded("ocean.h5", &file());
+    let (text, metadata) = file.extract(crate::formats::hdf::HdfParser.name());
+    assert!(text.contains("float temperature(3, 4)"), "{text}");
+    assert_eq!(metadata["hdf:title"], ["Havtemperatur"]);
+}

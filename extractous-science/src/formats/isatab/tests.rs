@@ -89,3 +89,26 @@ fn reads_tikas_test_files_which_tikas_path_leaves_empty() {
     let paths: Vec<&Path> = parsed.iter().map(std::path::PathBuf::as_path).collect();
     assert_read_where_tika_reads_nothing(&paths, WITHOUT_SCIENTIFIC_MODULE);
 }
+
+/// An assay too large to read whole is read a piece at a time, every row written.
+#[test]
+fn reads_an_assay_too_large_to_read_whole() {
+    let row = |index: u64| format!("\"C-{index}-aliquot1\"\t\"JC_A{index}\"\n").into_bytes();
+    let count = extractous_core::large::bodies_past_limit(row(1_000_000).len());
+    let file = extractous_core::large::LargeFile::new(
+        "a_large.txt",
+        b"\"Sample Name\"\t\"Assay Name\"\n",
+        count,
+        row,
+        b"",
+    );
+    let mut rows = 0;
+    file.extract_lines(IsaTabParser.name(), |line| {
+        let last_cell = line.rsplit('\t').next().unwrap_or_default();
+        if last_cell.starts_with("JC_A") {
+            assert_eq!(last_cell, format!("JC_A{rows}"));
+            rows += 1;
+        }
+    });
+    assert_eq!(rows, count);
+}
