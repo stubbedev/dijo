@@ -11,7 +11,7 @@ default:
 # Run every gate in order: format check, lint, tests.
 check: fmt-check lint test
 
-# Build every crate; the first build compiles Tika into a native library.
+# Build every crate, without Tika.
 build:
     cargo build --workspace
 
@@ -362,7 +362,7 @@ mime-reference:
 # which native routing walks a document's types against, from Tika's path in the native library.
 composite-reference:
     COMPOSITE_REFERENCE={{justfile_directory()}}/{{core}}/src/formats/composite/parsers.rs \
-        cargo nextest run -p extractous-core --lib \
+        cargo nextest run -p extractous-core --lib --features tika \
         -E 'test(=formats::composite::tests::lists_the_types_tikas_composite_parser_reads)'
     rustfmt --edition 2021 {{core}}/src/formats/composite/parsers.rs
 
@@ -392,11 +392,11 @@ ocr-image-reference:
     java -Djava.awt.headless=true "$fixtures/ImageReference.java" "$fixtures/image-reference.tsv.gz" \
         documents=test_files/documents corpus=quality/corpus tika="$CONFORMANCE_CORPUS"
 
-# Build the container image extractous:local around the static executable that `just static` built
-# (ci/container.nix) and load it into Docker; `nix build .#container` builds the one without Tika.
+# The image is the one `nix build .#container` builds (ci/container.nix).
+# Build the container image extractous:local around target/static/extractous and load it into Docker.
 [linux]
 container:
-    docker load --input "$(ci/container.sh target/static-image/extractous)"
+    docker load --input "$(ci/container.sh target/static/extractous)"
 
 # Retrain the models that tell closely related languages apart (extractous-cli/models/language-groups.bin) from the
 # Wikipedia shards pinned in extractous-cli/models/language-groups.tsv, fetched into target/wikipedia (about 7 GB).
@@ -418,15 +418,15 @@ language-accuracy file:
     LANGUAGE_EVALUATION={{absolute_path(file)}} cargo test --release --package extractous --lib \
         language::tests::accuracy_against_tika -- --ignored --nocapture
 
-# Build the statically linked Linux executable target/static-image/extractous: the program linked into
-# Tika's GraalVM native image, with musl, needing nothing at run time.
+# The program is linked into Tika's GraalVM native image, with musl, to compare with Tika's path.
+# Build the statically linked Linux executable with Tika, which is never released, into target/static-image.
 [linux]
-static:
+static-tika:
     ci/static-image.sh target/static-image/extractous
 
-# Build the statically linked Linux executable without Tika, target/static/extractous: the program alone, with
-# musl, tesseract and libheif linked in, needing nothing at run time and no GraalVM to build (the flake's
-# static output, built with Crane).
+# The program alone, with musl, tesseract and libheif linked in, needing nothing at run time: the flake's
+# static output, built with Crane.
+# Build the statically linked Linux executable as released into target/static/extractous.
 [linux]
 static-native:
     #!/usr/bin/env bash
@@ -480,17 +480,19 @@ parity filter='all()' *args:
     done
     filter="$1"
     shift
-    TZ=UTC cargo nextest run --workspace --lib --cargo-profile parity --run-ignored only \
+    TZ=UTC cargo nextest run --workspace --lib --features tika --cargo-profile parity --run-ignored only \
         -E "($filter) & not test(/^formats::audit::/)" "$@"
 
+# The corpus and tika-app are cached in target/, and the build includes Tika, as the baseline was recorded with it.
 # Compare native extraction of Apache Tika's own test documents with Tika on the JVM, fail on
-# any regression and write conformance/MATRIX.md; the corpus and tika-app are cached in target/.
+# any regression and write conformance/MATRIX.md.
 [unix]
 conformance:
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    cargo nextest run --package extractous --cargo-profile release --run-ignored only --test conformance
+    cargo nextest run --package extractous --features tika --cargo-profile release --run-ignored only \
+        --test conformance
 
 # Score Tika on the JVM, Kreuzberg and Docling (in Docker) against the quality corpus too, each
 # with its defaults, and write quality/COMPARISON.md with all their scores side by side.
@@ -509,7 +511,7 @@ quality-compare:
 
 # Load tika-server of the bundled Tika version and `extractous serve` alike on this machine, and
 # write their throughput, latency and memory to target/server-compare/comparison.md;
-# SERVER_COMPARE_BINARY serves another build, such as target/static-image/extractous.
+# SERVER_COMPARE_BINARY serves another build, such as target/static/extractous.
 [unix]
 server-compare:
     #!/usr/bin/env bash
@@ -534,7 +536,8 @@ conformance-bless:
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    CONFORMANCE_BLESS=1 cargo nextest run --package extractous --cargo-profile release --run-ignored only --test conformance
+    CONFORMANCE_BLESS=1 cargo nextest run --package extractous --features tika --cargo-profile release \
+        --run-ignored only --test conformance
 
 # Score extraction against the quality corpus and write quality/SCOREBOARD.md.
 [unix]
@@ -556,9 +559,10 @@ quality-corpus:
     nix shell nixpkgs#libreoffice nixpkgs#pandoc nixpkgs#poppler-utils nixpkgs#imagemagick nixpkgs#exiftool nixpkgs#python3 nixpkgs#texliveSmall nixpkgs#djvulibre nixpkgs#jbig2enc nixpkgs#openjpeg \
         --command quality/generate.sh $fonts
 
-# Lint every target; every warning fails.
+# Lint every target without Tika, as released, and with it, as the parity tests build it; warnings fail.
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --features tika -- -D warnings
 
 # Format every Rust source in place.
 fmt:
@@ -607,27 +611,23 @@ tika-agent +inputs="test_files":
     done
     rm -rf graal-agent
 
-# Regenerate THIRD-PARTY-LICENSES.md from the Rust crates, models and Java libraries in the binary.
+# Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and models in the binary.
 [unix]
 licenses:
-    cd {{core}}/tika-native && ./gradlew --quiet generateLicenseReport
+    mkdir -p target
     cargo about generate --workspace --fail --output-file target/rust-licenses.md about.hbs
-    cat target/rust-licenses.md extractous-cli/models/LICENSES.md {{core}}/tika-native/build/licenses/java.md \
-        > target/THIRD-PARTY-LICENSES.md
+    cat target/rust-licenses.md extractous-cli/models/LICENSES.md > target/THIRD-PARTY-LICENSES.md
     mv target/THIRD-PARTY-LICENSES.md THIRD-PARTY-LICENSES.md
 
-# Write CycloneDX SBOMs of the Rust crates and Java libraries in the binary to target/sbom.
+# Write the CycloneDX SBOM of the Rust crates in the binary to target/sbom.
 [unix]
 sbom:
-    cd {{core}}/tika-native && ./gradlew --quiet cyclonedxDirectBom
     cargo cyclonedx --format json --spec-version 1.5 --no-build-deps --describe binaries --target all
     mkdir -p target/sbom
     mv extractous-cli/extractous_bin.cdx.json target/sbom/extractous-rust.cdx.json
-    cp {{core}}/tika-native/build/sbom/java.cdx.json target/sbom/extractous-java.cdx.json
 
 # Check dependencies for advisories, licences and bans, and that THIRD-PARTY-LICENSES.md is current.
 [unix]
 deps: licenses
     cargo deny check
-    cd {{core}}/tika-native && ./gradlew --quiet checkLicense
     git diff --exit-code THIRD-PARTY-LICENSES.md

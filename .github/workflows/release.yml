@@ -42,14 +42,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install GraalVM
+      - name: Install the JDK whose JNI headers the OCR bundle's tesseract library is built with
         run: |
           if [ "${{ runner.os }}" = Windows ]; then
             home=$(cygpath --windows "$(ci/install-graalvm.sh ${{ matrix.graalvm }} "$(cygpath --unix "$RUNNER_TEMP")/graalvm")")
           else
             home=$(ci/install-graalvm.sh ${{ matrix.graalvm }} "$RUNNER_TEMP/graalvm")
           fi
-          echo "GRAALVM_HOME=$home" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$home" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - name: Install Ninja and NASM, which vcpkg builds with on Linux
@@ -73,7 +72,6 @@ jobs:
           binary=target/release/extractous
           "$binary" --version
           "$binary" --licenses > "$RUNNER_TEMP/licenses.txt"
-          grep -q "org.apache.tika:tika-core" "$RUNNER_TEMP/licenses.txt"
           "$binary" test_files/documents/simple.odt | grep -q "These are a few of my favorite things"
           "$binary" detect test_files/documents/2022_Q3_AAPL.pdf | grep -qx "application/pdf"
           "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
@@ -142,56 +140,23 @@ jobs:
         include:
           - os: ubuntu-24.04
             target: x86_64-linux-static
-            graalvm: linux-x64
-            tika: true
           - os: ubuntu-24.04-arm
             target: aarch64-linux-static
-            graalvm: linux-aarch64
-            tika: true
-          - os: ubuntu-24.04
-            target: x86_64-linux-static-native
-            tika: false
-          - os: ubuntu-24.04-arm
-            target: aarch64-linux-static-native
-            tika: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
-      BINARY: ${{ matrix.tika && 'target/static-image/extractous' || 'result-static/bin/extractous' }}
-      TIKA: ${{ matrix.tika }}
+      BINARY: result-static/bin/extractous
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install GraalVM
-        if: matrix.tika
-        run: |
-          home=$(ci/install-graalvm.sh "$GRAALVM_PLATFORM" "$RUNNER_TEMP/graalvm")
-          echo "GRAALVM_HOME=$home" >> "$GITHUB_ENV"
-          echo "JAVA_HOME=$home" >> "$GITHUB_ENV"
-        env:
-          GRAALVM_PLATFORM: ${{ matrix.graalvm }}
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         if: vars.CACHIX_CACHE != ''
         with:
           name: ${{ vars.CACHIX_CACHE }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - uses: ./.github/actions/ocr-bundle
-        if: matrix.tika
-        id: ocr
-        with:
-          linked: "true"
-      - name: Embed the OCR bundle
-        if: matrix.tika
-        env:
-          BUNDLE: ${{ steps.ocr.outputs.dir }}
-        run: echo "EXTRACTOUS_OCR_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
-      - name: Build
-        if: matrix.tika
-        run: ci/static-image.sh target/static-image/extractous
       - name: Build with Crane
-        if: ${{ !matrix.tika }}
         run: nix build --print-build-logs --out-link result-static .#static
       - name: Check that it is statically linked
         run: |
@@ -209,9 +174,6 @@ jobs:
         run: |
           "$BINARY" --version
           "$BINARY" --licenses > "$RUNNER_TEMP/licenses.txt"
-          if [ "$TIKA" = true ]; then
-            grep -q "org.apache.tika:tika-core" "$RUNNER_TEMP/licenses.txt"
-          fi
           "$BINARY" test_files/documents/simple.odt | grep -q "These are a few of my favorite things"
           "$BINARY" detect test_files/documents/2022_Q3_AAPL.pdf | grep -qx "application/pdf"
           "$BINARY" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
@@ -286,19 +248,9 @@ jobs:
           - os: ubuntu-24.04
             arch: amd64
             static: x86_64-linux-static
-            publish: true
           - os: ubuntu-24.04-arm
             arch: arm64
             static: aarch64-linux-static
-            publish: true
-          - os: ubuntu-24.04
-            arch: amd64
-            static: x86_64-linux-static-native
-            publish: false
-          - os: ubuntu-24.04-arm
-            arch: arm64
-            static: aarch64-linux-static-native
-            publish: false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     permissions:
@@ -339,13 +291,13 @@ jobs:
           grep -q "tusmørket" "$RUNNER_TEMP/read-only.txt"
           grep -q "Lighthouse Keeper" "$RUNNER_TEMP/read-only.txt"
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.publish
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push, tagged with the version and architecture, and record the digest
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.publish
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           ARCH: ${{ matrix.arch }}
         run: |
@@ -356,7 +308,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/digests"
           touch "$RUNNER_TEMP/digests/${digest#*@sha256:}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: startsWith(github.ref, 'refs/tags/v') && matrix.publish
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: container-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*

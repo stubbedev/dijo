@@ -1,5 +1,5 @@
-# The container image around a statically linked executable (the flake's static executable
-# without Tika, or ci/static-image.sh's with it, through ci/container.sh): the executable as
+# The container image around a statically linked executable (the flake's static executable, or
+# the one `just static-native` built, through ci/container.sh): the executable as
 # /extractous with nothing else, run as an unprivileged user that may write only to /tmp and its
 # cache, serving on port 9998. Building it runs the executable once, so an executable for another
 # machine or one that needs a shared library fails here.
