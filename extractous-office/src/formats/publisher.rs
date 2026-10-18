@@ -9,12 +9,14 @@
 //! missing or whose first record it cannot read fails Tika's parse; the port does not read them
 //! (#129).
 
+use std::borrow::Cow;
+
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
-use crate::formats::poi::{i32_at, safely_clone, thrown, u16_at, u8_at, Read, Thrown, Unread};
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::poi::{i32_at, safely_borrow, thrown, u16_at, u8_at, Read, Thrown, Unread};
+use crate::formats::{Decline, Footprint, Parser, Prepared};
 use crate::ole2::{EntryId, EntryKind, Ole2};
 
 const MEDIA_TYPE: &str = "application/x-mspublisher";
@@ -45,6 +47,12 @@ impl Parser for PublisherParser {
 
     fn media_types(&self) -> &'static [&'static str] {
         &[MEDIA_TYPE]
+    }
+
+    /// It reads the main and Quill contents in place. What it holds is the text of the text
+    /// bits, each at most a megabyte, which `PublisherTextExtractor` gives whole.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
     }
 
     /// Defers macros extracted when asked to, and fails documents POI throws on.
@@ -98,8 +106,8 @@ fn text(file: &Ole2<'_>, root: EntryId) -> Read<Vec<u16>> {
 }
 
 /// `HPBFPart`: the data of the stream at `path`, its directories named exactly and the stream in
-/// any case.
-fn part(file: &Ole2<'_>, root: EntryId, path: &[&str]) -> Read<Vec<u8>> {
+/// any case, in place where it lies in one run.
+fn part<'a>(file: &Ole2<'a>, root: EntryId, path: &[&str]) -> Read<Cow<'a, [u8]>> {
     let (name, directories) = path.split_last().expect("a part's path names its stream");
     let mut directory = root;
     for &name in directories {
@@ -121,18 +129,19 @@ fn part(file: &Ole2<'_>, root: EntryId, path: &[&str]) -> Read<Vec<u8>> {
     if file.kind(entry) != EntryKind::Document {
         return thrown(format!("Entry '{name}' is not a DocumentEntry"));
     }
-    file.read(entry)
+    file.content(entry)
+        .map(|content| content.bytes())
         .map_err(|reason| Thrown(format!("cannot read the stream {name}: {}", reason.0)))
 }
 
-/// A bit of the Quill contents, as far as the text needs it.
-enum Bit {
-    Text(Vec<u8>),
+/// A bit of the Quill contents, as far as the text needs it, its data in place.
+enum Bit<'a> {
+    Text(&'a [u8]),
     Other,
 }
 
 /// `QuillContents`: the bits its index lists, each an entry that starts `18 00`.
-fn quill_bits(data: &[u8]) -> Read<Vec<Bit>> {
+fn quill_bits(data: &[u8]) -> Read<Vec<Bit<'_>>> {
     if data.get(..8) != Some(QUILL_SIGNATURE.as_slice()) {
         return thrown("Expecting 'CHNKINK '");
     }
@@ -152,11 +161,11 @@ fn quill_bits(data: &[u8]) -> Read<Vec<Bit>> {
         let bit_type = &entry[10..14];
         let from = i32_at(entry, 14)?;
         let length = i32_at(entry, 18)?;
-        let bit_data = safely_clone(data, i64::from(from), i64::from(length), MAX_RECORD_LENGTH)?;
+        let bit_data = safely_borrow(data, i64::from(from), i64::from(length), MAX_RECORD_LENGTH)?;
         bits.push(match bit_type {
             b"TEXT" => Bit::Text(bit_data),
             b"PLC " => {
-                plc_bit(&bit_data)?;
+                plc_bit(bit_data)?;
                 Bit::Other
             }
             _ => Bit::Other,
@@ -298,7 +307,6 @@ mod tests {
     }
 
     /// Quill contents of the bits given as their type and data.
-    #[cfg(feature = "tika")]
     fn quill(bits: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
         let mut quill = vec![0u8; INDEX_START + BITS * INDEX_ENTRY];
         quill[..8].copy_from_slice(QUILL_SIGNATURE);
@@ -316,9 +324,48 @@ mod tests {
         quill
     }
 
-    #[cfg(feature = "tika")]
     fn utf16(text: &str) -> Vec<u8> {
         text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    /// A document too large to read whole, its size in its main contents, is read in place,
+    /// in memory that does not grow with it.
+    #[test]
+    fn extracts_documents_too_large_to_read_whole_in_bounded_memory() {
+        use crate::input::MAX_READ_WHOLE;
+        use crate::ole2::{write, Node, Storage};
+        use extractous_core::large::LargeFile;
+
+        let units = |name: &str| name.encode_utf16().collect::<Vec<u16>>();
+        let storage = |entries| {
+            Node::Storage(Storage {
+                class_id: [0; 16],
+                entries,
+            })
+        };
+        let quill = quill(&[(b"TEXT", utf16("Havnen i \u{c5}lborg\rog fjorden"))]);
+        let Node::Storage(root) = storage(vec![
+            (
+                units("Contents"),
+                Node::Owned(vec![0; MAX_READ_WHOLE as usize + 1]),
+            ),
+            (
+                units("Quill"),
+                storage(vec![(
+                    units("QuillSub"),
+                    storage(vec![(units("CONTENTS"), Node::Owned(quill))]),
+                )]),
+            ),
+        ]) else {
+            unreachable!("a storage")
+        };
+        let document = write(&root).unwrap();
+        drop(root);
+        let file = LargeFile::new("large.pub", &document, 0, |_| Vec::new(), b"");
+        drop(document);
+        let (text, metadata) = file.extract("extractous::OfficeParser");
+        assert!(text.contains("Havnen i \u{c5}lborg\nog fjorden"), "{text}");
+        assert_eq!(metadata["Content-Type"], ["application/x-mspublisher"]);
     }
 
     /// A Publisher document of Quill contents `quill`, without the delay stream where `delay` is
@@ -401,7 +448,7 @@ mod tests {
         entry[20..24].copy_from_slice(&(text.len() as u32).to_le_bytes());
         quill.extend(&text);
         let bits = quill_bits(&quill).unwrap();
-        assert!(matches!(&bits[..], [Bit::Text(data)] if *data == text));
+        assert!(matches!(&bits[..], [Bit::Text(data)] if **data == text[..]));
         assert!(quill_bits(b"CHNKINX ").is_err());
         let mut plc = vec![0u8; 16];
         plc[4] = 3;
