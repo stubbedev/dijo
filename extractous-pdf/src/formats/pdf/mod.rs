@@ -482,6 +482,9 @@ fn load<'a>(
         _ => None,
     };
     pdf.decrypt_with(state, id);
+    let found = resolution
+        .object_stream_placements(input, &|id, dict, data| pdf.decrypted(id, dict, data))?;
+    pdf.place(found);
     Ok(Loaded { pdf, access })
 }
 
@@ -1367,6 +1370,58 @@ mod tests {
         );
         assert!(xml.contains("<li fieldName=\"by\">by: Oslo</li>"), "{xml}");
         assert!(xml.contains("<li fieldName=\"tom\">tom: </li>"), "{xml}");
+    }
+
+    /// The documents qpdf 12.3.2 wrote of one page and an information dictionary, encrypted
+    /// for the empty user password with RC4, AES-128 and AES-256 and with every object it
+    /// could put in an object stream there:
+    /// `qpdf [--allow-weak-crypto] --object-streams=generate --encrypt "" eier 128|256
+    /// [--use-aes=n|y] -- plain.pdf out.pdf`.
+    const ENCRYPTED_OBJECT_STREAMS: [&str; 3] = [
+        "tests/fixtures/pdf/object-streams-rc4.pdf",
+        "tests/fixtures/pdf/object-streams-aes.pdf",
+        "tests/fixtures/pdf/object-streams-aes256.pdf",
+    ];
+
+    /// The document at `path` with a comment before its first object, which moves every object
+    /// off the offset its cross-reference stream gives, so that PDFBox searches the document for
+    /// its objects and object streams.
+    fn moved_objects(path: &str) -> Vec<u8> {
+        let input = std::fs::read(path).unwrap();
+        replace(&input, b"\n1 0 obj", b"\n%flyttet\n1 0 obj")
+    }
+
+    #[test]
+    fn decrypts_the_object_streams_a_search_finds() {
+        for path in ENCRYPTED_OBJECT_STREAMS {
+            let input = moved_objects(path);
+            let deferral =
+                PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
+            assert_eq!(deferral, None, "{path}");
+            let (xml, _) = native_xml(&input);
+            assert!(
+                xml.contains("Den yngste var den smukkeste"),
+                "{path}: {xml}"
+            );
+            assert!(
+                xml.contains("<meta name=\"dc:creator\" content=\"Kari\" />"),
+                "{path}: {xml}"
+            );
+        }
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn decrypts_the_object_streams_a_search_finds_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-encrypted-search");
+        let moved: Vec<PathBuf> = ENCRYPTED_OBJECT_STREAMS
+            .iter()
+            .map(|path| {
+                let name = Path::new(path).file_name().unwrap().to_str().unwrap();
+                scratch.write(name, &moved_objects(path))
+            })
+            .collect();
+        assert_same_as_tika_delegating(&as_paths(&moved), tika_name(), &DELEGATES);
     }
 
     #[test]

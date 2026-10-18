@@ -4,6 +4,7 @@
 //! its section, a table whose offsets miss their objects, and the object streams of a document
 //! whose table it replaces.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use lopdf::{Dictionary, Object, ObjectId, Stream};
@@ -107,7 +108,14 @@ pub(super) type Read<T> = Result<T, Thrown>;
 pub(super) struct Resolution {
     table: HashMap<Key, Location>,
     trailer: Dictionary,
+    /// For an encrypted document whose objects PDFBox searched for, those it found: it searches
+    /// their object streams once it can decrypt them ([`Resolution::object_stream_placements`]).
+    encrypted_search: Option<HashMap<Key, Location>>,
 }
+
+/// What decrypts the data of an object stream the search finds, the stream's key and
+/// dictionary given, as `SecurityHandler.decryptStream` does.
+pub(super) type Decrypt<'d> = dyn Fn(ObjectId, &Dictionary, &[u8]) -> Read<Vec<u8>> + 'd;
 
 /// Reads the cross-reference of `data` as PDFBox's lenient `COSParser.retrieveTrailer` does,
 /// or says why the port leaves the document to Tika.
@@ -128,11 +136,18 @@ pub(super) fn resolve(data: &[u8], paging: &Paging) -> Result<Resolution, Unport
         });
     };
     let mut table = parser.resolved.table;
+    let mut encrypted_search = None;
     if let Some(mut objects) = parser.brute.objects.take() {
-        let decrypts = trailer.has(b"Encrypt");
-        brute_force_object_streams(data, decrypts, &mut objects, &mut table)?;
+        match trailer.has(b"Encrypt") {
+            true => encrypted_search = Some(objects),
+            false => brute_force_object_streams(data, None, &mut objects, &mut table)?,
+        }
     }
-    Ok(Resolution { table, trailer })
+    Ok(Resolution {
+        table,
+        trailer,
+        encrypted_search,
+    })
 }
 
 /// `BruteForceParser.rebuildTrailer`, for a document without a trailer PDFBox can use: the
@@ -147,14 +162,18 @@ fn rebuild(data: &[u8]) -> Read<Resolution> {
     if !search_trailer(data, &objects, &mut trailer)?
         && !search_trailer_items(data, &objects, &mut trailer)
     {
-        brute_force_object_streams(data, false, &mut objects, &mut table)?;
+        brute_force_object_streams(data, None, &mut objects, &mut table)?;
         streams_searched = true;
         search_trailer_items(data, &objects, &mut trailer);
     }
     if !streams_searched {
-        brute_force_object_streams(data, false, &mut objects, &mut table)?;
+        brute_force_object_streams(data, None, &mut objects, &mut table)?;
     }
-    Ok(Resolution { table, trailer })
+    Ok(Resolution {
+        table,
+        trailer,
+        encrypted_search: None,
+    })
 }
 
 /// `bfSearchForTrailer`: the first `trailer` of the document whose `/Root` leads to a catalog,
@@ -382,31 +401,54 @@ impl Resolution {
 
     /// Where each object the table lists is read from, by its key as `lopdf` names it.
     pub(super) fn placements(&self) -> Result<HashMap<ObjectId, Placement>, Unported> {
-        let mut placements = HashMap::with_capacity(self.table.len());
-        for (key, location) in &self.table {
-            let id = key.id().ok_or_else(|| {
-                Unported(format!(
-                    "object number {}, which lopdf cannot hold",
-                    key.number
-                ))
-            })?;
-            let value = location.value();
-            let placement = match usize::try_from(value) {
-                Ok(offset) if offset > 0 => Placement::File(offset),
-                _ => match u32::try_from(-value) {
-                    Ok(number) => Placement::Stream(number),
-                    Err(_) => continue,
-                },
-            };
-            placements.insert(id, placement);
-        }
-        Ok(placements)
+        placements(&self.table)
+    }
+
+    /// `bfSearchForObjStreams` of an encrypted document whose objects PDFBox searched for, which
+    /// it runs once it has prepared the document's decryption: where the objects of the object
+    /// streams the search finds are read from, each stream's data decrypted with `decrypt`.
+    pub(super) fn object_stream_placements(
+        &self,
+        data: &[u8],
+        decrypt: &Decrypt,
+    ) -> Result<HashMap<ObjectId, Placement>, Unported> {
+        let Some(objects) = &self.encrypted_search else {
+            return Ok(HashMap::new());
+        };
+        let mut objects = objects.clone();
+        let mut table = HashMap::new();
+        brute_force_object_streams(data, Some(decrypt), &mut objects, &mut table)?;
+        placements(&table)
     }
 
     /// The trailer, as PDFBox merges it.
     pub(super) fn trailer(&self) -> &Dictionary {
         &self.trailer
     }
+}
+
+/// Where each object of `table` is read from, by its key as `lopdf` names it: from the file at
+/// a positive offset, else from the object stream whose number the value negates.
+fn placements(table: &HashMap<Key, Location>) -> Result<HashMap<ObjectId, Placement>, Unported> {
+    let mut placements = HashMap::with_capacity(table.len());
+    for (key, location) in table {
+        let id = key.id().ok_or_else(|| {
+            Unported(format!(
+                "object number {}, which lopdf cannot hold",
+                key.number
+            ))
+        })?;
+        let value = location.value();
+        let placement = match usize::try_from(value) {
+            Ok(offset) if offset > 0 => Placement::File(offset),
+            _ => match u32::try_from(-value) {
+                Ok(number) => Placement::Stream(number),
+                Err(_) => continue,
+            },
+        };
+        placements.insert(id, placement);
+    }
+    Ok(placements)
 }
 
 /// The first of the objects `ids`, which the table does not list, that PDFBox finds by
@@ -1688,10 +1730,11 @@ fn last_eof_marker(data: &[u8]) -> Read<i64> {
 }
 
 /// `bfSearchForObjStreams`: the objects of the object streams the search finds, added to the
-/// table where the stream stands after the object's other copy.
+/// table where the stream stands after the object's other copy, each stream's data decrypted
+/// with `decrypt`, if the search has a security handler.
 fn brute_force_object_streams(
     data: &[u8],
-    decrypts: bool,
+    decrypt: Option<&Decrypt>,
     objects: &mut HashMap<Key, Location>,
     table: &mut HashMap<Key, Location>,
 ) -> Result<(), Unported> {
@@ -1701,13 +1744,8 @@ fn brute_force_object_streams(
         .filter(|(offset, key)| objects.get(key) == Some(&Location::File(*offset)))
         .collect();
     offsets.sort_unstable();
-    if !offsets.is_empty() && decrypts {
-        return Err(Unported(
-            "the object streams of an encrypted document whose table PDFBox replaces".to_owned(),
-        ));
-    }
     for (offset, stream_key) in offsets {
-        let numbers = match object_stream_numbers(data, offset) {
+        let numbers = match object_stream_numbers(data, offset, decrypt) {
             Ok(numbers) => numbers,
             Err(Thrown::Io) => continue,
             Err(Thrown::Unported(unported)) => return Err(unported),
@@ -1761,19 +1799,28 @@ fn loading_fails() -> Unported {
 }
 
 /// `PDFObjectStreamParser.readObjectNumbers` of the object stream at `offset`, whose header
-/// PDFBox reads outside its handling of a corrupt stream.
-fn object_stream_numbers(data: &[u8], offset: i64) -> Read<Vec<i64>> {
+/// PDFBox reads outside its handling of a corrupt stream, its data decrypted with `decrypt`,
+/// if given.
+fn object_stream_numbers(data: &[u8], offset: i64, decrypt: Option<&Decrypt>) -> Read<Vec<i64>> {
     let mut source = Source::new(data);
-    source
+    let (number, generation) = source
         .seek(offset)
         .and_then(|()| source.read_object_number())
-        .and_then(|_| source.read_generation_number())
-        .and_then(|_| source.read_expected(b"obj"))
+        .and_then(|number| Ok((number, source.read_generation_number()?)))
+        .and_then(|key| source.read_expected(b"obj").map(|()| key))
         .map_err(|_| Thrown::Unported(loading_fails()))?;
     let dict = source.dictionary()?;
     source.start_stream();
     let raw = source.stream_data(direct_length(&dict)?)?;
-    let decoded = decode(&dict, raw.data)?;
+    let decrypted = match decrypt {
+        None => Cow::Borrowed(raw.data),
+        Some(decrypt) => {
+            let id = Key::new(number, generation)?.id().ok_or(Thrown::Io)?;
+            Cow::Owned(decrypt(id, &dict, raw.data)?)
+        }
+    };
+    let decoded = decode(&dict, &decrypted)?;
+
     let count = int_entry(&dict, b"N");
     let first = int_entry(&dict, b"First");
     if count < 0 || first < 0 {
