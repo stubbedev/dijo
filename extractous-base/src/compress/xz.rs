@@ -2,7 +2,7 @@
 //! `XZCompressorInputStream` without `decompressConcatenated` and `LZMACompressorInputStream`
 //! read them, under the memory limit Tika's `CompressorParser` sets.
 
-use super::{decoder_failure, spool_limited, Limited, Undecoded, MEMORY_LIMIT_KIB};
+use super::{decoder_failure, spool_limited, Decoding, Held, Limited, Undecoded, MEMORY_LIMIT_KIB};
 use crate::input::Input;
 
 /// The first stream of the xz file `data`, or why it is not decoded natively.
@@ -12,6 +12,19 @@ pub(crate) fn decode_xz(data: &[u8]) -> Result<Limited<Input<'static>>, Undecode
         data.len(),
         None,
     )
+}
+
+/// Decodes into `decoding`, up to its limit, the xz stream at the start of `data`, read as
+/// `XZCompressorInputStream` without `decompressConcatenated` reads it, without a memory limit,
+/// and returns how many bytes the stream takes, its index and footer included; none where the
+/// decoding is cut at its limit.
+pub(crate) fn decode_stream_into(
+    data: &[u8],
+    decoding: &mut Decoding<impl Held>,
+) -> Result<Option<usize>, Undecoded> {
+    let mut input = data;
+    decoding.read_from(lzma_rust2::XzReader::new(&mut input, false))?;
+    Ok((!decoding.is_cut()).then(|| data.len() - input.len()))
 }
 
 /// The content of the `.lzma` file `data`, or why it is not decoded natively.
@@ -54,6 +67,19 @@ pub mod tests {
         .unwrap();
         writer.write_all(content).unwrap();
         writer.finish().unwrap()
+    }
+
+    #[test]
+    fn finds_where_the_stream_ends() {
+        let mut data = xz(b"content");
+        let stream = data.len();
+        data.extend_from_slice(b"PK\x07\x08 after the stream");
+        let mut decoding = Decoding::in_memory();
+        assert_eq!(decode_stream_into(&data, &mut decoding), Ok(Some(stream)));
+        assert_eq!(
+            *decoding.finish().and_then(Limited::whole).unwrap(),
+            *b"content"
+        );
     }
 
     #[test]

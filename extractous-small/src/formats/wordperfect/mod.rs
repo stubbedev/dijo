@@ -12,6 +12,8 @@ mod quattro;
 pub use old_quattro::OldQuattroProParser;
 pub use quattro::QuattroProParser;
 
+use std::borrow::Cow;
+
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
@@ -19,6 +21,7 @@ use crate::formats::xhtml::Xhtml;
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::{Pages, Paging};
 use crate::java;
+use crate::ole2;
 
 /// `WPPrefixArea.WP5_MAJOR_VERSION`.
 const WP5_MAJOR_VERSION: u8 = 0;
@@ -27,9 +30,32 @@ const WP6_MAJOR_VERSION: u8 = 2;
 /// The text `WPDocumentAreaExtractor` gathers before it writes it, in UTF-16 units.
 const CHUNK: usize = 4096;
 
+/// What a `WPInputStream` reads: bytes in place, or a compound document's entry in place in it.
+enum Bytes<'a> {
+    Slice(&'a [u8]),
+    Entry(ole2::Content<'a>),
+}
+
+impl<'a> Bytes<'a> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Slice(data) => data.len(),
+            Self::Entry(content) => content.len(),
+        }
+    }
+
+    /// The `length` bytes at `at`, if there are as many.
+    fn get(&self, at: usize, length: usize) -> Option<Cow<'a, [u8]>> {
+        match self {
+            Self::Slice(data) => data.get(at..at.checked_add(length)?).map(Cow::Borrowed),
+            Self::Entry(content) => content.range(at, length),
+        }
+    }
+}
+
 /// The bytes `WPInputStream` reads, failing as its reads fail where the input ends.
 struct Stream<'a> {
-    data: &'a [u8],
+    data: Bytes<'a>,
     at: usize,
     /// The pages of `data`, released as it is read on, and where it was last counted read.
     paging: Paging<'a>,
@@ -64,11 +90,26 @@ impl<'a> Stream<'a> {
     /// The stream of `data`, whose `pages` it releases as it reads on.
     fn paged(data: &'a [u8], pages: Pages<'a>) -> Self {
         Self {
-            data,
+            data: Bytes::Slice(data),
             at: 0,
             paging: Paging::new(pages),
             counted: 0,
         }
+    }
+
+    /// The stream of a compound document's entry, read in place.
+    fn entry(content: ole2::Content<'a>) -> Self {
+        Self {
+            data: Bytes::Entry(content),
+            at: 0,
+            paging: Paging::new(Pages::IN_MEMORY),
+            counted: 0,
+        }
+    }
+
+    /// Whether it has been read to its end.
+    fn ended(&self) -> bool {
+        self.at >= self.data.len()
     }
 
     /// Counts what was read since it was last counted.
@@ -79,7 +120,10 @@ impl<'a> Stream<'a> {
 
     /// `read`: the next byte, if any.
     fn read(&mut self) -> Option<u8> {
-        let byte = *self.data.get(self.at)?;
+        let byte = match &self.data {
+            Bytes::Slice(data) => *data.get(self.at)?,
+            Bytes::Entry(content) => content.range(self.at, 1)?[0],
+        };
         self.at += 1;
         Some(byte)
     }
@@ -90,9 +134,9 @@ impl<'a> Stream<'a> {
     }
 
     fn take<const N: usize>(&mut self) -> Result<[u8; N], EndOfFile> {
-        let bytes = self.data.get(self.at..self.at + N).ok_or(EndOfFile)?;
+        let bytes = self.data.get(self.at, N).ok_or(EndOfFile)?;
         self.at += N;
-        Ok(bytes.try_into().expect("N bytes"))
+        Ok(bytes.as_ref().try_into().expect("N bytes"))
     }
 
     /// `readWPShort`.
@@ -117,17 +161,21 @@ impl<'a> Stream<'a> {
 
     /// `skipUntilChar`: past the next `target`, or to the end.
     fn skip_until(&mut self, target: u8) {
+        let Bytes::Slice(data) = self.data else {
+            while self.read().is_some_and(|byte| byte != target) {}
+            return;
+        };
         self.count_read();
-        match self.paging.find(&self.data[self.at..], &[target]) {
+        match self.paging.find(&data[self.at..], &[target]) {
             Some(offset) => self.at += offset + 1,
-            None => self.at = self.data.len(),
+            None => self.at = data.len(),
         }
         self.counted = self.at;
     }
 
     /// `readWPString`: `length` bytes as characters.
     fn string(&mut self, length: usize) -> Result<String, EndOfFile> {
-        let bytes = self.data.get(self.at..self.at + length).ok_or(EndOfFile)?;
+        let bytes = self.data.get(self.at, length).ok_or(EndOfFile)?;
         self.at += length;
         Ok(java::latin1(bytes))
     }

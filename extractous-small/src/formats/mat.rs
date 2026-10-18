@@ -3,20 +3,27 @@
 //! for each variable with its size and class, the fields of a structure listed after it.
 //!
 //! The file is read element by element as `MatFileReader` reads it, compressed elements inflated,
-//! so that it fails where jmatio fails on data that ends early or does not fill its element. It
+//! so that it fails where jmatio fails on data that ends early or does not fill its element. A
+//! compressed element is inflated twice as a stream, where jmatio inflates it into memory: once
+//! for its length, and again as it is read, the data of its arrays passed over; only the
+//! variables' descriptions are kept, as jmatio reads them all before `MatParser` writes. It
 //! reads what jmatio fails on (#156): `uint16` arrays, function handles, and Java objects, which
 //! it lists by their class where they are a field of a structure, where `MatParser` throws on
 //! them. A structure held in a field is named by its field, where jmatio names it "@".
 
+use std::borrow::Cow;
 use std::collections::HashSet;
+use std::io::{Cursor, Read};
 
-use crate::compress::{zlib, Undecoded};
+use flate2::bufread::ZlibDecoder;
+
+use crate::compress::{Decoding, Undecoded};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::java;
 
 const MEDIA_TYPE: &str = "application/x-matlab-data";
@@ -27,6 +34,10 @@ const MAGIC: &[u8] = b"MATLAB 5.0 MAT-file";
 const DESCRIPTION_BYTES: usize = 116;
 /// The bytes `InflaterInputStream` reads its input in.
 const INFLATER_CHUNK: usize = 512;
+/// The bytes of a compressed element inflated at a time.
+const WINDOW: usize = 64 << 10;
+/// The bytes of a character array decoded at a time.
+const PIECE: usize = 64 << 10;
 
 const MI_INT8: i32 = 1;
 const MI_UINT8: i32 = 2;
@@ -80,6 +91,10 @@ impl Parser for MatParser {
         &[MEDIA_TYPE]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -100,8 +115,8 @@ impl Parser for MatParser {
 }
 
 /// A file holding an element that inflates into more than
-/// [`MAX_DECODED`](crate::compress::MAX_DECODED) bytes, as `reason` says, which jmatio inflates
-/// into memory whole: Tika's path takes it where there is one.
+/// [`decode_limit`](crate::compress::decode_limit) of its compressed bytes, as `reason` says,
+/// which jmatio inflates into memory whole: Tika's path takes it where there is one.
 fn too_large(reason: String) -> Decline<'static> {
     if cfg!(feature = "tika") {
         Decline::Deferred(format!("{reason}, which Tika's path inflates whole"))
@@ -267,11 +282,12 @@ impl MatFile {
     /// `MatFileReader.read`: the header, then the elements up to the end of the file.
     fn read(input: &[u8]) -> Result<Self, Unread> {
         let mut buffer = Buffer {
-            data: input,
+            data: Data::Slice(input),
+            length: input.len(),
             at: 0,
             little_endian: false,
         };
-        let description = zero_ended(buffer.bytes(DESCRIPTION_BYTES)?).to_vec();
+        let description = zero_ended(&buffer.bytes(DESCRIPTION_BYTES)?).to_vec();
         if !description.starts_with(MAGIC) {
             return Err(matlab("This is not a valid MATLAB 5.0 MAT-file.").into());
         }
@@ -307,18 +323,18 @@ fn read_data(buffer: &mut Buffer, variables: &mut Variables) -> Result<(), Unrea
             if to_i64(buffer.remaining()) < i64::from(tag.size) {
                 return Err(matlab("Compressed buffer length miscalculated!").into());
             }
-            let compressed = usize::try_from(tag.size)
+            let size = usize::try_from(tag.size)
                 .ok()
                 .filter(|&size| size > 0)
-                .map(|size| &buffer.data[buffer.at..buffer.at + size])
                 .ok_or_else(|| {
                     matlab(
                         "Could not decompress data: java.io.EOFException: Unexpected end of \
                          ZLIB input stream",
                     )
                 })?;
-            let (inflated, taken) =
-                zlib::decode_prefix(compressed).map_err(|undecoded| match undecoded {
+            let compressed = buffer.peek(size)?;
+            let (length, taken) =
+                inflated_length(&compressed).map_err(|undecoded| match undecoded {
                     Undecoded::TooLarge => {
                         Unread::TooLarge(format!("the compressed element at byte {}", buffer.at))
                     }
@@ -326,7 +342,8 @@ fn read_data(buffer: &mut Buffer, variables: &mut Variables) -> Result<(), Unrea
                 })?;
             buffer.at += (taken.div_ceil(INFLATER_CHUNK) * INFLATER_CHUNK).min(compressed.len());
             let mut inflated = Buffer {
-                data: &inflated,
+                data: Data::Inflated(Inflated::new(compressed)),
+                length,
                 at: 0,
                 little_endian: buffer.little_endian,
             };
@@ -404,8 +421,7 @@ fn read_matrix(buffer: &mut Buffer, size: i32) -> Result<Field, Thrown> {
         }
         MX_CHAR => {
             let size = usize::try_from(array.size()).map_err(|_| negative_size(array.size()))?;
-            let text = Tag::read(buffer)?.string(buffer)?;
-            if java::utf16_length(&text) > size {
+            if Tag::read(buffer)?.string_length(buffer)? > size {
                 return Err(out_of_bounds(size, size));
             }
         }
@@ -453,7 +469,7 @@ fn capacity(capacity: i32) -> Result<(), Thrown> {
 /// The row indices, column starts and values of a sparse array, each value placed by them as
 /// jmatio places it, failing where they do not reach: the real values, then the imaginary ones.
 fn read_sparse(buffer: &mut Buffer, array: &Array) -> Result<(), Thrown> {
-    let rows = Tag::read(buffer)?.ints(buffer)?;
+    let rows = Tag::read(buffer)?.pass_ints(buffer)?;
     let columns = Tag::read(buffer)?.ints(buffer)?;
     let place = |values: usize| -> Result<(), Thrown> {
         let mut count = 0usize;
@@ -465,8 +481,8 @@ fn read_sparse(buffer: &mut Buffer, array: &Array) -> Result<(), Thrown> {
                 if count >= values {
                     return Err(out_of_bounds(count, values));
                 }
-                if count >= rows.len() {
-                    return Err(out_of_bounds(count, rows.len()));
+                if count >= rows {
+                    return Err(out_of_bounds(count, rows));
                 }
                 count += 1;
             }
@@ -620,7 +636,7 @@ impl Fields {
         let mut names = Vec::with_capacity(count.min(buffer.remaining()));
         for _ in 0..count {
             let length = usize::try_from(length).map_err(|_| negative_size(length))?;
-            names.push(java::latin1(zero_ended(buffer.bytes(length)?)));
+            names.push(java::latin1(zero_ended(&buffer.bytes(length)?)));
         }
         buffer.skip(tag.padding)?;
         Ok(Self {
@@ -701,26 +717,138 @@ impl Fields {
     }
 }
 
-/// The bytes `MatFileReader` reads from, as a `ByteBuffer` in the file's byte order.
+/// The bytes `MatFileReader` reads from, as a `ByteBuffer` in the file's byte order: `length`
+/// bytes of data, read at `at`.
 struct Buffer<'a> {
-    data: &'a [u8],
+    data: Data<'a>,
+    length: usize,
     at: usize,
     little_endian: bool,
 }
 
-impl<'a> Buffer<'a> {
-    fn remaining(&self) -> usize {
-        self.data.len() - self.at
+/// What a buffer reads: the file's bytes in place, or what a compressed element inflates into.
+enum Data<'a> {
+    Slice(&'a [u8]),
+    Inflated(Inflated<'a>),
+}
+
+/// The data a compressed element inflates into, read as a stream from its compressed bytes: the
+/// last [`WINDOW`] bytes inflated, from `start`, inflated on to read further and again from the
+/// start to read behind them.
+struct Inflated<'a> {
+    decoder: ZlibDecoder<Cursor<Cow<'a, [u8]>>>,
+    window: Vec<u8>,
+    start: usize,
+}
+
+impl<'a> Inflated<'a> {
+    fn new(compressed: Cow<'a, [u8]>) -> Self {
+        Self {
+            decoder: ZlibDecoder::new(Cursor::new(compressed)),
+            window: Vec::with_capacity(WINDOW),
+            start: 0,
+        }
     }
 
-    fn bytes(&mut self, count: usize) -> Result<&'a [u8], Thrown> {
-        let read = self.data[self.at..].get(..count).ok_or_else(underflow)?;
+    /// Copies the inflated bytes at `at` into `out`, all of which the data holds.
+    fn copy(&mut self, at: usize, out: &mut [u8]) -> Result<(), Thrown> {
+        let mut done = 0;
+        while done < out.len() {
+            let position = at + done;
+            if position < self.start {
+                let mut compressed = std::mem::replace(
+                    &mut self.decoder,
+                    ZlibDecoder::new(Cursor::new(Cow::Borrowed(&[]))),
+                )
+                .into_inner();
+                compressed.set_position(0);
+                self.decoder = ZlibDecoder::new(compressed);
+                self.window.clear();
+                self.start = 0;
+            }
+            let end = self.start + self.window.len();
+            if position >= end {
+                self.start = end;
+                self.window.resize(WINDOW, 0);
+                let read = self
+                    .decoder
+                    .read(&mut self.window)
+                    .map_err(|error| matlab(format!("Could not decompress data again: {error}")))?;
+                self.window.truncate(read);
+                if read == 0 {
+                    return Err(underflow());
+                }
+                continue;
+            }
+            let offset = position - self.start;
+            let count = (out.len() - done).min(self.window.len() - offset);
+            out[done..done + count].copy_from_slice(&self.window[offset..offset + count]);
+            done += count;
+        }
+        Ok(())
+    }
+}
+
+/// How many bytes the zlib stream `compressed` starts with inflates into, up to
+/// [`decode_limit`](crate::compress::decode_limit) of them, past which it fails, and how many
+/// bytes of `compressed` the stream takes: jmatio's inflation of a compressed element, keeping
+/// nothing of it.
+fn inflated_length(compressed: &[u8]) -> Result<(usize, usize), Undecoded> {
+    let mut decoder = ZlibDecoder::new(compressed);
+    let mut decoding = Decoding::discarded(compressed.len());
+    decoding.read_from(&mut decoder)?;
+    let length = decoding.finish()?.whole()?;
+    let length = usize::try_from(length).map_err(|_| Undecoded::TooLarge)?;
+    let taken = usize::try_from(decoder.total_in()).expect("a stream takes at most its input");
+    Ok((length, taken))
+}
+
+impl<'a> Buffer<'a> {
+    fn remaining(&self) -> usize {
+        self.length - self.at
+    }
+
+    /// The `count` bytes at the position, which stays where it is.
+    fn peek(&mut self, count: usize) -> Result<Cow<'a, [u8]>, Thrown> {
+        if count > self.remaining() {
+            return Err(underflow());
+        }
+        match &mut self.data {
+            Data::Slice(data) => Ok(Cow::Borrowed(&data[self.at..self.at + count])),
+            Data::Inflated(inflated) => {
+                let mut bytes = vec![0; count];
+                inflated.copy(self.at, &mut bytes)?;
+                Ok(Cow::Owned(bytes))
+            }
+        }
+    }
+
+    fn bytes(&mut self, count: usize) -> Result<Cow<'a, [u8]>, Thrown> {
+        let read = self.peek(count)?;
         self.at += count;
         Ok(read)
     }
 
+    /// Moves past `count` bytes, as reading them does, without reading them.
+    fn pass(&mut self, count: usize) -> Result<(), Thrown> {
+        if count > self.remaining() {
+            return Err(underflow());
+        }
+        self.at += count;
+        Ok(())
+    }
+
     fn array<const N: usize>(&mut self) -> Result<[u8; N], Thrown> {
-        Ok(self.bytes(N)?.try_into().expect("N bytes were read"))
+        if N > self.remaining() {
+            return Err(underflow());
+        }
+        let mut bytes = [0; N];
+        match &mut self.data {
+            Data::Slice(data) => bytes.copy_from_slice(&data[self.at..self.at + N]),
+            Data::Inflated(inflated) => inflated.copy(self.at, &mut bytes)?,
+        }
+        self.at += N;
+        Ok(bytes)
     }
 
     fn byte(&mut self) -> Result<u8, Thrown> {
@@ -762,11 +890,11 @@ impl<'a> Buffer<'a> {
     fn seek(&mut self, position: i64) -> Result<(), Thrown> {
         self.at = usize::try_from(position)
             .ok()
-            .filter(|&at| at <= self.data.len())
+            .filter(|&at| at <= self.length)
             .ok_or_else(|| {
                 illegal_argument(format!(
                     "newPosition out of bounds: ({position}, limit {})",
-                    self.data.len()
+                    self.length
                 ))
             })?;
         Ok(())
@@ -933,11 +1061,28 @@ impl Tag {
         Ok(values)
     }
 
+    /// `readToIntArray`, of which only how many values it reads matters: they are passed over.
+    fn pass_ints(&self, buffer: &mut Buffer) -> Result<usize, Thrown> {
+        let elements = self.elements()?;
+        if elements > 0 {
+            let width = match self.kind {
+                MI_UINT8 | MI_INT8 => 1,
+                MI_UINT16 | MI_INT16 => 2,
+                MI_UINT32 | MI_INT32 => 4,
+                MI_UINT64 | MI_INT64 | MI_DOUBLE => 8,
+                kind => return Err(illegal_argument(format!("Unknown data type: {kind}"))),
+            };
+            buffer.pass(elements * width)?;
+        }
+        buffer.skip(self.padding)?;
+        Ok(elements)
+    }
+
     /// `readToDoubleArray`, of which only how many values it reads matters.
     fn doubles(&self, buffer: &mut Buffer) -> Result<usize, Thrown> {
         let elements = self.elements()?;
         if elements > 0 {
-            buffer.bytes(elements * JavaType::Double.width(self.kind)?)?;
+            buffer.pass(elements * JavaType::Double.width(self.kind)?)?;
         }
         buffer.skip(self.padding)?;
         Ok(elements)
@@ -948,16 +1093,46 @@ impl Tag {
         let elements = self.elements()?;
         let mut bytes = Vec::with_capacity(elements.min(buffer.remaining()));
         for _ in 0..elements {
-            bytes.push(match self.kind {
-                MI_UINT8 | MI_INT8 | MI_UTF8 => buffer.byte()?,
-                MI_UINT16 | MI_INT16 => buffer.short()? as u8,
-                MI_UINT32 | MI_INT32 => buffer.int()? as u8,
-                MI_DOUBLE => buffer.double()? as i32 as u8,
-                kind => return Err(illegal_argument(format!("Unknown data type: {kind}"))),
-            });
+            bytes.push(self.byte(buffer)?);
         }
         buffer.skip(self.padding)?;
         Ok(java::utf8(&bytes))
+    }
+
+    /// The length in UTF-16 units of [`Tag::string`], decoded [`PIECE`] bytes at a time, each
+    /// piece ending before a byte that starts a character or cannot continue one, so that each
+    /// decodes as it does within the whole.
+    fn string_length(&self, buffer: &mut Buffer) -> Result<usize, Thrown> {
+        let elements = self.elements()?;
+        let mut length = 0;
+        let mut piece = Vec::with_capacity(elements.min(buffer.remaining()).min(PIECE));
+        let mut continuing = 0;
+        for _ in 0..elements {
+            let byte = self.byte(buffer)?;
+            continuing = if byte & 0xC0 == 0x80 {
+                continuing + 1
+            } else {
+                0
+            };
+            if piece.len() >= PIECE && (continuing == 0 || continuing > 3) {
+                length += java::utf16_length(&java::utf8(&piece));
+                piece.clear();
+            }
+            piece.push(byte);
+        }
+        buffer.skip(self.padding)?;
+        Ok(length + java::utf16_length(&java::utf8(&piece)))
+    }
+
+    /// The byte `readToByteArray` reads of the next value.
+    fn byte(&self, buffer: &mut Buffer) -> Result<u8, Thrown> {
+        Ok(match self.kind {
+            MI_UINT8 | MI_INT8 | MI_UTF8 => buffer.byte()?,
+            MI_UINT16 | MI_INT16 => buffer.short()? as u8,
+            MI_UINT32 | MI_INT32 => buffer.int()? as u8,
+            MI_DOUBLE => buffer.double()? as i32 as u8,
+            kind => return Err(illegal_argument(format!("Unknown data type: {kind}"))),
+        })
     }
 
     /// `readToByteBuffer` into a numeric array of `capacity` bytes holding `storage` values, then
@@ -973,13 +1148,13 @@ impl Tag {
                 ));
             }
             let start = to_i64(buffer.at);
-            buffer.bytes(capacity)?;
+            buffer.pass(capacity)?;
             let elements = self.size / size_of(self.kind);
             buffer.seek(start + i64::from(elements.wrapping_mul(storage.bytes())))?;
         } else {
             let values = capacity / usize::try_from(storage.bytes()).expect("positive");
             if values > 0 {
-                buffer.bytes(values * storage.width(self.kind)?)?;
+                buffer.pass(values * storage.width(self.kind)?)?;
             }
         }
         buffer.skip(self.padding)
@@ -1254,6 +1429,101 @@ mod tests {
         let mut cut = file(DESCRIPTION, &[doubles("x", &[2, 2])]);
         cut.truncate(cut.len() - 8);
         assert!(fails(&cut).contains("BufferUnderflowException"));
+    }
+
+    /// A file too large to read whole: an array of doubles past what is read whole, then a
+    /// compressed array that inflates past it, a character array behind it in the same
+    /// element, then a last variable. The data is passed over in place and as it inflates,
+    /// under a budget far below the file.
+    #[test]
+    fn describes_variables_of_files_too_large_to_read_whole() {
+        use extractous_core::large::{LargeFile, BUDGET};
+
+        use crate::input::MAX_READ_WHOLE;
+
+        let values = i32::try_from(MAX_READ_WHOLE / 8 + (1 << 20)).unwrap();
+        let name = element(MI_INT8, b"stor");
+        let head = [
+            element(MI_UINT32, &ints(&[MX_DOUBLE, 0])),
+            element(MI_INT32, &ints(&[1, values])),
+            name,
+        ]
+        .concat();
+        let data_length = i32::try_from(values as usize * 8).unwrap();
+        let mut large = MI_MATRIX.to_le_bytes().to_vec();
+        large.extend_from_slice(&(head.len() as i32 + 8 + data_length).to_le_bytes());
+        large.extend(head);
+        large.extend_from_slice(&MI_DOUBLE.to_le_bytes());
+        large.extend_from_slice(&data_length.to_le_bytes());
+        let inflated = matrix(
+            MX_DOUBLE,
+            0,
+            &[1, values],
+            "pakket",
+            &element(MI_DOUBLE, &vec![0; data_length as usize]),
+        );
+        let compressed = element(MI_COMPRESSED, &zlib(&inflated));
+        drop(inflated);
+        let last = doubles("sidst", &[1, 1]);
+        let file = LargeFile::written("large.mat", |out| {
+            out.write_all(&file(DESCRIPTION, &[]))?;
+            out.write_all(&large)?;
+            let zeros = vec![0u8; 1 << 20];
+            let mut left = data_length as usize;
+            while left > 0 {
+                let count = left.min(zeros.len());
+                out.write_all(&zeros[..count])?;
+                left -= count;
+            }
+            out.write_all(&compressed)?;
+            out.write_all(&last)
+        });
+        assert!(std::fs::metadata(file.path()).unwrap().len() > MAX_READ_WHOLE);
+        let (text, _) = file.extract_with(&crate::Extractor::new(), BUDGET, MatParser.name());
+        for described in [
+            format!("stor:[1x{values}  double array]"),
+            format!("pakket:[1x{values}  double array]"),
+            "sidst:[1x1  double array]".to_owned(),
+        ] {
+            assert!(text.contains(&described), "{described:?} in {text}");
+        }
+    }
+
+    /// The length of a character array's text, decoded a piece at a time, is that of all of it
+    /// decoded at once, wherever its multi-byte characters and malformed bytes fall.
+    #[test]
+    fn measures_character_arrays_a_piece_at_a_time() {
+        let mut bytes = "ø".repeat(PIECE).into_bytes();
+        bytes.extend_from_slice(&[0xE2, 0x82, 0x80, 0x80, 0x80, 0x80, b'a', 0xF0]);
+        bytes.extend("€".repeat(PIECE).into_bytes());
+        let tag = Tag {
+            kind: MI_UINT8,
+            size: i32::try_from(bytes.len()).unwrap(),
+            padding: 0,
+        };
+        let mut buffer = Buffer {
+            data: Data::Slice(&bytes),
+            length: bytes.len(),
+            at: 0,
+            little_endian: true,
+        };
+        assert_eq!(
+            tag.string_length(&mut buffer).unwrap(),
+            java::utf16_length(&java::utf8(&bytes))
+        );
+    }
+
+    /// Bytes of an inflated element are read again from its start where they lie behind those
+    /// the stream last gave.
+    #[test]
+    fn reads_an_inflated_element_behind_its_window_again() {
+        let data: Vec<u8> = (0..3 * WINDOW).map(|at| (at % 251) as u8).collect();
+        let mut inflated = Inflated::new(Cow::Owned(zlib(&data)));
+        let mut read = [0; 4];
+        for at in [2 * WINDOW + 7, 5, WINDOW - 2, 0] {
+            inflated.copy(at, &mut read).unwrap();
+            assert_eq!(read, data[at..at + 4], "at {at}");
+        }
     }
 
     #[cfg(feature = "tika")]

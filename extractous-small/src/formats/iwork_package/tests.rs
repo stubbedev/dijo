@@ -100,18 +100,20 @@ const NUMBERS: &[u8] = br#"<?xml version="1.0"?>
 
 #[test]
 fn reads_the_kind_of_each_content_entry() {
-    let package = read(&zip(&[
-        HISTORY,
-        ("index.apxl", KEYNOTE),
-        ("other.xml", PAGES),
-    ]))
+    let package = read(
+        &zip(&[HISTORY, ("index.apxl", KEYNOTE), ("other.xml", PAGES)]),
+        Pages::IN_MEMORY,
+    )
     .unwrap();
     assert!(package.failure.is_none());
     assert!(matches!(
         package.entries.as_slice(),
         [Entry::Document(IworkDocument::Keynote, _)]
     ));
-    assert!(read(&zip(&[HISTORY])).unwrap().entries.is_empty());
+    assert!(read(&zip(&[HISTORY]), Pages::IN_MEMORY)
+        .unwrap()
+        .entries
+        .is_empty());
 }
 
 #[cfg(feature = "tika")]
@@ -154,4 +156,45 @@ fn extracts_tikas_test_packages_as_tikas_path_does() {
     assert_eq!(anchored.len(), 1, "{parsed:?}");
     assert_same_as_tika(&paths, TIKA_NAME);
     assert_same_as_tika_departing(&anchored, TIKA_NAME, ANCHORED_BLOCKS);
+}
+
+/// A Pages '09 package whose `index.xml` decodes past what a spool holds in memory, with noise
+/// outside its text storage, which is not written, before the paragraph that ends it: the entry
+/// spools to a file as it is read, under a budget far below it.
+#[test]
+fn reads_a_package_too_large_to_read_whole_spooling_its_content() {
+    use extractous_core::large::{LargeFile, SPOOLING_BUDGET};
+
+    use crate::formats::large::{bytes, noise, package, END, LARGE};
+
+    let file = LargeFile::written("large.pages", |out| {
+        package(
+            out,
+            vec![
+                (HISTORY.0, bytes(HISTORY.1)),
+                (
+                    "index.xml",
+                    Box::new(|out| {
+                        out.write_all(
+                            br#"<?xml version="1.0"?>
+<sl:document xmlns:sl="http://developer.apple.com/namespaces/sl" xmlns:sf="http://developer.apple.com/namespaces/sf" xmlns:sfa="http://developer.apple.com/namespaces/sfa">"#,
+                        )?;
+                        noise(out, "sf:noise", LARGE)?;
+                        write!(
+                            out,
+                            "<sf:text-storage><sf:page-start/><sf:p>{END}</sf:p>\
+                             </sf:text-storage></sl:document>"
+                        )
+                    }),
+                ),
+            ],
+        )
+    });
+    let (text, metadata) = file.extract_with(
+        &crate::Extractor::new(),
+        SPOOLING_BUDGET,
+        IworkPackageParser.name(),
+    );
+    assert!(text.contains(END), "{text}");
+    assert_eq!(metadata["Content-Type"], ["application/vnd.apple.pages"]);
 }

@@ -2,19 +2,20 @@
 //! `mimetype` as its content type, the XMP of `META-INF/metadata.xml`, and the parts of its
 //! master spreads, spreads and stories, read in the archive's order by its
 //! `ContentAndMetadataExtractor`, each `Content` element a paragraph and the spreads' page counts
-//! summed.
+//! summed. Each part is spooled as it is read, ahead of the writing to tell whether the port
+//! reads it, and again as it is written, one at a time.
 //!
 //! `IDMLParser` keeps its page counts in fields of its one instance and never resets them, so
 //! Tika's path adds each document's counts to those of the documents it parsed before. The native
 //! path counts each document's own pages.
 
 use crate::config::ParserConfigs;
-use crate::errors::Error;
-use crate::formats::jdk_zip::{self, Refusal};
+use crate::formats::jdk_zip::{self, Archive, Checked, Refusal};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{xmp, Decline, Failure, Parser, Prepared};
+use crate::formats::{xmp, Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 use crate::java;
 
 /// `META_NAME`, the package's XMP, which Tika reads before the other entries.
@@ -38,29 +39,40 @@ impl Parser for IdmlParser {
         &["application/vnd.adobe.indesign-idml-package"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let entries = entries(input).map_err(|refusal| match refusal {
-            Refusal::Unread(reason) => Decline::Deferred(reason.to_owned()),
-            Refusal::Failed(reason) => Decline::Fails(Error::ParseError(reason)),
-        })?;
-        Ok(Box::new(move |xhtml| write(&entries, xhtml)))
+        let archive = Archive::open(input, pages)?;
+        let entries = entries(&archive)?;
+        Ok(Box::new(move |xhtml| write(&archive, entries, xhtml)))
     }
 }
 
 /// What `handleZipEntry` does with an entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
 enum Entry {
     /// The `mimetype`, as text.
     MediaType(String),
-    /// The package's XMP.
-    Metadata(Vec<u8>),
-    /// A master spread, a spread or a story, read for its content and page count.
-    Part { kind: Kind, xml: Vec<u8> },
+    /// The package's XMP, read ahead.
+    Metadata(Checked),
+    /// A master spread, a spread or a story, read ahead for its content and page count.
+    Part { kind: Kind, xml: Checked },
 }
 
 /// Which page count a part's spreads add to.
@@ -71,35 +83,37 @@ enum Kind {
     Story,
 }
 
-/// The entries `handleZipFile` hands `handleZipEntry`, `META-INF/metadata.xml` first, read; a
-/// package Tika's path reads otherwise left to it.
-fn entries(input: &[u8]) -> Result<Vec<Entry>, Refusal> {
-    let zip = jdk_zip::open(input)?;
-    let metadata = jdk_zip::entry(&zip, METADATA)?;
+/// The entries `handleZipFile` hands `handleZipEntry`, `META-INF/metadata.xml` first, read
+/// ahead; a package Tika's path reads otherwise left to it.
+fn entries(archive: &Archive<'_>) -> Result<Vec<Entry>, Refusal> {
+    let zip = archive.zip();
+    let metadata = jdk_zip::entry(zip, METADATA)?;
     let mut entries = Vec::new();
     for entry in metadata
         .into_iter()
         .chain(zip.entries().iter().filter(|entry| entry.name != METADATA))
     {
         let name = entry.name.as_str();
-        let read = || jdk_zip::read_whole(&zip, entry);
         let part = |kind| -> Result<Entry, Refusal> {
-            let xml = read()?;
+            let xml = archive.spool(entry)?;
             if xml::has_document_type(&xml) {
                 return Err(Refusal::Unread(
                     "a part declaring a document type, under which Xerces may report \
                      whitespace as ignorable, which the content handler drops",
                 ));
             }
-            Ok(Entry::Part { kind, xml })
+            Ok(Entry::Part {
+                kind,
+                xml: Archive::keep(entry, xml),
+            })
         };
         entries.push(if name == "mimetype" {
-            Entry::MediaType(java::utf8(&read()?))
+            Entry::MediaType(java::utf8(&archive.spool(entry)?))
         } else if name == METADATA {
-            let xml = read()?;
+            let xml = archive.spool(entry)?;
             xmp::extract(&xml, &mut TikaMetadata::new(), xmp::as_is)
                 .map_err(|_| Refusal::Unread("XMP Tika fails to map, whose failure it records"))?;
-            Entry::Metadata(xml)
+            Entry::Metadata(Archive::keep(entry, xml))
         } else if name.contains("MasterSpreads") {
             part(Kind::MasterSpread)?
         } else if name.contains("Spreads/Spread") {
@@ -113,8 +127,9 @@ fn entries(input: &[u8]) -> Result<Vec<Entry>, Refusal> {
     Ok(entries)
 }
 
-/// `IDMLParser.parse` once the archive is open.
-fn write(entries: &[Entry], xhtml: &mut Xhtml) -> Result<(), Failure> {
+/// `IDMLParser.parse` once the archive is open, each entry of `archive` read again as it is
+/// written.
+fn write(archive: &Archive<'_>, entries: Vec<Entry>, xhtml: &mut Xhtml) -> Result<(), Failure> {
     let (mut pages, mut master_pages) = (0i32, 0i32);
     for entry in entries {
         match entry {
@@ -124,7 +139,7 @@ fn write(entries: &[Entry], xhtml: &mut Xhtml) -> Result<(), Failure> {
                     .set("Content-Type", media_type.as_str());
             }
             Entry::Metadata(xml) => {
-                xmp::extract(xml, xhtml.metadata_mut(), xmp::as_is)
+                xmp::extract(&archive.read(&xml)?, xhtml.metadata_mut(), xmp::as_is)
                     .map_err(|unported| Failure::Malformed(unported.0))?;
             }
             Entry::Part { kind, xml } => {
@@ -134,7 +149,7 @@ fn write(entries: &[Entry], xhtml: &mut Xhtml) -> Result<(), Failure> {
                     spread: false,
                     pages: 0,
                 };
-                xml::parse_sax(xml, "the IDML part", &mut handler)?;
+                xml::parse_part(&archive.read(&xml)?, "the IDML part", &mut handler)?;
                 let spread = handler.spread.then_some(handler.pages);
                 let count = || {
                     spread.ok_or_else(|| {
@@ -216,3 +231,52 @@ pub const ACCUMULATED_PAGE_COUNTS: crate::formats::parity::Departures = &[
 
 #[cfg(all(test, feature = "tika"))]
 mod tests;
+
+#[cfg(test)]
+mod large_tests {
+    use extractous_core::large::{LargeFile, SPOOLING_BUDGET};
+
+    use crate::formats::large::{bytes, noise, package, END, LARGE};
+
+    const NAMESPACE: &str = "http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging";
+
+    /// A package whose first story decodes past what a spool holds in memory, with noise outside
+    /// its `Content` elements, which is not written, and whose second story ends the document:
+    /// each spools as it is read, to a file past the memory, under a budget far below them.
+    #[test]
+    fn reads_a_package_too_large_to_read_whole_a_part_at_a_time() {
+        let last = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><idPkg:Story xmlns:idPkg="{NAMESPACE}"><Story><Content>{END}</Content></Story></idPkg:Story>"#
+        );
+        let file = LargeFile::written("large.idml", |out| {
+            package(
+                out,
+                vec![
+                    (
+                        "mimetype",
+                        bytes(b"application/vnd.adobe.indesign-idml-package"),
+                    ),
+                    (
+                        "Stories/Story_u1.xml",
+                        Box::new(|out| {
+                            write!(
+                                out,
+                                r#"<?xml version="1.0" encoding="UTF-8"?><idPkg:Story xmlns:idPkg="{NAMESPACE}"><Story>"#
+                            )?;
+                            noise(out, "Noise", LARGE)?;
+                            out.write_all(b"</Story></idPkg:Story>")
+                        }),
+                    ),
+                    ("Stories/Story_u2.xml", bytes(last.as_bytes())),
+                ],
+            )
+        });
+        let (text, metadata) = file.extract_with(
+            &crate::Extractor::new(),
+            SPOOLING_BUDGET,
+            "extractous::IDMLParser",
+        );
+        assert!(text.contains(END), "{text}");
+        assert_eq!(metadata[super::PAGE_COUNT], ["0"]);
+    }
+}

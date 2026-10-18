@@ -54,7 +54,7 @@ impl<'a> Entry<'a> {
         let directory = self.mode & u64::from(FILE_TYPE) == u64::from(DIRECTORY);
         ArchiveFile {
             name: self.name,
-            size: self.content.len() as u64,
+            size: self.content.len() as i64,
             modified_millis: Some(self.mtime * 1000),
             created_millis: None,
             directory,

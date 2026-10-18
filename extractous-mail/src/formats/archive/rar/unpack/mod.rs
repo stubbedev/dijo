@@ -19,6 +19,7 @@ mod vm;
 
 use bits::BitInput;
 use huffman::Decode;
+pub(super) use io::Sum;
 use io::{DataIo, Input};
 use ppm::Model;
 use vm::{Filter, Vm, VM_FIXEDGLOBALSIZE, VM_GLOBALMEMADDR, VM_GLOBALMEMSIZE};
@@ -257,12 +258,12 @@ impl<'a> Unpack<'a> {
     }
 
     /// `ComprDataIO.init`: an entry's packed data of `packed` bytes from `start` on, which
-    /// unpacks into the `unpacked` bytes its header declares.
-    pub(super) fn start_entry(&mut self, start: u64, packed: i64, unpacked: Option<u64>) {
-        self.input.io.start(start, packed, unpacked);
+    /// unpacks into the `unpacked` bytes its header declares, checked by `sum`.
+    pub(super) fn start_entry(&mut self, start: u64, packed: i64, unpacked: Option<u64>, sum: Sum) {
+        self.input.io.start(start, packed, unpacked, sum);
     }
 
-    /// The CRC-32 of what the entry wrote.
+    /// The checksum of what the entry wrote.
     pub(super) fn crc(&self) -> u32 {
         self.input.io.crc()
     }

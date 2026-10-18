@@ -1,6 +1,6 @@
 //! Archives and compressed files as Tika 4.1's package module reads them, each entry handed to
 //! the embedded document extractor: ZIP archives with `ZipParser` ([`zip`]), compressed files
-//! with `CompressorParser` ([`compressor`]), TAR, ar and cpio archives with `PackageParser`
+//! with `CompressorParser` ([`compressor`]), TAR, ar, cpio and ARJ archives with `PackageParser`
 //! ([`package`]), 7z archives with `SevenZParser` ([`seven_z`]) and RAR archives with
 //! `RarParser` ([`rar`]).
 
@@ -25,7 +25,6 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure};
-use crate::input::Paging;
 use crate::java::time::format_instant;
 use crate::Error;
 
@@ -197,17 +196,6 @@ fn within_limit<T>(
         Limited::Cut(_) if DEFERS => Err(too_large(&what)),
         Limited::Cut(decoded) => Ok((decoded, Some(Cut(what)))),
     }
-}
-
-/// The loop of `PackageParser` and `SevenZParser` over the files but the directories, each
-/// handed to the embedded document extractor, the pages of the archive released by `paging` as
-/// its files are read.
-fn write_files(files: &[ArchiveFile], xhtml: &mut Xhtml, paging: &Paging) -> Result<(), Failure> {
-    for file in files.iter().filter(|file| !file.directory) {
-        write_file(file, xhtml)?;
-        paging.read(file.content.len());
-    }
-    Ok(())
 }
 
 /// Hands `file`, which is no directory, to the embedded document extractor, with its metadata.

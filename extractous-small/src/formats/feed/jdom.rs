@@ -1,7 +1,8 @@
 //! The JDOM 2.0.6.1 tree ROME reads a feed into: built from the document as JDOM's `SAXHandler`
 //! builds it from Xerces' events with ROME's settings (no document type declaration allowed),
 //! read as `Element`'s accessors read it, and written out as a raw-format `XMLOutputter` writes
-//! it.
+//! it. Elements a reader picks are left out of the tree and handed to it as they end, so that
+//! the tree holds no more than the rest.
 
 use crate::xml::{self, Event, Flow, TextKind, XmlError, XMLNS};
 
@@ -102,7 +103,15 @@ pub(super) type Invalid = String;
 
 /// `SAXBuilder.build` of `input` with ROME's settings: the root element, or why Xerces or
 /// JDOM fails on it. ROME disallows document type declarations.
-pub(super) fn build(input: &[u8]) -> Result<Element, Invalid> {
+///
+/// Each element `picks` picks as it starts, by its open ancestors, the root first, and itself
+/// without its content, is left out of the tree and handed to `each` with its ancestors once it
+/// ends, whole; what an element `picks` picks holds is not asked about.
+pub(super) fn build(
+    input: &[u8],
+    picks: &mut dyn FnMut(&[Element], &Element) -> bool,
+    each: &mut dyn FnMut(&[Element], Element),
+) -> Result<Element, Invalid> {
     let mut builder = Builder::default();
     let mut disallowed = false;
     let result = xml::parse(input, &mut |event| {
@@ -110,7 +119,10 @@ pub(super) fn build(input: &[u8]) -> Result<Element, Invalid> {
             disallowed = true;
             return Flow::Stop;
         }
-        builder.event(event);
+        builder.event(event, picks);
+        if let Some(picked) = builder.picked.take() {
+            each(&builder.open, picked);
+        }
         Flow::Continue
     });
     if disallowed {
@@ -129,7 +141,8 @@ pub(super) fn build(input: &[u8]) -> Result<Element, Invalid> {
 }
 
 /// `SAXHandler`'s state: the open elements, and the character data not yet added as a node,
-/// with whether it is CDATA, which JDOM decides as Xerces' events come.
+/// with whether it is CDATA, which JDOM decides as Xerces' events come; how deep the open
+/// elements are into one picked to be left out, if they are, and the one that last ended.
 #[derive(Default)]
 struct Builder {
     open: Vec<Element>,
@@ -137,12 +150,26 @@ struct Builder {
     text: String,
     previous_cdata: bool,
     in_cdata: bool,
+    picking: Option<usize>,
+    picked: Option<Element>,
 }
 
 impl Builder {
-    fn event(&mut self, event: Event<'_>) {
+    fn event(&mut self, event: Event<'_>, picks: &mut dyn FnMut(&[Element], &Element) -> bool) {
         match event {
-            Event::Start(name, attributes) => self.start(name, attributes),
+            Event::Start(name, attributes) => {
+                self.start(name, attributes);
+                match &mut self.picking {
+                    Some(depth) => *depth += 1,
+                    None => {
+                        let (element, ancestors) =
+                            self.open.split_last().expect("an element was just opened");
+                        if picks(ancestors, element) {
+                            self.picking = Some(0);
+                        }
+                    }
+                }
+            }
             Event::End(_) => self.end(),
             Event::Text(text, TextKind::Data | TextKind::Reference) => self.characters(text),
             Event::Text(text, TextKind::CData) => {
@@ -247,6 +274,15 @@ impl Builder {
     fn end(&mut self) {
         self.flush();
         let element = self.open.pop().expect("an end tag closes an open element");
+        match &mut self.picking {
+            Some(0) => {
+                self.picking = None;
+                self.picked = Some(element);
+                return;
+            }
+            Some(depth) => *depth -= 1,
+            None => {}
+        }
         match self.open.last_mut() {
             Some(parent) => parent.content.push(Node::Element(element)),
             None => self.root = Some(element),
@@ -331,8 +367,26 @@ fn escape_text(text: &str, out: &mut String) {
 mod tests {
     use super::*;
 
+    fn whole(xml: &[u8]) -> Result<Element, Invalid> {
+        build(xml, &mut |_, _| false, &mut |_, _| {})
+    }
+
     fn root(xml: &str) -> Element {
-        build(xml.as_bytes()).unwrap()
+        whole(xml.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn hands_on_the_elements_picked_as_they_end() {
+        let mut picked = Vec::new();
+        let root = build(
+            b"<r>a<i><j>1</j></i>b<x><i>2</i></x><i>3</i></r>",
+            &mut |ancestors, element| ancestors.len() == 1 && element.name == "i",
+            &mut |ancestors, element| picked.push((ancestors.len(), element.text())),
+        )
+        .unwrap();
+        assert_eq!(picked, [(1, String::new()), (1, "3".to_owned())]);
+        assert_eq!(root.text(), "ab");
+        assert_eq!(root.children().count(), 1);
     }
 
     #[test]
@@ -396,7 +450,7 @@ mod tests {
 
     #[test]
     fn refuses_document_type_declarations() {
-        assert!(build(b"<!DOCTYPE r><r/>").is_err());
-        assert!(build(b"<r>").is_err());
+        assert!(whole(b"<!DOCTYPE r><r/>").is_err());
+        assert!(whole(b"<r>").is_err());
     }
 }

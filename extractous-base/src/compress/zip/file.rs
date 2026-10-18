@@ -6,7 +6,7 @@
 use super::extra::{self, ExtraFields, Field, Instant, Times};
 use super::{
     decode_into, decode_name, decompresses, inflate_into, method_name, u16_at, u32_at, u64_at,
-    Content, Corrupt, Decoded, Spooled, CFH_SIG, DEFLATED, LFH_SIG, STORED,
+    Content, Corrupt, Decoded, Spooled, CFH_SIG, DEFLATED, LFH_SIG, STORED, XZ, ZSTD,
 };
 use crate::compress::{crc32, Decoding, Held, Undecoded};
 use crate::input::Pages;
@@ -65,6 +65,13 @@ impl ZipEntry {
     /// `getGeneralPurposeBit().usesEncryption()`.
     pub fn uses_encryption(&self) -> bool {
         self.flags & 0x0001 != 0
+    }
+
+    /// Whether `ZipArchiveInputStream` opens no decompressor for the entry's data, so that
+    /// reading it throws a `NullPointerException`: xz or Zstandard data a data descriptor
+    /// follows, whose compressed size the local header does not give.
+    pub fn streams_without_decompressor(&self) -> bool {
+        self.flags & 0x0008 != 0 && (self.method == XZ || ZSTD.contains(&self.method))
     }
 
     /// `ZipUtil.canHandleEntryData`: not encrypted, and compressed a way commons-compress reads.

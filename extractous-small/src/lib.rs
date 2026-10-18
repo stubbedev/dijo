@@ -37,6 +37,8 @@ pub mod formats {
     pub mod idml;
     pub mod iwork;
     pub mod iwork_package;
+    #[cfg(test)]
+    mod large;
     pub mod markdown;
     pub mod mat;
     pub mod mif;

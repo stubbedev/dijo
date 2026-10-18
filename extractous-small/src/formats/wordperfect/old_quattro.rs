@@ -10,6 +10,9 @@
 //! available, which these files hold as a NaN, is an empty cell. Text is in the code page of the
 //! system the file was written on, which the file does not name: IBM437 for DOS, windows-1252
 //! for Windows.
+//!
+//! The cells are written in the order of their addresses, as the records give them where they
+//! come in that order, else by an index of where each cell's last record starts, read again.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +20,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Decline, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::java;
 use crate::ole2;
 use crate::text::charset::Charset;
@@ -51,6 +54,10 @@ impl Parser for OldQuattroProParser {
         ]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     /// Reads a spreadsheet's cells, and defers one that is a compound document after all, which
     /// `OfficeParser` opens.
     fn prepare<'a>(
@@ -64,12 +71,20 @@ impl Parser for OldQuattroProParser {
                 "a compound document, which OfficeParser opens".to_owned(),
             ));
         }
-        let cells = read(input).map_err(|reason| {
+        let layout = Layout::of(input).map_err(|reason| {
             Decline::Fails(Error::ParseError(format!(
                 "Cannot read the Quattro Pro spreadsheet: {reason}"
             )))
         })?;
-        Ok(Box::new(move |xhtml| Ok(write(&cells, xhtml)?)))
+        Ok(Box::new(move |xhtml| {
+            let mut unread = None;
+            let cells = layout
+                .cells(input)
+                .map_err(Failure::Malformed)?
+                .map_while(|cell| cell.map_err(|reason| unread = Some(reason)).ok());
+            write(cells, xhtml)?;
+            unread.map_or(Ok(()), |reason| Err(Failure::Malformed(reason)))
+        }))
     }
 }
 
@@ -152,9 +167,9 @@ struct Address {
     column: u16,
 }
 
-/// The text of each cell that holds a value, in the order of their addresses, or why the
-/// records do not read.
-fn read(input: &[u8]) -> Result<BTreeMap<Address, String>, String> {
+/// The release a spreadsheet's beginning names, and its records after it, or why they do not
+/// read.
+fn release(input: &[u8]) -> Result<(Release, Records<'_>), String> {
     let mut records = Records { input, at: 0 };
     let (kind, body) = records.next()?.ok_or("the file is empty")?;
     let version = match (kind, body) {
@@ -163,47 +178,189 @@ fn read(input: &[u8]) -> Result<BTreeMap<Address, String>, String> {
     };
     let release = Release::of(version)
         .ok_or_else(|| format!("version {version:#06x} is no Quattro Pro 1 to 6 version"))?;
-    let charset = release.charset();
+    Ok((release, records))
+}
+
+/// A cell record: where it is, where the record starts, and its text, none for a value that is
+/// an error or not available, which takes the place of the cell's earlier value.
+type Cell = (Address, usize, Option<String>);
+
+/// A cell that holds a value, as it is written: where it is and its text, or why its record
+/// does not read.
+type Valued = Result<(Address, String), String>;
+
+/// The cell records of a spreadsheet in the order they come, up to its end, each read whole.
+struct Cells<'a> {
+    release: Release,
+    records: Records<'a>,
+    ended: bool,
+}
+
+impl<'a> Cells<'a> {
+    fn new(input: &'a [u8]) -> Result<Self, String> {
+        let (release, records) = release(input)?;
+        Ok(Self {
+            release,
+            records,
+            ended: false,
+        })
+    }
+
+    /// The cell of the record at `start` of `input`, which a reading of it found there.
+    fn at(&self, start: usize) -> Result<(Address, String), String> {
+        let mut records = Records {
+            input: self.records.input,
+            at: start,
+        };
+        let again = || format!("the cell record at byte {start} reads otherwise again");
+        let (kind, body) = records.next()?.ok_or_else(again)?;
+        match cell_of(self.release, kind, body, records.at)? {
+            Some((address, Some(text))) => Ok((address, text)),
+            _ => Err(again()),
+        }
+    }
+}
+
+impl Iterator for Cells<'_> {
+    type Item = Result<Cell, String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while !self.ended {
+            let start = self.records.at;
+            let (kind, body) = match self.records.next() {
+                Ok(Some((EOF, _)) | None) => {
+                    self.ended = true;
+                    return None;
+                }
+                Ok(Some(record)) => record,
+                Err(cut) => {
+                    self.ended = true;
+                    return Some(Err(cut));
+                }
+            };
+            match cell_of(self.release, kind, body, self.records.at) {
+                Ok(Some((address, text))) => return Some(Ok((address, start, text))),
+                Ok(None) => {}
+                Err(cut) => return Some(Err(cut)),
+            }
+        }
+        None
+    }
+}
+
+/// The address and text of the cell a record of `kind` with `body`, ending at byte `end`,
+/// holds, none for a record of another kind, or why it is cut.
+fn cell_of(
+    release: Release,
+    kind: u16,
+    body: &[u8],
+    end: usize,
+) -> Result<Option<(Address, Option<String>)>, String> {
+    if !matches!(kind, INTEGER | NUMBER | LABEL | FORMULA | STRING) {
+        return Ok(None);
+    }
     let decode = |bytes: &[u8]| {
-        charset
+        release
+            .charset()
             .decode(bytes)
             .expect("the code pages of Quattro Pro's systems decode")
     };
-    let mut cells = BTreeMap::new();
-    while let Some((kind, body)) = records.next()? {
-        if kind == EOF {
-            break;
+    let short = || format!("the cell record of type {kind:#06x} ending at byte {end} is cut");
+    let (address, data) = release.address(body).ok_or_else(short)?;
+    let text = match kind {
+        INTEGER => {
+            let value = data.first_chunk::<2>().ok_or_else(short)?;
+            Some(i16::from_le_bytes(*value).to_string())
         }
-        if !matches!(kind, INTEGER | NUMBER | LABEL | FORMULA | STRING) {
-            continue;
+        NUMBER | FORMULA => {
+            let value = data.first_chunk::<8>().ok_or_else(short)?;
+            number(f64::from_le_bytes(*value))
         }
-        let at = records.at;
-        let short = || format!("the cell record of type {kind:#06x} ending at byte {at} is cut");
-        let (address, data) = release.address(body).ok_or_else(short)?;
-        let text = match kind {
-            INTEGER => {
-                let value = data.first_chunk::<2>().ok_or_else(short)?;
-                Some(i16::from_le_bytes(*value).to_string())
+        LABEL => {
+            let text = data
+                .split_first()
+                .and_then(|(_, text)| release.text(text))
+                .ok_or_else(short)?;
+            Some(decode(text))
+        }
+        _ => Some(decode(release.text(data).ok_or_else(short)?)),
+    };
+    Ok(Some((address, text)))
+}
+
+/// Where the cells of a spreadsheet are, once its records read: in the order of their
+/// addresses, a later record of a cell's address following the earlier, or out of it, each
+/// cell that holds a value then indexed by its address, with where its last record starts.
+enum Layout {
+    InOrder,
+    Indexed(BTreeMap<Address, usize>),
+}
+
+impl Layout {
+    /// The layout of the cells of `input`, or why its records do not read.
+    fn of(input: &[u8]) -> Result<Self, String> {
+        let mut last = None;
+        for cell in Cells::new(input)? {
+            let (address, _, _) = cell?;
+            if last.is_some_and(|last| address < last) {
+                let mut index = BTreeMap::new();
+                for cell in Cells::new(input)? {
+                    match cell? {
+                        (address, start, Some(_)) => index.insert(address, start),
+                        (address, _, None) => index.remove(&address),
+                    };
+                }
+                return Ok(Self::Indexed(index));
             }
-            NUMBER | FORMULA => {
-                let value = data.first_chunk::<8>().ok_or_else(short)?;
-                number(f64::from_le_bytes(*value))
-            }
-            LABEL => {
-                let text = data
-                    .split_first()
-                    .and_then(|(_, text)| release.text(text))
-                    .ok_or_else(short)?;
-                Some(decode(text))
-            }
-            _ => Some(decode(release.text(data).ok_or_else(short)?)),
-        };
-        match text {
-            Some(text) => cells.insert(address, text),
-            None => cells.remove(&address),
-        };
+            last = Some(address);
+        }
+        Ok(Self::InOrder)
     }
-    Ok(cells)
+
+    /// The cells of `input` that hold a value, in the order of their addresses, read again.
+    fn cells<'a>(
+        &'a self,
+        input: &'a [u8],
+    ) -> Result<Box<dyn Iterator<Item = Valued> + 'a>, String> {
+        let cells = Cells::new(input)?;
+        Ok(match self {
+            Self::InOrder => Box::new(InOrder {
+                cells,
+                pending: None,
+            }),
+            Self::Indexed(index) => Box::new(index.values().map(move |&start| cells.at(start))),
+        })
+    }
+}
+
+/// The cells of records in the order of their addresses, each the last record of its address,
+/// those without a value left out.
+struct InOrder<'a> {
+    cells: Cells<'a>,
+    pending: Option<(Address, Option<String>)>,
+}
+
+impl Iterator for InOrder<'_> {
+    type Item = Valued;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.cells.next() {
+                Some(Ok((address, _, text))) => {
+                    let earlier = self.pending.replace((address, text));
+                    if let Some((at, Some(text))) = earlier.filter(|(at, _)| *at != address) {
+                        return Some(Ok((at, text)));
+                    }
+                }
+                Some(Err(cut)) => return Some(Err(cut)),
+                None => {
+                    if let (at, Some(text)) = self.pending.take()? {
+                        return Some(Ok((at, text)));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The text of a number: a whole number below 10^15 without a fraction, others as Java's
@@ -242,14 +399,14 @@ impl<'a> Records<'a> {
     }
 }
 
-/// Each page as a table of its rows.
-fn write(cells: &BTreeMap<Address, String>, xhtml: &mut Xhtml) -> Result<(), Stop> {
-    let mut cells = cells.iter().peekable();
-    while let Some(&(&first, _)) = cells.peek() {
+/// Each page as a table of its rows, of `cells` in the order of their addresses.
+fn write(cells: impl Iterator<Item = (Address, String)>, xhtml: &mut Xhtml) -> Result<(), Stop> {
+    let mut cells = cells.peekable();
+    while let Some(&(first, _)) = cells.peek() {
         xhtml.start_element_with("div", &[("class", "page")])?;
         xhtml.start_element("table")?;
         xhtml.start_element("tbody")?;
-        while let Some(&(&row, _)) = cells.peek() {
+        while let Some(&(row, _)) = cells.peek() {
             if row.page != first.page {
                 break;
             }
@@ -261,7 +418,7 @@ fn write(cells: &BTreeMap<Address, String>, xhtml: &mut Xhtml) -> Result<(), Sto
                 for _ in column..address.column {
                     cell(xhtml, "")?;
                 }
-                cell(xhtml, text)?;
+                cell(xhtml, &text)?;
                 column = address.column + 1;
             }
             xhtml.end_element("tr")?;

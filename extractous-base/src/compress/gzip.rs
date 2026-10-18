@@ -1,7 +1,7 @@
 //! gzip files, which flate2 decodes, read as `GzipCompressorInputStream` reads them without
 //! `decompressConcatenated`: the first member only; and `GzipUtils`'s names of what they hold.
 
-use super::{spool_limited, Limited, Undecoded};
+use super::{spool_limited, Decoding, Limited, Undecoded};
 use crate::input::Input;
 
 /// `GzipUtils`'s suffixes of gzip file names, with what replaces each in the uncompressed name.
@@ -76,6 +76,14 @@ pub fn decode(data: &[u8]) -> Result<Limited<Member>, Undecoded> {
             Err(_) => name.iter().map(|&byte| char::from(byte)).collect(),
         });
     Ok(content.map(|content| Member { file_name, content }))
+}
+
+/// [`decode`] keeping nothing, to tell whether the first member of `data` decodes whole: how
+/// many bytes it decodes into.
+pub fn verify(data: &[u8]) -> Result<Limited<u64>, Undecoded> {
+    let mut decoding = Decoding::discarded(data.len());
+    decoding.read_from(flate2::bufread::GzDecoder::new(data))?;
+    decoding.finish()
 }
 
 #[cfg(any(test, feature = "testing"))]

@@ -2,6 +2,10 @@
 //! the wire-feed parser its `FeedParsers` picks for the document, and what the converter for
 //! that feed type copies into the `SyndFeed` of the feed's title and description and each
 //! entry's link, title and description. Where ROME throws, so does [`read`].
+//!
+//! ROME reads the whole feed before Tika's parser writes, so the feed is read twice: once into
+//! its tree without its entries, each checked as it ends where ROME's reading of it may throw,
+//! and again, each entry converted as it ends and handed on ([`each_entry`]).
 
 use super::jdom::{self, Element, Node};
 use crate::java;
@@ -19,14 +23,15 @@ const PERIODS: [&str; 5] = ["hourly", "daily", "weekly", "monthly", "yearly"];
 /// Why ROME throws on a feed.
 pub(super) type Thrown = String;
 
-/// The part of a `SyndFeed` Tika's `FeedParser` reads.
-#[derive(Debug, Default, PartialEq, Eq)]
+/// The part of a `SyndFeed` Tika's `FeedParser` reads but its entries, and the wire-feed parser
+/// that reads them.
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct SyndFeed {
     /// The value of `getTitleEx()`, `None` where it or its value is null.
     pub(super) title: Option<String>,
     /// The value of `getDescriptionEx()`, `None` where it or its value is null.
     pub(super) description: Option<String>,
-    pub(super) entries: Vec<SyndEntry>,
+    wire: Wire,
 }
 
 /// The part of a `SyndEntry` Tika's `FeedParser` reads.
@@ -58,6 +63,11 @@ enum Wire {
 }
 
 impl Wire {
+    /// The parser `FeedParsers` picks for the feed of `root`.
+    fn of(root: &Element) -> Option<Self> {
+        Self::ALL.into_iter().find(|wire| wire.takes(root))
+    }
+
     const ALL: [Self; 10] = [
         Self::Rss090,
         Self::Rss091Userland,
@@ -135,19 +145,95 @@ impl Wire {
     }
 }
 
-/// `new SyndFeedInput().build(input)` with doctypes disallowed: the feed, or what ROME, JDOM or
-/// Xerces throws.
+/// Whether `element`, under `ancestors`, may be an entry of a feed of any type: an item or an
+/// entry of the root, or an item of a channel of the root.
+fn may_be_entry(ancestors: &[Element], element: &Element) -> bool {
+    match ancestors {
+        [_] => matches!(element.name.as_str(), "item" | "entry"),
+        [_, channel] => channel.name == "channel" && element.name == "item",
+        _ => false,
+    }
+}
+
+/// `new SyndFeedInput().build(input)` with doctypes disallowed: the feed but its entries, or
+/// what ROME, JDOM or Xerces throws.
 pub(super) fn read(input: &[u8]) -> Result<SyndFeed, Thrown> {
-    let root = jdom::build(input).map_err(|reason| format!("Invalid XML: {reason}"))?;
-    let wire = Wire::ALL
-        .into_iter()
-        .find(|wire| wire.takes(&root))
-        .ok_or_else(|| "IllegalArgumentException: Invalid document".to_owned())?;
-    match wire {
+    let mut entry_thrown = None;
+    let root = jdom::build(input, &mut may_be_entry, &mut |ancestors, element| {
+        let atom_03 = ancestors.len() == 1 && Wire::of(&ancestors[0]) == Some(Wire::Atom03);
+        if atom_03 && element.name == "entry" && element.namespace_uri() == ATOM_03 {
+            if let Err(thrown) = atom_03_entry(&element) {
+                entry_thrown.get_or_insert(thrown);
+            }
+        }
+    })
+    .map_err(|reason| format!("Invalid XML: {reason}"))?;
+    let wire =
+        Wire::of(&root).ok_or_else(|| "IllegalArgumentException: Invalid document".to_owned())?;
+    let feed = match wire {
         Wire::Atom10 => atom_10(&root),
         Wire::Atom03 => atom_03(&root),
         wire => rss(&root, wire),
-    }
+    }?;
+    entry_thrown.map_or(Ok(feed), Err)
+}
+
+/// Why handing on the entries of a feed stops: its XML is read otherwise the second time, or
+/// what takes the entries fails.
+pub(super) enum Halt<E> {
+    Reread(String),
+    Taken(E),
+}
+
+/// Reads the feed `input`, which [`read`] read as `feed`, again, handing `each` its entries as
+/// ROME converts them, one at a time.
+pub(super) fn each_entry<E>(
+    input: &[u8],
+    feed: &SyndFeed,
+    each: &mut dyn FnMut(SyndEntry) -> Result<(), E>,
+) -> Result<(), Halt<E>> {
+    let wire = feed.wire;
+    let namespace = wire.namespace();
+    let mut channels = 0usize;
+    let mut picks = |ancestors: &[Element], element: &Element| match ancestors {
+        [_] if element.namespace_uri() != namespace => false,
+        [_] if element.name == "channel" => {
+            channels += 1;
+            false
+        }
+        [_] => match wire {
+            Wire::Atom10 | Wire::Atom03 => element.name == "entry",
+            Wire::Rss090 | Wire::Rss10 => element.name == "item",
+            _ => false,
+        },
+        [_, channel] => {
+            wire.is_userland()
+                && channels == 1
+                && channel.name == "channel"
+                && channel.namespace_uri() == namespace
+                && element.name == "item"
+                && element.namespace_uri() == namespace
+        }
+        _ => false,
+    };
+    let mut taken = None;
+    jdom::build(input, &mut picks, &mut |_, element| {
+        if taken.is_some() {
+            return;
+        }
+        let entry = match wire {
+            Wire::Atom10 => Ok(atom_10_entry(&element)),
+            Wire::Atom03 => atom_03_entry(&element),
+            wire => Ok(rss_entry(&element, wire)),
+        };
+        taken = Some(match entry {
+            Ok(entry) => each(entry).map_err(Halt::Taken),
+            Err(thrown) => Err(Halt::Reread(thrown)),
+        })
+        .filter(Result::is_err);
+    })
+    .map_err(Halt::Reread)?;
+    taken.unwrap_or(Ok(()))
 }
 
 fn null_pointer() -> Thrown {
@@ -201,16 +287,10 @@ fn rss(root: &Element, wire: Wire) -> Result<SyndFeed, Thrown> {
             parse_int(java::trim(port))?;
         }
     }
-    let items = if wire.is_userland() {
-        channel.children_named("item", namespace)
-    } else {
-        root.children_named("item", namespace)
-    };
-    let entries = items.map(|item| rss_entry(item, wire)).collect();
     Ok(SyndFeed {
         title: channel.child("title", namespace).map(Element::text),
         description: channel.child("description", namespace).map(Element::text),
-        entries,
+        wire,
     })
 }
 
@@ -291,29 +371,28 @@ fn atom_10(feed: &Element) -> Result<SyndFeed, Thrown> {
         }
     }
     check_syndication(feed)?;
-    let entries = feed
-        .children_named("entry", ATOM_10)
-        .map(|entry| {
-            let link = entry
-                .children_named("link", ATOM_10)
-                .find(|link| {
-                    feed_attribute(link, "rel", ATOM_10)
-                        .is_none_or(|rel| java::trim(rel).is_empty() || rel == "alternate")
-                })
-                .and_then(|link| feed_attribute(link, "href", ATOM_10))
-                .map(str::to_owned);
-            SyndEntry {
-                link,
-                title: entry.child("title", ATOM_10).map(atom_10_text),
-                description: entry.child("summary", ATOM_10).map(atom_10_text),
-            }
-        })
-        .collect();
     Ok(SyndFeed {
         title: feed.child("title", ATOM_10).map(atom_10_text),
         description: feed.child("subtitle", ATOM_10).map(atom_10_text),
-        entries,
+        wire: Wire::Atom10,
     })
+}
+
+/// `Atom10Parser.parseEntry` and `ConverterForAtom10.createSyndEntry`.
+fn atom_10_entry(entry: &Element) -> SyndEntry {
+    let link = entry
+        .children_named("link", ATOM_10)
+        .find(|link| {
+            feed_attribute(link, "rel", ATOM_10)
+                .is_none_or(|rel| java::trim(rel).is_empty() || rel == "alternate")
+        })
+        .and_then(|link| feed_attribute(link, "href", ATOM_10))
+        .map(str::to_owned);
+    SyndEntry {
+        link,
+        title: entry.child("title", ATOM_10).map(atom_10_text),
+        description: entry.child("summary", ATOM_10).map(atom_10_text),
+    }
 }
 
 /// `Atom03Parser.parseContent`'s value: by the content's mode, its text, its text decoded from
@@ -345,36 +424,37 @@ fn atom_03(feed: &Element) -> Result<SyndFeed, Thrown> {
         atom_03_content(info)?;
     }
     check_syndication(feed)?;
-    let mut entries = Vec::new();
-    for entry in feed.children_named("entry", ATOM_03) {
-        let title = entry
-            .child("title", ATOM_03)
-            .map(atom_03_content)
-            .transpose()?;
-        let description = entry
-            .child("summary", ATOM_03)
-            .map(atom_03_content)
-            .transpose()?;
-        for content in entry.children_named("content", ATOM_03) {
-            atom_03_content(content)?;
-        }
-        let mut alternates = entry
-            .children_named("link", ATOM_03)
-            .filter(|link| feed_attribute(link, "rel", ATOM_03) == Some("alternate"));
-        let link = match (alternates.next(), alternates.next()) {
-            (Some(only), None) => feed_attribute(only, "href", ATOM_03).map(str::to_owned),
-            _ => None,
-        };
-        entries.push(SyndEntry {
-            link,
-            title,
-            description,
-        });
-    }
     Ok(SyndFeed {
         title,
         description,
-        entries,
+        wire: Wire::Atom03,
+    })
+}
+
+/// `Atom03Parser.parseEntry` and `ConverterForAtom03.createSyndEntry`, or what they throw.
+fn atom_03_entry(entry: &Element) -> Result<SyndEntry, Thrown> {
+    let title = entry
+        .child("title", ATOM_03)
+        .map(atom_03_content)
+        .transpose()?;
+    let description = entry
+        .child("summary", ATOM_03)
+        .map(atom_03_content)
+        .transpose()?;
+    for content in entry.children_named("content", ATOM_03) {
+        atom_03_content(content)?;
+    }
+    let mut alternates = entry
+        .children_named("link", ATOM_03)
+        .filter(|link| feed_attribute(link, "rel", ATOM_03) == Some("alternate"));
+    let link = match (alternates.next(), alternates.next()) {
+        (Some(only), None) => feed_attribute(only, "href", ATOM_03).map(str::to_owned),
+        _ => None,
+    };
+    Ok(SyndEntry {
+        link,
+        title,
+        description,
     })
 }
 
@@ -445,8 +525,26 @@ fn rome_base64(text: &str) -> Result<String, Thrown> {
 mod tests {
     use super::*;
 
-    fn feed(xml: &str) -> Result<SyndFeed, Thrown> {
-        read(xml.as_bytes())
+    /// A feed's title, description and entries, as ROME reads them.
+    struct Read {
+        title: Option<String>,
+        description: Option<String>,
+        entries: Vec<SyndEntry>,
+    }
+
+    fn feed(xml: &str) -> Result<Read, Thrown> {
+        let feed = read(xml.as_bytes())?;
+        let mut entries = Vec::new();
+        let read = each_entry(xml.as_bytes(), &feed, &mut |entry| {
+            entries.push(entry);
+            Ok::<_, ()>(())
+        });
+        assert!(read.is_ok());
+        Ok(Read {
+            title: feed.title,
+            description: feed.description,
+            entries,
+        })
     }
 
     fn entry(link: &str, title: &str, description: Option<&str>) -> SyndEntry {

@@ -36,6 +36,26 @@ fn decodes_an_attachment_too_large_to_read_whole_to_a_spool() {
     assert!(text.contains(END), "{text}");
 }
 
+/// A message whose HTML body is too large to read whole is written as its DOM is built, from a
+/// spool, rather than built whole: the comments that fill it write nothing, and the paragraph
+/// after them is written.
+#[test]
+fn writes_an_html_part_too_large_to_read_whole_as_it_is_built() {
+    let file = LargeFile::written("large-html.eml", |out| {
+        out.write_all(
+            b"From: a@example.com\r\nSubject: large\r\nMIME-Version: 1.0\r\n\
+              Content-Type: text/html; charset=utf-8\r\n\r\n<html><body>\r\n",
+        )?;
+        let line: &[u8] = b"<!-- a comment of the page, which its text leaves out -->\r\n";
+        for _ in 0..(MAX_READ_WHOLE + (16 << 20)) / line.len() as u64 {
+            out.write_all(line)?;
+        }
+        write!(out, "<p>{END}</p></body></html>\r\n")
+    });
+    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, "extractous::RFC822Parser");
+    assert!(text.contains(END), "{text}");
+}
+
 #[test]
 fn reads_a_mailbox_too_large_to_read_whole_a_message_at_a_time() {
     let file = LargeFile::written("large.mbox", |out| {

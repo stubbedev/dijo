@@ -8,11 +8,12 @@
 //!
 //! The content is read from the BER encoding as Bouncy Castle's streaming parsers read it:
 //! the content info, the version and digest or compression algorithms, and the encapsulated
-//! content info, its OCTET STRING primitive or constructed. Content no native parser takes,
-//! signed data typed `application/pkcs7-mime` without content (whose kind Bouncy Castle tells
-//! by its signers and certificates), and encodings the port does not read as Bouncy Castle
-//! does stay on Tika's path. Data Bouncy Castle fails to read as signed data, such as digested
-//! data or PEM text typed as a signature, fails as it fails on Tika's path.
+//! content info, its OCTET STRING primitive or constructed; tags of any number, lengths of any
+//! form Bouncy Castle takes. Content no native parser takes, and data laid out otherwise than
+//! the port reads as Bouncy Castle does, stay on Tika's path. Data Bouncy Castle fails to read
+//! as signed or compressed data, such as digested data or PEM text typed as a signature, or a
+//! malformed encoding, fails as it fails on Tika's path; data whose content type it fails to
+//! read is no CMS data to Tika, an empty document.
 
 use crate::compress::{zlib, Limited};
 use crate::config::ParserConfigs;
@@ -108,12 +109,44 @@ fn encryption(input: &[u8]) -> Option<&'static str> {
 /// A BER length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Length {
-    Definite(usize),
+    Definite(u64),
     Indefinite,
 }
 
-/// A reader of the BER encoding, the elements it reads limited to the forms the port knows
-/// Bouncy Castle reads alike: one-byte tags, lengths of up to four bytes.
+/// Why the port reads no further in CMS data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Unread {
+    /// Bouncy Castle throws this exception reading the encoding.
+    Thrown(String),
+    /// The data is laid out otherwise than the port reads as Bouncy Castle does.
+    Unported,
+}
+
+type Read<T> = Result<T, Unread>;
+
+/// The `IOException` Bouncy Castle throws on a malformed encoding.
+fn corrupt(message: &str) -> Unread {
+    Unread::Thrown(format!("java.io.IOException: {message}"))
+}
+
+/// The `EOFException` Bouncy Castle throws where the encoding ends early.
+fn eof(message: &str) -> Unread {
+    Unread::Thrown(format!("java.io.EOFException: {message}"))
+}
+
+/// The tag Bouncy Castle reads of an element: its first byte, which holds the class and
+/// whether it is constructed, and its number, from the bytes after it where the first's low
+/// five bits are all set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Tag {
+    byte: u8,
+    number: u32,
+}
+
+/// A reader of the BER encoding as Bouncy Castle's `ASN1StreamParser` reads it: tags of any
+/// number, definite lengths of up to 63 bits however many bytes they take, indefinite lengths
+/// of constructed elements, and the content of an element read only as far as the input holds
+/// it.
 struct Ber<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -126,27 +159,75 @@ impl<'a> Ber<'a> {
         Some(byte)
     }
 
-    fn header(&mut self) -> Option<(u8, Length)> {
-        let tag = self.byte()?;
-        if tag & 0x1F == 0x1F {
-            return None;
+    /// `readTagNumber` and `readLongLength`: the next element's tag and length.
+    fn tagged_header(&mut self) -> Read<(Tag, Length)> {
+        let byte = self
+            .byte()
+            .ok_or_else(|| eof("EOF found when tag expected"))?;
+        let mut number = u32::from(byte & 0x1F);
+        if number == 0x1F {
+            let mut next = self
+                .byte()
+                .ok_or_else(|| eof("EOF found inside tag value."))?;
+            if next < 31 {
+                return Err(corrupt("corrupted stream - high tag number < 31 found"));
+            }
+            number = u32::from(next & 0x7F);
+            if number == 0 {
+                return Err(corrupt("corrupted stream - invalid high tag number found"));
+            }
+            while next & 0x80 != 0 {
+                if number >> 24 != 0 {
+                    return Err(corrupt("Tag number more than 31 bits"));
+                }
+                next = self
+                    .byte()
+                    .ok_or_else(|| eof("EOF found inside tag value."))?;
+                number = number << 7 | u32::from(next & 0x7F);
+            }
         }
-        let first = self.byte()?;
+        let first = self
+            .byte()
+            .ok_or_else(|| eof("EOF found when length expected"))?;
         let length = match first {
-            0x80 => return (tag & 0x20 != 0).then_some((tag, Length::Indefinite)),
-            0x00..=0x7F => usize::from(first),
-            0x81..=0x84 => (0..first & 0x7F).try_fold(0usize, |length, _| {
-                Some(length << 8 | usize::from(self.byte()?))
-            })?,
-            _ => return None,
+            0x00..=0x7F => Length::Definite(u64::from(first)),
+            0x80 if byte & 0x20 == 0 => {
+                return Err(corrupt("indefinite-length primitive encoding encountered"))
+            }
+            0x80 => Length::Indefinite,
+            0xFF => return Err(corrupt("invalid long form definite-length 0xFF")),
+            _ => {
+                let mut length = 0u64;
+                for _ in 0..first & 0x7F {
+                    let octet = self.byte().ok_or_else(|| eof("EOF found reading length"))?;
+                    if length >> 55 != 0 {
+                        return Err(corrupt("long form definite-length more than 63 bits"));
+                    }
+                    length = length << 8 | u64::from(octet);
+                }
+                Length::Definite(length)
+            }
         };
-        (self.bytes.len() - self.at >= length).then_some((tag, Length::Definite(length)))
+        Ok((Tag { byte, number }, length))
     }
 
-    fn take(&mut self, length: usize) -> &'a [u8] {
-        let bytes = &self.bytes[self.at..self.at + length];
-        self.at += length;
-        bytes
+    /// The next element's tag byte and length.
+    fn header(&mut self) -> Read<(u8, Length)> {
+        self.tagged_header().map(|(tag, length)| (tag.byte, length))
+    }
+
+    /// The `length` bytes of a definite-length element's content, which the input must hold.
+    fn take(&mut self, length: u64) -> Read<&'a [u8]> {
+        let left = (self.bytes.len() - self.at) as u64;
+        if length > left {
+            return Err(eof(&format!(
+                "DEF length {length} object truncated by {}",
+                length - left
+            )));
+        }
+        let bytes = &self.bytes[self.at..self.at + length as usize];
+        self.at += bytes.len();
+        Ok(bytes)
     }
 
     /// Whether an end-of-contents marker comes next, which it reads.
@@ -159,10 +240,10 @@ impl<'a> Ber<'a> {
     }
 
     /// Reads past the element whose header was `length`, nested indefinite lengths included.
-    fn skip(&mut self, length: Length) -> Option<()> {
+    fn skip(&mut self, length: Length) -> Read<()> {
         match length {
             Length::Definite(length) => {
-                self.take(length);
+                self.take(length)?;
             }
             Length::Indefinite => {
                 while !self.end_of_contents() {
@@ -171,14 +252,14 @@ impl<'a> Ber<'a> {
                 }
             }
         }
-        Some(())
+        Ok(())
     }
 
     /// Whether the constructed element whose header was `length`, and which started at `start`,
     /// has more elements, an indefinite one's end-of-contents marker read.
     fn has_more(&mut self, start: usize, length: Length) -> bool {
         match length {
-            Length::Definite(length) => self.at < start + length,
+            Length::Definite(length) => (self.at as u64) < start as u64 + length,
             Length::Indefinite => !self.end_of_contents(),
         }
     }
@@ -186,21 +267,25 @@ impl<'a> Ber<'a> {
 
 impl<'a> Ber<'a> {
     /// Reads the header of the next element, which must be `tag`.
-    fn expect(&mut self, tag: u8) -> Option<Length> {
+    fn expect(&mut self, tag: u8) -> Read<Length> {
         let (found, length) = self.header()?;
-        (found == tag).then_some(length)
+        if found == tag {
+            Ok(length)
+        } else {
+            Err(Unread::Unported)
+        }
     }
 
     /// Reads an object identifier, returning its content.
-    fn object_identifier(&mut self) -> Option<&'a [u8]> {
+    fn object_identifier(&mut self) -> Read<&'a [u8]> {
         let Length::Definite(length) = self.expect(OBJECT_IDENTIFIER)? else {
-            return None;
+            return Err(Unread::Unported);
         };
-        Some(self.take(length))
+        self.take(length)
     }
 
     /// Reads an `AlgorithmIdentifier`: an object identifier and, at most, its parameters.
-    fn algorithm_identifier(&mut self) -> Option<()> {
+    fn algorithm_identifier(&mut self) -> Read<()> {
         let identifier = self.expect(SEQUENCE)?;
         let start = self.at;
         self.object_identifier()?;
@@ -208,31 +293,31 @@ impl<'a> Ber<'a> {
             let (_, parameters) = self.header()?;
             self.skip(parameters)?;
             if self.has_more(start, identifier) {
-                return None;
+                return Err(Unread::Unported);
             }
         }
-        Some(())
+        Ok(())
     }
 
     /// The content of an OCTET STRING, primitive or constructed of nested ones: the pieces of
     /// the input it is made of.
-    fn octet_string(&mut self, content: &mut Vec<&'a [u8]>) -> Option<()> {
+    fn octet_string(&mut self, content: &mut Vec<&'a [u8]>) -> Read<()> {
         match self.header()? {
-            (OCTET_STRING, Length::Definite(length)) => content.push(self.take(length)),
+            (OCTET_STRING, Length::Definite(length)) => content.push(self.take(length)?),
             (CONSTRUCTED_OCTET_STRING, length) => {
                 let start = self.at;
                 while self.has_more(start, length) {
                     self.octet_string(content)?;
                 }
             }
-            _ => return None,
+            _ => return Err(Unread::Unported),
         }
-        Some(())
+        Ok(())
     }
 
     /// Reads the elements of a SET or tagged collection of `length`, returning how many of them
     /// are SEQUENCEs.
-    fn sequences(&mut self, length: Length) -> Option<usize> {
+    fn sequences(&mut self, length: Length) -> Read<usize> {
         let start = self.at;
         let mut sequences = 0;
         while self.has_more(start, length) {
@@ -240,13 +325,13 @@ impl<'a> Ber<'a> {
             self.skip(element)?;
             sequences += usize::from(tag == SEQUENCE);
         }
-        Some(sequences)
+        Ok(sequences)
     }
 
     /// `refinedSignedType` of signed data without encapsulated content, read on from after its
     /// encapsulated content info: certificates and no signers make it certs-only, anything
     /// else a detached signature. Only X.509 certificates, SEQUENCEs, count as certificates.
-    fn detached_type(&mut self) -> Option<&'static str> {
+    fn detached_type(&mut self) -> Read<&'static str> {
         let (mut tag, mut length) = self.header()?;
         let mut certificates = 0;
         if tag == CERTIFICATES {
@@ -258,10 +343,10 @@ impl<'a> Ber<'a> {
             (tag, length) = self.header()?;
         }
         if tag != SET {
-            return None;
+            return Err(Unread::Unported);
         }
         let signers = self.sequences(length)?;
-        Some(if certificates > 0 && signers == 0 {
+        Ok(if certificates > 0 && signers == 0 {
             CERTS_ONLY
         } else {
             SIGNATURE
@@ -270,34 +355,33 @@ impl<'a> Ber<'a> {
 
     /// Reads an encapsulated content info: its content type, then the content of its OCTET
     /// STRING, if it has one.
-    fn encapsulated_content(&mut self) -> Option<Option<Vec<&'a [u8]>>> {
+    fn encapsulated_content(&mut self) -> Read<Option<Vec<&'a [u8]>>> {
         let encapsulated = self.expect(SEQUENCE)?;
         let start = self.at;
         self.object_identifier()?;
         if !self.has_more(start, encapsulated) {
-            return Some(None);
+            return Ok(None);
         }
         self.expect(EXPLICIT_0)?;
         let mut content = Vec::new();
         self.octet_string(&mut content)?;
-        Some(Some(content))
+        Ok(Some(content))
     }
 }
 
-/// The content type of `input` as `CmsClassifier.contentType` reads it, `None` when it is not a
-/// SEQUENCE, or `Err` for one the port does not read as Bouncy Castle does.
-fn classify(input: &[u8]) -> Result<Option<&[u8]>, &'static str> {
+/// The content type of `input` as `CmsClassifier.contentType` reads it: the object identifier
+/// that opens its outer SEQUENCE, none where it is not one, which Tika takes for data that is
+/// not CMS, whatever Bouncy Castle throws reading it.
+fn classify(input: &[u8]) -> Option<&[u8]> {
     if input.first() != Some(&SEQUENCE) {
-        return Ok(None);
+        return None;
     }
     let mut ber = Ber {
         bytes: input,
         at: 0,
     };
-    ber.expect(SEQUENCE)
-        .and_then(|_| ber.object_identifier())
-        .map(Some)
-        .ok_or("CMS data the port does not read as Bouncy Castle does")
+    ber.expect(SEQUENCE).ok()?;
+    ber.object_identifier().ok()
 }
 
 /// What `CMSSignedDataParser` makes of data it is given as signed data.
@@ -305,68 +389,70 @@ fn classify(input: &[u8]) -> Result<Option<&[u8]>, &'static str> {
 enum Signed<'a> {
     /// The encapsulated content: the pieces of the input it is made of.
     Read(Vec<&'a [u8]>),
-    /// No encapsulated content, and the type `refinedSignedType` gives the data, where the
-    /// port reads its certificates and signers.
-    Detached(Option<&'static str>),
+    /// No encapsulated content, and the type `refinedSignedType` gives the data, reading its
+    /// certificates and signers, or why it gives none.
+    Detached(Read<&'static str>),
     /// Bouncy Castle fails on it, with this exception.
     Fails(String),
-}
-
-/// The exception `ASN1StreamParser.readObject` throws on the first element of `input` when it is
-/// of a constructed universal type the parser has no parser for, as on text read as BER: none
-/// for any other element.
-fn unknown_object(input: &[u8]) -> Option<String> {
-    const PARSED: [u8; 5] = [0x03, 0x04, 0x08, 0x10, 0x11];
-    let (&tag, &length) = (input.first()?, input.get(1)?);
-    let number = tag & 0x1F;
-    if tag & 0xE0 != 0x20 || number == 0x1F || PARSED.contains(&number) {
-        return None;
-    }
-    let encoding = match length {
-        0x80 => "BER",
-        0x00..=0x7F => "DL",
-        _ => return None,
-    };
-    Some(format!(
-        "org.bouncycastle.asn1.ASN1Exception: unknown {encoding} object encountered: 0x{number:x}"
-    ))
 }
 
 /// Data read as signed data, as `CMSSignedDataParser.getSignedContent` reads it whatever its
 /// content type: the content info, the version and digest algorithms of the signed data, then
 /// its encapsulated content info; `None` where the port does not read it as Bouncy Castle does.
 fn signed_content(input: &[u8]) -> Option<Signed<'_>> {
-    if let Some(exception) = unknown_object(input) {
-        return Some(Signed::Fails(exception));
+    match read_signed(input) {
+        Ok(signed) => Some(signed),
+        Err(Unread::Thrown(exception)) => Some(Signed::Fails(exception)),
+        Err(Unread::Unported) => None,
     }
+}
+
+/// The universal types `ASN1StreamParser.readObject` has a parser for when constructed.
+const PARSED: [u32; 5] = [0x03, 0x04, 0x08, 0x10, 0x11];
+
+/// [`signed_content`], failing where the port does not read the data on.
+fn read_signed(input: &[u8]) -> Read<Signed<'_>> {
     let mut ber = Ber {
         bytes: input,
         at: 0,
     };
-    ber.expect(SEQUENCE)?;
+    let (tag, length) = ber.tagged_header()?;
+    if tag.byte & 0xE0 == 0x20 && !PARSED.contains(&tag.number) {
+        let encoding = match length {
+            Length::Indefinite => "BER",
+            Length::Definite(_) => "DL",
+        };
+        return Ok(Signed::Fails(format!(
+            "org.bouncycastle.asn1.ASN1Exception: unknown {encoding} object encountered: 0x{:x}",
+            tag.number
+        )));
+    }
+    if tag.byte != SEQUENCE {
+        return Err(Unread::Unported);
+    }
     ber.object_identifier()?;
     ber.expect(EXPLICIT_0)?;
     ber.expect(SEQUENCE)?;
     let Length::Definite(length) = ber.expect(INTEGER)? else {
-        return None;
+        return Err(Unread::Unported);
     };
-    ber.take(length);
+    ber.take(length)?;
     let algorithms = match ber.header()? {
         (SET, algorithms) => algorithms,
         (SEQUENCE, _) => {
-            return Some(Signed::Fails(
+            return Ok(Signed::Fails(
                 "java.lang.ClassCastException: the digest algorithms of the signed data are a \
                  SEQUENCE, where an ASN1SetParser is expected"
                     .to_owned(),
             ))
         }
-        _ => return None,
+        _ => return Err(Unread::Unported),
     };
     let start = ber.at;
     while ber.has_more(start, algorithms) {
         ber.algorithm_identifier()?;
     }
-    Some(match ber.encapsulated_content()? {
+    Ok(match ber.encapsulated_content()? {
         Some(content) => Signed::Read(content),
         None => Signed::Detached(ber.detached_type()),
     })
@@ -382,11 +468,17 @@ fn unreadable_signed_data(exception: String) -> Decline<'static> {
 /// The content of compressed data, inflated as `CMSCompressedDataParser.getContent` with a
 /// `ZlibExpanderProvider` inflates it, to a spool, within `Pkcs7Parser`'s bound; `None` where
 /// the port does not read it as Bouncy Castle does, the zlib stream does not end, or the content
-/// passes the bound, past which Tika drops the rest and records a warning; or why the
-/// compressed content, in pieces, cannot be spooled whole.
+/// passes the bound, past which Tika drops the rest and records a warning; or why Bouncy Castle
+/// fails to read it, or the compressed content, in pieces, cannot be spooled whole.
 fn compressed_content(input: &[u8]) -> Result<Option<Input<'static>>, Error> {
-    let Some(pieces) = compressed_pieces(input) else {
-        return Ok(None);
+    let pieces = match compressed_pieces(input) {
+        Ok(Some(pieces)) => pieces,
+        Ok(None) | Err(Unread::Unported) => return Ok(None),
+        Err(Unread::Thrown(exception)) => {
+            return Err(Error::ParseError(format!(
+                "Unable to parse pkcs7 compressed data: {exception}"
+            )))
+        }
     };
     let compressed = Input::joined(&pieces, Pages::IN_MEMORY).map_err(|error| {
         Error::IoError(format!(
@@ -399,25 +491,25 @@ fn compressed_content(input: &[u8]) -> Result<Option<Input<'static>>, Error> {
         .filter(|inflated| inflated.len() <= MAX_DECOMPRESSED))
 }
 
-/// The pieces of the input the compressed content of compressed data is made of; `None` where
-/// the port does not read it as Bouncy Castle does.
-fn compressed_pieces(input: &[u8]) -> Option<Vec<&[u8]>> {
+/// The pieces of the input the compressed content of compressed data is made of, none where it
+/// has none.
+fn compressed_pieces(input: &[u8]) -> Read<Option<Vec<&[u8]>>> {
     let mut ber = Ber {
         bytes: input,
         at: 0,
     };
     ber.expect(SEQUENCE)?;
     if ber.object_identifier()? != COMPRESSED_DATA {
-        return None;
+        return Err(Unread::Unported);
     }
     ber.expect(EXPLICIT_0)?;
     ber.expect(SEQUENCE)?;
     let Length::Definite(length) = ber.expect(INTEGER)? else {
-        return None;
+        return Err(Unread::Unported);
     };
-    ber.take(length);
+    ber.take(length)?;
     ber.algorithm_identifier()?;
-    ber.encapsulated_content()?
+    ber.encapsulated_content()
 }
 
 /// Whether `metadata` types the document `application/pkcs7-signature`.
@@ -453,11 +545,14 @@ fn prepare_unencrypted<'a>(
             Signed::Fails(exception) => Err(unreadable_signed_data(exception)),
         };
     }
-    match classify(input).map_err(str::to_owned)? {
+    match classify(input) {
         Some(SIGNED_DATA) => match signed_content(input).ok_or_else(unread)? {
             Signed::Read(pieces) => signed(pieces),
-            Signed::Detached(refined) => Ok(empty(Some(refined.ok_or_else(unread)?))),
-            Signed::Fails(exception) => Err(unreadable_signed_data(exception)),
+            Signed::Detached(Ok(refined)) => Ok(empty(Some(refined))),
+            Signed::Detached(Err(Unread::Unported)) => Err(Decline::Deferred(unread())),
+            Signed::Detached(Err(Unread::Thrown(exception))) | Signed::Fails(exception) => {
+                Err(unreadable_signed_data(exception))
+            }
         },
         Some(COMPRESSED_DATA) => Ok(with_content(
             COMPRESSED,
@@ -882,14 +977,14 @@ mod tests {
             Some(Signed::Detached(refined)) => refined,
             other => panic!("not detached: {other:?}"),
         };
-        assert_eq!(typed(signed(without_content())), Some(SIGNATURE));
+        assert_eq!(typed(signed(without_content())), Ok(SIGNATURE));
         assert_eq!(
             typed(signed_with(
                 without_content(),
                 Some(std::slice::from_ref(&certificate)),
                 &[]
             )),
-            Some(CERTS_ONLY)
+            Ok(CERTS_ONLY)
         );
         assert_eq!(
             typed(signed_with(
@@ -897,17 +992,102 @@ mod tests {
                 Some(&[certificate]),
                 std::slice::from_ref(&signer)
             )),
-            Some(SIGNATURE)
+            Ok(SIGNATURE)
         );
         assert_eq!(
             typed(signed_with(without_content(), Some(&[]), &[signer])),
-            Some(SIGNATURE)
+            Ok(SIGNATURE)
         );
         let certs_only = signed_with(without_content(), Some(&[der(SEQUENCE, &[])]), &[]);
         let mut metadata = TikaMetadata::new();
         metadata.set("Content-Type", "application/pkcs7-mime");
         let configs = ParserConfigs::default();
         assert!(CmsParser.prepare(&certs_only, &metadata, &configs).is_ok());
+    }
+
+    /// Signed data of `content`, whose digest algorithm has `parameters`, its encapsulated
+    /// OCTET STRING's header `octet_header`.
+    fn signed_encoded(parameters: &[u8], octet_header: &[u8], content: &[u8]) -> Vec<u8> {
+        let algorithm = der(
+            SEQUENCE,
+            &[&der(OBJECT_IDENTIFIER, SHA256)[..], parameters].concat(),
+        );
+        let encapsulated = der(
+            SEQUENCE,
+            &[
+                der(OBJECT_IDENTIFIER, DATA),
+                der(EXPLICIT_0, &[octet_header, content].concat()),
+            ]
+            .concat(),
+        );
+        let signed_data = der(
+            SEQUENCE,
+            &[
+                der(INTEGER, &[1]),
+                der(SET, &algorithm),
+                encapsulated,
+                der(SET, &[]),
+            ]
+            .concat(),
+        );
+        der(
+            SEQUENCE,
+            &[
+                der(OBJECT_IDENTIFIER, SIGNED_DATA),
+                der(EXPLICIT_0, &signed_data),
+            ]
+            .concat(),
+        )
+    }
+
+    #[test]
+    fn reads_the_ber_encodings_bouncy_castle_reads() {
+        let content = b"Indhold";
+        let high_tag = [0x9F, 0x81, 0x48, 0x01, 0x00];
+        let five_byte_length = [OCTET_STRING, 0x85, 0, 0, 0, 0, content.len() as u8];
+        for (parameters, header) in [
+            (&high_tag[..], &[OCTET_STRING, content.len() as u8][..]),
+            (&[][..], &five_byte_length[..]),
+        ] {
+            let signed = signed_encoded(parameters, header, content);
+            assert_eq!(
+                signed_content(&signed),
+                Some(Signed::Read(vec![&content[..]])),
+                "{signed:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fails_on_the_ber_encodings_bouncy_castle_fails_on() {
+        let content = b"Indhold";
+        let failures = [
+            (
+                &[OCTET_STRING, 0xFF][..],
+                "invalid long form definite-length 0xFF",
+            ),
+            (
+                &[OCTET_STRING, 0x80][..],
+                "indefinite-length primitive encoding encountered",
+            ),
+            (
+                &[OCTET_STRING, 0x20][..],
+                "DEF length 32 object truncated by",
+            ),
+            (&[0x1F, 0x1E, 0x01][..], "high tag number < 31 found"),
+        ];
+        for (header, message) in failures {
+            let signed = signed_encoded(&[], header, content);
+            let Some(Signed::Fails(exception)) = signed_content(&signed) else {
+                panic!("{header:02x?} is read");
+            };
+            assert!(exception.contains(message), "{exception}");
+        }
+        assert_eq!(classify(&[SEQUENCE, 0xFF]), None);
+        let configs = ParserConfigs::default();
+        assert!(CmsParser
+            .prepare(&[SEQUENCE, 0x84, 0x7F], &TikaMetadata::new(), &configs)
+            .is_ok());
     }
 
     #[test]

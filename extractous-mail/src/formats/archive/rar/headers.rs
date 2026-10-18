@@ -1,7 +1,9 @@
 //! The headers of a RAR archive as junrar 8.1.1's `Archive` reads them when Tika's
-//! `RarParser` opens it: the marker found, then `readHeaders3`'s walk over the blocks of a RAR
-//! 1.5 to 4 archive, which skips a block it cannot parse and keeps the headers it has read
-//! where it stops, and the RAR 3 `FileHeader` of each file.
+//! `RarParser` opens it: the marker found, at the start or past a self-extractor's code, then
+//! `readHeaders3`'s walk over the blocks of a RAR 1.5 to 4 archive, which skips a block it
+//! cannot parse and keeps the headers it has read where it stops, and the RAR 3 `FileHeader`
+//! of each file; or `readHeaders14`'s walk over the file headers of a RAR 1.4 archive, which
+//! fails the archive where one does not parse.
 
 use std::collections::HashSet;
 
@@ -19,8 +21,20 @@ const NEWLHD_SIZE: i64 = 32;
 const MAX_SURE_NAME: usize = 1024;
 const MAX_SURE_COMPONENT: usize = 255;
 
+const MHD_VOLUME: u16 = 0x0001;
+const MHD_COMMENT: u16 = 0x0002;
+const MHD_LOCK: u16 = 0x0004;
+const MHD_SOLID: u16 = 0x0008;
 const MHD_PASSWORD: u16 = 0x0080;
 const MHD_ENCRYPTVER: u16 = 0x0200;
+/// `SIZEOF_MAINHEAD14`: a RAR 1.4 archive's marker and main header.
+const SIZEOF_MAINHEAD14: usize = 7;
+/// `Rar14HeaderReader.SIZEOF_FILEHEAD14`: the fixed fields of a RAR 1.4 file header.
+const SIZEOF_FILEHEAD14: usize = 21;
+/// The DOS attribute of a directory, which a RAR 1.4 file header has for a directory flag.
+const ATTRIBUTE_DIRECTORY: u8 = 0x10;
+/// The base RAR 1.5 and later add to the method of a file header, which RAR 1.4 stores bare.
+const METHOD_BASE: u8 = 0x30;
 const LHD_SPLIT_BEFORE: u16 = 0x0001;
 const LHD_SPLIT_AFTER: u16 = 0x0002;
 const LHD_PASSWORD: u16 = 0x0004;
@@ -33,14 +47,12 @@ const LHD_UNICODE: u16 = 0x0200;
 const LHD_SALT: u16 = 0x0400;
 const LHD_EXTTIME: u16 = 0x1000;
 
-/// Why junrar or Tika's parser does not open an archive.
+/// Why junrar or Tika's parser does not open an archive: opening it throws, failing the
+/// document, as an encrypted archive's `EncryptedDocumentException` does when `encrypted`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Unopened {
-    /// Opening it throws, failing the document, as an encrypted archive's
-    /// `EncryptedDocumentException` does when `encrypted`.
-    Fails { encrypted: bool, reason: String },
-    /// junrar reads it in a way the port does not.
-    Unported(String),
+pub(super) struct Unopened {
+    pub(super) encrypted: bool,
+    pub(super) reason: String,
 }
 
 /// A file entry's name as junrar decodes it, its separators, which the format writes as
@@ -99,61 +111,170 @@ impl FileHeader {
     }
 }
 
+/// The format of an archive, `RarFormat`, which decides how its entries are extracted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Format {
+    /// RAR 1.4: entries checked against a 16-bit checksum, compressed ones unpacked as RAR 1.5
+    /// does, each after the first continuing a solid stream where the main header says the
+    /// archive is solid.
+    Rar14,
+    /// RAR 1.5 to 4.
+    Rar15,
+}
+
 /// The headers of an archive Tika's parser goes on with: not encrypted, with a main header.
 #[derive(Debug)]
 pub(super) struct Headers {
+    pub(super) format: Format,
+    /// Whether the main header says the archive is solid.
+    pub(super) solid: bool,
     /// `getFileHeaders()`: the file entries, in archive order.
     pub(super) files: Vec<FileHeader>,
 }
 
 /// `Archive`'s constructor and `isEncrypted`, as `RarParser` calls them.
 pub(super) fn read(data: &[u8]) -> Result<Headers, Unopened> {
-    match signature_type(data) {
+    let (signature, marker) = locate(data)?;
+    match signature {
         Signature::Rar15 => {}
+        Signature::Rar14 => return read14(data, marker),
         Signature::Rar50 => {
             return Err(fails(
                 "UnsupportedRarV5Exception: a RAR 5 archive, which Tika detects as such only \
                  with its full marker",
             ))
         }
-        Signature::Rar14 => return Err(unported("a RAR 1.4 archive")),
         Signature::Future => {
             return Err(fails(
                 "UnsupportedRarVersionException: a RAR format junrar predates",
             ))
         }
-        Signature::None => {
-            let scanned = &data[1.min(data.len())..data.len().min(MAX_SFX_SIZE + 1)];
-            if (0..scanned.len()).any(|i| sfx_signature(scanned, i)) {
-                return Err(unported(
-                    "a RAR marker past the start, after a self-extractor's code",
-                ));
-            }
-            return Err(fails("BadRarArchiveException: no RAR marker"));
-        }
+        Signature::None => unreachable!("a marker is located only where there is one"),
     }
-    let walk = Walk::run(data);
+    let walk = Walk::run(data, marker);
     let main = walk
         .main
         .ok_or_else(|| fails("MainHeaderNullException: no main header"))?;
     if main & MHD_PASSWORD != 0 {
-        return Err(Unopened::Fails {
+        return Err(Unopened {
             encrypted: true,
             reason: "EncryptedDocumentException: the archive's headers are encrypted".to_owned(),
         });
     }
-    Ok(Headers { files: walk.files })
+    Ok(Headers {
+        format: Format::Rar15,
+        solid: main & MHD_SOLID != 0,
+        files: walk.files,
+    })
+}
+
+/// `detectFormatAndSeek`: the archive's marker and where it is, at the start, or within
+/// [`MAX_SFX_SIZE`] bytes after it, past a self-extractor's code.
+fn locate(data: &[u8]) -> Result<(Signature, usize), Unopened> {
+    let signature = signature_type(data);
+    if signature != Signature::None {
+        return Ok((signature, 0));
+    }
+    let scanned = &data[1.min(data.len())..data.len().min(MAX_SFX_SIZE + 1)];
+    (0..scanned.len())
+        .find(|&i| sfx_signature(scanned, i))
+        .map(|i| (signature_type(&scanned[i..]), 1 + i))
+        .ok_or_else(|| fails("BadRarArchiveException: no RAR marker"))
+}
+
+/// `readHeaders14`: the file headers of a RAR 1.4 archive whose marker is at `marker`, each
+/// read from where the one before it and its packed data end, up to the end of the archive.
+/// A header that is cut short or does not parse fails the archive.
+fn read14(data: &[u8], marker: usize) -> Result<Headers, Unopened> {
+    let main = data
+        .get(marker..marker + SIZEOF_MAINHEAD14)
+        .ok_or_else(|| corrupt("Truncated RAR 1.4 main header"))?;
+    let main_size = usize::from(u16::from_le_bytes([main[4], main[5]]));
+    if main_size < SIZEOF_MAINHEAD14 {
+        return Err(corrupt("RAR 1.4 main header too small"));
+    }
+    let main_flags = u16::from(main[6]) & (MHD_VOLUME | MHD_COMMENT | MHD_LOCK | MHD_SOLID);
+    let mut files = Vec::new();
+    let mut processed = HashSet::new();
+    let mut position = marker + main_size;
+    while position < data.len() {
+        let fixed = data
+            .get(position..position + SIZEOF_FILEHEAD14)
+            .ok_or_else(|| corrupt("Truncated RAR 1.4 file header"))?;
+        let name_start = position + SIZEOF_FILEHEAD14;
+        let name = data
+            .get(name_start..name_start + usize::from(fixed[19]))
+            .ok_or_else(|| corrupt("Truncated RAR 1.4 file name"))?;
+        let header = parse_file_header14(position, fixed, name)?;
+        let head_size = u64::from(u16::from_le_bytes([fixed[10], fixed[11]]));
+        let next = (position as u64)
+            .saturating_add(head_size)
+            .saturating_add(header.full_pack_size as u64);
+        files.push(header);
+        if !processed.insert(next) {
+            return Err(fails("BadRarArchiveException: a header read twice"));
+        }
+        position = usize::try_from(next).unwrap_or(usize::MAX);
+    }
+    Ok(Headers {
+        format: Format::Rar14,
+        solid: main_flags & MHD_SOLID != 0,
+        files,
+    })
+}
+
+/// `Rar14HeaderReader.read` of the file header at `position`, its fixed fields `fixed` and
+/// its name `name`, whose OEM bytes are decoded as IBM437.
+fn parse_file_header14(position: usize, fixed: &[u8], name: &[u8]) -> Result<FileHeader, Unopened> {
+    let int_at =
+        |at: usize| u32::from_le_bytes([fixed[at], fixed[at + 1], fixed[at + 2], fixed[at + 3]]);
+    let head_size = u16::from_le_bytes([fixed[10], fixed[11]]);
+    if usize::from(head_size) < SIZEOF_FILEHEAD14 {
+        return Err(corrupt("RAR 1.4 file header too small"));
+    }
+    if usize::from(head_size) < SIZEOF_FILEHEAD14 + name.len() {
+        return Err(corrupt("RAR 1.4 file name runs past HeadSize"));
+    }
+    let attributes = fixed[16];
+    let raw_flags = u16::from(fixed[17]);
+    let mut flags = raw_flags & (LHD_SPLIT_BEFORE | LHD_SPLIT_AFTER | LHD_PASSWORD);
+    if attributes & ATTRIBUTE_DIRECTORY != 0 {
+        flags |= LHD_DIRECTORY;
+    }
+    let decoded = crate::text::charset::Charset::named("IBM437")
+        .decode(name)
+        .expect("IBM437 decodes every byte");
+    let name = match checked_name(&utf16(&decoded)) {
+        Ok(Name::Decoded(name)) => Name::Decoded(name.replace('\\', "/")),
+        Ok(differs) => differs,
+        Err(()) => return Err(corrupt(&format!("Invalid filename: {decoded}"))),
+    };
+    Ok(FileHeader {
+        position: position as i64,
+        header_size: head_size as i16,
+        flags,
+        full_pack_size: i64::from(int_at(0)),
+        full_unpack_size: i64::from(int_at(4)),
+        file_crc: u32::from(u16::from_le_bytes([fixed[8], fixed[9]])),
+        unp_version: if fixed[18] == 2 { 13 } else { 10 },
+        unp_method: METHOD_BASE.wrapping_add(fixed[20]),
+        name,
+        modified_millis: dos_millis(int_at(12) as i32),
+        created_millis: None,
+        broken: false,
+    })
+}
+
+/// A RAR 1.4 header that does not parse, which `CorruptHeaderException` fails the archive on.
+fn corrupt(reason: &str) -> Unopened {
+    fails(&format!("CorruptHeaderException: {reason}"))
 }
 
 fn fails(reason: &str) -> Unopened {
-    Unopened::Fails {
+    Unopened {
         encrypted: false,
         reason: reason.to_owned(),
     }
-}
-
-fn unported(what: &str) -> Unopened {
-    Unopened::Unported(what.to_owned())
 }
 
 /// `signatureType`'s classes of a marker.
@@ -257,10 +378,11 @@ struct Walk<'a> {
 }
 
 impl<'a> Walk<'a> {
-    fn run(data: &'a [u8]) -> Self {
+    /// The walk from the marker at `marker` on.
+    fn run(data: &'a [u8], marker: usize) -> Self {
         let mut walk = Walk {
             data,
-            position: 0,
+            position: marker as i64,
             processed: HashSet::new(),
             main: None,
             files: Vec::new(),
