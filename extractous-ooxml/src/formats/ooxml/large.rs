@@ -4,7 +4,7 @@
 
 use std::io::{self, Write};
 
-use extractous_core::large::{LargeFile, SPOOLING_BUDGET};
+use extractous_core::large::{LargeFile, BUDGET};
 use extractous_core::Extractor;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
@@ -164,7 +164,7 @@ fn spools_a_deflated_word_document_part_past_the_memory_limit() {
     let file = LargeFile::written("deflated.docx", |out| {
         write_docx(out, CompressionMethod::Deflated, LARGE)
     });
-    let (text, _) = file.extract_with(&Extractor::new(), SPOOLING_BUDGET, OOXML_PARSER);
+    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, OOXML_PARSER);
     assert!(text.contains(END), "{text}");
 }
 
@@ -225,7 +225,7 @@ fn reads_a_worksheet_past_the_memory_limit_a_row_at_a_time() {
             ],
         )
     });
-    let (text, _) = file.extract_with(&Extractor::new(), SPOOLING_BUDGET, OOXML_PARSER);
+    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, OOXML_PARSER);
     assert!(text.contains("Række 1 i et meget stort regneark"), "{text}");
     assert!(text.contains(END), "{text}");
 }
@@ -281,7 +281,7 @@ fn reads_a_slide_past_the_memory_limit_as_it_writes_it() {
             ],
         )
     });
-    let (text, _) = file.extract_with(&Extractor::new(), SPOOLING_BUDGET, OOXML_PARSER);
+    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, OOXML_PARSER);
     assert!(text.contains("Punkt 0 på et meget langt dias"), "{text}");
     assert!(text.contains(END), "{text}");
 }
