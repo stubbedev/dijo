@@ -1,9 +1,11 @@
 //! What the ports of POI's readers share: the Java exception POI throws reading a document,
 //! which fails Tika's parse, and little-endian reads that fail where Java's array bounds do.
 
+use crate::formats::{Decline, Difference, Failure, Unported};
+
 /// A Java exception POI throws reading a document.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Thrown(pub(crate) String);
+pub struct Thrown(pub String);
 
 impl Thrown {
     pub(crate) fn new(reason: impl Into<String>) -> Self {
@@ -15,6 +17,61 @@ pub(crate) type Read<T> = Result<T, Thrown>;
 
 pub(crate) fn thrown<T>(reason: impl Into<String>) -> Read<T> {
     Err(Thrown(reason.into()))
+}
+
+/// Why a native parser of POI's formats does not read a document as Tika's parser does: POI
+/// throws on it, which fails Tika's parse, or it has what the port does not read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unread {
+    /// POI throws reading the document, for this reason as the port tells it.
+    Thrown(Thrown),
+    Unported(Unported),
+}
+
+impl From<Thrown> for Unread {
+    fn from(thrown: Thrown) -> Self {
+        Unread::Thrown(thrown)
+    }
+}
+
+impl From<Unported> for Unread {
+    fn from(unported: Unported) -> Self {
+        Unread::Unported(unported)
+    }
+}
+
+impl From<Thrown> for Decline<'_> {
+    fn from(thrown: Thrown) -> Self {
+        Unread::from(thrown).declined()
+    }
+}
+
+impl From<Unread> for Decline<'_> {
+    fn from(unread: Unread) -> Self {
+        unread.declined()
+    }
+}
+
+impl Unread {
+    /// What a parser declines the document with: what the port does not read is left to Tika's
+    /// path, and a document POI throws on fails, as it fails Tika's parse, though with the
+    /// port's account of the exception where Tika's path names POI's: a reading that differs.
+    pub fn declined<'a>(self) -> Decline<'a> {
+        match self {
+            Unread::Unported(unported) => unported.into(),
+            Unread::Thrown(Thrown(reason)) => Decline::Differs {
+                difference: Difference(format!(
+                    "POI throws on the document, which fails Tika's parse with POI's exception: \
+                     {reason}"
+                )),
+                reading: Box::new(move |_| {
+                    Err(Failure::Malformed(format!(
+                        "POI throws reading the document: {reason}"
+                    )))
+                }),
+            },
+        }
+    }
 }
 
 fn slice(data: &[u8], at: usize, length: usize) -> Read<&[u8]> {

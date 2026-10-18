@@ -3,7 +3,7 @@
 //! gives (`getData`); and the data of its embedded OLE objects (`ExOleObjStg.getData`).
 
 use crate::formats::escher::{kind as escher_kind, Content, Escher};
-use crate::formats::poi::{i32_at, inflate, Thrown};
+use crate::formats::poi::{i32_at, inflate, Thrown, Unread};
 use crate::formats::{wmf_placeable, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
@@ -20,13 +20,11 @@ const PREAMBLE: usize = 8;
 const CHECKSUM: usize = 16;
 const BSTORE_CONTAINER: u16 = 0xF001;
 
-fn poi_throws(reason: &str) -> Unported {
-    Unported(format!(
-        "POI throws reading the presentation's pictures, which fails Tika's parse: {reason}"
-    ))
+fn poi_throws(reason: &str) -> Unread {
+    Thrown(format!("reading the presentation's pictures: {reason}")).into()
 }
 
-fn recorded(reason: &str) -> Unported {
+pub(super) fn recorded(reason: &str) -> Unported {
     Unported(format!(
         "a picture or object whose data POI fails to read, which Tika records with Java's stack \
          trace: {reason}"
@@ -35,7 +33,7 @@ fn recorded(reason: &str) -> Unported {
 
 /// Why the data of a picture or an object is not read as POI reads it.
 #[derive(Debug)]
-pub(super) enum Unread {
+pub(super) enum UnreadData {
     /// POI throws for this reason, which Tika records before it goes on past the picture or
     /// object.
     Recorded(&'static str),
@@ -46,18 +44,18 @@ pub(super) enum Unread {
     Unported(Unported),
 }
 
-impl From<Unported> for Unread {
+impl From<Unported> for UnreadData {
     fn from(unported: Unported) -> Self {
         Self::Unported(unported)
     }
 }
 
-impl From<Unread> for Unported {
-    fn from(unread: Unread) -> Self {
+impl From<UnreadData> for Unread {
+    fn from(unread: UnreadData) -> Self {
         match unread {
-            Unread::Recorded(reason) => recorded(reason),
-            Unread::Thrown(exception) => recorded(&exception),
-            Unread::Unported(unported) => unported,
+            UnreadData::Recorded(reason) => recorded(reason).into(),
+            UnreadData::Thrown(exception) => recorded(&exception).into(),
+            UnreadData::Unported(unported) => unported.into(),
         }
     }
 }
@@ -153,7 +151,7 @@ impl Pictures {
         &self,
         store: Option<&[StoreEntry]>,
         index: i32,
-    ) -> Result<Option<&Picture>, Unported> {
+    ) -> Result<Option<&Picture>, Unread> {
         let Some(store) = store else {
             return Ok(None);
         };
@@ -173,7 +171,7 @@ impl Pictures {
 }
 
 /// The entries of a drawing group's blip store, `None` where it has none.
-pub(super) fn store_of(group: &Escher) -> Result<Option<Vec<StoreEntry>>, Unported> {
+pub(super) fn store_of(group: &Escher) -> Result<Option<Vec<StoreEntry>>, Unread> {
     let Some(store) = group
         .children
         .iter()
@@ -220,7 +218,7 @@ pub(super) fn read(
     directory: EntryId,
     records: &[Top],
     encryption: Option<&Encryption>,
-) -> Result<Pictures, Unported> {
+) -> Result<Pictures, Unread> {
     let Some(entry) = file.child_ignoring_case(directory, PICTURES) else {
         return Ok(Pictures::default());
     };
@@ -230,7 +228,7 @@ pub(super) fn read(
     let mut store = first_document_store(records)?;
     let encryption = pictures_encryption(records, encryption)?;
     let mut stream = file.read(entry).map_err(|Unreadable(reason)| {
-        Unported(format!("POI cannot read the Pictures stream: {reason}"))
+        poi_throws(&format!("cannot read the Pictures stream: {reason}"))
     })?;
     if stream.len() > MAX_IMAGE {
         return Err(poi_throws("the Pictures stream is longer than POI reads"));
@@ -294,7 +292,7 @@ pub(super) fn read(
 fn pictures_encryption<'e>(
     records: &[Top],
     encryption: Option<&'e Encryption>,
-) -> Result<Option<&'e Encryption>, Unported> {
+) -> Result<Option<&'e Encryption>, Unread> {
     let first = records.iter().find(|top| {
         top.record
             .as_ref()
@@ -311,7 +309,7 @@ fn pictures_encryption<'e>(
 
 /// `getBlipStore`: the blip store of the first document record by offset, failing where a
 /// record before it is missing or it has no drawing group.
-fn first_document_store(records: &[Top]) -> Result<Vec<StoreEntry>, Unported> {
+fn first_document_store(records: &[Top]) -> Result<Vec<StoreEntry>, Unread> {
     let mut document = None;
     for top in records {
         let Some(record) = &top.record else {
@@ -332,7 +330,7 @@ fn first_document_store(records: &[Top]) -> Result<Vec<StoreEntry>, Unported> {
 
 /// `matchPicturesAndRecords`: each picture's blip store entry, by offset, then by checksum, else
 /// a new entry.
-fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Result<(), Unported> {
+fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Result<(), Unread> {
     let mut unmatched: Vec<usize> = (0..factories.len()).collect();
     unmatched.sort_by_key(|&at| factories[at].offset);
     let mut by_offset: Vec<(i32, Vec<usize>)> = Vec::new();
@@ -393,7 +391,8 @@ fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Resu
                         "pictures matched by checksum among blip store entries POI orders by a \
                          hash map"
                             .to_owned(),
-                    ));
+                    )
+                    .into());
                 }
                 let entry = remaining.remove(i);
                 store[entry].offset = factories[at].offset;
@@ -414,13 +413,13 @@ fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Resu
 
 impl Picture {
     /// `getData`: the picture's data as its type gives it, or why POI fails, which Tika records.
-    pub(super) fn data(&self) -> Result<Vec<u8>, Unread> {
+    pub(super) fn data(&self) -> Result<Vec<u8>, UnreadData> {
         let raw = &self.raw;
         match self.kind {
             PictureType::Jpeg | PictureType::Png | PictureType::Dib => {
                 let prefix = CHECKSUM * self.checksums + 1;
                 if raw.len() < prefix {
-                    return Err(Unread::Recorded("a bitmap shorter than its header"));
+                    return Err(UnreadData::Recorded("a bitmap shorter than its header"));
                 }
                 let data = &raw[prefix..];
                 Ok(match self.kind {
@@ -433,7 +432,7 @@ impl Picture {
                 let header = MetafileHeader::read(raw, CHECKSUM)?;
                 let _ = header;
                 inflate(raw.get(CHECKSUM + 34..).unwrap_or_default(), None)
-                    .map_err(|_| Unread::Recorded("an EMF picture that does not inflate"))
+                    .map_err(|_| UnreadData::Recorded("an EMF picture that does not inflate"))
             }
             PictureType::Wmf => {
                 let at = CHECKSUM * self.checksums;
@@ -441,7 +440,7 @@ impl Picture {
                 let mut data = header.placeable()?;
                 data.extend(
                     inflate(raw.get(at + 34..).unwrap_or_default(), None)
-                        .map_err(|_| Unread::Recorded("a WMF picture that does not inflate"))?,
+                        .map_err(|_| UnreadData::Recorded("a WMF picture that does not inflate"))?,
                 );
                 Ok(data)
             }
@@ -450,8 +449,9 @@ impl Picture {
                 MetafileHeader::read(raw, at)?;
                 let mut data = vec![0; 512];
                 data.extend(
-                    inflate(raw.get(at + 34..).unwrap_or_default(), None)
-                        .map_err(|_| Unread::Recorded("a PICT picture that does not inflate"))?,
+                    inflate(raw.get(at + 34..).unwrap_or_default(), None).map_err(|_| {
+                        UnreadData::Recorded("a PICT picture that does not inflate")
+                    })?,
                 );
                 Ok(data)
             }
@@ -460,9 +460,9 @@ impl Picture {
 }
 
 /// `DIB.addBMPHeader`: the file header of a bitmap before its data.
-fn bmp(data: &[u8]) -> Result<Vec<u8>, Unread> {
-    let image_size =
-        i32_at(data, 0x22 - 14).map_err(|_| Unread::Recorded("a DIB shorter than its header"))?;
+fn bmp(data: &[u8]) -> Result<Vec<u8>, UnreadData> {
+    let image_size = i32_at(data, 0x22 - 14)
+        .map_err(|_| UnreadData::Recorded("a DIB shorter than its header"))?;
     let file_size = (data.len() as i32).wrapping_add(14);
     let offset = file_size.wrapping_sub(image_size);
     let mut out = Vec::with_capacity(data.len() + 14);
@@ -490,9 +490,9 @@ struct MetafileHeader {
 const EMUS_PER_INCH: i64 = 914_400;
 
 impl MetafileHeader {
-    fn read(raw: &[u8], at: usize) -> Result<MetafileHeader, Unread> {
+    fn read(raw: &[u8], at: usize) -> Result<MetafileHeader, UnreadData> {
         if raw.len() < at + 34 {
-            return Err(Unread::Recorded(
+            return Err(UnreadData::Recorded(
                 "a metafile picture shorter than its header",
             ));
         }
@@ -544,16 +544,16 @@ pub(super) struct Object<'a> {
 impl Object<'_> {
     /// `ExOleObjStg.getData` read whole: a compressed object inflated to the length it gives, or
     /// why Java's stream fails reading it.
-    pub(super) fn data(&self) -> Result<Vec<u8>, Unread> {
+    pub(super) fn data(&self) -> Result<Vec<u8>, UnreadData> {
         let data = self.record.data();
         if self.record.options == 0 {
             return Ok(data.to_vec());
         }
         let size = i32_at(data, 0)
-            .map_err(|_| Unread::Recorded("a compressed object without its length"))?;
+            .map_err(|_| UnreadData::Recorded("a compressed object without its length"))?;
         let size = usize::try_from(size)
-            .map_err(|_| Unread::Recorded("a compressed object of a negative length"))?;
-        inflate(&data[4..], Some(size)).map_err(|Thrown(exception)| Unread::Thrown(exception))
+            .map_err(|_| UnreadData::Recorded("a compressed object of a negative length"))?;
+        inflate(&data[4..], Some(size)).map_err(|Thrown(exception)| UnreadData::Thrown(exception))
     }
 }
 

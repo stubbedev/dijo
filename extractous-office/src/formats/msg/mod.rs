@@ -27,6 +27,7 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
+use crate::formats::poi::Unread;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared, Unported};
 use crate::ole2::{write, EntryId, EntryKind, Node, Ole2, Unreadable};
@@ -74,7 +75,7 @@ impl Parser for MsgParser {
 fn read(
     input: &[u8],
     configs: &ParserConfigs,
-) -> Result<(Summaries, Extracted, Option<Difference>), Unported> {
+) -> Result<(Summaries, Extracted, Option<Difference>), Unread> {
     let file = office::open(input, configs, MEDIA_TYPE, "message")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;

@@ -2,7 +2,7 @@
 //! strings of its headers and footers record, the document's of its type, or a new one; or, in a
 //! presentation PowerPoint 2007 saved, from the text of its placeholder shapes.
 
-use crate::formats::Unported;
+use crate::formats::poi::{Thrown, Unread};
 
 use super::records::{kind, Record};
 use super::shapes::sheet_shapes;
@@ -20,10 +20,8 @@ const FOOTER_STRING: i32 = 2;
 const HEADER_PLACEHOLDER: i32 = 10;
 const FOOTER_PLACEHOLDER: i32 = 9;
 
-fn poi_throws(reason: &str) -> Unported {
-    Unported(format!(
-        "POI throws reading the headers and footers, which fails Tika's parse: {reason}"
-    ))
+fn poi_throws(reason: &str) -> Unread {
+    Thrown(format!("reading the headers and footers: {reason}")).into()
 }
 
 /// Which headers and footers a sheet has: a slide's or notes'.
@@ -62,7 +60,7 @@ impl<'s, 'a> HeadersFooters<'s, 'a> {
         show: &'s Show<'a>,
         sheet: &'s Sheet<'a>,
         scope: Scope,
-    ) -> Result<Self, Unported> {
+    ) -> Result<Self, Unread> {
         let first_master = show
             .masters
             .first()
@@ -88,7 +86,7 @@ impl<'s, 'a> HeadersFooters<'s, 'a> {
     }
 
     /// `isHeaderVisible` and `isFooterVisible`.
-    pub(super) fn is_visible(&self, part: Part) -> Result<bool, Unported> {
+    pub(super) fn is_visible(&self, part: Part) -> Result<bool, Unread> {
         if self.ppt_2007 {
             return Ok(self.placeholder_text(part)?.is_some());
         }
@@ -109,7 +107,7 @@ impl<'s, 'a> HeadersFooters<'s, 'a> {
     }
 
     /// `getHeaderText` and `getFooterText`.
-    pub(super) fn text(&self, part: Part) -> Result<Option<Vec<u16>>, Unported> {
+    pub(super) fn text(&self, part: Part) -> Result<Option<Vec<u16>>, Unread> {
         if self.ppt_2007 {
             let text = self.placeholder_text(part)?;
             return Ok(text.filter(|text| text != &[u16::from(b'*')]));
@@ -130,7 +128,7 @@ impl<'s, 'a> HeadersFooters<'s, 'a> {
 
     /// The text of the sheet's first shape of the part's placeholder, where it is a text shape
     /// (`getPlaceholder(ph)` then `getText`).
-    fn placeholder_text(&self, part: Part) -> Result<Option<Vec<u16>>, Unported> {
+    fn placeholder_text(&self, part: Part) -> Result<Option<Vec<u16>>, Unread> {
         let wanted = match part {
             Part::Header => HEADER_PLACEHOLDER,
             Part::Footer => FOOTER_PLACEHOLDER,
@@ -180,7 +178,7 @@ fn programmable_tag(container: &Record) -> Option<String> {
 }
 
 /// The sheet `getNotesHeadersFooters` reads: the first notes, else the first master.
-pub(super) fn notes_sheet<'s, 'a>(show: &'s Show<'a>) -> Result<&'s Sheet<'a>, Unported> {
+pub(super) fn notes_sheet<'s, 'a>(show: &'s Show<'a>) -> Result<&'s Sheet<'a>, Unread> {
     if let Some(notes) = show.notes.first() {
         return Ok(notes);
     }

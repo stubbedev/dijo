@@ -93,44 +93,9 @@ impl Element<'_> {
     }
 }
 
-/// `Base64.getDecoder().decode`: the strict basic alphabet, its padding optional.
+/// `Base64.getDecoder().decode`, failing with what Java throws.
 fn base64(text: &str) -> Result<Vec<u8>, Unopened> {
-    let illegal = || Unopened::Thrown("Illegal base64 character".to_owned());
-    let trimmed = text.trim_end_matches('=');
-    if text.len() - trimmed.len() > 2 {
-        return Err(illegal());
-    }
-    let mut out = Vec::with_capacity(trimmed.len() / 4 * 3);
-    let mut bits = 0u32;
-    let mut count = 0;
-    for byte in trimmed.bytes() {
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return Err(illegal()),
-        };
-        bits = (bits << 6) | u32::from(value);
-        count += 1;
-        if count == 4 {
-            out.extend_from_slice(&bits.to_be_bytes()[1..]);
-            bits = 0;
-            count = 0;
-        }
-    }
-    match count {
-        0 => {}
-        2 => out.push((bits >> 4) as u8),
-        3 => out.extend_from_slice(&((bits >> 2) as u16).to_be_bytes()),
-        _ => {
-            return Err(Unopened::Thrown(
-                "Last unit does not have enough valid bits".to_owned(),
-            ))
-        }
-    }
-    Ok(out)
+    crate::java::base64_decode(text).map_err(|message| Unopened::Thrown(message.to_owned()))
 }
 
 /// The cipher of a key data or key encryptor, which this port opens only as AES in CBC mode.
@@ -398,15 +363,6 @@ impl AgileKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn decodes_base64_as_java_does() {
-        assert_eq!(base64("aGk=").unwrap(), b"hi");
-        assert_eq!(base64("aGk").unwrap(), b"hi");
-        assert_eq!(base64("aGVsbG8=").unwrap(), b"hello");
-        assert!(base64("a").is_err());
-        assert!(base64("a b").is_err());
-    }
 
     #[test]
     fn fails_on_a_descriptor_poi_cannot_parse() {

@@ -7,6 +7,7 @@ use crate::formats::parity::Scratch;
 use crate::formats::parity::{
     assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents,
 };
+use crate::text::charset::Charset;
 
 const OST: &str = "../test_files/documents/offline-folder.ost";
 
@@ -94,6 +95,15 @@ fn refuses_files_java_libpst_refuses() {
             .extract_file_to_string(path.to_str().unwrap())
             .unwrap_err();
         assert!(error.to_string().contains(message), "{error}");
+    }
+}
+
+#[test]
+fn decodes_the_charset_of_every_code_page_java_libpst_names() {
+    for (code_page, name) in file::CODE_PAGES {
+        if let Some(charset) = Charset::for_name(&name.to_ascii_uppercase()) {
+            assert!(charset.decodes(), "code page {code_page}: {name}");
+        }
     }
 }
 

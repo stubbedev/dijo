@@ -2,27 +2,136 @@
 //! throw past the limit, absolute reads that throw outside it, and a position that cannot pass
 //! it; and what Jackcess throws reading a database.
 
-/// Why reading a database stops: an exception Jackcess throws, which ends the parse; something
-/// the port leaves to Tika, which it then leaves the database to; or Office encryption, which
-/// needs a password. The port reads no usage map but a table's owned pages, which hold its rows:
-/// Jackcess reads the others too, and fails the parse on any it cannot read but a column's
-/// (#122).
+use crate::formats::thrown;
+
+pub(super) const IO_EXCEPTION: &str = "java.io.IOException";
+pub(super) const ILLEGAL_ARGUMENT: &str = "java.lang.IllegalArgumentException";
+pub(super) const CLASS_CAST: &str = "java.lang.ClassCastException";
+pub(super) const NEGATIVE_ARRAY_SIZE: &str = "java.lang.NegativeArraySizeException";
+pub(super) const ARRAY_INDEX_OUT_OF_BOUNDS: &str = "java.lang.ArrayIndexOutOfBoundsException";
+pub(super) const BUFFER_UNDERFLOW: &str = "java.nio.BufferUnderflowException";
+pub(super) const INDEX_OUT_OF_BOUNDS: &str = "java.lang.IndexOutOfBoundsException";
+const ILLEGAL_STATE: &str = "java.lang.IllegalStateException";
+const NULL_POINTER: &str = "java.lang.NullPointerException";
+
+/// The branch of Java's exceptions an exception is of, which decides how Tika's
+/// `JackcessParser` rethrows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Kind {
+    /// An `IOException`.
+    Io,
+    /// An `IndexOutOfBoundsException`.
+    IndexOutOfBounds,
+    /// An `IllegalStateException`.
+    IllegalState,
+    /// Any other `RuntimeException`.
+    Runtime,
+}
+
+/// What Jackcess's `withErrorContext` names after an exception's message: the database, and the
+/// table, column or index of it, or the query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Context {
+    Database,
+    Table(String),
+    Column { table: String, column: String },
+    Index { table: String, index: String },
+    Query(String),
+}
+
+/// An exception Jackcess, or the JVM under it, throws.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Exception {
+    pub(super) kind: Kind,
+    class: &'static str,
+    message: Option<String>,
+    context: Option<Context>,
+}
+
+impl Exception {
+    /// The class of the exception.
+    pub(super) fn class(&self) -> &'static str {
+        self.class
+    }
+
+    /// The message, with its context in the database Jackcess names `database`.
+    pub(super) fn message(&self, database: &str) -> Option<String> {
+        let message = self.message.as_deref()?;
+        Some(match &self.context {
+            None => message.to_owned(),
+            Some(Context::Database) => format!("{message} (Db={database})"),
+            Some(Context::Table(table)) => format!("{message} (Db={database};Table={table})"),
+            Some(Context::Column { table, column }) => {
+                format!("{message} (Db={database};Table={table};Column={column})")
+            }
+            Some(Context::Index { table, index }) => {
+                format!("{message} (Db={database};Table={table};Index={index})")
+            }
+            Some(Context::Query(query)) => format!("{message} (Query: {query})"),
+        })
+    }
+
+    /// The exception as Java's, in the database Jackcess names `database`.
+    pub(super) fn java(&self, database: &str) -> thrown::Exception {
+        match self.message(database) {
+            Some(message) => thrown::Exception::new(self.class, message),
+            None => thrown::Exception::bare(self.class),
+        }
+    }
+}
+
+/// Why reading a database stops: an exception Jackcess throws, which ends the parse, or
+/// something the port leaves to Tika, which it then leaves the database to. The port reads no
+/// usage map but a table's owned pages, which hold its rows: Jackcess reads the others too, and
+/// fails the parse on any it cannot read but a column's (#122).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Thrown {
-    IllegalState(String),
-    Other(String),
+    Exception(Exception),
     Unported(String),
-    /// The database is encrypted with Office encryption.
-    Encrypted,
 }
 
 impl Thrown {
-    pub(super) fn illegal_state(message: impl Into<String>) -> Self {
-        Thrown::IllegalState(message.into())
+    fn exception(kind: Kind, class: &'static str, message: Option<String>) -> Self {
+        Thrown::Exception(Exception {
+            kind,
+            class,
+            message,
+            context: None,
+        })
     }
 
-    pub(super) fn other(message: impl Into<String>) -> Self {
-        Thrown::Other(message.into())
+    /// A `java.io.IOException`.
+    pub(super) fn io(message: impl Into<String>) -> Self {
+        Self::exception(Kind::Io, IO_EXCEPTION, Some(message.into()))
+    }
+
+    /// A `java.lang.IllegalStateException`, or an exception of `class` that extends it.
+    pub(super) fn illegal_state_of(class: &'static str, message: impl Into<String>) -> Self {
+        Self::exception(Kind::IllegalState, class, Some(message.into()))
+    }
+
+    pub(super) fn illegal_state(message: impl Into<String>) -> Self {
+        Self::illegal_state_of(ILLEGAL_STATE, message)
+    }
+
+    /// An `IndexOutOfBoundsException` of `class`, with its message if it has one.
+    pub(super) fn index_out_of_bounds(class: &'static str, message: Option<String>) -> Self {
+        Self::exception(Kind::IndexOutOfBounds, class, message)
+    }
+
+    /// Another `RuntimeException`, of `class`.
+    pub(super) fn runtime(class: &'static str, message: impl Into<String>) -> Self {
+        Self::exception(Kind::Runtime, class, Some(message.into()))
+    }
+
+    /// Another `RuntimeException`, of `class`, without a message.
+    pub(super) fn bare(class: &'static str) -> Self {
+        Self::exception(Kind::Runtime, class, None)
+    }
+
+    /// The `NullPointerException` the JVM throws dereferencing null.
+    pub(super) fn null_pointer() -> Self {
+        Self::bare(NULL_POINTER)
     }
 
     /// What the port does not read.
@@ -30,32 +139,43 @@ impl Thrown {
         Thrown::Unported(what.into())
     }
 
-    /// Why the port leaves the database to Tika.
-    pub(super) fn reason(self) -> String {
+    /// The exception with the context Jackcess names after its message.
+    pub(super) fn in_context(self, context: Context) -> Self {
         match self {
-            Thrown::IllegalState(message) => format!(
-                "an Access database Jackcess throws reading: java.lang.IllegalStateException: \
-                 {message}"
-            ),
-            Thrown::Other(message) => {
-                format!("an Access database Jackcess throws reading: {message}")
-            }
-            Thrown::Unported(what) => format!("{what}, which the port does not read"),
-            Thrown::Encrypted => {
-                "an encrypted database, which the port does not decrypt".to_owned()
-            }
+            Thrown::Exception(exception) => Thrown::Exception(Exception {
+                context: Some(context),
+                ..exception
+            }),
+            unported @ Thrown::Unported(_) => unported,
+        }
+    }
+
+    /// The exception with `context`, where it is an `IOException` without one: Jackcess names
+    /// the context of every `IOException` a column throws reading its value, the JVM's
+    /// exceptions without one.
+    pub(super) fn io_in_context(self, context: Context) -> Self {
+        match self {
+            Thrown::Exception(
+                exception @ Exception {
+                    kind: Kind::Io,
+                    context: None,
+                    ..
+                },
+            ) => Thrown::Exception(Exception {
+                context: Some(context),
+                ..exception
+            }),
+            other => other,
         }
     }
 }
 
-fn index_out_of_bounds(index: i64, size: usize) -> Thrown {
-    Thrown::other(format!(
-        "java.lang.IndexOutOfBoundsException: index {index}, size {size}"
-    ))
+fn index_out_of_bounds() -> Thrown {
+    Thrown::index_out_of_bounds(INDEX_OUT_OF_BOUNDS, None)
 }
 
 fn underflow() -> Thrown {
-    Thrown::other("java.nio.BufferUnderflowException")
+    Thrown::bare(BUFFER_UNDERFLOW)
 }
 
 /// A `ByteBuffer` over borrowed bytes, its capacity theirs.
@@ -102,10 +222,14 @@ impl<'a> Buffer<'a> {
                 self.position = position;
                 Ok(())
             }
-            _ => Err(Thrown::other(format!(
-                "java.lang.IllegalArgumentException: newPosition > limit: ({position} > {})",
-                self.limit
-            ))),
+            _ if position < 0 => Err(Thrown::runtime(
+                ILLEGAL_ARGUMENT,
+                format!("newPosition < 0: ({position} < 0)"),
+            )),
+            _ => Err(Thrown::runtime(
+                ILLEGAL_ARGUMENT,
+                format!("newPosition > limit: ({position} > {})", self.limit),
+            )),
         }
     }
 
@@ -117,10 +241,14 @@ impl<'a> Buffer<'a> {
                 self.position = self.position.min(limit);
                 Ok(())
             }
-            _ => Err(Thrown::other(format!(
-                "java.lang.IllegalArgumentException: newLimit > capacity: ({limit} > {})",
-                self.data.len()
-            ))),
+            _ if limit < 0 => Err(Thrown::runtime(
+                ILLEGAL_ARGUMENT,
+                format!("newLimit < 0: ({limit} < 0)"),
+            )),
+            _ => Err(Thrown::runtime(
+                ILLEGAL_ARGUMENT,
+                format!("newLimit > capacity: ({limit} > {})", self.data.len()),
+            )),
         }
     }
 
@@ -133,7 +261,7 @@ impl<'a> Buffer<'a> {
     fn at(&self, index: i64, size: usize) -> Result<&'a [u8], Thrown> {
         match usize::try_from(index) {
             Ok(start) if start + size <= self.limit => Ok(&self.data[start..start + size]),
-            _ => Err(index_out_of_bounds(index, self.limit)),
+            _ => Err(index_out_of_bounds()),
         }
     }
 
@@ -163,7 +291,7 @@ impl<'a> Buffer<'a> {
     /// `new byte[count]` does, too many as the read does.
     pub(super) fn take(&mut self, count: i64) -> Result<&'a [u8], Thrown> {
         let count = usize::try_from(count)
-            .map_err(|_| Thrown::other(format!("java.lang.NegativeArraySizeException: {count}")))?;
+            .map_err(|_| Thrown::runtime(NEGATIVE_ARRAY_SIZE, count.to_string()))?;
         if count > self.remaining() {
             return Err(underflow());
         }

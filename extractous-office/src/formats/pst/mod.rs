@@ -8,9 +8,6 @@
 //! ones refuse what it reads (OST files, damaged headers) and cannot reach the attachments of an
 //! embedded message. A file is read as Tika reads it, through its B-trees, block by block, so
 //! that one of any size is read in place.
-//!
-//! A file with a message whose HTML body the native HTML parser leaves to Tika, or with a string
-//! in a charset the port does not decode, is left to Tika.
 
 mod file;
 mod lzfu;
@@ -21,7 +18,7 @@ mod table;
 mod tests;
 
 use file::{Format, PstFile, Thrown};
-use object::{Folder, Message, Undecodable};
+use object::{Folder, Message};
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
@@ -31,8 +28,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::msg::extractor::normalized_class;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{
-    html, noted, reading, unless_different, Decline, Deferral, Difference, Failure, Footprint,
-    Opened, Parser, Prepared,
+    html, unless_different, Decline, Difference, Failure, Footprint, Opened, Parser, Prepared,
 };
 use crate::java;
 use crate::java::time::format_instant;
@@ -140,7 +136,7 @@ impl Parser for OutlookPstParser {
             return Err(Decline::Fails(Error::ParseError(OST_2013.to_owned())));
         }
         let root = Folder::root(&file).map_err(fails)?;
-        let difference = scan_folder(&root).map_err(Decline::Deferred)?;
+        let difference = scan_folder(&root);
         drop(root);
         unless_different(
             Box::new(move |xhtml| {
@@ -169,87 +165,35 @@ fn malformed(thrown: Thrown) -> Failure {
     Failure::Malformed(thrown.to_string())
 }
 
-fn undecodable(Undecodable(reason): Undecodable) -> Failure {
-    Failure::Malformed(format!(
-        "{reason}, which the scan before the extraction missed"
-    ))
-}
-
-/// What stops a message being written: a failure java-libpst throws, or text the port cannot
-/// decode.
-enum Unread {
-    Thrown(Thrown),
-    Undecodable(Undecodable),
-}
-
-impl From<Thrown> for Unread {
-    fn from(thrown: Thrown) -> Self {
-        Self::Thrown(thrown)
-    }
-}
-
-impl From<Undecodable> for Unread {
-    fn from(undecodable: Undecodable) -> Self {
-        Self::Undecodable(undecodable)
-    }
-}
-
-impl From<Unread> for Failure {
-    fn from(unread: Unread) -> Self {
-        match unread {
-            Unread::Thrown(thrown) => malformed(thrown),
-            Unread::Undecodable(reason) => undecodable(reason),
-        }
-    }
-}
-
-/// What the native port makes of a file, found as the extraction will walk it: why it leaves the
-/// file to Tika, text it cannot decode, or else the first message whose HTML body the native
-/// HTML parser reads differently from Tika's, if any. A failure ends the walk, as it ends the
-/// extraction.
-fn scan_folder(folder: &Folder) -> Result<Option<Difference>, Deferral> {
+/// The first message the extraction will walk whose HTML body the native HTML parser reads
+/// differently from Tika's, if any, found as the extraction walks the file.
+fn scan_folder(folder: &Folder) -> Option<Difference> {
     let mut difference = None;
     if folder.content_count() > 0 {
         let mut index = 0;
         while let Ok(Some(message)) = folder.child(index) {
-            let found = scan_message(&message)?;
-            difference = difference.or(found);
+            difference = difference.or_else(|| scan_message(&message));
             index += 1;
         }
     }
-    if let Err(Undecodable(reason)) = folder.display_name() {
-        return Err(reason);
-    }
     if folder.has_subfolders() {
         let Ok(subfolders) = folder.subfolders() else {
-            return Ok(difference);
+            return difference;
         };
         for subfolder in subfolders {
-            let found = scan_folder(&subfolder)?;
-            difference = difference.or(found);
+            difference = difference.or_else(|| scan_folder(&subfolder));
         }
     }
-    Ok(difference)
+    difference
 }
 
 /// [`scan_folder`] of a message and the messages attached to it.
-fn scan_message(message: &Message) -> Result<Option<Difference>, Deferral> {
-    let read = match read_message(message) {
-        Ok(read) => read,
-        Err(Unread::Undecodable(Undecodable(reason))) => return Err(reason),
-        Err(Unread::Thrown(_)) => return Ok(None),
-    };
-    if let Err(Unread::Undecodable(Undecodable(reason))) =
-        write_metadata(message, &read, &mut TikaMetadata::new())
-    {
-        return Err(reason);
-    }
+fn scan_message(message: &Message) -> Option<Difference> {
+    let html = message.body_html();
     let mut difference = None;
-    let html = read.html;
     if !java::is_blank(&html) {
         let units: Vec<u16> = html.encode_utf16().collect();
-        let (_, read_otherwise) = noted(html::prepare_string(&units))
-            .map_err(|declined| format!("a message's HTML body: {declined}"))?;
+        let (_, read_otherwise) = html::prepare_string(&units);
         difference = read_otherwise
             .map(|Difference(reason)| Difference(format!("a message's HTML body: {reason}")));
     }
@@ -257,22 +201,11 @@ fn scan_message(message: &Message) -> Result<Option<Difference>, Deferral> {
         let Ok(mut attachment) = message.attachment(index) else {
             continue;
         };
-        match attachment.embedded_message() {
-            Ok(Some(embedded)) => {
-                let found = scan_message(&embedded)?;
-                difference = difference.or(found);
-            }
-            Ok(None) => {
-                for name in [attachment.long_filename(), attachment.filename()] {
-                    if let Err(Undecodable(reason)) = name {
-                        return Err(reason);
-                    }
-                }
-            }
-            Err(_) => {}
+        if let Ok(Some(embedded)) = attachment.embedded_message() {
+            difference = difference.or_else(|| scan_message(&embedded));
         }
     }
-    Ok(difference)
+    difference
 }
 
 /// What `PSTMailItemParser` reads of a message's text.
@@ -282,12 +215,12 @@ struct ReadMessage {
     body: String,
 }
 
-fn read_message(message: &Message) -> Result<ReadMessage, Unread> {
-    Ok(ReadMessage {
-        subject: message.subject()?,
-        html: message.body_html()?,
-        body: message.body()?,
-    })
+fn read_message(message: &Message) -> ReadMessage {
+    ReadMessage {
+        subject: message.subject(),
+        html: message.body_html(),
+        body: message.body(),
+    }
 }
 
 /// `parseFolder`: the folder's messages, then each subfolder in a div headed by its name.
@@ -295,7 +228,7 @@ fn write_folder(folder: &Folder, path: &str, xhtml: &mut Xhtml) -> Result<(), Fa
     if folder.content_count() > 0 {
         let mut index = 0;
         while let Some(message) = folder.child(index).map_err(malformed)? {
-            let subject = message.subject().map_err(undecodable)?;
+            let subject = message.subject();
             let resource = format!("{subject}.msg");
             let internal_path = if path.ends_with('/') {
                 format!("{path}{resource}")
@@ -309,7 +242,7 @@ fn write_folder(folder: &Folder, path: &str, xhtml: &mut Xhtml) -> Result<(), Fa
             metadata.set(embedded::RESOURCE_NAME, resource);
             metadata.set(
                 name::CONTENT_LENGTH,
-                estimate_size(&message).map_err(Failure::from)?.to_string(),
+                estimate_size(&message).map_err(malformed)?.to_string(),
             );
             xhtml.parse_container_natively(
                 &[],
@@ -326,12 +259,12 @@ fn write_folder(folder: &Folder, path: &str, xhtml: &mut Xhtml) -> Result<(), Fa
     }
     for subfolder in folder.subfolders().map_err(malformed)? {
         xhtml.start_element_with("div", &[("class", "email-folder")])?;
-        let name = subfolder.display_name().map_err(undecodable)?;
+        let name = subfolder.display_name();
         xhtml.element("h1", &name)?;
         let subpath = if path.ends_with('/') {
             format!("{path}{name}")
         } else {
-            format!("{path}/{}", folder.display_name().map_err(undecodable)?)
+            format!("{path}/{}", folder.display_name())
         };
         write_folder(&subfolder, &subpath, xhtml)?;
         xhtml.end_element("div")?;
@@ -340,12 +273,12 @@ fn write_folder(folder: &Folder, path: &str, xhtml: &mut Xhtml) -> Result<(), Fa
 }
 
 /// `estimateSize`: the length of the message's texts, RTF included, plus a margin.
-fn estimate_size(message: &Message) -> Result<i64, Unread> {
-    let read = read_message(message)?;
+fn estimate_size(message: &Message) -> Result<i64, Thrown> {
+    let read = read_message(message);
     let rtf = match message.rtf_body() {
         Ok(rtf) => length(&rtf),
         Err(thrown) if thrown.is_checked() => 0,
-        Err(thrown) => return Err(thrown.into()),
+        Err(thrown) => return Err(thrown),
     };
     Ok(length(&read.body) + rtf + length(&read.html) + length(&read.subject) + SIZE_ESTIMATE_BASE)
 }
@@ -358,11 +291,9 @@ fn length(text: &str) -> i64 {
 /// `PSTMailItemParser.parse`: the message's metadata, then its body and attachments in an
 /// `embedded` div.
 fn write_message(message: &Message, xhtml: &mut Xhtml) -> Result<(), Failure> {
-    let read = read_message(message)?;
-    write_metadata(message, &read, xhtml.metadata_mut())?;
-    let id = message
-        .string(property::INTERNET_MESSAGE_ID)
-        .map_err(undecodable)?;
+    let read = read_message(message);
+    write_metadata(message, &read, xhtml.metadata_mut()).map_err(malformed)?;
+    let id = message.string(property::INTERNET_MESSAGE_ID);
     xhtml.start_element_with("div", &[("class", "embedded"), ("id", &id)])?;
     if java::is_blank(&read.html) {
         xhtml.start_element("p")?;
@@ -370,11 +301,7 @@ fn write_message(message: &Message, xhtml: &mut Xhtml) -> Result<(), Failure> {
         xhtml.end_element("p")?;
     } else {
         let units: Vec<u16> = read.html.encode_utf16().collect();
-        let prepared = reading(html::prepare_string(&units)).map_err(|reason| {
-            Failure::Malformed(format!(
-                "a message's HTML body: {reason}, which the scan before the extraction missed"
-            ))
-        })?;
+        let (prepared, _) = html::prepare_string(&units);
         let metadata = xhtml.metadata_mut().clone();
         let (metadata, result) = parse_inline_with(prepared, metadata, xhtml);
         *xhtml.metadata_mut() = metadata;
@@ -418,21 +345,6 @@ impl From<Stop> for Interrupted {
     }
 }
 
-impl From<Undecodable> for Interrupted {
-    fn from(reason: Undecodable) -> Self {
-        Self::Failure(undecodable(reason))
-    }
-}
-
-impl From<Unread> for Interrupted {
-    fn from(unread: Unread) -> Self {
-        match unread {
-            Unread::Thrown(thrown) => Self::Thrown(thrown),
-            Unread::Undecodable(reason) => reason.into(),
-        }
-    }
-}
-
 /// `parseMailAttachment`: an embedded message as an embedded document of its own, any other
 /// attachment as its name and its data in an `embedded` div.
 fn write_attachment(message: &Message, index: usize, xhtml: &mut Xhtml) -> Result<(), Interrupted> {
@@ -445,7 +357,7 @@ fn write_attachment(message: &Message, index: usize, xhtml: &mut Xhtml) -> Resul
         metadata.set(embedded::PARSER_OVERRIDE, MAIL_ITEM);
         metadata.set(
             embedded::RESOURCE_NAME,
-            format!("{}.msg", embedded.subject()?),
+            format!("{}.msg", embedded.subject()),
         );
         ResourceType::Attachment.set(&mut metadata);
         metadata.set(name::CONTENT_LENGTH, size);
@@ -458,9 +370,9 @@ fn write_attachment(message: &Message, index: usize, xhtml: &mut Xhtml) -> Resul
         )?;
         return Ok(());
     }
-    let mut filename = attachment.long_filename()?;
+    let mut filename = attachment.long_filename();
     if filename.is_empty() {
-        filename = attachment.filename()?;
+        filename = attachment.filename();
     }
     xhtml.element("p", &filename)?;
     let mut metadata = TikaMetadata::new();
@@ -480,10 +392,10 @@ fn write_metadata(
     message: &Message,
     read: &ReadMessage,
     metadata: &mut TikaMetadata,
-) -> Result<(), Unread> {
+) -> Result<(), Thrown> {
     let string = |id| message.string(id);
-    let id = string(property::INTERNET_MESSAGE_ID)?;
-    let sender = string(property::SENDER_NAME)?;
+    let id = string(property::INTERNET_MESSAGE_ID);
+    let sender = string(property::SENDER_NAME);
     metadata.set(embedded::RESOURCE_NAME, format!("{}.msg", read.subject));
     metadata.set(embedded::RELATIONSHIP_ID, id.clone());
     ResourceType::Attachment.set(metadata);
@@ -509,16 +421,16 @@ fn write_metadata(
         name::LAST_MODIFICATION_TIME,
         message.date(property::LAST_MODIFICATION_TIME)?,
     );
-    metadata.set(name::COMMENTS, string(property::COMMENT)?);
+    metadata.set(name::COMMENTS, string(property::COMMENT));
     metadata.set(
         name::DESCRIPTOR_NODE_ID,
         message.descriptor_node_id().to_string(),
     );
-    let from_email = string(property::SENDER_EMAIL_ADDRESS)?;
+    let from_email = string(property::SENDER_EMAIL_ADDRESS);
     metadata.set(name::FROM_EMAIL, from_email.clone());
-    metadata.set(name::TO_DISPLAY_NAME, string(property::DISPLAY_TO)?);
-    metadata.set(name::CC_DISPLAY_NAME, string(property::DISPLAY_CC)?);
-    metadata.set(name::BCC_DISPLAY_NAME, string(property::DISPLAY_BCC)?);
+    metadata.set(name::TO_DISPLAY_NAME, string(property::DISPLAY_TO));
+    metadata.set(name::CC_DISPLAY_NAME, string(property::DISPLAY_CC));
+    metadata.set(name::BCC_DISPLAY_NAME, string(property::DISPLAY_BCC));
     metadata.set(
         name::IMPORTANCE,
         message.int_or(property::IMPORTANCE, 1).to_string(),
@@ -528,24 +440,24 @@ fn write_metadata(
         message.int_or(property::PRIORITY, 0).to_string(),
     );
     metadata.set(name::IS_FLAGGED, message.is_flagged()?.to_string());
-    let class = string(property::MESSAGE_CLASS)?;
+    let class = string(property::MESSAGE_CLASS);
     metadata.set(name::MESSAGE_CLASS, normalized_class(Some(&class)));
     metadata.set(name::MESSAGE_CLASS_RAW, class);
     metadata.set(name::FROM_EMAIL, from_email);
     metadata.set(
         name::FROM_REPRESENTING_EMAIL,
-        string(property::SENT_REPRESENTING_EMAIL_ADDRESS)?,
+        string(property::SENT_REPRESENTING_EMAIL_ADDRESS),
     );
     metadata.set(name::FROM_NAME, sender);
     metadata.set(
         name::FROM_REPRESENTING_NAME,
-        string(property::SENT_REPRESENTING_NAME)?,
+        string(property::SENT_REPRESENTING_NAME),
     );
     for index in 0..message.recipient_count() {
         let recipient = match message.recipient(index) {
             Ok(recipient) => recipient,
             Err(thrown) if thrown.is_checked() => break,
-            Err(thrown) => return Err(thrown.into()),
+            Err(thrown) => return Err(thrown),
         };
         let (display_name, email) = match recipient.recipient_type() {
             1 => (name::TO_DISPLAY_NAME, name::TO_EMAIL),

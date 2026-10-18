@@ -74,9 +74,9 @@ impl UsageMap {
                     let map_page = pages.page(map_page_number)?;
                     let page_type = map_page[0] as i8;
                     if map_page[0] != PAGE_TYPE_USAGE_MAP {
-                        return Err(Thrown::other(format!(
-                            "java.io.IOException: Looking for usage map at page \
-                             {map_page_number}, but page type is {page_type}"
+                        return Err(Thrown::io(format!(
+                            "Looking for usage map at page {map_page_number}, but page type is \
+                             {page_type}"
                         )));
                     }
                     map.process(
@@ -86,8 +86,8 @@ impl UsageMap {
                 }
                 Ok(map)
             }
-            other => Err(Thrown::other(format!(
-                "java.io.IOException: Unrecognized map type: {}",
+            other => Err(Thrown::io(format!(
+                "Unrecognized map type: {}",
                 other as i8
             ))),
         }

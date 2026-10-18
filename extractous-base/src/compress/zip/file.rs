@@ -7,8 +7,8 @@ use std::borrow::Cow;
 
 use super::extra::{self, ExtraFields, Field, Instant, Times};
 use super::{
-    decode, decode_name, decompresses, inflate, u16_at, u32_at, u64_at, Content, Corrupt, CFH_SIG,
-    DEFLATED, LFH_SIG, STORED,
+    decode, decode_name, decompresses, inflate, method_name, u16_at, u32_at, u64_at, Content,
+    Corrupt, CFH_SIG, DEFLATED, LFH_SIG, STORED,
 };
 use crate::compress::crc32;
 
@@ -70,8 +70,32 @@ impl ZipEntry {
 
     /// `ZipUtil.canHandleEntryData`: not encrypted, and compressed a way commons-compress reads.
     pub fn can_read(&self) -> bool {
-        !self.uses_encryption()
-            && (matches!(self.method, STORED | DEFLATED) || decompresses(self.method))
+        self.unsupported_feature().is_none()
+    }
+
+    /// The message of the `UnsupportedZipFeatureException` that `ZipUtil.checkRequestedFeatures`
+    /// throws on an entry commons-compress does not read: encrypted, or compressed a way it does
+    /// not decompress.
+    pub fn unsupported_feature(&self) -> Option<String> {
+        if self.uses_encryption() {
+            return Some(format!(
+                "Unsupported feature encryption used in entry {}",
+                self.name
+            ));
+        }
+        if matches!(self.method, STORED | DEFLATED) || decompresses(self.method) {
+            return None;
+        }
+        Some(match method_name(self.method) {
+            Some(method) => format!(
+                "Unsupported compression method {} ({method}) used in entry {}",
+                self.method, self.name
+            ),
+            None => format!(
+                "Unsupported feature compression method used in entry {}",
+                self.name
+            ),
+        })
     }
 
     /// `getPlatform`: the high byte of the version made by.
@@ -160,6 +184,13 @@ fn locate_eocd(data: &[u8]) -> Option<usize> {
     let last = data.len().checked_sub(MIN_EOCD_SIZE)?;
     let stop = data.len().saturating_sub(MAX_EOCD_SIZE);
     (stop..=last).rev().find(|&at| data[at..at + 4] == EOCD_SIG)
+}
+
+/// Whether `data` has an end of central directory record where `ZipFile` looks for one: without
+/// one, it throws a `ZipException` that the archive is not a ZIP archive before it reads
+/// anything else.
+pub fn has_end_of_central_directory(data: &[u8]) -> bool {
+    locate_eocd(data).is_some()
 }
 
 /// A central directory record before its local header is resolved.
@@ -464,6 +495,25 @@ pub mod tests {
         let cd = lying.len() - 22 - 47;
         lying[cd + 42..cd + 46].copy_from_slice(&1000u32.to_le_bytes());
         assert!(ZipFile::open(&lying).is_err());
+    }
+
+    #[test]
+    fn names_the_feature_commons_compress_does_not_read() {
+        let feature = |method: u16| {
+            let data = zip_compressed("a", method, b"x", 1);
+            ZipFile::open(&data).unwrap().entries()[0].unsupported_feature()
+        };
+        assert_eq!(feature(DEFLATED), None);
+        assert_eq!(
+            feature(14).as_deref(),
+            Some("Unsupported compression method 14 (LZMA) used in entry a")
+        );
+        assert_eq!(
+            feature(11).as_deref(),
+            Some("Unsupported feature compression method used in entry a")
+        );
+        assert!(!has_end_of_central_directory(b"not a zip"));
+        assert!(has_end_of_central_directory(&zip(&[("a", b"x")])));
     }
 
     #[test]

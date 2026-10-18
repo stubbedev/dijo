@@ -46,17 +46,24 @@ pub fn password(configs: &ParserConfigs) -> &str {
 /// The error Tika's path fails with where a parser throws a Tika `EncryptedDocumentException`,
 /// wrapping the exception `cause` POI throws where there is one, as our Java reports it.
 pub fn encrypted(cause: Option<&str>) -> Error {
-    let thrown = "Parse error occurred : org.apache.tika.exception.EncryptedDocumentException: \
-                  Unable to process: document is encrypted";
-    Error::Encrypted(match cause {
-        Some(cause) => format!("{thrown} <- caused by {cause}"),
-        None => thrown.to_owned(),
+    let message = "Unable to process: document is encrypted";
+    encrypted_document(&match cause {
+        Some(cause) => format!("{message} <- caused by {cause}"),
+        None => message.to_owned(),
     })
+}
+
+/// The error Tika's path fails with where a parser throws a Tika `EncryptedDocumentException`
+/// with `message`, as our Java reports it.
+pub fn encrypted_document(message: &str) -> Error {
+    Error::Encrypted(format!(
+        "Parse error occurred : org.apache.tika.exception.EncryptedDocumentException: {message}"
+    ))
 }
 
 /// The hash algorithms the encryptions use (`HashAlgorithm`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Hash {
+pub enum Hash {
     Md5,
     Sha1,
     Sha256,
@@ -66,7 +73,7 @@ enum Hash {
 
 impl Hash {
     /// The hash of the parts, one after the other.
-    fn digest(self, parts: &[&[u8]]) -> Vec<u8> {
+    pub fn digest(self, parts: &[&[u8]]) -> Vec<u8> {
         fn run<D: Digest>(parts: &[&[u8]]) -> Vec<u8> {
             let mut digest = D::new();
             for part in parts {
@@ -84,7 +91,7 @@ impl Hash {
     }
 
     /// `hashSize`.
-    fn size(self) -> usize {
+    pub fn size(self) -> usize {
         match self {
             Hash::Md5 => 16,
             Hash::Sha1 => 20,
@@ -786,7 +793,7 @@ impl std::fmt::Debug for AesKey {
 
 impl AesKey {
     /// The key of `key`'s bytes, failing as Java's cipher does on a length AES does not take.
-    fn new(key: &[u8]) -> Result<AesKey, Unopened> {
+    pub fn new(key: &[u8]) -> Result<AesKey, Unopened> {
         use aes::cipher::KeyInit as _;
         let invalid = |_| Unopened::Thrown("Invalid AES key length".to_owned());
         Ok(match key.len() {
@@ -811,7 +818,7 @@ impl AesKey {
     }
 
     /// AES/ECB/NoPadding of `data`'s whole blocks.
-    fn decrypt_ecb(&self, data: &[u8]) -> Vec<u8> {
+    pub fn decrypt_ecb(&self, data: &[u8]) -> Vec<u8> {
         let mut out = data.to_vec();
         for chunk in out.as_chunks_mut::<16>().0 {
             self.decrypt_block(chunk);
@@ -827,7 +834,7 @@ impl AesKey {
     }
 
     /// AES/CBC/NoPadding of `data`'s whole blocks with the IV.
-    fn decrypt_cbc(&self, iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
+    pub fn decrypt_cbc(&self, iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
         let mut out = data.to_vec();
         let mut previous = *iv;
         for chunk in out.as_chunks_mut::<16>().0 {

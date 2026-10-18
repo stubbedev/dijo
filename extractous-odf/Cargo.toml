@@ -18,8 +18,8 @@ testing = ["extractous-base/testing"]
 [dependencies]
 extractous-base = { path = "../extractous-base", default-features = false }
 extractous-mime = { path = "../extractous-mime", default-features = false }
-zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 extractous-base = { path = "../extractous-base", default-features = false, features = ["testing"] }
 extractous-core = { path = "../extractous-core", default-features = false, features = ["parity"] }
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }

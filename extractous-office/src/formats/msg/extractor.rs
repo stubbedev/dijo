@@ -649,12 +649,7 @@ fn body(message: &Message) -> Result<(Body, HashSet<String>, Option<Difference>)
         if !data.is_empty() {
             let rtf = rtf::decompress(data).map_err(unported)?;
             if let Some(html) = rtf::decapsulate(&rtf)? {
-                let (prepared, difference) =
-                    noted(html::prepare_string(&html)).map_err(|reason| {
-                        Unported(format!(
-                            "the HTML the RTF body encapsulates defers: {reason}"
-                        ))
-                    })?;
+                let (prepared, difference) = html::prepare_string(&html);
                 image_content_ids(&String::from_utf16_lossy(&html), &mut content_ids);
                 return Ok((
                     Body::Html {

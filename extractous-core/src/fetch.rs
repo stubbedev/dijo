@@ -231,16 +231,30 @@ mod tests {
         assert_eq!(java_int_length(""), None);
     }
 
+    /// The path of a `file:` URL naming `path`, as `Path.toUri` writes it: with forward slashes,
+    /// a slash before a Windows drive letter, and spaces encoded.
+    fn url_path(path: &std::path::Path) -> String {
+        let path = path
+            .to_str()
+            .unwrap()
+            .replace('\\', "/")
+            .replace(' ', "%20");
+        if path.starts_with('/') {
+            path
+        } else {
+            format!("/{path}")
+        }
+    }
+
     #[test]
     fn opens_file_urls_of_regular_files_as_those_files() {
         let path =
             std::env::temp_dir().join(format!("extractous fetch {}.txt", std::process::id()));
         std::fs::write(&path, "text").unwrap();
-        let name = path.to_str().unwrap();
-        let encoded = name.replace(' ', "%20");
+        let encoded = url_path(&path);
         for url in [format!("file:{encoded}"), format!("file://{encoded}")] {
             match locate(&url, None).unwrap() {
-                Located::File(found) => assert_eq!(found, name),
+                Located::File(found) => assert_eq!(std::path::Path::new(&found), path),
                 Located::Fetched(_) => panic!("{url} was fetched"),
             }
         }
@@ -251,7 +265,7 @@ mod tests {
         ));
         let directory = std::env::temp_dir();
         assert!(matches!(
-            locate(&format!("file:{}", directory.to_str().unwrap()), None),
+            locate(&format!("file:{}", url_path(&directory)), None),
             Err(Error::IoError(_))
         ));
         assert!(matches!(

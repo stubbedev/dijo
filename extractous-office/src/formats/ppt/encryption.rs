@@ -6,6 +6,7 @@ use rc4::StreamCipher;
 
 use crate::config::ParserConfigs;
 use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Rc4Keys};
+use crate::formats::poi::{Thrown, Unread};
 use crate::formats::{Decline, Unported};
 
 /// `BLIB_STORE_ENTRY_PARTS`: the fields of a blip store entry, each encrypted on its own.
@@ -20,10 +21,8 @@ const WRONG_PASSWORD: &str = "org.apache.poi.hslf.exceptions.EncryptedPowerPoint
                               PowerPoint file is encrypted. The correct password needs to be set \
                               via Biff8EncryptionKey.setCurrentUserPassword()";
 
-fn unported(reason: &str) -> Unported {
-    Unported(format!(
-        "POI fails decrypting the presentation, which fails Tika's parse: {reason}"
-    ))
+fn poi_throws(reason: &str) -> Unread {
+    Thrown(format!("decrypting the presentation: {reason}")).into()
 }
 
 /// The encryption of a presentation, opened.
@@ -63,11 +62,11 @@ impl Encryption {
         document: &mut [u8],
         persist_id: i32,
         offset: i32,
-    ) -> Result<(), Unported> {
+    ) -> Result<(), Unread> {
         let start = usize::try_from(offset)
             .ok()
             .filter(|start| start + 8 <= document.len())
-            .ok_or_else(|| unported("a record's header runs past the document stream"))?;
+            .ok_or_else(|| poi_throws("a record's header runs past the document stream"))?;
         let mut cipher = self.key.block(persist_id as u32).cipher();
         cipher.apply_keystream(&mut document[start..start + 8]);
         let length = i32::from_le_bytes(
@@ -79,7 +78,7 @@ impl Encryption {
             .ok()
             .map(|length| start + 8 + length)
             .filter(|&end| end <= document.len() && (end > start + 8 || end < document.len()))
-            .ok_or_else(|| unported("a record runs past the document stream"))?;
+            .ok_or_else(|| poi_throws("a record runs past the document stream"))?;
         cipher.apply_keystream(&mut document[start + 8..end]);
         Ok(())
     }
@@ -88,7 +87,7 @@ impl Encryption {
     /// place, each of its parts, a blip store entry's fields each, from the start of block 0's
     /// key. POI decrypts each field of the entry at the entry's start, so that only some of its
     /// bytes come out right, and fails on a part of no bytes (#119).
-    pub(super) fn decrypt_picture(&self, stream: &mut [u8], offset: usize) -> Result<(), Unported> {
+    pub(super) fn decrypt_picture(&self, stream: &mut [u8], offset: usize) -> Result<(), Unread> {
         self.decrypt_part(stream, offset, 8)?;
         let mut instance = ushort(stream, offset)? >> 4;
         let mut kind = ushort(stream, offset + 2)?;
@@ -134,29 +133,29 @@ impl Encryption {
 
     /// `decryptPicBytes`: `length` bytes at `at` decrypted with block 0's key from its start,
     /// failing where they run past the stream.
-    fn decrypt_part(&self, stream: &mut [u8], at: usize, length: i64) -> Result<(), Unported> {
+    fn decrypt_part(&self, stream: &mut [u8], at: usize, length: i64) -> Result<(), Unread> {
         let range = usize::try_from(length)
             .ok()
             .map(|length| at..at + length)
             .filter(|range| range.end <= stream.len())
-            .ok_or_else(|| unported("a picture's part runs past the stream"))?;
+            .ok_or_else(|| poi_throws("a picture's part runs past the stream"))?;
         self.key.block(0).decrypt(&mut stream[range]);
         Ok(())
     }
 }
 
-fn ushort(stream: &[u8], at: usize) -> Result<u16, Unported> {
+fn ushort(stream: &[u8], at: usize) -> Result<u16, Unread> {
     stream
         .get(at..at + 2)
         .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
-        .ok_or_else(|| unported("a picture's header runs past the stream"))
+        .ok_or_else(|| poi_throws("a picture's header runs past the stream"))
 }
 
-fn int(stream: &[u8], at: usize) -> Result<i32, Unported> {
+fn int(stream: &[u8], at: usize) -> Result<i32, Unread> {
     stream
         .get(at..at + 4)
         .map(|bytes| i32::from_le_bytes(bytes.try_into().expect("four bytes")))
-        .ok_or_else(|| unported("a picture's header runs past the stream"))
+        .ok_or_else(|| poi_throws("a picture's header runs past the stream"))
 }
 
 #[cfg(test)]

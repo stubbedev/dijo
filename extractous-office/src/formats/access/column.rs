@@ -2,7 +2,9 @@
 //! definition, and the value its bytes in a row hold, which for a memo or OLE column lie in a
 //! long value on other pages.
 
-use super::buffer::{Buffer, Thrown};
+use super::buffer::{
+    Buffer, Thrown, ARRAY_INDEX_OUT_OF_BOUNDS, BUFFER_UNDERFLOW, NEGATIVE_ARRAY_SIZE,
+};
 use super::format::{Charset, Format};
 use super::pages::Pages;
 use super::table::{row_end, row_start};
@@ -113,12 +115,8 @@ impl DataType {
 
     /// `DataType.fromByte` where it throws, as an exception.
     pub(super) fn from_byte_or_throw(byte: u8) -> Result<Self, Thrown> {
-        Self::from_byte(byte).ok_or_else(|| {
-            Thrown::other(format!(
-                "java.io.IOException: Unrecognized data type: {}",
-                byte as i8
-            ))
-        })
+        Self::from_byte(byte)
+            .ok_or_else(|| Thrown::io(format!("Unrecognized data type: {}", byte as i8)))
     }
 
     fn fixed_size(self) -> Option<i16> {
@@ -379,7 +377,7 @@ pub(super) enum Value {
 }
 
 fn underflow() -> Thrown {
-    Thrown::other("java.nio.BufferUnderflowException")
+    Thrown::bare(BUFFER_UNDERFLOW)
 }
 
 fn bytes<const N: usize>(data: &[u8]) -> Result<[u8; N], Thrown> {
@@ -406,7 +404,7 @@ fn read_plain(
         DataType::Text => Value::Text(decode_text(data, charset)),
         DataType::Money => {
             if data.len() != 8 {
-                return Err(Thrown::other("java.io.IOException: Invalid money value"));
+                return Err(Thrown::io("Invalid money value"));
             }
             Value::Money(i64::from_le_bytes(bytes(data)?))
         }
@@ -426,17 +424,15 @@ fn read_plain(
         DataType::ComplexType => Value::Complex(i32::from_le_bytes(bytes(data)?)),
         DataType::BigInt => Value::BigInt(i64::from_le_bytes(bytes(data)?)),
         DataType::Boolean => {
-            return Err(Thrown::other(
-                "java.io.IOException: Tried to read a boolean from data instead of null mask.",
+            return Err(Thrown::io(
+                "Tried to read a boolean from data instead of null mask.",
             ))
         }
         DataType::Ole
         | DataType::Memo
         | DataType::UnsupportedFixedLength
         | DataType::UnsupportedVariableLength => {
-            return Err(Thrown::other(format!(
-                "java.io.IOException: Unrecognized data type: {data_type:?}"
-            )))
+            return Err(Thrown::io(format!("Unrecognized data type: {data_type:?}")))
         }
     })
 }
@@ -553,8 +549,8 @@ fn read_long_value(definition: &[u8], pages: &Pages<'_>) -> Result<Vec<u8>, Thro
         return Ok(def.take(length.min(available) as i64)?.to_vec());
     }
     if definition.len() != format.size_long_value_def {
-        return Err(Thrown::other(format!(
-            "java.io.IOException: Expected {} bytes in long value definition, but found {}",
+        return Err(Thrown::io(format!(
+            "Expected {} bytes in long value definition, but found {}",
             format.size_long_value_def,
             definition.len()
         )));
@@ -578,7 +574,7 @@ fn read_long_value(definition: &[u8], pages: &Pages<'_>) -> Result<Vec<u8>, Thro
         }
         LONG_VALUE_TYPE_OTHER_PAGES => {
             if length > pages.file_len() {
-                return Err(Thrown::other(format!(
+                return Err(Thrown::unported(format!(
                     "a long value of {length} bytes, more than the file holds, which Jackcess \
                      allocates before reading it"
                 )));
@@ -595,7 +591,7 @@ fn read_long_value(definition: &[u8], pages: &Pages<'_>) -> Result<Vec<u8>, Thro
                 page_number = buffer.u24()?;
                 let mut chunk = i64::from(end) - i64::from(start) - 4;
                 if chunk <= 0 {
-                    return Err(Thrown::other(
+                    return Err(Thrown::unported(
                         "a long value chunk that adds nothing, over which Jackcess may loop for \
                          ever",
                     ));
@@ -608,14 +604,14 @@ fn read_long_value(definition: &[u8], pages: &Pages<'_>) -> Result<Vec<u8>, Thro
                 buffer.set_limit(i64::from(end))?;
                 let rest = &buffer.bytes()[buffer.position()..buffer.limit()];
                 if value.len() + rest.len() > length {
-                    return Err(Thrown::other("java.nio.BufferOverflowException"));
+                    return Err(Thrown::bare("java.nio.BufferOverflowException"));
                 }
                 value.extend_from_slice(rest);
             }
             Ok(value)
         }
-        other => Err(Thrown::other(format!(
-            "java.io.IOException: Unrecognized long value type: {}",
+        other => Err(Thrown::io(format!(
+            "Unrecognized long value type: {}",
             other as i8
         ))),
     }
@@ -634,7 +630,7 @@ fn unwrap_calculated(data: &[u8]) -> Result<&[u8], Thrown> {
     );
     let available = data.len() - CALC_DATA_OFFSET;
     let take = usize::try_from(length)
-        .map_err(|_| Thrown::other(format!("java.lang.NegativeArraySizeException: {length}")))?
+        .map_err(|_| Thrown::runtime(NEGATIVE_ARRAY_SIZE, length.to_string()))?
         .min(available);
     Ok(&data[CALC_DATA_OFFSET..CALC_DATA_OFFSET + take])
 }
@@ -653,8 +649,9 @@ fn read_calculated_numeric(data: &[u8]) -> Result<Value, Thrown> {
     let negate = buffer.u8()? != 0;
     let mut magnitude = buffer.take(length)?.to_vec();
     if magnitude.is_empty() {
-        return Err(Thrown::other(
-            "java.lang.ArrayIndexOutOfBoundsException: Index 0 out of bounds for length 0",
+        return Err(Thrown::index_out_of_bounds(
+            ARRAY_INDEX_OUT_OF_BOUNDS,
+            Some("Index 0 out of bounds for length 0".to_owned()),
         ));
     }
     let mut position = 0;
@@ -699,7 +696,8 @@ fn check_extended_date(data: &[u8]) -> Result<(), Thrown> {
     let seconds = number(12)?;
     let nanos = number(7)?.wrapping_mul(100);
     buffer.forward(3)?;
-    let out_of_range = || Thrown::other("java.time.DateTimeException: Invalid value for EpochDay");
+    let out_of_range =
+        || Thrown::runtime("java.time.DateTimeException", "Invalid value for EpochDay");
     let plus_days = |epoch_day: i64, days: i64| -> Result<i64, Thrown> {
         if days == 0 {
             return Ok(epoch_day);

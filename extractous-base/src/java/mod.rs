@@ -252,6 +252,43 @@ fn parse_signed(text: &str, radix: i128, value: fn(char) -> Option<u32>) -> Opti
     i64::try_from(if negative { -magnitude } else { magnitude }).ok()
 }
 
+/// `Base64.getDecoder().decode(text)`: the strict basic alphabet, its padding optional, or the
+/// message of the `IllegalArgumentException` Java throws.
+pub fn base64_decode(text: &str) -> Result<Vec<u8>, &'static str> {
+    const ILLEGAL: &str = "Illegal base64 character";
+    let trimmed = text.trim_end_matches('=');
+    if text.len() - trimmed.len() > 2 {
+        return Err(ILLEGAL);
+    }
+    let mut out = Vec::with_capacity(trimmed.len() / 4 * 3);
+    let mut bits = 0u32;
+    let mut count = 0;
+    for byte in trimmed.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return Err(ILLEGAL),
+        };
+        bits = (bits << 6) | u32::from(value);
+        count += 1;
+        if count == 4 {
+            out.extend_from_slice(&bits.to_be_bytes()[1..]);
+            bits = 0;
+            count = 0;
+        }
+    }
+    match count {
+        0 => {}
+        2 => out.push((bits >> 4) as u8),
+        3 => out.extend_from_slice(&((bits >> 2) as u16).to_be_bytes()),
+        _ => return Err("Last unit does not have enough valid bits"),
+    }
+    Ok(out)
+}
+
 /// `Base64.getMimeDecoder().decode(text)`: the text's ISO-8859-1 bytes, a character beyond it
 /// as `?`, decoded with everything outside the alphabet skipped, up to padding that must close a
 /// unit; `None` where Java throws.
@@ -690,6 +727,15 @@ pub fn hash_set_order<'a>(items: impl IntoIterator<Item = &'a str>) -> Vec<&'a s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_base64_as_java_does() {
+        assert_eq!(base64_decode("aGk=").unwrap(), b"hi");
+        assert_eq!(base64_decode("aGk").unwrap(), b"hi");
+        assert_eq!(base64_decode("aGVsbG8=").unwrap(), b"hello");
+        assert!(base64_decode("a").is_err());
+        assert!(base64_decode("a b").is_err());
+    }
 
     #[test]
     fn decodes_bytes_as_new_string_does() {
