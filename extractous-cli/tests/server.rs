@@ -550,6 +550,40 @@ fn embedded_document_limits_are_configurable() {
     assert!(skipped > 0, "{records:?}");
 }
 
+#[test]
+fn a_declared_content_type_hints_at_the_type() {
+    let server = Server::start(&[]);
+    let csv = "table-multi-row-column-cells-actual.csv";
+    let untyped = server.post_file("/detect", &[], csv).text();
+    let typed = server
+        .post_file("/detect", &[("Content-Type", "text/csv")], csv)
+        .text();
+    assert_ne!(untyped, typed);
+    assert!(typed.starts_with("text/csv"), "{typed}");
+
+    let named = server
+        .post_file(
+            "/detect",
+            &[
+                ("Content-Type", "text/csv"),
+                ("X-Extractous-Filename", "t.txt"),
+            ],
+            csv,
+        )
+        .text();
+    assert_eq!(named, untyped);
+
+    let json = server
+        .post_file(
+            "/extract?format=json",
+            &[("Content-Type", "application/pdf")],
+            "2022_Q3_AAPL.pdf",
+        )
+        .json();
+    assert_eq!(json["status"], "complete");
+    assert_eq!(json["source"]["path"], "upload");
+}
+
 /// Every spooled upload is removed, however its request ends.
 #[test]
 fn no_request_leaves_files_behind() {

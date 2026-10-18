@@ -40,7 +40,7 @@ use crate::tree::Limits;
 use handlers::{error_body, ExtractRequest, Head, Task};
 use metrics::Metrics;
 use processes::ProcessOptions;
-use upload::UploadError;
+use upload::{Name, UploadError};
 use workers::{Chunk, Job, Pool, Workers};
 
 const PASSWORD_HEADER: &str = "x-extractous-password";
@@ -438,11 +438,13 @@ async fn run(
     if let (Task::Extract(extract), Some(deadline)) = (&mut task, deadline) {
         extract.deadline = Some(deadline.into_std());
     }
-    let name = request
-        .headers()
-        .get(FILENAME_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(upload::file_name);
+    let header = |name| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value: &HeaderValue| value.to_str().ok())
+    };
+    let name = Name::from_hints(header(FILENAME_HEADER), header(CONTENT_TYPE.as_str()));
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let received = upload::receive(
         request.into_body(),
