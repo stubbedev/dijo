@@ -25,5 +25,6 @@ pub mod formats {
     pub mod fits;
     pub mod grib;
     pub mod hdf;
+    pub mod isatab;
     pub mod netcdf;
 }

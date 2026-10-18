@@ -57,6 +57,7 @@ pub(crate) use extractous_pdf::formats::pdf;
 pub(crate) use extractous_science::formats::fits;
 pub(crate) use extractous_science::formats::grib;
 pub(crate) use extractous_science::formats::hdf;
+pub(crate) use extractous_science::formats::isatab;
 pub(crate) use extractous_science::formats::netcdf;
 pub(crate) use extractous_small::formats::apple_single;
 pub(crate) use extractous_small::formats::chm;
@@ -153,6 +154,7 @@ static PARSERS: &[&dyn Parser] = &[
     &hwpx::HwpxParser,
     &hdf::HdfParser,
     &idml::IdmlParser,
+    &isatab::IsaTabParser,
     &iwork::IworkArchiveParser,
     &iwork_package::IworkPackageParser,
     &mail::EmlxParser,
@@ -232,6 +234,7 @@ pub(crate) static SCIENTIFIC: &[&dyn Parser] = &[
     &fits::FitsParser,
     &grib::GribParser,
     &hdf::HdfParser,
+    &isatab::IsaTabParser,
     &netcdf::NetCdfParser,
 ];
 
