@@ -313,6 +313,67 @@ fn reads_quattro_pro_for_dos_cells() {
     assert_eq!(xml.matches("<tr>").count(), 3, "{xml}");
 }
 
+/// A spreadsheet too large to read whole, its cells in the order of their addresses: they are
+/// written as their records are read again, under a budget far below an index of them.
+#[test]
+fn writes_quattro_pro_spreadsheets_too_large_to_read_whole_in_order() {
+    const COLUMNS: u16 = 256;
+    let row = |index: u64| {
+        let row = u16::try_from(index).unwrap();
+        (0..COLUMNS)
+            .flat_map(|column| {
+                let mut body = vec![0x80];
+                body.extend(column.to_le_bytes());
+                body.extend(row.to_le_bytes());
+                body.extend([b'\'', 1, b'Q']);
+                record(0x000F, &body)
+            })
+            .collect::<Vec<u8>>()
+    };
+    let count = extractous_core::large::bodies_past_limit(row(0).len());
+    assert!(count < 1 << 16, "{count} rows fit a sheet");
+    let file = extractous_core::large::LargeFile::new(
+        "large.wq1",
+        &record(0x0000, &0x5120u16.to_le_bytes()),
+        count,
+        row,
+        &record(0x0001, &[]),
+    );
+    let mut cells = 0u64;
+    file.extract_each(OldQuattroProParser.name(), |text| {
+        cells += text.matches('Q').count() as u64;
+    });
+    assert_eq!(cells, count * u64::from(COLUMNS));
+}
+
+#[test]
+fn indexes_cells_out_of_the_order_of_their_addresses() {
+    fn cell(column: u16, row: u16, text: &[u8]) -> Vec<u8> {
+        let mut body = vec![0x80];
+        body.extend(column.to_le_bytes());
+        body.extend(row.to_le_bytes());
+        body.push(b'\'');
+        body.push(u8::try_from(text.len()).unwrap());
+        body.extend(text);
+        record(0x000F, &body)
+    }
+    let sheet = [
+        record(0x0000, &0x5120u16.to_le_bytes()),
+        cell(1, 1, b"d"),
+        cell(0, 0, b"a"),
+        cell(1, 0, b"x"),
+        cell(0, 1, b"c"),
+        cell(1, 0, b"b"),
+        record(0x0001, &[]),
+    ]
+    .concat();
+    let xml = extract_xml(&sheet);
+    assert!(
+        xml.contains("<tr>\t<td>a</td>\t<td>b</td></tr>\n<tr>\t<td>c</td>\t<td>d</td></tr>"),
+        "{xml}"
+    );
+}
+
 #[test]
 fn reads_quattro_pro_for_windows_pages() {
     let xml = extract_xml(&quattro_windows());
