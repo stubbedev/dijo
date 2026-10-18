@@ -3,14 +3,10 @@
 
 use std::io::{self, Write};
 
-use extractous_core::large::LargeFile;
-pub(crate) use extractous_core::large::{Binary, BUDGET};
+use extractous_core::large::{bytes, zip_archive, Binary, LargeFile, BUDGET, END};
 
 use crate::compress::MAX_DECODED;
 use crate::input::MAX_READ_WHOLE;
-
-/// The text of the entry after the large one, which only an archive read to its end writes.
-pub(crate) const END: &str = "the end of the archive";
 
 /// The size of the large entry: well past what a stream may decode into memory.
 pub(crate) const LARGE: u64 = MAX_DECODED as u64 + (64 << 20);
@@ -63,18 +59,17 @@ fn zip_of_large_entry(
     large: u64,
     method: zip::CompressionMethod,
 ) -> io::Result<()> {
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(method)
-        .compression_level(Some(1))
-        .large_file(true);
-    let mut zip = zip::ZipWriter::new_stream(out);
-    zip.start_file("large.bin", options)
-        .map_err(io::Error::other)?;
-    io::copy(&mut Binary::new(large), &mut zip)?;
-    zip.start_file("end.txt", options)
-        .map_err(io::Error::other)?;
-    zip.write_all(END.as_bytes())?;
-    zip.finish().map_err(io::Error::other)?.flush()
+    zip_archive(
+        out,
+        vec![
+            (
+                "large.bin",
+                method,
+                Box::new(move |out| io::copy(&mut Binary::new(large), out).map(drop)),
+            ),
+            ("end.txt", method, bytes(END.as_bytes())),
+        ],
+    )
 }
 
 #[test]

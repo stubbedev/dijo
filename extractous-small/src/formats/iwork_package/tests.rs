@@ -165,7 +165,7 @@ fn extracts_tikas_test_packages_as_tikas_path_does() {
 fn reads_a_package_too_large_to_read_whole_spooling_its_content() {
     use extractous_core::large::{LargeFile, SPOOLING_BUDGET};
 
-    use crate::formats::large::{bytes, noise, package, END, LARGE};
+    use extractous_core::large::{bytes, noise, package, END, LARGE_PART};
 
     let file = LargeFile::written("large.pages", |out| {
         package(
@@ -179,7 +179,7 @@ fn reads_a_package_too_large_to_read_whole_spooling_its_content() {
                             br#"<?xml version="1.0"?>
 <sl:document xmlns:sl="http://developer.apple.com/namespaces/sl" xmlns:sf="http://developer.apple.com/namespaces/sf" xmlns:sfa="http://developer.apple.com/namespaces/sfa">"#,
                         )?;
-                        noise(out, "sf:noise", LARGE)?;
+                        noise(out, "sf:noise", LARGE_PART)?;
                         write!(
                             out,
                             "<sf:text-storage><sf:page-start/><sf:p>{END}</sf:p>\

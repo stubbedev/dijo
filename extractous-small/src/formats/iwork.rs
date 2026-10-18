@@ -803,8 +803,8 @@ mod tests {
         use extractous_core::large::{Binary, LargeFile, SPOOLING_BUDGET};
         use zip::CompressionMethod::{Deflated, Stored};
 
-        use crate::formats::large::{bytes, zip_archive, END, LARGE};
         use crate::input::MAX_READ_WHOLE;
+        use extractous_core::large::{bytes, zip_archive, END, LARGE_PART};
 
         let document = archive(&[record(
             2001,
@@ -831,7 +831,7 @@ mod tests {
                     (
                         "Data/deflated.bin",
                         Deflated,
-                        Box::new(|out| std::io::copy(&mut Binary::new(LARGE), out).map(drop)),
+                        Box::new(|out| std::io::copy(&mut Binary::new(LARGE_PART), out).map(drop)),
                     ),
                 ],
             )

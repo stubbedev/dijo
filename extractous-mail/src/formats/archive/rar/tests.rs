@@ -329,9 +329,8 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
 fn spools_an_entry_too_large_to_read_whole_one_entry_at_a_time() {
     use std::io::Read;
 
-    use super::super::large::{Binary, BUDGET, END};
     use crate::input::MAX_READ_WHOLE;
-    use extractous_core::large::LargeFile;
+    use extractous_core::large::{Binary, LargeFile, BUDGET, END};
 
     let mut large = Vec::new();
     Binary::new(MAX_READ_WHOLE + (16 << 20))

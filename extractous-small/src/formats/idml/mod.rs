@@ -236,7 +236,7 @@ mod tests;
 mod large_tests {
     use extractous_core::large::{LargeFile, SPOOLING_BUDGET};
 
-    use crate::formats::large::{bytes, noise, package, END, LARGE};
+    use extractous_core::large::{bytes, noise, package, END, LARGE_PART};
 
     const NAMESPACE: &str = "http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging";
 
@@ -263,7 +263,7 @@ mod large_tests {
                                 out,
                                 r#"<?xml version="1.0" encoding="UTF-8"?><idPkg:Story xmlns:idPkg="{NAMESPACE}"><Story>"#
                             )?;
-                            noise(out, "Noise", LARGE)?;
+                            noise(out, "Noise", LARGE_PART)?;
                             out.write_all(b"</Story></idPkg:Story>")
                         }),
                     ),

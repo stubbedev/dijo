@@ -4,10 +4,9 @@
 
 use std::io::{self, Write};
 
-use extractous_core::large::{LargeFile, BUDGET};
+use extractous_core::large::{zip_archive, EntryData, LargeFile, BUDGET};
 use extractous_core::Extractor;
-use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
+use zip::CompressionMethod;
 
 use super::extractor::kind;
 use super::testing::{content_types, relationship, relationships};
@@ -25,18 +24,15 @@ const W: &str = "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/20
 const DOCUMENT_TYPE: &str =
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml";
 
-/// What writes a part's content.
-type Content<'c> = Box<dyn FnOnce(&mut dyn Write) -> io::Result<()> + 'c>;
-
 /// A part: its name, its content type and what writes its content.
 struct Part<'c> {
     name: &'c str,
     content_type: &'c str,
-    content: Content<'c>,
+    content: EntryData<'c>,
 }
 
 impl<'c> Part<'c> {
-    fn new(name: &'c str, content_type: &'c str, content: Content<'c>) -> Self {
+    fn new(name: &'c str, content_type: &'c str, content: EntryData<'c>) -> Self {
         Self {
             name,
             content_type,
@@ -46,11 +42,7 @@ impl<'c> Part<'c> {
 
     /// A part of `text`.
     fn text(name: &'c str, content_type: &'c str, text: String) -> Self {
-        Self::new(
-            name,
-            content_type,
-            Box::new(move |out| out.write_all(text.as_bytes())),
-        )
+        Self::new(name, content_type, bytes_of(text))
     }
 
     /// The relationships part of the part `source`, of `relationships`.
@@ -71,25 +63,24 @@ fn write_package(
     main_relationship: (&str, &str),
     parts: Vec<Part>,
 ) -> io::Result<()> {
-    let options = SimpleFileOptions::default()
-        .compression_method(method)
-        .compression_level(Some(1))
-        .large_file(true);
     let types = content_types(parts.iter().map(|part| (part.name, part.content_type)));
     let (kind, main) = main_relationship;
-    let mut zip = ZipWriter::new_stream(out);
-    zip.start_file("[Content_Types].xml", options)
-        .map_err(io::Error::other)?;
-    zip.write_all(types.as_bytes())?;
-    zip.start_file("_rels/.rels", options)
-        .map_err(io::Error::other)?;
-    zip.write_all(relationships(&relationship("rId1", kind, main)).as_bytes())?;
-    for part in parts {
-        zip.start_file(part.name, options)
-            .map_err(io::Error::other)?;
-        (part.content)(&mut zip)?;
-    }
-    zip.finish().map_err(io::Error::other)?.flush()
+    let package_relationships = relationships(&relationship("rId1", kind, main));
+    let mut entries: Vec<(&str, CompressionMethod, EntryData)> = vec![
+        ("[Content_Types].xml", method, bytes_of(types)),
+        ("_rels/.rels", method, bytes_of(package_relationships)),
+    ];
+    entries.extend(
+        parts
+            .into_iter()
+            .map(|part| (part.name, method, part.content)),
+    );
+    zip_archive(out, entries)
+}
+
+/// The data of an entry that holds `text`.
+fn bytes_of<'c>(text: String) -> EntryData<'c> {
+    Box::new(move |out| out.write_all(text.as_bytes()))
 }
 
 /// Writes to `out` `head`, the units `unit` makes of their indexes up to `length` bytes in

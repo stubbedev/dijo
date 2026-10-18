@@ -4,10 +4,9 @@
 
 use std::io::{self, Write};
 
-use extractous_core::large::{write_base64, LargeFile};
+use extractous_core::large::{write_base64, Binary, LargeFile, BUDGET, END};
 use extractous_core::Extractor;
 
-use crate::formats::archive::large::{Binary, BUDGET, END};
 use crate::input::MAX_READ_WHOLE;
 
 /// Writes to `out` a message whose first part is a binary attachment of `large` bytes in

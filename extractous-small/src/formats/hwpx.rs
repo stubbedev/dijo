@@ -558,7 +558,7 @@ mod tests {
     fn reads_a_package_too_large_to_read_whole_a_section_at_a_time() {
         use extractous_core::large::{LargeFile, SPOOLING_BUDGET};
 
-        use crate::formats::large::{bytes, noise, package, END, LARGE};
+        use extractous_core::large::{bytes, noise, package, END, LARGE_PART};
 
         let last = SECTION1.replace("Second section, 한국어 텍스트.", END);
         let file = LargeFile::written("large.hwpx", |out| {
@@ -575,7 +575,7 @@ mod tests {
                                 out,
                                 r#"<?xml version="1.0" encoding="UTF-8"?><hs:noise xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">"#
                             )?;
-                            noise(out, "hs:n", LARGE)?;
+                            noise(out, "hs:n", LARGE_PART)?;
                             out.write_all(b"<hs:sec/></hs:noise>")
                         }),
                     ),

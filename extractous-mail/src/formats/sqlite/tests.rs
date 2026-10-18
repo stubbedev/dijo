@@ -257,9 +257,8 @@ fn types_values_as_sqlite_jdbc_does() {
 #[cfg(not(feature = "tika"))]
 #[test]
 fn reads_a_database_too_large_to_read_whole_in_place() {
-    use extractous_core::large::{LargeFile, BUDGET};
+    use extractous_core::large::{LargeFile, BUDGET, END};
 
-    use crate::formats::archive::large::END;
     use crate::input::MAX_READ_WHOLE;
 
     let scratch = Scratch::new("sqlite-large");

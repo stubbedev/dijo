@@ -7,8 +7,11 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::fs::File;
-use std::io::BufWriter;
+use std::io::{self, BufWriter, Write as _};
 use std::path::PathBuf;
+
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 use crate::config::ParserConfigs;
 use crate::formats::handlers::Write;
@@ -27,6 +30,13 @@ const BASE64_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 /// What [`LargeFile::padded`] pads a header with, a body at a time.
 const PADDING: &[u8] = &[0; 1 << 20];
+/// The text after the large part of a document, which only a document read to its end writes.
+pub const END: &str = "the end of the document";
+/// Twice what a spool holds in memory, so that a part this large spools to a file.
+pub const LARGE_PART: u64 = 2 * MAX_READ_WHOLE;
+/// The characters [`noise`] draws from.
+const NOISE_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .";
 
 thread_local! {
     /// The bytes this thread holds of what it allocated.
@@ -168,6 +178,73 @@ pub fn write_base64(
         encoded.extend_from_slice(line_end);
         out.write_all(&encoded)?;
     }
+}
+
+/// Writes to `out` at least `length` bytes of `element` elements, each on a line of its own,
+/// holding characters that deflate barely compresses, drawn from a fixed sequence, so that a
+/// package holding them deflated is itself too large to read whole.
+pub fn noise(out: &mut dyn io::Write, element: &str, length: u64) -> io::Result<()> {
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut line = [0u8; 1024];
+    let mut written = 0;
+    while written < length {
+        for character in &mut line {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            *character = NOISE_ALPHABET[(state >> 58) as usize];
+        }
+        write!(out, "<{element}>")?;
+        out.write_all(&line)?;
+        writeln!(out, "</{element}>")?;
+        written += (line.len() + 2 * element.len() + 6) as u64;
+    }
+    Ok(())
+}
+
+/// What writes the data of an entry of an archive.
+pub type EntryData<'a> = Box<dyn FnOnce(&mut dyn io::Write) -> io::Result<()> + 'a>;
+
+/// The data of an entry that holds `bytes`.
+pub fn bytes(bytes: &[u8]) -> EntryData<'_> {
+    Box::new(move |out| out.write_all(bytes))
+}
+
+/// Writes to `out` a ZIP archive of `entries`, each with its name and what writes its data, the
+/// first stored, as a package's `mimetype` is, the others deflated.
+pub fn package(out: &mut dyn io::Write, entries: Vec<(&str, EntryData<'_>)>) -> io::Result<()> {
+    zip_archive(
+        out,
+        entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, data))| {
+                let method = if index == 0 {
+                    CompressionMethod::Stored
+                } else {
+                    CompressionMethod::Deflated
+                };
+                (name, method, data)
+            })
+            .collect(),
+    )
+}
+
+/// Writes to `out` a ZIP archive of `entries`, each with its name, how it is compressed and
+/// what writes its data, as a stream.
+pub fn zip_archive(
+    out: &mut dyn io::Write,
+    entries: Vec<(&str, CompressionMethod, EntryData<'_>)>,
+) -> io::Result<()> {
+    let mut zip = ZipWriter::new_stream(out);
+    for (name, method, data) in entries {
+        let options = SimpleFileOptions::default()
+            .compression_method(method)
+            .compression_level(Some(1));
+        zip.start_file(name, options).map_err(io::Error::other)?;
+        data(&mut zip)?;
+    }
+    zip.finish().map_err(io::Error::other)?.flush()
 }
 
 /// How many bodies of `length` bytes make a file too large to read whole.

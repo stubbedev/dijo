@@ -655,7 +655,7 @@ adminlang=\"en\" srclang=\"en\" datatype=\"plaintext\"/>\r\n<body>\r\n",
     fn reads_xlz_archives_too_large_to_read_whole_an_entry_at_a_time() {
         use extractous_core::large::SPOOLING_BUDGET;
 
-        use crate::formats::large::{bytes, noise, package, END, LARGE};
+        use extractous_core::large::{bytes, noise, package, END, LARGE_PART};
 
         const XLIFF: &str = r#"<?xml version="1.0" encoding="UTF-8"?><xliff version="1.2" xmlns="urn:oasis:names:tc:xliff:document:1.2">"#;
         let last = format!(
@@ -670,7 +670,7 @@ adminlang=\"en\" srclang=\"en\" datatype=\"plaintext\"/>\r\n<body>\r\n",
                         "a.xlf",
                         Box::new(|out| {
                             out.write_all(XLIFF.as_bytes())?;
-                            noise(out, "note", LARGE)?;
+                            noise(out, "note", LARGE_PART)?;
                             out.write_all(b"</xliff>")
                         }),
                     ),

@@ -173,8 +173,8 @@ fn reads_files_too_large_to_read_whole_an_entry_at_a_time() {
     use extractous_core::large::{Binary, LargeFile, SPOOLING_BUDGET};
     use zip::CompressionMethod::{Deflated, Stored};
 
-    use crate::formats::large::{bytes, zip_archive, END, LARGE};
     use crate::input::MAX_READ_WHOLE;
+    use extractous_core::large::{bytes, zip_archive, END, LARGE_PART};
 
     let worksheet = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><geogebra format="5.0"><construction title="{END}"><element type="text"><caption val="{END}"/></element></construction></geogebra>"#
@@ -194,7 +194,7 @@ fn reads_files_too_large_to_read_whole_an_entry_at_a_time() {
                 (
                     "deflated.bin",
                     Deflated,
-                    Box::new(|out| std::io::copy(&mut Binary::new(LARGE), out).map(drop)),
+                    Box::new(|out| std::io::copy(&mut Binary::new(LARGE_PART), out).map(drop)),
                 ),
             ],
         )

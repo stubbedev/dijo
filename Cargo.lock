@@ -843,6 +843,7 @@ dependencies = [
  "test-case",
  "textdistance",
  "ureq",
+ "zip",
 ]
 
 [[package]]

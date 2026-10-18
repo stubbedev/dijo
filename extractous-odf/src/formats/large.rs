@@ -5,63 +5,15 @@
 
 use std::io::{self, Write};
 
-use extractous_core::large::{write_base64, Binary, LargeFile, BUDGET, SPOOLING_BUDGET};
+use extractous_core::large::{
+    noise, package, write_base64, Binary, LargeFile, BUDGET, END, LARGE_PART, SPOOLING_BUDGET,
+};
 use extractous_core::{Extractor, Metadata};
 
 use crate::input::MAX_READ_WHOLE;
 
-/// The text after the large part, which only a document read to its end writes.
-const END: &str = "the end of the document";
 const TITLE: &str = "A large document";
 const OFFICE_NAMESPACES: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/""#;
-/// Twice what a spool holds in memory, so that a part this large spools to a file.
-const LARGE: u64 = 2 * MAX_READ_WHOLE;
-/// The characters [`noise`] draws from.
-const NOISE_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .";
-
-/// Writes to `out` at least `length` bytes of `element` elements, each on a line of its own, holding characters that deflate barely compresses, drawn from a fixed
-/// sequence, so that a package holding them deflated is itself too large to read whole.
-fn noise(out: &mut dyn Write, element: &str, length: u64) -> io::Result<()> {
-    let mut state = 0x9E37_79B9_7F4A_7C15u64;
-    let mut line = [0u8; 1024];
-    let mut written = 0;
-    while written < length {
-        for character in &mut line {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            *character = NOISE_ALPHABET[(state >> 58) as usize];
-        }
-        write!(out, "<{element}>")?;
-        out.write_all(&line)?;
-        writeln!(out, "</{element}>")?;
-        written += (line.len() + 2 * element.len() + 6) as u64;
-    }
-    Ok(())
-}
-
-/// What writes the data of an entry of an archive.
-type EntryData = Box<dyn FnOnce(&mut dyn Write) -> io::Result<()>>;
-
-/// Writes to `out` a ZIP archive of `entries`, each with its name and what writes its data,
-/// the first stored, as a package's `mimetype` is, the others deflated.
-fn package(out: &mut dyn Write, entries: Vec<(&str, EntryData)>) -> io::Result<()> {
-    let mut zip = zip::ZipWriter::new_stream(out);
-    for (index, (name, data)) in entries.into_iter().enumerate() {
-        let method = if index == 0 {
-            zip::CompressionMethod::Stored
-        } else {
-            zip::CompressionMethod::Deflated
-        };
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(method)
-            .compression_level(Some(1));
-        zip.start_file(name, options).map_err(io::Error::other)?;
-        data(&mut zip)?;
-    }
-    zip.finish().map_err(io::Error::other)?.flush()
-}
 
 /// Asserts that `file` is too large to read whole, that `text` reaches [`END`], and that
 /// `metadata` has the title.
@@ -105,7 +57,7 @@ fn reads_a_package_too_large_to_read_whole_spooling_its_content() {
                             out,
                             r#"<?xml version="1.0" encoding="UTF-8"?><office:document-content {OFFICE_NAMESPACES}><office:body><office:text><text:tracked-changes><text:changed-region text:id="c"><text:deletion>"#
                         )?;
-                        noise(out, "text:p", LARGE)?;
+                        noise(out, "text:p", LARGE_PART)?;
                         write!(
                             out,
                             "</text:deletion></text:changed-region></text:tracked-changes>\
@@ -181,7 +133,9 @@ fn reads_a_book_too_large_to_read_whole_a_chapter_at_a_time() {
                 ),
                 (
                     "OEBPS/one.xhtml",
-                    Box::new(move |out| chapter(out, &|out| noise(out, "style", LARGE), "one")),
+                    Box::new(move |out| {
+                        chapter(out, &|out| noise(out, "style", LARGE_PART), "one")
+                    }),
                 ),
                 (
                     "OEBPS/two.xhtml",

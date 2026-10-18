@@ -3,10 +3,11 @@
 
 use std::io::{self, Write};
 
-use extractous_core::large::LargeFile;
+use extractous_core::large::{bytes, zip_archive, Binary, LargeFile, BUDGET, END};
 use extractous_core::Extractor;
+use zip::CompressionMethod::Deflated;
 
-use crate::formats::archive::large::{Binary, BUDGET, END, LARGE};
+use crate::formats::archive::large::LARGE;
 use crate::input::MAX_READ_WHOLE;
 
 /// Writes to `out` a response record of `id` whose payload of `length` bytes and `content_type`
@@ -70,18 +71,21 @@ fn inflates_a_gzipped_archive_past_the_memory_limit_to_a_spool() {
 #[test]
 fn spools_a_collection_archive_past_the_memory_limit() {
     let file = LargeFile::written("large.wacz", |out| {
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated)
-            .compression_level(Some(1))
-            .large_file(true);
-        let mut zip = zip::ZipWriter::new_stream(out);
-        zip.start_file("datapackage.json", options)
-            .map_err(io::Error::other)?;
-        zip.write_all(br#"{"profile": "data-package", "resources": []}"#)?;
-        zip.start_file("archive/data.warc", options)
-            .map_err(io::Error::other)?;
-        archive_of_large_payload(&mut zip, LARGE)?;
-        zip.finish().map_err(io::Error::other)?.flush()
+        zip_archive(
+            out,
+            vec![
+                (
+                    "datapackage.json",
+                    Deflated,
+                    bytes(br#"{"profile": "data-package", "resources": []}"#),
+                ),
+                (
+                    "archive/data.warc",
+                    Deflated,
+                    Box::new(|out| archive_of_large_payload(out, LARGE)),
+                ),
+            ],
+        )
     });
     let (text, metadata) = file.extract_with(&Extractor::new(), BUDGET, "extractous::WACZParser");
     assert!(text.contains(END), "{text}");

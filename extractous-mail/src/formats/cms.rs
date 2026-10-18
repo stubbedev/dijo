@@ -1158,9 +1158,8 @@ mod tests {
     fn reads_signed_content_too_large_to_read_whole_in_place() {
         use std::io::Read;
 
-        use crate::formats::archive::large::Binary;
         use crate::input::MAX_READ_WHOLE;
-        use extractous_core::large::{LargeFile, BUDGET};
+        use extractous_core::large::{Binary, LargeFile, BUDGET};
 
         let mut content = Vec::new();
         Binary::new(MAX_READ_WHOLE + (16 << 20))
