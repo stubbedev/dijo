@@ -159,30 +159,26 @@ struct Walker<'p, 'x, 'h> {
     package: &'p Package,
 }
 
-/// The objects of a cell by their IDs, as `indexObjectsById` puts them in a `HashMap`, the last
-/// of an ID kept in the place of its first.
+/// The objects of a cell by their IDs, as `indexObjectsById` indexes them, the last of an ID kept
+/// in the place of its first.
 struct Objects {
     by_id: HashMap<GuidKey, Rc<Object>>,
-    /// The IDs in the order Java iterates the map.
+    /// The IDs in the order the cell declares them, where Tika iterates them in its `HashMap`'s
+    /// order (#129).
     order: Vec<GuidKey>,
 }
 
 impl Objects {
     fn of(groups: &[Vec<Rc<Object>>]) -> Self {
         let mut by_id = HashMap::new();
-        let mut first: Vec<ExGuid> = Vec::new();
+        let mut order = Vec::new();
         for object in groups.iter().flatten() {
             if let Some(id) = object.id {
                 if by_id.insert(id.key(), object.clone()).is_none() {
-                    first.push(id);
+                    order.push(id.key());
                 }
             }
         }
-        let hashes: Vec<u32> = first.iter().map(|id| id.java_hash()).collect();
-        let order = crate::java::hash_map_order(&hashes, 16)
-            .into_iter()
-            .map(|index| first[index].key())
-            .collect();
         Objects { by_id, order }
     }
 
@@ -846,19 +842,14 @@ impl<'p> Walker<'p, '_, '_> {
         Ok(())
     }
 
-    /// `handleRichEditTextUnicode`: the text up to the first NUL, as a link where it is a
-    /// hyperlink field, nothing where it has no NUL.
+    /// `handleRichEditTextUnicode`: the text up to the first NUL, or all of it where it has
+    /// none, which Tika drops (#129), as a link where it is a hyperlink field.
     fn rich_edit_text(&mut self, bytes: &[u8]) -> Result<(), Ended> {
-        let first_null = bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .position(|pair| *pair == [0, 0])
-            .map_or(0, |pair| pair * 2);
-        if first_null == 0 {
+        let text = up_to_nul(bytes);
+        if text.is_empty() {
             return Ok(());
         }
-        let text = utf16le(&bytes[..first_null]);
+        let text = utf16le(text);
         let link = self
             .hyperlink
             .captures(&text)
@@ -984,9 +975,52 @@ fn sanitized_name(name: &str) -> String {
     }
 }
 
+/// The UTF-16LE units of `bytes` before the first NUL, all of them where there is none.
+fn up_to_nul(bytes: &[u8]) -> &[u8] {
+    let units = bytes.as_chunks::<2>().0;
+    let end = units
+        .iter()
+        .position(|pair| *pair == [0, 0])
+        .unwrap_or(units.len());
+    &bytes[..end * 2]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_rich_text_up_to_its_first_nul_or_whole() {
+        let utf16 =
+            |text: &str| -> Vec<u8> { text.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+        assert_eq!(up_to_nul(&utf16("Havn\0rest")), utf16("Havn"));
+        assert_eq!(up_to_nul(&utf16("Bølge")), utf16("Bølge"));
+        assert_eq!(up_to_nul(&utf16("\0")), b"");
+    }
+
+    #[test]
+    fn looks_objects_up_in_the_order_they_are_declared() {
+        let object = |value: i32| {
+            Rc::new(Object {
+                id: Some(ExGuid {
+                    kind: 32,
+                    value,
+                    guid: super::super::Uuid([7; 16]),
+                }),
+                property_set: None,
+                references: Vec::new(),
+                space_references: Vec::new(),
+                file_data: None,
+            })
+        };
+        let groups = [vec![object(9), object(2)], vec![object(5), object(2)]];
+        let values: Vec<i32> = Objects::of(&groups)
+            .order
+            .iter()
+            .map(|(value, _)| *value)
+            .collect();
+        assert_eq!(values, [9, 2, 5]);
+    }
 
     #[test]
     fn sanitizes_names_as_tika_does() {

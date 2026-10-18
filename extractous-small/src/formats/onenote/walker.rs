@@ -75,8 +75,9 @@ pub(super) struct Found {
     pub(super) original_authors: Vec<String>,
     /// `lastModifiedTimestamp`, in seconds, if any.
     pub(super) last_modified_timestamp: Option<i64>,
-    pub(super) creation_timestamp: i64,
-    pub(super) last_modified: i64,
+    /// The earliest creation time, if any, where Tika gives `Long.MAX_VALUE` for none (#122).
+    pub(super) creation_timestamp: Option<i64>,
+    pub(super) last_modified: Option<i64>,
 }
 
 pub(super) struct Walker<'w, 'a, 'x> {
@@ -107,11 +108,7 @@ impl<'w, 'a, 'x> Walker<'w, 'a, 'x> {
             dif,
             xhtml,
             hyperlink: Regex::new(HYPERLINK).expect("the hyperlink pattern is valid"),
-            found: Found {
-                creation_timestamp: i64::MAX,
-                last_modified: i64::MIN,
-                ..Found::default()
-            },
+            found: Found::default(),
             most_recent_author_prop: false,
             original_author_prop: false,
             text_already_fetched: HashSet::new(),
@@ -273,14 +270,22 @@ impl<'w, 'a, 'x> Walker<'w, 'a, 'x> {
             }
             CREATION_TIME_STAMP => {
                 let created = value.scalar + TIME32_EPOCH_DIFF_1980;
-                if created < self.found.creation_timestamp {
-                    self.found.creation_timestamp = created;
+                if self
+                    .found
+                    .creation_timestamp
+                    .is_none_or(|earliest| created < earliest)
+                {
+                    self.found.creation_timestamp = Some(created);
                 }
             }
             LAST_MODIFIED_TIME => {
                 let modified = value.scalar + TIME32_EPOCH_DIFF_1980;
-                if modified > self.found.last_modified {
-                    self.found.last_modified = modified;
+                if self
+                    .found
+                    .last_modified
+                    .is_none_or(|latest| modified > latest)
+                {
+                    self.found.last_modified = Some(modified);
                 }
             }
             AUTHOR => {

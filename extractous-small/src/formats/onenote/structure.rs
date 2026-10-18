@@ -75,6 +75,7 @@ pub(super) struct Header {
     pub(super) ffv_newest_code_that_has_written_to_this_file: i64,
     pub(super) ffv_oldest_code_that_may_read_this_file: i64,
     pub(super) c_transactions_in_log: i64,
+    pub(super) cb_legacy_expected_file_length: i64,
     pub(super) cb_expected_file_length: i64,
     pub(super) rgb_placeholder: i64,
     pub(super) cb_legacy_free_space_in_free_chunk_list: i64,
@@ -401,21 +402,18 @@ impl<'a, 'd> Reader<'a, 'd> {
         Ok(bytes)
     }
 
-    /// `deserializeGUID`: sixteen bytes from the file's position, wherever the pointer is.
-    fn guid(&mut self, ptr: &mut Ptr) -> Guid {
-        let mut raw = [0; 16];
-        for byte in &mut raw {
-            *byte = self.dif.read_byte();
-        }
-        ptr.offset = self.dif.position();
-        Guid([
+    /// `deserializeGUID`: sixteen bytes at the pointer, where Tika reads them from wherever the
+    /// file's position is, past its end as `0xFF` bytes (#122).
+    fn guid(&mut self, ptr: &mut Ptr) -> Result<Guid, Thrown> {
+        let raw = self.bytes(ptr, 16)?;
+        Ok(Guid([
             raw[3], raw[2], raw[1], raw[0], raw[5], raw[4], raw[7], raw[6], raw[8], raw[9],
             raw[10], raw[11], raw[12], raw[13], raw[14], raw[15],
-        ])
+        ]))
     }
 
     fn extended_guid(&mut self, ptr: &mut Ptr) -> Result<ExtendedGuid, Thrown> {
-        let guid = self.guid(ptr);
+        let guid = self.guid(ptr)?;
         let n = self.int(ptr)?;
         Ok(ExtendedGuid { guid, n })
     }
@@ -450,16 +448,16 @@ impl<'a, 'd> Reader<'a, 'd> {
         Ok(ExtendedGuid { guid, n })
     }
 
-    /// `deserializeHeader`: the header's fields in order, the legacy expected file length
-    /// read into the expected one, which the 64-bit field then replaces; the reserved bytes
-    /// after it unless the file is in the alternative packaging.
+    /// `deserializeHeader`: the header's fields in order, the legacy expected file length its
+    /// own, where Tika reads it into the expected one, which the 64-bit field then replaces
+    /// (#122); the reserved bytes after it unless the file is in the alternative packaging.
     pub(super) fn header(&mut self) -> Result<Header, Thrown> {
         let mut ptr = Ptr::at(&self.dif);
         let p = &mut ptr;
-        self.guid(p);
-        self.guid(p);
-        let guid_legacy_file_version = self.guid(p);
-        let file_format = self.guid(p);
+        self.guid(p)?;
+        self.guid(p)?;
+        let guid_legacy_file_version = self.guid(p)?;
+        let file_format = self.guid(p)?;
         let ffv_last_code_that_wrote_to_this_file = self.int(p)?;
         let ffv_oldest_code_that_has_written_to_this_file = self.int(p)?;
         let ffv_newest_code_that_has_written_to_this_file = self.int(p)?;
@@ -467,14 +465,14 @@ impl<'a, 'd> Reader<'a, 'd> {
         self.chunk64(p)?;
         self.chunk64(p)?;
         let c_transactions_in_log = self.int(p)?;
-        self.int(p)?;
+        let cb_legacy_expected_file_length = self.int(p)?;
         let rgb_placeholder = self.long(p)?;
         self.chunk64(p)?;
         let cb_legacy_free_space_in_free_chunk_list = self.int(p)?;
         for _ in 0..4 {
             self.char(p)?;
         }
-        self.guid(p);
+        self.guid(p)?;
         let crc_name = self.int(p)?;
         self.chunk64x32(p)?;
         self.chunk64x32(p)?;
@@ -482,9 +480,9 @@ impl<'a, 'd> Reader<'a, 'd> {
         self.chunk64x32(p)?;
         let cb_expected_file_length = self.long(p)?;
         let cb_free_space_in_free_chunk_list = self.long(p)?;
-        self.guid(p);
+        self.guid(p)?;
         let n_file_version_generation = self.long(p)?;
-        self.guid(p);
+        self.guid(p)?;
         let grf_debug_log_flags = self.int(p)?;
         self.chunk64x32(p)?;
         self.chunk64x32(p)?;
@@ -504,6 +502,7 @@ impl<'a, 'd> Reader<'a, 'd> {
             ffv_newest_code_that_has_written_to_this_file,
             ffv_oldest_code_that_may_read_this_file,
             c_transactions_in_log,
+            cb_legacy_expected_file_length,
             cb_expected_file_length,
             rgb_placeholder,
             cb_legacy_free_space_in_free_chunk_list,
@@ -732,7 +731,7 @@ impl<'a, 'd> Reader<'a, 'd> {
             }
             GLOBAL_ID_TABLE_ENTRY_FNDX => {
                 let index = self.int(ptr)?;
-                let guid = self.guid(ptr);
+                let guid = self.guid(ptr)?;
                 self.document
                     .current_revision()?
                     .global_id
@@ -802,7 +801,7 @@ impl<'a, 'd> Reader<'a, 'd> {
             }
             FILE_DATA_STORE_OBJECT_REFERENCE_FND => {
                 self.chunk64(ptr)?;
-                self.guid(ptr);
+                self.guid(ptr)?;
                 let mut store = *ptr;
                 store.reposition(&mut self.dif, reference)?;
                 data.file_data = Some(self.file_data_store_object(&mut store)?);
@@ -946,7 +945,7 @@ impl<'a, 'd> Reader<'a, 'd> {
 
     /// `deserializeFileDataStoreObject`: where its data is, past its header.
     fn file_data_store_object(&mut self, ptr: &mut Ptr) -> Result<Chunk, Thrown> {
-        self.guid(ptr);
+        self.guid(ptr)?;
         let length = self.long(ptr)?;
         let unused = self.int(ptr)?;
         let reserved = self.long(ptr)?;
@@ -958,7 +957,7 @@ impl<'a, 'd> Reader<'a, 'd> {
             stp: ptr.offset,
             cb: length,
         };
-        self.guid(ptr);
+        self.guid(ptr)?;
         Ok(data)
     }
 
