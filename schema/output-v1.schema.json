@@ -93,6 +93,7 @@
                   "unsupported",
                   "limit-exceeded",
                   "timeout",
+                  "differs-from-tika",
                   "internal"
                 ]
               },

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
-use extractous_core::Metadata;
+use extractous_core::{Metadata, DIFFERS_FROM_TIKA};
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u32 = 1;
@@ -68,6 +68,7 @@ pub enum ErrorCategory {
     Unsupported,
     LimitExceeded,
     Timeout,
+    DiffersFromTika,
     Internal,
 }
 
@@ -80,6 +81,7 @@ impl ErrorCategory {
             ErrorCategory::Unsupported => "unsupported",
             ErrorCategory::LimitExceeded => "limit-exceeded",
             ErrorCategory::Timeout => "timeout",
+            ErrorCategory::DiffersFromTika => "differs-from-tika",
             ErrorCategory::Internal => "internal",
         }
     }
@@ -177,7 +179,9 @@ impl ExtractionError {
 
     /// Classifies an error by the Java exception classes in its cause chain.
     pub fn from_message(message: String) -> Self {
-        let category = if message.contains("NoSuchFileException")
+        let category = if message.contains(DIFFERS_FROM_TIKA) {
+            ErrorCategory::DiffersFromTika
+        } else if message.contains("NoSuchFileException")
             || message.contains("AccessDeniedException")
         {
             ErrorCategory::Unreadable
@@ -578,6 +582,12 @@ mod tests {
         assert_eq!(
             classify("TikaException: TIKA-237: Illegal SAXException <- caused by org.apache.tika.sax.TaggedSAXException: Suspected zip bomb: 10 levels of package entry nesting"),
             ErrorCategory::LimitExceeded
+        );
+        assert_eq!(
+            classify(
+                "extractous::FlvParser read the document differently from Tika: a date in UTC"
+            ),
+            ErrorCategory::DiffersFromTika
         );
         assert_eq!(classify("something else"), ErrorCategory::Internal);
     }

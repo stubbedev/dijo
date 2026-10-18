@@ -108,7 +108,7 @@ pub fn status_for(category: ErrorCategory) -> u16 {
         ErrorCategory::Corrupt | ErrorCategory::Encrypted => 422,
         ErrorCategory::LimitExceeded => 413,
         ErrorCategory::Timeout => 504,
-        ErrorCategory::Unreadable | ErrorCategory::Internal => 500,
+        ErrorCategory::Unreadable | ErrorCategory::DiffersFromTika | ErrorCategory::Internal => 500,
     }
 }
 
