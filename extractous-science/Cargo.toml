@@ -1,0 +1,24 @@
+[package]
+name = "extractous-science"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "extractous's native parsers of scientific data formats: NetCDF, HDF4 and HDF5, GRIB, FITS and ISA-Tab"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/extractous"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+# Tika's path, which the tests compare the native parsers with.
+tika = ["extractous-base/tika", "extractous-core/tika", "extractous-html/tika"]
+# What the tests of the crates built on this one share with its own.
+testing = ["extractous-base/testing", "extractous-html/testing"]
+
+[dependencies]
+extractous-base = { path = "../extractous-base", default-features = false }
+extractous-html = { path = "../extractous-html", default-features = false }
+memchr = "2.8.3"
+
+[dev-dependencies]
+extractous-base = { path = "../extractous-base", default-features = false, features = ["testing"] }
+extractous-core = { path = "../extractous-core", default-features = false, features = ["parity"] }

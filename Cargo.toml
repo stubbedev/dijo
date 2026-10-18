@@ -11,6 +11,7 @@ members = [
     "extractous-media",
     "extractous-odf",
     "extractous-small",
+    "extractous-science",
     "extractous-mail",
     "extractous-office",
     "extractous-ooxml",
