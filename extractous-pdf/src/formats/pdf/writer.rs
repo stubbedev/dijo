@@ -222,10 +222,11 @@ impl Callbacks for PageWriter<'_, '_> {
     }
 }
 
-/// The document being written.
+/// The document being written: its pages each read in a scope of its own, and the rest of it as
+/// a whole, through `pdf`.
 pub(super) struct DocumentWriter<'p, 'r> {
     pdf: &'p Pdf<'p>,
-    engine: Engine<'p>,
+    engine: Engine,
     pub(super) page: PageWriter<'p, 'r>,
     /// `getCurrentPageNo`.
     page_number: usize,
@@ -253,7 +254,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         }
         Self {
             pdf,
-            engine: Engine::new(pdf, labels),
+            engine: Engine::new(labels),
             page: PageWriter {
                 pdf,
                 out,
@@ -279,14 +280,19 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
     /// `PDFTextStripper.writeText` as `AbstractPDF2XHTML` runs it: every page, then the end
     /// of the document.
     /// Writes the pages and the end of the document, handing the recording to `after_page`
-    /// after each page, which may stop the writing there.
+    /// after each page, which may stop the writing there. Each page is read in a scope of its
+    /// own, let go of once it is written.
     pub(super) fn write(
         &mut self,
         after_page: &mut dyn FnMut(&mut Recording) -> ControlFlow<()>,
     ) -> Result<ControlFlow<()>, WriteFailure> {
-        for page in self.pdf.pages() {
+        let pdf = self.pdf;
+        for page in pdf.pages() {
             self.page.out.enter_page();
-            self.process_page(page)?;
+            let scope = pdf.scoped();
+            self.process_page(&scope, scope.page(page))?;
+            drop(scope);
+            self.end_scope();
             self.page.out.leave_page();
             if after_page(self.page.out).is_break() {
                 return Ok(ControlFlow::Break(()));
@@ -298,21 +304,21 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
 
     /// `PDFTextStripper.processPage`, as `PDF2XHTML` and Tika's tagged writer run it, or
     /// `OCR2XHTML.processPage`, which reads the page's OCR text in place of its text.
-    fn process_page(&mut self, page: Page<'p>) -> Result<(), WriteFailure> {
+    fn process_page(&mut self, pdf: &Pdf, page: Page) -> Result<(), WriteFailure> {
         self.page_number += 1;
         if self.settings.ocr.reads_only_ocr() {
             self.page
                 .out
                 .start_element_with("div", &[("class", "page")])?;
-            if self.renders(page) {
+            if self.renders(pdf, page) {
                 self.page
                     .out
                     .release_read(self.page_number - 1, PageCheck::Recognize);
             }
-            return self.close_page(page, 0, 0);
+            return self.close_page(pdf, page, 0, 0);
         }
         self.start_page()?;
-        let mut content = self.engine.process_page(page);
+        let mut content = self.engine.process_page(pdf, page);
         if self.page.tagged.is_none() && self.settings.reading_order {
             for article in content.articles.iter_mut() {
                 reading_order::arrange(article);
@@ -322,7 +328,16 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             true => Tagged::write_page(&mut self.page, self.page_number, &mut content)?,
             false => stripper::write_page(&mut content.articles, &mut self.page)?,
         }
-        self.end_page(page, &content)
+        self.end_page(pdf, page, &content)
+    }
+
+    /// Ends the scope a page was read in: what is kept by where a direct object of it was held
+    /// is let go of, as a later page's objects may be held there.
+    fn end_scope(&mut self) {
+        self.extracted.retain(|key| !key.is_direct());
+        if let Some(images) = self.images.as_mut() {
+            images.end_scope();
+        }
     }
 
     /// `AbstractPDF2XHTML.startPage`, the page's content held back from there when Tika's
@@ -344,12 +359,17 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
     }
 
     /// `PDF2XHTML.endPage`.
-    fn end_page(&mut self, page: Page<'p>, content: &PageContent) -> Result<(), WriteFailure> {
+    fn end_page(
+        &mut self,
+        pdf: &Pdf,
+        page: Page,
+        content: &PageContent,
+    ) -> Result<(), WriteFailure> {
         self.page.write_paragraph_end()?;
         if let Some(images) = self.images.as_mut() {
-            images.extract(self.pdf, page, self.page_number, &mut self.page)?;
+            images.extract(pdf, page, self.page_number, &mut self.page)?;
         }
-        self.close_page(page, content.glyphs, content.unmapped)
+        self.close_page(pdf, page, content.glyphs, content.unmapped)
     }
 
     /// `AbstractPDF2XHTML.endPage` of a page of `glyphs` glyphs, `unmapped` of them without
@@ -357,7 +377,8 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
     /// `TextLayerCheckingPdfParser` reads it, or its OCR text when Tika's PDF parser reads it.
     fn close_page(
         &mut self,
-        page: Page<'p>,
+        pdf: &Pdf,
+        page: Page,
         glyphs: i32,
         unmapped: i32,
     ) -> Result<(), WriteFailure> {
@@ -366,7 +387,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         out.add("pdf:unmapped-unicode-chars-per-page", unmapped.to_string());
         self.total_glyphs += i64::from(glyphs);
         self.total_unmapped += i64::from(unmapped);
-        self.annotations(page)?;
+        self.annotations(pdf, page)?;
         let layer_text = self.page.layer_text.take();
         let layer = match (layer_text.as_deref(), self.page.embeds) {
             (None, _) => Layer::Unheld,
@@ -374,13 +395,13 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             (Some(text), false) => Layer::Text(text),
         };
         let check = match self.settings.ocr.page(glyphs, unmapped, layer) {
-            PageCheck::Recognize if !self.renders(page) => PageCheck::Keep,
+            PageCheck::Recognize if !self.renders(pdf, page) => PageCheck::Keep,
             check => check,
         };
         match check {
             PageCheck::Keep => self.page.out.release(),
             PageCheck::Unrecognized => {
-                self.pdf.differ(Difference(format!(
+                pdf.differ(Difference(format!(
                     "page {} shows {glyphs} glyphs, {unmapped} of them without characters, \
                      which Tika's PDF parser wants OCR for, read without OCR as no tesseract \
                      runs",
@@ -398,10 +419,10 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
     /// Whether Tika's renderer renders `page` for the OCR parser: not a page too small to hold
     /// anything (`RenderSettings.belowMinimum`). A page above its limit of pixels, whose failure
     /// Tika records, is read without OCR, the difference noted.
-    fn renders(&self, page: Page<'p>) -> bool {
-        let [left, bottom, right, top] = page.crop_box(self.pdf);
+    fn renders(&self, pdf: &Pdf, page: Page) -> bool {
+        let [left, bottom, right, top] = page.crop_box(pdf);
         let (width, height) = (f64::from(right - left), f64::from(top - bottom));
-        let (width, height) = match page.rotation(self.pdf) {
+        let (width, height) = match page.rotation(pdf) {
             90 | 270 => (height, width),
             _ => (width, height),
         };
@@ -410,7 +431,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             return false;
         }
         if pixels(width) * pixels(height) > MAX_RENDER_PIXELS {
-            self.pdf.differ(Difference(format!(
+            pdf.differ(Difference(format!(
                 "page {} renders to more pixels than Tika's renderer allows, whose failure Tika \
                  records, read without OCR",
                 self.page_number
@@ -421,13 +442,12 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
     }
 
     /// The annotations of a page, as `processPageAnnotation` writes and records them.
-    fn annotations(&mut self, page: Page<'p>) -> Result<(), WriteFailure> {
-        let pdf = self.pdf;
+    fn annotations(&mut self, pdf: &Pdf, page: Page) -> Result<(), WriteFailure> {
         let Some(annotations) = pdf.array(page.dict, b"Annots") else {
             return Ok(());
         };
         for item in annotations {
-            let Some(object) = pdf.resolve(item) else {
+            let Some((identity, object)) = pdf.resolve_identified(item) else {
                 continue;
             };
             let Some(annotation) = as_dict(object) else {
@@ -437,14 +457,18 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 ));
                 continue;
             };
-            let annotated = self.annotation(annotation);
+            let annotated = self.annotation(pdf, identity, annotation);
             gone_past(pdf, "an annotation", annotated)?;
         }
         Ok(())
     }
 
-    fn annotation(&mut self, annotation: &'p Dictionary) -> Result<(), PartFailure> {
-        let pdf = self.pdf;
+    fn annotation(
+        &mut self,
+        pdf: &Pdf,
+        identity: Identity,
+        annotation: &Dictionary,
+    ) -> Result<(), PartFailure> {
         let name = pdf.text(annotation, b"NM");
         if self.annotation_types.len() < MAX_ANNOTATION_TYPES {
             self.annotation_types
@@ -458,8 +482,8 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         match subtype.as_deref() {
             Some("FileAttachment") => {
                 let source = "annotationFileAttachment";
-                let spec = attachment::file_spec(pdf.get(annotation, b"FS"))?;
-                self.annotation_file(source, spec)?;
+                let spec = attachment::file_spec(pdf.get_identified(annotation, b"FS"))?;
+                self.annotation_file(pdf, source, spec)?;
             }
             Some("Widget") => {}
             _ => {
@@ -471,8 +495,9 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                     .into());
                 }
                 let source = subtype.as_deref().unwrap_or("unknown");
-                for spec in attachment::find_file_specs(pdf, annotation) {
-                    self.annotation_file(source, Some(FileSpec::Complex(spec)))?;
+                for (identity, dict) in attachment::find_file_specs(pdf, identity, annotation) {
+                    let spec = FileSpec::Complex { identity, dict };
+                    self.annotation_file(pdf, source, Some(spec))?;
                 }
             }
         }
@@ -643,8 +668,9 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
     /// parsed ([`PageCheck::Settle`]).
     fn annotation_file(
         &mut self,
+        pdf: &Pdf,
         source: &str,
-        spec: Option<FileSpec<'p>>,
+        spec: Option<FileSpec>,
     ) -> Result<(), PartFailure> {
         let Some(spec) = spec else {
             return Ok(());
@@ -652,7 +678,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         let key = spec.key();
         if !self.extracted.contains(&key) {
             let attributes = vec![("source".to_owned(), source.to_owned())];
-            for written in attachment::written(self.pdf, "", source, spec, attributes)? {
+            for written in attachment::written(pdf, "", source, spec, attributes)? {
                 match written {
                     Written::Link(attributes) => {
                         self.page.start("div", &borrowed(&attributes))?;
@@ -677,7 +703,6 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         let pdf = self.pdf;
         let specs = attachment::document_specs(pdf);
         for (name, spec) in specs.specs {
-            let spec = FileSpec::Complex(spec);
             if self.extracted.contains(&spec.key()) {
                 continue;
             }

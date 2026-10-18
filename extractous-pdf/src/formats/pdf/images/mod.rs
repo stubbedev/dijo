@@ -82,6 +82,12 @@ impl Images {
         }
     }
 
+    /// Ends the scope a page was read in, letting go of the images numbered by where a direct
+    /// object of it was held, as a later page's objects may be held there.
+    pub(super) fn end_scope(&mut self) {
+        self.processed.retain(|identity, _| !identity.is_direct());
+    }
+
     /// `extractImages` of page `page_number`, written by `writer`.
     pub(super) fn extract(
         &mut self,

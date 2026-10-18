@@ -108,9 +108,11 @@ impl Fonts {
         self.held.insert(identity, Held { font, used });
     }
 
-    /// Ends the page, letting go of the fonts of the pages longest past.
+    /// Ends the page, letting go of the fonts of the pages longest past, and of those held
+    /// directly in what the page read, whose identity a later page's objects may take.
     fn end_page(&mut self) {
         self.page += 1;
+        self.held.retain(|identity, _| !identity.is_direct());
         if self.held.len() <= FONTS_KEPT {
             return;
         }
@@ -120,9 +122,9 @@ impl Fonts {
     }
 }
 
-/// The text extraction engine of one document.
-pub(super) struct Engine<'p> {
-    pdf: &'p Pdf<'p>,
+/// The text extraction engine of one document, which holds what it learns of the document's
+/// fonts across its pages, and nothing of their objects.
+pub(super) struct Engine {
     fonts: Fonts,
     default_font: Option<Rc<Font>>,
     unshared: usize,
@@ -144,9 +146,9 @@ struct Frame {
     mcid: i32,
 }
 
-/// One page being processed.
+/// One page being processed, its objects read in the page's scope `pdf`.
 struct Run<'p, 'e> {
-    engine: &'e mut Engine<'p>,
+    engine: &'e mut Engine,
     pdf: &'p Pdf<'p>,
     page: Page<'p>,
     rotation: i32,
@@ -165,10 +167,9 @@ struct Run<'p, 'e> {
     content: PageContent,
 }
 
-impl<'p> Engine<'p> {
-    pub(super) fn new(pdf: &'p Pdf, labels: bool) -> Self {
+impl Engine {
+    pub(super) fn new(labels: bool) -> Self {
         Self {
-            pdf,
             fonts: Fonts::default(),
             default_font: None,
             unshared: 0,
@@ -178,9 +179,9 @@ impl<'p> Engine<'p> {
         }
     }
 
-    /// `PDFTextStripper.processPage` up to `writePage`: the page's glyphs by article.
-    pub(super) fn process_page(&mut self, page: Page<'p>) -> PageContent {
-        let pdf = self.pdf;
+    /// `PDFTextStripper.processPage` up to `writePage`: the page's glyphs by article, its
+    /// objects read in the page's scope `pdf`.
+    pub(super) fn process_page<'p>(&mut self, pdf: &'p Pdf<'p>, page: Page<'p>) -> PageContent {
         let crop = page.crop_box(pdf);
         let translate = (!jfloat::same(crop[0], 0.0) || !jfloat::same(crop[1], 0.0))
             .then(|| Matrix::translation(-crop[0], -crop[1]));
@@ -224,27 +225,32 @@ impl<'p> Engine<'p> {
 
     /// The font a resource names, created once per font dictionary as PDFBox's resource cache
     /// holds it.
-    fn font(&mut self, identity: Identity, dict: &Dictionary) -> Result<Rc<Font>, Unported> {
+    fn font(
+        &mut self,
+        pdf: &Pdf,
+        identity: Identity,
+        dict: &Dictionary,
+    ) -> Result<Rc<Font>, Unported> {
         if let Some(font) = self.fonts.get(identity) {
             return Ok(font);
         }
-        let font = Rc::new(Font::load(self.pdf, identity, dict)?);
+        let font = Rc::new(Font::load(pdf, identity, dict)?);
         self.fonts.insert(identity, Rc::clone(&font));
         Ok(font)
     }
 
     /// A font PDFBox creates anew each time, outside its resource cache.
-    fn unshared_font(&mut self, dict: &Dictionary) -> Result<Rc<Font>, Unported> {
+    fn unshared_font(&mut self, pdf: &Pdf, dict: &Dictionary) -> Result<Rc<Font>, Unported> {
         self.unshared += 1;
         Ok(Rc::new(Font::load(
-            self.pdf,
+            pdf,
             Identity::Unshared(self.unshared),
             dict,
         )?))
     }
 
     /// `PDFStreamEngine.getDefaultFont`: Helvetica, for text shown without a font.
-    fn default_font(&mut self) -> Result<Rc<Font>, Unported> {
+    fn default_font(&mut self, pdf: &Pdf) -> Result<Rc<Font>, Unported> {
         if let Some(font) = &self.default_font {
             return Ok(Rc::clone(font));
         }
@@ -253,7 +259,7 @@ impl<'p> Engine<'p> {
         dict.set("Subtype", Object::Name(b"Type1".to_vec()));
         dict.set("BaseFont", Object::Name(b"Helvetica".to_vec()));
         dict.set("Encoding", Object::Name(b"WinAnsiEncoding".to_vec()));
-        let font = Rc::new(Font::load(self.pdf, Identity::Unshared(0), &dict)?);
+        let font = Rc::new(Font::load(pdf, Identity::Unshared(0), &dict)?);
         self.default_font = Some(Rc::clone(&font));
         Ok(font)
     }
@@ -493,7 +499,7 @@ impl<'p> Run<'p, '_> {
             .and_then(|fonts| pdf.get_identified(fonts, name))
         {
             Some((identity, object)) => match as_dict(object) {
-                Some(dict) => Some(self.engine.font(identity, dict)?),
+                Some(dict) => Some(self.engine.font(pdf, identity, dict)?),
                 None => None,
             },
             None => None,
@@ -545,7 +551,7 @@ impl<'p> Run<'p, '_> {
                 .and_then(|item| pdf.resolve(item))
                 .and_then(as_dict)
             {
-                Some(dict) => Some(self.engine.unshared_font(dict)?),
+                Some(dict) => Some(self.engine.unshared_font(pdf, dict)?),
                 None => None,
             };
             let size = match setting.get(1) {
@@ -754,7 +760,7 @@ impl<'p> Run<'p, '_> {
     fn show_text(&mut self, string: &[u8]) -> Result<(), Unported> {
         let font = match self.state().text.font.clone() {
             Some(font) => font,
-            None => self.engine.default_font()?,
+            None => self.engine.default_font(self.pdf)?,
         };
         let text = self.state().text.clone();
         let horizontal_scaling = text.horizontal_scaling / 100.0;

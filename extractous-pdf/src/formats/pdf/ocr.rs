@@ -11,7 +11,7 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use super::cos::Pdf;
+use super::cos::Document;
 use super::quality::{self, Assessment, Unmapped};
 use crate::config::{ParserConfigs, Password, PdfOcrStrategy, PdfParserConfig};
 use crate::errors::Error;
@@ -293,7 +293,7 @@ impl PageOcr {
         check: OcrCheck,
         input: &[u8],
         configs: &ParserConfigs,
-        pdf: &Pdf,
+        pdf: &Document,
     ) -> Option<Self> {
         if pages.is_empty() {
             return None;

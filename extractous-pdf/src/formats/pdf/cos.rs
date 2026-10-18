@@ -3,15 +3,24 @@
 //! object on demand, a stream's data left in the document until it is decoded; an indirect
 //! reference resolves to its object, `null` and a missing object to nothing, a stream is a
 //! dictionary too, and numbers, names and text strings convert as PDFBox converts them.
+//!
+//! What is read is held at one of two tiers. The [`Document`] holds what is read for the
+//! document as a whole: its catalog, page tree, structure tree, outline and form. A scoped
+//! [`Pdf`], a page's, holds what it reads that the document does not, and lets go of it when
+//! it is dropped, so that a document is read in memory bounded by its largest page rather than
+//! by its size; an object needed again is read again from where the table puts it, as it read
+//! the first time.
 
 use std::borrow::Cow;
-use std::cell::{OnceCell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::ops::Deref;
 
 use lopdf::encryption::decrypt_object;
-use lopdf::{Dictionary, Document, EncryptionState, Object, ObjectId, Stream};
+use lopdf::{Dictionary, Document as LoDocument, EncryptionState, Object, ObjectId, Stream};
 
 use super::content::Lexer;
+use super::document::PageRef;
 use super::xref::{self, java_trim, Placement, Read, Resolution, Source, Thrown};
 use super::Unported;
 use crate::formats::thrown::Exception;
@@ -23,6 +32,9 @@ use crate::text::charset::Charset;
 const MAX_REFERENCE_CHAIN: usize = 32;
 /// What reading an object counts as having read of the document: at least a page of it.
 pub(super) const OBJECT_READ: usize = 4096;
+/// How many objects a scope reading objects one after another holds before it lets go of them
+/// ([`Pdf::trim`]).
+const SCAN_SCOPE: usize = 1024;
 /// `PDFObjectStreamParser`'s check of a metadata stream an encrypted document leaves in clear.
 const XPACKET: &[u8] = b"<?xpacket ";
 
@@ -41,13 +53,19 @@ impl Identity {
     pub(super) fn of_direct(object: &Object) -> Self {
         Self::Direct(std::ptr::from_ref(object) as usize)
     }
+
+    /// Whether this is where a direct object is held: once the scope that read it ends, an
+    /// object read later may be held there, so what is kept by it is let go with the scope.
+    pub(super) fn is_direct(self) -> bool {
+        matches!(self, Self::Direct(_))
+    }
 }
 
-/// An object the cross-reference table lists: where it is read from, and once asked for, what
-/// reading it gave, nothing where PDFBox fails to read it.
+/// An object the cross-reference table lists: where it is read from, and once read for the
+/// document as a whole, what reading it gave, nothing where PDFBox fails to read it.
 struct Slot {
     placement: Placement,
-    object: OnceCell<Option<Object>>,
+    object: OnceCell<Box<Option<Object>>>,
 }
 
 /// Where the data of a stream read from the document lies, and how it is decrypted.
@@ -58,8 +76,8 @@ struct StreamData {
     encrypted: bool,
 }
 
-/// A document's objects, read as they are asked for.
-pub(super) struct Pdf<'d> {
+/// A document's objects, read as they are asked for, and what the extraction learns of it.
+pub(super) struct Document<'d> {
     data: &'d [u8],
     paging: Paging<'d>,
     objects: HashMap<ObjectId, Slot>,
@@ -68,7 +86,7 @@ pub(super) struct Pdf<'d> {
     crypt: Option<EncryptionState>,
     /// The encryption dictionary, which is not encrypted.
     encrypt_id: Option<ObjectId>,
-    /// The data of the streams read, by where it starts in the document.
+    /// The data of the streams read for the document as a whole, by where it starts.
     streams: RefCell<HashMap<usize, StreamData>>,
     /// The objects being read, which a reference back to one of them reads as nothing, as
     /// PDFBox's `COSObject` marks itself dereferenced before it parses.
@@ -79,6 +97,10 @@ pub(super) struct Pdf<'d> {
     unlisted_needed: RefCell<BTreeSet<ObjectId>>,
     /// The first detail in which the extraction read the document otherwise than Tika's path.
     difference: RefCell<Option<Difference>>,
+    /// The pages, in tree order, once the page tree has been walked.
+    pub(super) pages: OnceCell<Vec<PageRef>>,
+    /// The objects of the object streams read last.
+    object_streams: RefCell<ObjectStreams>,
     /// Whether the document's bytes spell `Filespec`, as a file specification outside an
     /// object stream must.
     pub(super) spells_filespec: bool,
@@ -87,7 +109,7 @@ pub(super) struct Pdf<'d> {
     pub(super) trailer_rebuilt: bool,
 }
 
-impl<'d> Pdf<'d> {
+impl<'d> Document<'d> {
     /// The document `data`, whose cross-reference PDFBox reads as `resolution`, its pages
     /// released as it is read. The objects PDFBox read while it read the cross-reference stay
     /// as it read them, but dictionaries, which may be streams, are read as other objects are.
@@ -112,11 +134,11 @@ impl<'d> Pdf<'d> {
                 object: OnceCell::new(),
             });
             slot.object
-                .set(Some(object.clone()))
+                .set(Box::new(Some(object.clone())))
                 .expect("each object is pooled once");
         }
         let spells_filespec = paging.find(data, b"Filespec").is_some();
-        let pdf = Self {
+        let document = Self {
             data,
             paging,
             objects,
@@ -128,16 +150,26 @@ impl<'d> Pdf<'d> {
             unread: RefCell::new(None),
             unlisted_needed: RefCell::new(BTreeSet::new()),
             difference: RefCell::new(None),
+            pages: OnceCell::new(),
+            object_streams: RefCell::new(ObjectStreams::default()),
             spells_filespec,
             trailer_rebuilt: resolution.rebuilt(),
         };
-        pdf.release_pages();
+        document.release_pages();
         if let Some(number) = resolution.unheld_object() {
-            pdf.differ(Difference(format!(
+            document.differ(Difference(format!(
                 "the port leaves out object number {number}, which lopdf cannot hold"
             )));
         }
-        pdf
+        document
+    }
+
+    /// The document's objects as read for the document as a whole.
+    pub(super) fn view(&self) -> Pdf<'_> {
+        Pdf {
+            document: self,
+            scope: None,
+        }
     }
 
     /// Releases the pages of the document read so far, after a search of all of it.
@@ -155,56 +187,12 @@ impl<'d> Pdf<'d> {
         &self.trailer
     }
 
-    /// The document's encryption dictionary, as `lopdf` reads it to open the document: in a
-    /// document of its own, whose trailer is this one's with the document ID `document_id`, as
-    /// PDFBox reads it, and whose dictionary has `entries` in place of its own.
-    pub(super) fn encryption_document(
-        &self,
-        document_id: &[u8],
-        entries: &Dictionary,
-    ) -> Option<Document> {
-        let encrypt = self.trailer.get(b"Encrypt").ok()?;
-        let dict = self.resolve(encrypt).and_then(as_dict)?;
-        let id = match encrypt {
-            Object::Reference(id) => *id,
-            _ => (u32::MAX, 0),
-        };
-        let mut doc = Document::new();
-        doc.trailer = self.trailer.clone();
-        doc.trailer.set("Encrypt", Object::Reference(id));
-        let document_id = Object::string_literal(document_id.to_vec());
-        doc.trailer
-            .set("ID", Object::Array(vec![document_id.clone(), document_id]));
-        let mut dict = self.inlined(dict, 0);
-        for (key, value) in entries.iter() {
-            dict.set(key.clone(), value.clone());
-        }
-        doc.objects.insert(id, Object::Dictionary(dict));
-        Some(doc)
-    }
-
-    /// A copy of `dict` with the objects its references lead to in their place, as far as
-    /// `lopdf`'s reading of an encryption dictionary goes, which follows none.
-    fn inlined(&self, dict: &Dictionary, depth: usize) -> Dictionary {
-        let mut copy = Dictionary::new();
-        for (key, value) in dict.iter() {
-            let value = match self.resolve(value) {
-                Some(Object::Dictionary(inner)) if depth < 2 => {
-                    Object::Dictionary(self.inlined(inner, depth + 1))
-                }
-                Some(object) => object.clone(),
-                None => Object::Null,
-            };
-            copy.set(key.clone(), value);
-        }
-        copy
-    }
-
     /// Decrypts the objects read from now on with `state`, the encryption dictionary `id`
     /// excepted.
     pub(super) fn decrypt_with(&mut self, state: EncryptionState, id: Option<ObjectId>) {
         self.crypt = Some(state);
         self.encrypt_id = id;
+        self.object_streams = RefCell::new(ObjectStreams::default());
     }
 
     /// The first object the extraction needed that the port could not read, and why: what
@@ -244,124 +232,6 @@ impl<'d> Pdf<'d> {
             .is_some_and(|slot| matches!(slot.placement, Placement::Stream(_)))
     }
 
-    /// The indirect object `id`, read the first time it is asked for; nothing where it is no
-    /// object the table lists, which is noted, or where PDFBox fails to read it.
-    pub(super) fn indirect(&self, id: ObjectId) -> Option<&Object> {
-        let Some(slot) = self.objects.get(&id) else {
-            self.unlisted_needed.borrow_mut().insert(id);
-            return None;
-        };
-        if let Some(object) = slot.object.get() {
-            return object.as_ref();
-        }
-        if !self.loading.borrow_mut().insert(id) {
-            return None;
-        }
-        let read = self.read(id, slot.placement);
-        self.loading.borrow_mut().remove(&id);
-        let object = match read {
-            Ok(object) => object,
-            Err(Thrown::Io) => None,
-            Err(Thrown::Unported(unported)) => {
-                self.unread.borrow_mut().get_or_insert((id, unported));
-                None
-            }
-        };
-        slot.object.get_or_init(|| object).as_ref()
-    }
-
-    /// `COSParser.parseObjectDynamically` of the object `id`, the table placing it as
-    /// `placement`.
-    fn read(&self, id: ObjectId, placement: Placement) -> Read<Option<Object>> {
-        match placement {
-            Placement::File(offset) => self.read_file_object(id, offset),
-            Placement::Stream(number) => self.read_compressed_object(id, number),
-        }
-    }
-
-    /// `COSParser.parseFileObject`: the object `id` at `offset`, a stream's data left where it
-    /// stands, decrypted as `SecurityHandler` decrypts it.
-    fn read_file_object(&self, id: ObjectId, offset: usize) -> Read<Option<Object>> {
-        self.paging.read(OBJECT_READ);
-        let mut source = Source::new(self.data);
-        source.seek(offset as i64)?;
-        let number = source.read_object_number()?;
-        let generation = source.read_generation_number()?;
-        source.read_expected(b"obj")?;
-        if (number, generation) != (i64::from(id.0), i64::from(id.1)) {
-            return Err(Thrown::Io);
-        }
-        source.skip_spaces();
-        let parsed = source.lexer.file_object()?.ok_or(Thrown::Io)?;
-        let end = source.read_string();
-        if end != b"stream" {
-            let mut parsed = parsed;
-            if let Some(object) = parsed.as_mut() {
-                self.decrypt(id, object)?;
-            }
-            return Ok(parsed);
-        }
-        source.rewind(end.len());
-        let Some(Object::Dictionary(mut dict)) = parsed else {
-            return Err(Thrown::Io);
-        };
-        source.start_stream();
-        let length = self.length(&dict)?;
-        let found = source.stream_data(length)?;
-        if found.measured && length != Some(found.data.len() as i64) {
-            dict.set("Length", Object::Integer(found.data.len() as i64));
-        }
-        let encrypted = self.decrypts_stream(id, &dict, found.data);
-        if encrypted {
-            let mut strings = Object::Dictionary(dict);
-            self.decrypt(id, &mut strings)?;
-            let Object::Dictionary(decrypted) = strings else {
-                unreachable!("decrypting a dictionary keeps it one")
-            };
-            dict = decrypted;
-        }
-        source.skip_spaces();
-        let line = source.read_line()?;
-        if !line.starts_with(b"endobj")
-            && line.starts_with(b"endstream")
-            && java_trim(&line[b"endstream".len()..]).is_empty()
-        {
-            source.read_line()?;
-        }
-        self.streams.borrow_mut().insert(
-            found.start,
-            StreamData {
-                id,
-                length: found.data.len(),
-                encrypted,
-            },
-        );
-        Ok(Some(Object::Stream(Stream {
-            dict,
-            content: Vec::new(),
-            allows_compression: false,
-            start_position: Some(found.start),
-        })))
-    }
-
-    /// `COSParser.getLength`: a stream's `/Length`, a reference to a number followed, a
-    /// reference to nothing failing the stream, one to `null` reading as none.
-    fn length(&self, dict: &Dictionary) -> Read<Option<i64>> {
-        match dict.get(b"Length") {
-            Err(_) => Ok(None),
-            Ok(Object::Integer(length)) => Ok(Some(*length)),
-            Ok(Object::Real(length)) => Ok(Some(*length as i64)),
-            Ok(Object::Reference(id)) => match self.indirect(*id) {
-                None => Err(Thrown::Io),
-                Some(Object::Null) => Ok(None),
-                Some(Object::Integer(length)) => Ok(Some(*length)),
-                Some(Object::Real(length)) => Ok(Some(*length as i64)),
-                Some(_) => Err(Thrown::Io),
-            },
-            Ok(_) => Err(Thrown::Io),
-        }
-    }
-
     /// Whether `SecurityHandler.decryptStream` decrypts the stream `id` of `dict`, whose data
     /// is `data`: not under the identity filter, not the cross-reference stream, and not a
     /// metadata stream the document leaves in clear.
@@ -397,10 +267,442 @@ impl<'d> Pdf<'d> {
         })
     }
 
+    /// `SecurityHandler.decryptStream` of the data `data` of the stream `id` of `dict`, as
+    /// `bfSearchForObjStreams` decrypts an object stream it finds: data that does not decrypt
+    /// is a corrupt stream.
+    pub(super) fn decrypted(&self, id: ObjectId, dict: &Dictionary, data: &[u8]) -> Read<Vec<u8>> {
+        match &self.crypt {
+            Some(state) if self.decrypts_stream(id, dict, data) => {
+                decrypt_data(state, id, dict, data).map_err(|_| Thrown::Io)
+            }
+            _ => Ok(data.to_vec()),
+        }
+    }
+
+    /// Reads each object of `placements` from where it says from now on, as `getObjectOffset`
+    /// finds the objects `bfSearchForObjStreams` adds; an object already read keeps what it read.
+    pub(super) fn place(&mut self, placements: HashMap<ObjectId, Placement>) {
+        for (id, placement) in placements {
+            match self.objects.get_mut(&id) {
+                Some(slot) => slot.placement = placement,
+                None => {
+                    self.objects.insert(
+                        id,
+                        Slot {
+                            placement,
+                            object: OnceCell::new(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// Searches the document for the first of the objects `ids` the table does not list that
+    /// PDFBox finds there, releasing its pages after.
+    pub(super) fn first_found(&self, ids: &[ObjectId]) -> Result<Option<ObjectId>, Unported> {
+        let found = xref::first_found(self.data, ids);
+        if !ids.is_empty() {
+            self.release_pages();
+        }
+        found
+    }
+}
+
+/// How many objects of the object streams read last are held, the last one's whatever their
+/// number.
+const OBJECT_STREAM_OBJECTS: usize = 1024;
+
+/// The objects of the object streams read last, most recently read first, so that an object
+/// stream's other objects are read without decoding it again, and without holding the objects of
+/// every stream read.
+#[derive(Default)]
+struct ObjectStreams {
+    streams: VecDeque<(u32, HashMap<ObjectId, Option<Object>>)>,
+}
+
+impl ObjectStreams {
+    /// What reading the object `id` of the object stream `number` gave, if the stream is held:
+    /// nothing where it does not hold the object, or PDFBox fails to read it.
+    fn get(&mut self, number: u32, id: ObjectId) -> Option<Option<Object>> {
+        let at = self.streams.iter().position(|(held, _)| *held == number)?;
+        let stream = self.streams.remove(at)?;
+        let object = stream.1.get(&id).cloned().flatten();
+        self.streams.push_front(stream);
+        Some(object)
+    }
+
+    /// Holds the objects of the object stream `number`, letting go of those of the streams read
+    /// longest ago past [`OBJECT_STREAM_OBJECTS`].
+    fn insert(&mut self, number: u32, objects: HashMap<ObjectId, Option<Object>>) {
+        self.streams.push_front((number, objects));
+        let mut held = 0;
+        let kept = self
+            .streams
+            .iter()
+            .take_while(|(_, objects)| {
+                let first = held == 0;
+                held += objects.len().max(1);
+                first || held <= OBJECT_STREAM_OBJECTS
+            })
+            .count();
+        self.streams.truncate(kept);
+    }
+}
+
+/// How many values the first segment of an [`Arena`] holds; each segment after holds twice as
+/// many as the one before.
+const FIRST_SEGMENT: usize = 16;
+/// How many segments an [`Arena`] has: room for more values than any memory holds.
+const SEGMENTS: usize = 48;
+
+/// Values added one at a time, each staying where it was put until the arena is dropped, so
+/// that those added stay borrowed while more are added.
+struct Arena<T> {
+    segments: [OnceCell<Box<[OnceCell<T>]>>; SEGMENTS],
+    len: Cell<usize>,
+}
+
+impl<T> Arena<T> {
+    fn new() -> Self {
+        Self {
+            segments: std::array::from_fn(|_| OnceCell::new()),
+            len: Cell::new(0),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len.get()
+    }
+
+    /// The segment the value at `index` is held in, and where in it.
+    fn locate(index: usize) -> (usize, usize) {
+        let segment = (index / FIRST_SEGMENT + 1).ilog2() as usize;
+        (segment, index - FIRST_SEGMENT * ((1 << segment) - 1))
+    }
+
+    /// The value at `index`, which the arena gave out.
+    fn get(&self, index: usize) -> &T {
+        let (segment, offset) = Self::locate(index);
+        self.segments[segment]
+            .get()
+            .and_then(|values| values[offset].get())
+            .expect("an arena holds a value at each index it gave out")
+    }
+
+    /// Adds `value`, and gives where it is held.
+    fn push(&self, value: T) -> (usize, &T) {
+        let index = self.len.get();
+        let (segment, offset) = Self::locate(index);
+        let values = self.segments[segment].get_or_init(|| {
+            (0..FIRST_SEGMENT << segment)
+                .map(|_| OnceCell::new())
+                .collect()
+        });
+        let value = values[offset].get_or_init(|| value);
+        self.len.set(index + 1);
+        (index, value)
+    }
+}
+
+/// What a scope of reading, such as a page, read that the document as a whole has not.
+struct Scope {
+    index: RefCell<HashMap<ObjectId, usize>>,
+    objects: Arena<Option<Object>>,
+    /// The data of the streams read in the scope, by where it starts.
+    streams: RefCell<HashMap<usize, StreamData>>,
+}
+
+impl Scope {
+    fn new() -> Self {
+        Self {
+            index: RefCell::new(HashMap::new()),
+            objects: Arena::new(),
+            streams: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn get(&self, id: ObjectId) -> Option<&Option<Object>> {
+        let index = *self.index.borrow().get(&id)?;
+        Some(self.objects.get(index))
+    }
+
+    /// What reading `id` gave: `object`, unless the scope holds it already.
+    fn insert(&self, id: ObjectId, object: Option<Object>) -> &Option<Object> {
+        if let Some(held) = self.get(id) {
+            return held;
+        }
+        let (index, held) = self.objects.push(object);
+        self.index.borrow_mut().insert(id, index);
+        held
+    }
+}
+
+/// A document's objects as a part of the extraction reads them: those read for the document as
+/// a whole, and, in a scope ([`Pdf::scoped`]), those read for the scope alone, let go of when
+/// it is dropped.
+pub(super) struct Pdf<'p> {
+    document: &'p Document<'p>,
+    scope: Option<Scope>,
+}
+
+impl<'p> Deref for Pdf<'p> {
+    type Target = Document<'p>;
+
+    fn deref(&self) -> &Document<'p> {
+        self.document
+    }
+}
+
+impl<'p> Pdf<'p> {
+    /// The document's objects in a scope of their own, such as a page's: an object the
+    /// document as a whole has not read is read for the scope, and let go of with it.
+    pub(super) fn scoped(&self) -> Pdf<'p> {
+        Pdf {
+            document: self.document,
+            scope: Some(Scope::new()),
+        }
+    }
+
+    /// Lets go of what the scope holds once it holds more than [`SCAN_SCOPE`] objects, for a
+    /// scope that reads objects one after another: those read together, such as the objects of
+    /// one object stream, are read once, and not all are held.
+    pub(super) fn trim(&mut self) {
+        if let Some(scope) = &mut self.scope {
+            if scope.objects.len() > SCAN_SCOPE {
+                *scope = Scope::new();
+            }
+        }
+    }
+
+    /// The identity of what the value of `key` in `dict` resolves to, if it resolves to what
+    /// `wanted` takes, read in a scope of its own so that it is not held for the document.
+    pub(super) fn identity_of(
+        &self,
+        dict: &Dictionary,
+        key: &[u8],
+        wanted: fn(&Object) -> bool,
+    ) -> Option<Identity> {
+        let scope = self.scoped();
+        scope
+            .get_identified(dict, key)
+            .filter(|(_, object)| wanted(object))
+            .map(|(identity, _)| identity)
+    }
+
+    /// The document's encryption dictionary, as `lopdf` reads it to open the document: in a
+    /// document of its own, whose trailer is this one's with the document ID `document_id`, as
+    /// PDFBox reads it, and whose dictionary has `entries` in place of its own.
+    pub(super) fn encryption_document(
+        &self,
+        document_id: &[u8],
+        entries: &Dictionary,
+    ) -> Option<LoDocument> {
+        let encrypt = self.trailer.get(b"Encrypt").ok()?;
+        let dict = self.resolve(encrypt).and_then(as_dict)?;
+        let id = match encrypt {
+            Object::Reference(id) => *id,
+            _ => (u32::MAX, 0),
+        };
+        let mut doc = LoDocument::new();
+        doc.trailer = self.trailer.clone();
+        doc.trailer.set("Encrypt", Object::Reference(id));
+        let document_id = Object::string_literal(document_id.to_vec());
+        doc.trailer
+            .set("ID", Object::Array(vec![document_id.clone(), document_id]));
+        let mut dict = self.inlined(dict, 0);
+        for (key, value) in entries.iter() {
+            dict.set(key.clone(), value.clone());
+        }
+        doc.objects.insert(id, Object::Dictionary(dict));
+        Some(doc)
+    }
+
+    /// A copy of `dict` with the objects its references lead to in their place, as far as
+    /// `lopdf`'s reading of an encryption dictionary goes, which follows none.
+    fn inlined(&self, dict: &Dictionary, depth: usize) -> Dictionary {
+        let mut copy = Dictionary::new();
+        for (key, value) in dict.iter() {
+            let value = match self.resolve(value) {
+                Some(Object::Dictionary(inner)) if depth < 2 => {
+                    Object::Dictionary(self.inlined(inner, depth + 1))
+                }
+                Some(object) => object.clone(),
+                None => Object::Null,
+            };
+            copy.set(key.clone(), value);
+        }
+        copy
+    }
+
+    /// The indirect object `id`, read the first time it is asked for; nothing where it is no
+    /// object the table lists, which is noted, or where PDFBox fails to read it.
+    pub(super) fn indirect(&self, id: ObjectId) -> Option<&Object> {
+        let document = self.document;
+        let Some(slot) = document.objects.get(&id) else {
+            document.unlisted_needed.borrow_mut().insert(id);
+            return None;
+        };
+        if let Some(object) = self.held(id, slot) {
+            return object.as_ref();
+        }
+        if !document.loading.borrow_mut().insert(id) {
+            return None;
+        }
+        let read = self.read(id, slot.placement);
+        document.loading.borrow_mut().remove(&id);
+        let object = match read {
+            Ok(object) => object,
+            Err(Thrown::Io) => None,
+            Err(Thrown::Unported(unported)) => {
+                document.unread.borrow_mut().get_or_insert((id, unported));
+                None
+            }
+        };
+        self.keep(id, slot, object).as_ref()
+    }
+
+    /// What reading the object `id` of `slot` gave, if the document or the scope holds it.
+    fn held<'a>(&'a self, id: ObjectId, slot: &'a Slot) -> Option<&'a Option<Object>> {
+        if let Some(object) = slot.object.get() {
+            return Some(object);
+        }
+        self.scope.as_ref()?.get(id)
+    }
+
+    /// Holds `object`, read as the object `id` of `slot`: for the scope, if this is one, else
+    /// for the document.
+    fn keep<'a>(
+        &'a self,
+        id: ObjectId,
+        slot: &'a Slot,
+        object: Option<Object>,
+    ) -> &'a Option<Object> {
+        match &self.scope {
+            None => slot.object.get_or_init(|| Box::new(object)),
+            Some(scope) => scope.insert(id, object),
+        }
+    }
+
+    /// The data of the streams read where this holds the objects it reads.
+    fn streams(&self) -> &RefCell<HashMap<usize, StreamData>> {
+        match &self.scope {
+            Some(scope) => &scope.streams,
+            None => &self.document.streams,
+        }
+    }
+
+    /// Where the data of the stream read from `start` lies, if the scope or the document read
+    /// it.
+    fn stream_data(&self, start: usize) -> Option<StreamData> {
+        let scoped = self
+            .scope
+            .as_ref()
+            .and_then(|scope| scope.streams.borrow().get(&start).copied());
+        scoped.or_else(|| self.document.streams.borrow().get(&start).copied())
+    }
+
+    /// `COSParser.parseObjectDynamically` of the object `id`, the table placing it as
+    /// `placement`.
+    fn read(&self, id: ObjectId, placement: Placement) -> Read<Option<Object>> {
+        match placement {
+            Placement::File(offset) => self.read_file_object(id, offset),
+            Placement::Stream(number) => self.read_compressed_object(id, number),
+        }
+    }
+
+    /// `COSParser.parseFileObject`: the object `id` at `offset`, a stream's data left where it
+    /// stands, decrypted as `SecurityHandler` decrypts it.
+    fn read_file_object(&self, id: ObjectId, offset: usize) -> Read<Option<Object>> {
+        let document = self.document;
+        document.paging.read(OBJECT_READ);
+        let mut source = Source::new(document.data);
+        source.seek(offset as i64)?;
+        let number = source.read_object_number()?;
+        let generation = source.read_generation_number()?;
+        source.read_expected(b"obj")?;
+        if (number, generation) != (i64::from(id.0), i64::from(id.1)) {
+            return Err(Thrown::Io);
+        }
+        source.skip_spaces();
+        let parsed = source.lexer.file_object()?.ok_or(Thrown::Io)?;
+        let end = source.read_string();
+        if end != b"stream" {
+            let mut parsed = parsed;
+            if let Some(object) = parsed.as_mut() {
+                document.decrypt(id, object)?;
+            }
+            return Ok(parsed);
+        }
+        source.rewind(end.len());
+        let Some(Object::Dictionary(mut dict)) = parsed else {
+            return Err(Thrown::Io);
+        };
+        source.start_stream();
+        let length = self.length(&dict)?;
+        let found = source.stream_data(length)?;
+        if found.measured && length != Some(found.data.len() as i64) {
+            dict.set("Length", Object::Integer(found.data.len() as i64));
+        }
+        let encrypted = document.decrypts_stream(id, &dict, found.data);
+        if encrypted {
+            let mut strings = Object::Dictionary(dict);
+            document.decrypt(id, &mut strings)?;
+            let Object::Dictionary(decrypted) = strings else {
+                unreachable!("decrypting a dictionary keeps it one")
+            };
+            dict = decrypted;
+        }
+        source.skip_spaces();
+        let line = source.read_line()?;
+        if !line.starts_with(b"endobj")
+            && line.starts_with(b"endstream")
+            && java_trim(&line[b"endstream".len()..]).is_empty()
+        {
+            source.read_line()?;
+        }
+        self.streams().borrow_mut().insert(
+            found.start,
+            StreamData {
+                id,
+                length: found.data.len(),
+                encrypted,
+            },
+        );
+        Ok(Some(Object::Stream(Stream {
+            dict,
+            content: Vec::new(),
+            allows_compression: false,
+            start_position: Some(found.start),
+        })))
+    }
+
+    /// `COSParser.getLength`: a stream's `/Length`, a reference to a number followed, a
+    /// reference to nothing failing the stream, one to `null` reading as none.
+    fn length(&self, dict: &Dictionary) -> Read<Option<i64>> {
+        match dict.get(b"Length") {
+            Err(_) => Ok(None),
+            Ok(Object::Integer(length)) => Ok(Some(*length)),
+            Ok(Object::Real(length)) => Ok(Some(*length as i64)),
+            Ok(Object::Reference(id)) => match self.indirect(*id) {
+                None => Err(Thrown::Io),
+                Some(Object::Null) => Ok(None),
+                Some(Object::Integer(length)) => Ok(Some(*length)),
+                Some(Object::Real(length)) => Ok(Some(*length as i64)),
+                Some(_) => Err(Thrown::Io),
+            },
+            Ok(_) => Err(Thrown::Io),
+        }
+    }
+
     /// `COSParser.parseObjectStreamObject`: the object `id` of the object stream `number`, read
     /// with the others it holds, which are kept for when they are asked for, each where the
     /// table puts it in that stream.
     fn read_compressed_object(&self, id: ObjectId, number: u32) -> Read<Option<Object>> {
+        let streams = &self.document.object_streams;
+        if let Some(object) = streams.borrow_mut().get(number, id) {
+            return Ok(object);
+        }
         let Some(Object::Stream(stream)) = self.indirect((number, 0)) else {
             return Ok(None);
         };
@@ -412,23 +714,9 @@ impl<'d> Pdf<'d> {
             Err(Thrown::Io) => return Ok(None),
             Err(unported) => return Err(unported),
         };
-        let mut wanted = None;
-        for (found, object) in objects {
-            if found == id {
-                wanted.get_or_insert(object);
-                continue;
-            }
-            let Some(slot) = self.objects.get(&found) else {
-                continue;
-            };
-            let kept = slot.placement == Placement::Stream(number)
-                && slot.object.get().is_none()
-                && !self.loading.borrow().contains(&found);
-            if kept {
-                let _ = slot.object.set(object);
-            }
-        }
-        Ok(wanted.flatten())
+        let mut streams = streams.borrow_mut();
+        streams.insert(number, objects.into_iter().collect());
+        Ok(streams.get(number, id).flatten())
     }
 
     /// The object `object` stands for: itself, or what its references lead to; nothing for
@@ -534,16 +822,17 @@ impl<'d> Pdf<'d> {
     pub(super) fn raw<'s>(&'s self, stream: &'s Stream) -> Result<Cow<'s, [u8]>, Unported> {
         let found = stream
             .start_position
-            .and_then(|start| Some((start, *self.streams.borrow().get(&start)?)));
+            .and_then(|start| Some((start, self.stream_data(start)?)));
         let Some((start, found)) = found else {
             return Ok(Cow::Borrowed(&stream.content));
         };
-        self.paging.read(found.length);
-        let data = &self.data[start..start + found.length];
+        let document = self.document;
+        document.paging.read(found.length);
+        let data = &document.data[start..start + found.length];
         if !found.encrypted {
             return Ok(Cow::Borrowed(data));
         }
-        let state = self
+        let state = document
             .crypt
             .as_ref()
             .expect("an encrypted stream is read from a document that decrypts");
@@ -554,37 +843,6 @@ impl<'d> Pdf<'d> {
             ))
         })?;
         Ok(Cow::Owned(decrypted))
-    }
-
-    /// `SecurityHandler.decryptStream` of the data `data` of the stream `id` of `dict`, as
-    /// `bfSearchForObjStreams` decrypts an object stream it finds: data that does not decrypt
-    /// is a corrupt stream.
-    pub(super) fn decrypted(&self, id: ObjectId, dict: &Dictionary, data: &[u8]) -> Read<Vec<u8>> {
-        match &self.crypt {
-            Some(state) if self.decrypts_stream(id, dict, data) => {
-                decrypt_data(state, id, dict, data).map_err(|_| Thrown::Io)
-            }
-            _ => Ok(data.to_vec()),
-        }
-    }
-
-    /// Reads each object of `placements` from where it says from now on, as `getObjectOffset`
-    /// finds the objects `bfSearchForObjStreams` adds; an object already read keeps what it read.
-    pub(super) fn place(&mut self, placements: HashMap<ObjectId, Placement>) {
-        for (id, placement) in placements {
-            match self.objects.get_mut(&id) {
-                Some(slot) => slot.placement = placement,
-                None => {
-                    self.objects.insert(
-                        id,
-                        Slot {
-                            placement,
-                            object: OnceCell::new(),
-                        },
-                    );
-                }
-            }
-        }
     }
 
     /// The decoded data of `stream`, its filters applied in order as PDFBox applies them, each
@@ -669,16 +927,6 @@ impl<'d> Pdf<'d> {
     ) -> Option<&'a [u8]> {
         self.name(dictionary, b"Name")
             .filter(|name| *name != b"Identity")
-    }
-
-    /// Searches the document for the first of the objects `ids` the table does not list that
-    /// PDFBox finds there, releasing its pages after.
-    pub(super) fn first_found(&self, ids: &[ObjectId]) -> Result<Option<ObjectId>, Unported> {
-        let found = xref::first_found(self.data, ids);
-        if !ids.is_empty() {
-            self.release_pages();
-        }
-        found
     }
 }
 
@@ -851,6 +1099,11 @@ pub(super) fn as_dict(object: &Object) -> Option<&Dictionary> {
         Object::Stream(stream) => Some(&stream.dict),
         _ => None,
     }
+}
+
+/// Whether `object` is a dictionary or a stream.
+pub(super) fn is_dict(object: &Object) -> bool {
+    as_dict(object).is_some()
 }
 
 /// `COSNumber.intValue`: an integer cast as Java casts a `long` to `int`, a real truncated.
