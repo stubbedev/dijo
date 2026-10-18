@@ -37,10 +37,10 @@ import java.util.zip.DeflaterOutputStream;
  * its u32 cells, each less the one before it (wrapping), which compresses the runs of
  * consecutive characters.
  *
- * The decoder reference has one line per multi-byte charset and per Unicode charset of
- * {@link #UNICODE}: its name and, in hexadecimal and separated by a tab, the hash
+ * The decoder reference has one line per multi-byte charset and per charset of
+ * {@link #PORTED}: its name and, in hexadecimal and separated by a tab, the hash
  * {@link DecoderReference} takes of what its decoder makes of pseudo-random bytes (of the
- * decoded text alone for a Unicode charset).
+ * decoded text alone for a charset of {@link #PORTED}).
  */
 public final class CharsetTables {
 
@@ -56,8 +56,9 @@ public final class CharsetTables {
     static final int EUC_TW = 5;
     static final int GB18030 = 6;
 
-    /** The Unicode charsets whose decoders the Rust port mirrors without tables. */
-    static final List<String> UNICODE = List.of("UTF-8", "UTF-16", "UTF-16BE", "UTF-16LE");
+    /** The charsets whose decoders the Rust port mirrors without tables. */
+    static final List<String> PORTED =
+            List.of("UTF-8", "UTF-16", "UTF-16BE", "UTF-16LE", "x-ISCII91");
 
     public static void main(String[] args) throws IOException {
         if (args.length != 2) {
@@ -81,7 +82,7 @@ public final class CharsetTables {
                 reference.add(charset.name() + "\t" + Long.toHexString(DecoderReference.hash(charset)));
             }
         }
-        for (String name : UNICODE) {
+        for (String name : PORTED) {
             reference.add(name + "\t" + Long.toHexString(DecoderReference.textHash(
                     Charset.forName(name))));
         }

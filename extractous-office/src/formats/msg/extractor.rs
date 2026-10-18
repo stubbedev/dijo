@@ -151,7 +151,7 @@ pub(super) fn extract(
     }
     let mut scratch = TikaMetadata::new();
     write_metadata(&message, &mut scratch).map_err(unported)?;
-    let (body, content_ids) = body(&message, configs)?;
+    let (body, content_ids) = body(&message)?;
     let attachments = attachments(file, &message, &content_ids, configs)?;
     Ok(Extracted {
         message,
@@ -625,7 +625,7 @@ fn declared_charset(message: &Message) -> Read<Option<String>> {
 }
 
 /// `handleBodyChunks`'s reading: the body and the content ids of the pictures it shows.
-fn body(message: &Message, configs: &ParserConfigs) -> Result<(Body, HashSet<String>), Unported> {
+fn body(message: &Message) -> Result<(Body, HashSet<String>), Unported> {
     let mut content_ids = HashSet::new();
     let html = message.main.last(property::BODY_HTML);
     if let Some(data) = html.and_then(|chunk| match (chunk.bytes(), chunk.text()) {
@@ -664,9 +664,6 @@ fn body(message: &Message, configs: &ParserConfigs) -> Result<(Body, HashSet<Str
                     },
                     content_ids,
                 ));
-            }
-            if let Some(reason) = rtf::deferral(&rtf, configs) {
-                return Err(Unported(format!("the RTF body defers: {reason}")));
             }
             image_content_ids(&String::from_utf8_lossy(&rtf), &mut content_ids);
             return Ok((Body::Rtf(rtf), content_ids));
@@ -984,8 +981,7 @@ mod tests {
             metadata.get("mapi:msg-client-submit-time"),
             Some("2020-01-01T00:00:00Z")
         );
-        let configs = ParserConfigs::default();
-        let (body, _) = body(&read, &configs).unwrap();
+        let (body, _) = body(&read).unwrap();
         assert!(matches!(body, Body::Text(text) if text == "Hi Bob"));
     }
 

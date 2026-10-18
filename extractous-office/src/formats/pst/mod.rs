@@ -50,7 +50,6 @@ const LIMIT_RETHROWN: &str = "org.apache.tika.exception.TikaException: the text 
 mod name {
     pub(super) const CONTENT_TYPE: &str = "Content-Type";
     pub(super) const CONTENT_LENGTH: &str = "Content-Length";
-    pub(super) const PARSER_OVERRIDE: &str = "tk:content-type-parser-override";
     pub(super) const IS_VALID: &str = "pst:is-valid";
     pub(super) const DESCRIPTOR_NODE_ID: &str = "pst:descriptor-node-id";
     pub(super) const IDENTIFIER: &str = "dc:identifier";
@@ -297,7 +296,7 @@ fn write_folder(folder: &Folder, path: &str, xhtml: &mut Xhtml) -> Result<(), Fa
             };
             let mut metadata = TikaMetadata::new();
             metadata.set(name::CONTENT_TYPE, MAIL_ITEM);
-            metadata.set(name::PARSER_OVERRIDE, MAIL_ITEM);
+            metadata.set(embedded::PARSER_OVERRIDE, MAIL_ITEM);
             metadata.set(embedded::INTERNAL_PATH, internal_path);
             metadata.set(embedded::RESOURCE_NAME, resource);
             metadata.set(
@@ -435,7 +434,7 @@ fn write_attachment(message: &Message, index: usize, xhtml: &mut Xhtml) -> Resul
         xhtml.metadata_mut().set(name::CONTENT_LENGTH, size.clone());
         let mut metadata = TikaMetadata::new();
         metadata.set(name::CONTENT_TYPE, MAIL_ITEM);
-        metadata.set(name::PARSER_OVERRIDE, MAIL_ITEM);
+        metadata.set(embedded::PARSER_OVERRIDE, MAIL_ITEM);
         metadata.set(
             embedded::RESOURCE_NAME,
             format!("{}.msg", embedded.subject()?),

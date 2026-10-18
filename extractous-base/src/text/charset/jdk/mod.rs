@@ -3,10 +3,12 @@
 //! and the East Asian multi-byte ones decode with the JDK's own tables
 //! (`models/java-charsets.bin`, written by `just encoding-reference`), character for character as
 //! Java does; UTF-8, UTF-16 and UTF-32 decode with ports of the JDK's decoders, which replace
-//! malformed input differently from WHATWG's; ISO-2022-JP decodes with `encoding_rs`, whose
-//! decoder is the WHATWG equivalent of the JDK's; the rest, rarely seen charsets such as the IBM
-//! EBCDIC double-byte ones, are known by name but not decoded.
+//! malformed input differently from WHATWG's, as does ISCII-91, whose decoder holds characters
+//! back; ISO-2022-JP decodes with `encoding_rs`, whose decoder is the WHATWG equivalent of the
+//! JDK's; the rest, rarely seen charsets such as the IBM EBCDIC double-byte ones, are known by
+//! name but not decoded.
 
+mod iscii91;
 mod multibyte;
 
 use std::collections::HashMap;
@@ -38,6 +40,7 @@ enum Decoding {
         big_endian: bool,
         sniff_bom: bool,
     },
+    Iscii91,
     None,
 }
 
@@ -133,6 +136,7 @@ impl Registry {
                         big_endian: false,
                         sniff_bom: false,
                     },
+                    "x-ISCII91" => Decoding::Iscii91,
                     other => whatwg(other).map_or(Decoding::None, Decoding::Whatwg),
                 },
                 kind => {
@@ -190,6 +194,7 @@ impl Charset {
                 big_endian,
                 sniff_bom,
             } => decode_utf32(bytes, *big_endian, *sniff_bom),
+            Decoding::Iscii91 => iscii91::decode(bytes),
             Decoding::None => return None,
         })
     }
@@ -259,7 +264,7 @@ impl Charset {
 /// follows gives what decoding the whole gives: anywhere for a single-byte charset, before an
 /// ASCII byte for UTF-8, which no sequence continues with, after a whole unit that is no high
 /// surrogate for UTF-16 and after a whole unit for UTF-32, once a byte order mark has set the
-/// byte order. The East Asian multi-byte charsets decode the characters that end past the
+/// byte order; ISCII-91, whose decoder can hold a character back to the end, in one piece. The East Asian multi-byte charsets decode the characters that end past the
 /// piece's size, looking ahead into what follows as the whole's decoding does; ISO-2022-JP,
 /// whose escapes switch the decoder's state for what follows, decodes with `encoding_rs`'s
 /// streaming decoder.
@@ -286,6 +291,7 @@ impl Pieces<'_> {
             | Decoding::Whatwg(_)
             | Decoding::None => size,
             Decoding::Utf8 => at_or_end(rest[size..].iter().position(u8::is_ascii)),
+            Decoding::Iscii91 => rest.len(),
             Decoding::Utf16 { .. } => {
                 let mut cut = size.next_multiple_of(2);
                 while cut <= rest.len() {
@@ -327,6 +333,7 @@ impl Iterator for Pieces<'_> {
             Decoding::Utf8 => decode_utf8(piece),
             Decoding::Utf16 { .. } => decode_utf16(piece, self.big_endian, false),
             Decoding::Utf32 { .. } => decode_utf32(piece, self.big_endian, false),
+            Decoding::Iscii91 => iscii91::decode(piece),
             Decoding::Whatwg(_) => {
                 let decoder = self
                     .whatwg
@@ -654,7 +661,10 @@ mod tests {
             .filter(|entry| {
                 matches!(
                     entry.decoding,
-                    Decoding::MultiByte(_) | Decoding::Utf8 | Decoding::Utf16 { .. }
+                    Decoding::MultiByte(_)
+                        | Decoding::Utf8
+                        | Decoding::Utf16 { .. }
+                        | Decoding::Iscii91
                 )
             })
             .map(|entry| entry.name.as_str())
@@ -663,7 +673,7 @@ mod tests {
         ported.sort_unstable();
         assert_eq!(
             expected, ported,
-            "the reference covers every multi-byte, UTF-8 and UTF-16 charset"
+            "the reference covers every multi-byte, UTF-8, UTF-16 and ISCII-91 charset"
         );
         let mismatches: Vec<String> = REFERENCE
             .lines()

@@ -5,8 +5,9 @@
 //! JPEG 2000 images, which tesseract reads where Java has no decoder, are decoded by
 //! hayro-jpeg2000, JBIG2 images, which jbig2-imageio decodes for Java, by hayro-jbig2, AVIF
 //! images by rav1d, and HEIC and HEIF images, and AVIF images of other codecs, by libheif, which
-//! decodes all three for Java. Each keeps its colours, as Java keeps them; JBIG2, of black and
-//! white alone, is grey.
+//! decodes all three for Java. JPEG XL images, which Tika does not read at all (#132), are
+//! decoded by jxl-oxide. Each keeps its colours, as Java keeps them; JBIG2, of black and white
+//! alone, is grey.
 //!
 //! An image too large to prepare ([`MAX_PIXELS`]) is still decoded, up to the largest tesseract
 //! can hold ([`MAX_DECODED_PIXELS`]), and read as it is, as Java has tesseract read it; only a
@@ -20,6 +21,7 @@ use tiff::tags::Tag;
 use tiff::ColorType;
 
 use super::bitmap::{cmyk_rgb, Bitmap};
+use super::prepare::Orientation;
 use super::recognize::MAX_PIXELS;
 use super::{avif, heif, jbig2, raster};
 
@@ -35,6 +37,7 @@ pub(crate) enum Format {
     Jbig2,
     Avif,
     Heif,
+    Jxl,
 }
 
 impl Format {
@@ -61,14 +64,15 @@ impl Format {
             "image/heic" | "image/heic-sequence" | "image/heif" | "image/heif-sequence" => {
                 Self::Heif
             }
+            "image/jxl" => Self::Jxl,
             _ => return None,
         })
     }
 
     /// Whether `PreparingOcrParser` hands tesseract the file of an image of the format, which
     /// tesseract decodes itself, rather than the pixels Java decoded: for every format but
-    /// those Java decodes for tesseract, Photoshop, PCX, TGA and JBIG2, and HEIC, HEIF and
-    /// AVIF, which libheif converts first.
+    /// those Java decodes for tesseract, Photoshop, PCX, TGA and JBIG2, HEIC, HEIF and AVIF,
+    /// which libheif converts first, and JPEG XL, which tesseract does not read.
     fn read_by_tesseract(self) -> bool {
         !matches!(
             self,
@@ -78,6 +82,7 @@ impl Format {
                 | Self::Jbig2
                 | Self::Avif
                 | Self::Heif
+                | Self::Jxl
         )
     }
 }
@@ -187,6 +192,7 @@ pub(crate) fn decode(
             avif::Avif::OfOtherCodecs => heif::decode(input, timeout).map(single),
         },
         Format::Heif => heif::decode(input, timeout).map(single),
+        Format::Jxl => Ok(single(jxl(input)?)),
     }
 }
 
@@ -213,6 +219,54 @@ fn jpeg2000(input: &[u8]) -> Page {
     let image = DynamicImage::from_decoder(image)
         .map_err(|e| format!("cannot decode the JPEG 2000 image: {e}"))?;
     Ok(bitmap(image))
+}
+
+/// A JPEG XL image's first frame, CMYK printed as sRGB, its pixels laid out as stored: the
+/// image is turned as its orientation says where it is read, as every image is, so the turn
+/// jxl-oxide renders it with is undone.
+fn jxl(input: &[u8]) -> Page {
+    let mut image = jxl_oxide::JxlImage::builder()
+        .read(input)
+        .map_err(|e| format!("cannot read the JPEG XL image: {e}"))?;
+    decodable(image.width(), image.height())?;
+    if image.pixel_format().has_black() {
+        image.request_color_encoding(jxl_oxide::EnumColourEncoding::srgb(
+            jxl_oxide::RenderingIntent::Relative,
+        ));
+    }
+    let render = image
+        .render_frame(0)
+        .map_err(|e| format!("cannot decode the JPEG XL image: {e}"))?;
+    let mut stream = render.stream();
+    let (width, height) = (stream.width(), stream.height());
+    let mut samples = vec![0u8; width as usize * height as usize * stream.channels() as usize];
+    stream.write_to_buffer(&mut samples);
+    let short = || "the JPEG XL image holds fewer samples than its size needs".to_owned();
+    let upright = match image.pixel_format() {
+        jxl_oxide::PixelFormat::Gray => GrayImage::from_raw(width, height, samples)
+            .map(Bitmap::Gray)
+            .ok_or_else(short)?,
+        jxl_oxide::PixelFormat::Graya => {
+            let gray_alpha =
+                image::GrayAlphaImage::from_raw(width, height, samples).ok_or_else(short)?;
+            bitmap(DynamicImage::ImageLumaA8(gray_alpha))
+        }
+        jxl_oxide::PixelFormat::Rgb => RgbImage::from_raw(width, height, samples)
+            .map(Bitmap::Rgb)
+            .ok_or_else(short)?,
+        jxl_oxide::PixelFormat::Rgba => RgbaImage::from_raw(width, height, samples)
+            .map(Bitmap::Rgba)
+            .ok_or_else(short)?,
+        other @ (jxl_oxide::PixelFormat::Cmyk | jxl_oxide::PixelFormat::Cmyka) => {
+            return Err(format!("the JPEG XL image renders as {other:?}, not sRGB"))
+        }
+    };
+    Ok(
+        match Orientation::of(image.image_header().metadata.orientation) {
+            Some(orientation) => upright.oriented(orientation.undone()),
+            None => upright,
+        },
+    )
 }
 
 /// A JPEG as the JDK decodes it: grey, or colours converted from the profile it embeds. CMYK,
