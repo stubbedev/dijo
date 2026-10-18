@@ -15,7 +15,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Parser, Prepared, Unported};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared, Unported};
 use crate::text::charset::Charset;
 
 use emf::{Comment, TextOut};
@@ -42,22 +42,8 @@ struct Rect {
     height: f64,
 }
 
-/// The records of a picture that matter to Tika, and why reading them stopped short of the
-/// picture's end, if it did.
-#[derive(Debug)]
-struct Picture<R> {
-    records: Vec<R>,
-    broken: Option<String>,
-}
-
-impl<R> Default for Picture<R> {
-    fn default() -> Self {
-        Self {
-            records: Vec::new(),
-            broken: None,
-        }
-    }
-}
+/// Why reading a picture's records stopped short of its end, if it did.
+type Broken = Option<String>;
 
 /// The `length` bytes of `data` at `at`, those of `what`.
 fn slice<'a>(data: &'a [u8], at: usize, length: usize, what: &str) -> Result<&'a [u8], String> {
@@ -101,31 +87,29 @@ enum Step<'a> {
     Fails(String),
 }
 
-/// Writes the `steps`, and fails where one says the picture could not be read on.
-fn write(xhtml: &mut Xhtml, steps: Vec<Step<'_>>) -> Result<(), Failure> {
-    for step in steps {
-        match step {
-            Step::Paragraph(text) => {
-                xhtml.start_element("p")?;
-                if !text.is_empty() {
-                    xhtml.characters(&text)?;
-                }
-                xhtml.end_element("p")?;
+/// Writes a `step`, and fails where it says the picture could not be read on.
+fn write(xhtml: &mut Xhtml, step: Step<'_>) -> Result<(), Failure> {
+    match step {
+        Step::Paragraph(text) => {
+            xhtml.start_element("p")?;
+            if !text.is_empty() {
+                xhtml.characters(&text)?;
             }
-            Step::Embedded { data, content_type } => {
-                let mut metadata = TikaMetadata::new();
-                if let Some(content_type) = content_type {
-                    metadata.set("Content-Type", content_type);
-                }
-                xhtml.parse_embedded(data, &metadata, Wrapping::PackageEntry)?;
-            }
-            Step::IconString(name) => {
-                let metadata = xhtml.metadata_mut();
-                metadata.set(ICON_ONLY, "true");
-                metadata.set(ICON_STRING, name);
-            }
-            Step::Fails(reason) => return Err(Failure::Malformed(reason)),
+            xhtml.end_element("p")?;
         }
+        Step::Embedded { data, content_type } => {
+            let mut metadata = TikaMetadata::new();
+            if let Some(content_type) = content_type {
+                metadata.set("Content-Type", content_type);
+            }
+            xhtml.parse_embedded(data, &metadata, Wrapping::PackageEntry)?;
+        }
+        Step::IconString(name) => {
+            let metadata = xhtml.metadata_mut();
+            metadata.set(ICON_ONLY, "true");
+            metadata.set(ICON_STRING, name);
+        }
+        Step::Fails(reason) => return Err(Failure::Malformed(reason)),
     }
     Ok(())
 }
@@ -145,14 +129,19 @@ impl Parser for EmfParser {
         &["image/emf"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        let steps = emf_steps(emf::records(input));
-        Ok(Box::new(move |xhtml| write(xhtml, steps)))
+        Ok(Box::new(move |xhtml| {
+            emf_steps(input, |step| write(xhtml, step))
+        }))
     }
 }
 
@@ -169,9 +158,12 @@ struct EmfState {
     charset: Option<u8>,
 }
 
-/// What Tika's `EMFParser` writes of a `picture`.
-fn emf_steps(picture: Picture<emf::Record<'_>>) -> Vec<Step<'_>> {
-    let mut steps = Vec::new();
+/// What Tika's `EMFParser` writes of the EMF picture `data`, handed to `step` as its records are
+/// read, unless `step` stops it.
+fn emf_steps<'a, E>(
+    data: &'a [u8],
+    mut step: impl FnMut(Step<'a>) -> Result<(), E>,
+) -> Result<(), E> {
     let mut state = EmfState {
         last: Rect {
             x: -1.0,
@@ -186,19 +178,21 @@ fn emf_steps(picture: Picture<emf::Record<'_>>) -> Vec<Step<'_>> {
         fonts: BTreeMap::new(),
         charset: None,
     };
-    for record in picture.records {
+    let broken = emf::records(data, |record| {
         let mut is_icon_only = false;
         match record {
             emf::Record::Comment(Comment::Formats(formats)) => {
-                steps.extend(formats.into_iter().map(|data| Step::Embedded {
-                    data,
-                    content_type: None,
-                }));
+                for data in formats {
+                    step(Step::Embedded {
+                        data,
+                        content_type: None,
+                    })?;
+                }
             }
-            emf::Record::Comment(Comment::Wmf(data)) => steps.push(Step::Embedded {
+            emf::Record::Comment(Comment::Wmf(data)) => step(Step::Embedded {
                 data,
                 content_type: Some("image/wmf"),
-            }),
+            })?,
             emf::Record::Comment(Comment::Generic(data)) => {
                 let value = unicode_string(data);
                 if value.as_deref() == Some(ICON_ONLY_COMMENT) && !state.hit_icon_only {
@@ -209,7 +203,11 @@ fn emf_steps(picture: Picture<emf::Record<'_>>) -> Vec<Step<'_>> {
                 }
             }
             emf::Record::Comment(Comment::Other) => {}
-            emf::Record::Text(text) => ext_text_out(&text, &mut state, &mut steps),
+            emf::Record::Text(text) => {
+                if let Some(paragraph) = ext_text_out(&text, &mut state) {
+                    step(Step::Paragraph(paragraph))?;
+                }
+            }
             emf::Record::Font { index, charset } => {
                 state.fonts.insert(index, charset);
             }
@@ -225,17 +223,18 @@ fn emf_steps(picture: Picture<emf::Record<'_>>) -> Vec<Step<'_>> {
             }
         }
         state.last_was_icon_only = is_icon_only;
-    }
+        Ok(())
+    })?;
     if let Some(name) = state.icon_string {
-        steps.push(Step::IconString(name));
+        step(Step::IconString(name))?;
     }
     if !state.buffer.is_empty() {
-        steps.push(Step::Paragraph(state.buffer));
+        step(Step::Paragraph(state.buffer))?;
     }
-    if let Some(reason) = picture.broken {
-        steps.push(Step::Fails(reason));
+    if let Some(reason) = broken {
+        step(Step::Fails(reason))?;
     }
-    steps
+    Ok(())
 }
 
 /// The bit of an EMF object index that names a stock object, a stock font among them, in the
@@ -251,12 +250,14 @@ fn text_charset(id: Option<u8>) -> &'static str {
 const DEFAULT_CHARSET: &str = "Cp1252";
 
 /// `handleExtTextOut`: the record's text added to the paragraph, after a space where it starts
-/// well right of the last text, or in a new paragraph where it starts at another height. Its
-/// ANSI text is in the selected font's charset, where Tika decodes it as UTF-8.
-fn ext_text_out(text: &TextOut, state: &mut EmfState, steps: &mut Vec<Step>) {
+/// well right of the last text, or in a new paragraph where it starts at another height, which
+/// ends the paragraph before it, returned. Its ANSI text is in the selected font's charset,
+/// where Tika decodes it as UTF-8.
+fn ext_text_out(text: &TextOut, state: &mut EmfState) -> Option<String> {
     let current = current_rectangle(text);
+    let mut ended = None;
     if state.last.y > -1.0 && (state.last.y - current.y).abs() > LINE_GAP {
-        steps.push(Step::Paragraph(std::mem::take(&mut state.buffer)));
+        ended = Some(std::mem::take(&mut state.buffer));
     } else if state.last.x > -1.0
         && (current.x - (state.last.x + state.last.width)).abs() > SPACE_GAP
     {
@@ -269,6 +270,7 @@ fn ext_text_out(text: &TextOut, state: &mut EmfState, steps: &mut Vec<Step>) {
     };
     state.buffer.push_str(&decode(text.raw, charset));
     state.last = current;
+    ended
 }
 
 /// `getCurrentRectangle`: the record's bounds, or the bounds it says to ignore where its own
@@ -314,21 +316,29 @@ fn unicode_string(bytes: &[u8]) -> Option<String> {
 /// name of the file the icon shows, or none where it names none or the parser fails. A picture
 /// whose comments embed documents, which Tika parses there, is left to Tika.
 pub fn emf_icon_name(input: &[u8]) -> Result<Option<String>, Unported> {
-    let mut name = None;
-    for step in emf_steps(emf::records(input)) {
-        match step {
-            Step::IconString(found) => name = Some(found),
-            Step::Fails(_) => return Ok(None),
-            Step::Embedded { .. } => {
-                return Err(Unported::new(
-                    "the EMF picture embeds documents, which Tika parses when it reads the \
-                     picture as the icon of an OLE object",
-                ))
-            }
-            Step::Paragraph(_) => {}
-        }
+    /// Why the steps of the picture stop: it failed, or it embeds documents.
+    enum Unnamed {
+        Fails,
+        Embeds,
     }
-    Ok(name)
+    let mut name = None;
+    let walked = emf_steps(input, |step| match step {
+        Step::IconString(found) => {
+            name = Some(found);
+            Ok(())
+        }
+        Step::Fails(_) => Err(Unnamed::Fails),
+        Step::Embedded { .. } => Err(Unnamed::Embeds),
+        Step::Paragraph(_) => Ok(()),
+    });
+    match walked {
+        Ok(()) => Ok(name),
+        Err(Unnamed::Fails) => Ok(None),
+        Err(Unnamed::Embeds) => Err(Unported::new(
+            "the EMF picture embeds documents, which Tika parses when it reads the picture as \
+             the icon of an OLE object",
+        )),
+    }
 }
 
 /// Tika's `WMFParser`.
@@ -346,14 +356,19 @@ impl Parser for WmfParser {
         &["image/wmf"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
-        let steps = wmf_steps(wmf::records(input));
-        Ok(Box::new(move |xhtml| write(xhtml, steps)))
+        Ok(Box::new(move |xhtml| {
+            wmf_steps(input, |step| write(xhtml, step))
+        }))
     }
 }
 
@@ -389,14 +404,17 @@ enum WmfObject {
     Other,
 }
 
-/// What Tika's `WMFParser` writes of a `picture`: a paragraph of each text record, its bytes
-/// decoded in the charset of the font selected. Tika decodes them in that of the last font
-/// made, and cuts the text of a `META_EXTTEXTOUT` to its length after decoding it (#127).
-fn wmf_steps(picture: Picture<wmf::Record<'_>>) -> Vec<Step<'static>> {
+/// What Tika's `WMFParser` writes of the WMF picture `data`, handed to `step` as its records are
+/// read, unless `step` stops it: a paragraph of each text record, its bytes decoded in the
+/// charset of the font selected. Tika decodes them in that of the last font made, and cuts the
+/// text of a `META_EXTTEXTOUT` to its length after decoding it (#127).
+fn wmf_steps<E>(
+    data: &[u8],
+    mut step: impl FnMut(Step<'static>) -> Result<(), E>,
+) -> Result<(), E> {
     let mut objects: Vec<Option<WmfObject>> = Vec::new();
     let mut charset = None;
-    let mut steps = Vec::new();
-    for record in picture.records {
+    let broken = wmf::records(data, |record| {
         let made = match record {
             wmf::Record::Font { charset } => WmfObject::Font(charset),
             wmf::Record::Object => WmfObject::Other,
@@ -404,28 +422,28 @@ fn wmf_steps(picture: Picture<wmf::Record<'_>>) -> Vec<Step<'static>> {
                 if let Some(Some(WmfObject::Font(selected))) = objects.get(usize::from(index)) {
                     charset = Some(*selected);
                 }
-                continue;
+                return Ok(());
             }
             wmf::Record::Delete(index) => {
                 if let Some(object) = objects.get_mut(usize::from(index)) {
                     *object = None;
                 }
-                continue;
+                return Ok(());
             }
             wmf::Record::Text(raw) => {
-                steps.push(Step::Paragraph(decode(raw, text_charset(charset))));
-                continue;
+                return step(Step::Paragraph(decode(raw, text_charset(charset))));
             }
         };
         match objects.iter_mut().find(|object| object.is_none()) {
             Some(free) => *free = Some(made),
             None => objects.push(Some(made)),
         }
+        Ok(())
+    })?;
+    match broken {
+        Some(reason) => step(Step::Fails(reason)),
+        None => Ok(()),
     }
-    if let Some(reason) = picture.broken {
-        steps.push(Step::Fails(reason));
-    }
-    steps
 }
 
 #[cfg(test)]
