@@ -12,14 +12,16 @@
 
 use std::collections::HashMap;
 
+use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::odf::{
-    decode_base64, normalized_attributes, normalized_namespace, BINARY_DATA_ELEMENT, OFFICE_NS,
+    normalized_attributes, normalized_namespace, BinaryData, BINARY_DATA_ELEMENT, OFFICE_NS,
 };
 use crate::formats::xhtml::{Stop, Xhtml, XHTML_NAMESPACE};
 use crate::formats::xml::{attribute, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::input::Input;
 use crate::java;
 
 const TEXT_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0";
@@ -70,6 +72,13 @@ const MAPPINGS: [(&str, &str, &str, AttributeMapping); 16] = [
     (TABLE_NS, "table-row", "tr", &[]),
     (TABLE_NS, "table-cell", "td", CELL_ATTRIBUTES),
 ];
+
+/// The failure of a spooling of binary data, which `error` stopped.
+fn unspooled(error: std::io::Error) -> Failure {
+    Failure::Extraction(Error::IoError(format!(
+        "spooling the binary data of an OpenDocument part fails: {error}"
+    )))
+}
 
 /// The XHTML element an ODF element maps to, and how its attributes carry over.
 fn mapping(namespace: &str, local_name: &str) -> Option<(&'static str, AttributeMapping)> {
@@ -124,8 +133,9 @@ pub(super) struct Body<'a, 'x> {
     italic: bool,
     paragraph_depth: i64,
     anchor_depth: i64,
-    /// The base64 text of the `binary-data` element being read, if one is.
-    binary_data: Option<String>,
+    /// The data of the `binary-data` element being read, if one is, decoded as far as its text
+    /// has come.
+    binary_data: Option<BinaryData>,
 }
 
 impl<'a, 'x> Body<'a, 'x> {
@@ -560,7 +570,7 @@ impl SaxHandler for Body<'_, '_> {
             self.end_in(XHTML_NAMESPACE, "img")?;
         }
         if local_name == BINARY_DATA_ELEMENT {
-            self.binary_data = Some(String::new());
+            self.binary_data = Some(BinaryData::new());
             return Ok(());
         }
         self.define_styles(namespace, local_name, attributes)?;
@@ -613,9 +623,12 @@ impl SaxHandler for Body<'_, '_> {
 
     fn end_element(&mut self, namespace: &str, local_name: &str) -> Result<(), Failure> {
         if local_name == BINARY_DATA_ELEMENT {
-            let text = self.binary_data.take().unwrap_or_default();
-            return self.xhtml.parse_embedded(
-                &decode_base64(&text),
+            let data = match self.binary_data.take() {
+                Some(data) => data.finish().map_err(unspooled)?,
+                None => Input::Borrowed(&[]),
+            };
+            return self.xhtml.parse_embedded_input(
+                &data,
                 &TikaMetadata::new(),
                 Wrapping::PackageEntry,
             );
@@ -671,8 +684,7 @@ impl SaxHandler for Body<'_, '_> {
 
     fn characters(&mut self, text: &str) -> Result<(), Failure> {
         if let Some(binary_data) = &mut self.binary_data {
-            binary_data.push_str(text);
-            return Ok(());
+            return binary_data.push(text).map_err(unspooled);
         }
         self.write_characters(text)
     }

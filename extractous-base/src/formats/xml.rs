@@ -120,13 +120,18 @@ pub fn parse_part(
     what: &str,
     handler: &mut impl SaxHandler,
 ) -> Result<(), Failure> {
-    parse_sax_paged(
-        input,
-        input.pages(),
-        DocumentTypes::Processed,
-        what,
-        handler,
-    )
+    parse_paged(input, input.pages(), what, handler)
+}
+
+/// [`parse_sax`] of `input`, whose `pages` are released as the parse goes on: a mapped file
+/// that a parser of bounded memory reads.
+pub fn parse_paged(
+    input: &[u8],
+    pages: Pages<'_>,
+    what: &str,
+    handler: &mut impl SaxHandler,
+) -> Result<(), Failure> {
+    parse_sax_paged(input, pages, DocumentTypes::Processed, what, handler)
 }
 
 fn parse_sax_paged(
@@ -242,29 +247,6 @@ pub fn has_document_type(input: &[u8]) -> bool {
     finder.0
 }
 
-/// Whether the JDK's scanner reads on over the character `byte` is part of in a run of character
-/// data: anything but a line break, `]` and a character outside the Basic Multilingual Plane, the
-/// characters whose UTF-8 starts with a byte of 0xF0 or more.
-fn is_content_byte(byte: u8) -> bool {
-    !matches!(byte, b'\n' | b']') && byte < 0xF0
-}
-
-/// The end of the run the JDK's scanner reads from `start`: line breaks, then content.
-fn scanned_run(text: &str, start: usize) -> usize {
-    let rest = &text[start..];
-    let content = rest.trim_start_matches('\n');
-    let end = content
-        .bytes()
-        .position(|byte| !is_content_byte(byte))
-        .unwrap_or(content.len());
-    start + (rest.len() - content.len()) + end
-}
-
-fn after_brackets(text: &str, start: usize) -> usize {
-    let rest = &text[start..];
-    start + rest.len() - rest.trim_start_matches(']').len()
-}
-
 /// Hands `write` the character data `text`, which lies between markup and references and whose
 /// line ends are normalized, in the pieces the JDK's SAX parser reports it in: a run of line
 /// breaks and content, any `]`s, a second such run and its `]`s; or a run up to and with a
@@ -277,15 +259,7 @@ fn for_each_sax_piece<'t, E>(
     let mut position = 0;
     while position < text.len() {
         let start = position;
-        position = scanned_run(text, position);
-        if let Some(character) = text[position..].chars().next() {
-            if character >= '\u{10000}' {
-                position += character.len_utf8();
-            } else {
-                position = after_brackets(text, position);
-                position = after_brackets(text, scanned_run(text, position));
-            }
-        }
+        position = xml::sax_piece_end(text, position);
         write(&text[start..position])?;
     }
     Ok(())

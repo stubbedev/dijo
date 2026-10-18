@@ -352,24 +352,25 @@ pub fn base64_mime_decode(text: &str) -> Option<Vec<u8>> {
 pub fn commons_base64_decode(text: &str) -> Vec<u8> {
     let mut decoded = Vec::with_capacity(text.len() / 4 * 3);
     let mut decoder = CommonsBase64::default();
-    decoder.decode(text, &mut decoded);
+    decoder.push(text, &mut decoded);
     decoder.finish(&mut decoded);
     decoded
 }
 
-/// [`commons_base64_decode`] of a text handed over a piece at a time, as Commons Codec's
-/// `Base64InputStream` decodes one: what each piece completes decoded as it comes.
+/// [`commons_base64_decode`] of a text that comes in pieces, each decoded as it comes.
 #[derive(Debug, Default)]
 pub struct CommonsBase64 {
+    /// The bits of the unit read so far.
     bits: u32,
+    /// How many characters of the unit are read.
     count: u8,
-    /// Whether an `=` was read, past which nothing is decoded.
+    /// Whether a `=` has ended the text.
     ended: bool,
 }
 
 impl CommonsBase64 {
-    /// Adds to `decoded` the bytes the units `text` completes.
-    pub fn decode(&mut self, text: &str, decoded: &mut Vec<u8>) {
+    /// Decodes the next piece of the text onto `decoded`.
+    pub fn push(&mut self, text: &str, decoded: &mut Vec<u8>) {
         if self.ended {
             return;
         }
@@ -396,7 +397,7 @@ impl CommonsBase64 {
         }
     }
 
-    /// Adds to `decoded` the whole bytes of the unit the text ends inside.
+    /// Decodes the whole bytes of the unfinished unit the text ends in onto `decoded`.
     pub fn finish(self, decoded: &mut Vec<u8>) {
         match self.count {
             2 => decoded.push((self.bits >> 4) as u8),
@@ -784,13 +785,24 @@ mod tests {
         assert_eq!(commons_base64_decode("SGVqI"), b"Hej");
         assert_eq!(commons_base64_decode("øSGVq"), b"Hej");
         assert!(commons_base64_decode("").is_empty());
-        let mut decoder = CommonsBase64::default();
-        let mut decoded = Vec::new();
-        for piece in ["S", "GVqI", "G", "Q", "=IGRp", "SGVq"] {
-            decoder.decode(piece, &mut decoded);
+    }
+
+    #[test]
+    fn decodes_commons_base64_in_pieces_as_whole() {
+        for text in ["SG\nVq IGRp*", "SGVqIGQ=", "SGVq=IGRp", "SGVqI", "-_-_+/"] {
+            for cut in 0..=text.len() {
+                let mut decoder = CommonsBase64::default();
+                let mut decoded = Vec::new();
+                decoder.push(&text[..cut], &mut decoded);
+                decoder.push(&text[cut..], &mut decoded);
+                decoder.finish(&mut decoded);
+                assert_eq!(
+                    decoded,
+                    commons_base64_decode(text),
+                    "{text:?} cut at {cut}"
+                );
+            }
         }
-        decoder.finish(&mut decoded);
-        assert_eq!(decoded, b"Hej d");
     }
 
     #[test]

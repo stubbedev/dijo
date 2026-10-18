@@ -1,10 +1,10 @@
 //! Archives and compressed files too large to read whole, or holding entries too large to
 //! decode into memory, extracted under a memory budget far below their size.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 
 use extractous_core::large::LargeFile;
-pub(crate) use extractous_core::large::SPOOLING_BUDGET;
+pub(crate) use extractous_core::large::{Binary, SPOOLING_BUDGET};
 
 use crate::compress::MAX_DECODED;
 use crate::input::MAX_READ_WHOLE;
@@ -14,37 +14,6 @@ pub(crate) const END: &str = "the end of the archive";
 
 /// The size of the large entry: well past what a stream may decode into memory.
 pub(crate) const LARGE: u64 = MAX_DECODED as u64 + (64 << 20);
-
-/// A large entry's data: binary, so that no parser writes it out, and compressing well, lines
-/// of 64 bytes that each hold their number among bytes that repeat.
-pub(crate) struct Binary {
-    at: u64,
-    length: u64,
-}
-
-impl Binary {
-    pub(crate) fn new(length: u64) -> Self {
-        Self { at: 0, length }
-    }
-}
-
-impl Read for Binary {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let mut written = 0;
-        while written < buffer.len() && self.at < self.length {
-            let mut line = [0xABu8; 64];
-            line[0] = 0;
-            line[1..9].copy_from_slice(&(self.at / 64).to_le_bytes());
-            let offset = (self.at % 64) as usize;
-            let left = usize::try_from(self.length - self.at).unwrap_or(usize::MAX);
-            let length = (64 - offset).min(buffer.len() - written).min(left);
-            buffer[written..written + length].copy_from_slice(&line[offset..offset + length]);
-            written += length;
-            self.at += length as u64;
-        }
-        Ok(written)
-    }
-}
 
 /// Writes to `out` a TAR archive of a binary entry of `large` bytes, then a text entry of
 /// [`END`].

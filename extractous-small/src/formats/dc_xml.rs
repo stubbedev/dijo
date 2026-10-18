@@ -8,7 +8,8 @@ use crate::formats::element_metadata::ElementHandlers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::input::Pages;
 
 /// The XML types Tika's registry hands `DcXMLParser`, having no parser of their own.
 const MEDIA_TYPES: [&str; 8] = [
@@ -41,9 +42,23 @@ impl Parser for DcXmlParser {
         &["application/xml"]
     }
 
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
+        metadata: &TikaMetadata,
+        configs: &'a ParserConfigs,
+    ) -> Result<Prepared<'a>, Decline<'a>> {
+        self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
+    }
+
+    fn prepare_paged<'a>(
+        &self,
+        input: &'a [u8],
+        pages: Pages<'a>,
         _metadata: &TikaMetadata,
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -53,10 +68,10 @@ impl Parser for DcXmlParser {
                 dublin_core: ElementHandlers::dublin_core(),
             };
             // A malformed document fails the second reading, as far as which it is written.
-            let _ = xml::parse_sax(input, "the XML document", &mut metadata);
+            let _ = xml::parse_paged(input, pages, "the XML document", &mut metadata);
             xhtml.start_element("p")?;
             let mut handler = Text { xhtml };
-            let parsed = xml::parse_sax(input, "the XML document", &mut handler);
+            let parsed = xml::parse_paged(input, pages, "the XML document", &mut handler);
             xhtml.end_element("p")?;
             xhtml.end_document()?;
             parsed.map_err(|failure| match failure {
@@ -310,5 +325,40 @@ mod tests {
         assert_eq!(failing.len(), 1);
         assert_same_as_tika(&read, TIKA_NAME);
         crate::formats::parity::assert_fails_as_tika(&failing);
+    }
+}
+
+#[cfg(test)]
+mod large {
+    use extractous_core::large::{bodies_past_limit, LargeFile};
+
+    use super::*;
+
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    /// A UTF-16 document too large to read whole is decoded a window at a time and its text
+    /// written as it is read, in either build, under a memory budget far below its size.
+    #[test]
+    fn writes_utf16_documents_too_large_to_read_whole_as_they_are_read() {
+        let row = |index: u64| utf16(&format!("<r>R\u{e6}kke {index}</r>\n"));
+        let count = bodies_past_limit(row(1_000_000).len());
+        let file = LargeFile::new(
+            "long.xml",
+            &utf16("\u{feff}<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<doc>\n"),
+            count,
+            row,
+            &utf16("</doc>\n"),
+        );
+        let mut rows = 0;
+        file.extract_lines(DcXmlParser.name(), |line| {
+            let line = line.trim();
+            if !line.is_empty() {
+                assert_eq!(line, format!("R\u{e6}kke {rows}"));
+                rows += 1;
+            }
+        });
+        assert_eq!(rows, count);
     }
 }

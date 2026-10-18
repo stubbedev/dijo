@@ -20,9 +20,11 @@ use crate::{memory, Extractor, Metadata};
 /// The memory an extraction of a large file may take by default: a fraction of the file.
 pub const BUDGET: u64 = 16 << 20;
 /// The budget of an extraction that decodes a stream of unknown length, which holds as much of
-/// what it decodes in memory as a file read whole before it spools the rest to a file, or that
-/// reads whole a file that decodes into more than that.
+/// what it decodes in memory as a file read whole before it spools the rest to a file.
 pub const SPOOLING_BUDGET: u64 = MAX_READ_WHOLE + BUDGET;
+/// The base64 alphabet, which [`write_base64`] encodes with.
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 /// What [`LargeFile::padded`] pads a header with, a body at a time.
 const PADDING: &[u8] = &[0; 1 << 20];
 
@@ -93,6 +95,79 @@ pub fn peak_of<R>(work: impl FnOnce() -> R) -> (R, u64) {
         result,
         u64::try_from(peak).expect("the peak is at least what was held before"),
     )
+}
+
+/// Binary data of a length, as large as a test needs, which no parser writes out and which
+/// compresses well: lines of 64 bytes that each hold their number among bytes that repeat.
+pub struct Binary {
+    at: u64,
+    length: u64,
+}
+
+impl Binary {
+    pub fn new(length: u64) -> Self {
+        Self { at: 0, length }
+    }
+}
+
+impl std::io::Read for Binary {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let mut written = 0;
+        while written < buffer.len() && self.at < self.length {
+            let mut line = [0xABu8; 64];
+            line[0] = 0;
+            line[1..9].copy_from_slice(&(self.at / 64).to_le_bytes());
+            let offset = (self.at % 64) as usize;
+            let left = usize::try_from(self.length - self.at).unwrap_or(usize::MAX);
+            let length = (64 - offset).min(buffer.len() - written).min(left);
+            buffer[written..written + length].copy_from_slice(&line[offset..offset + length]);
+            written += length;
+            self.at += length as u64;
+        }
+        Ok(written)
+    }
+}
+
+/// Writes to `out` what `data` reads, in base64, in lines of 76 characters, each ended by
+/// `line_end`.
+pub fn write_base64(
+    out: &mut dyn std::io::Write,
+    mut data: impl std::io::Read,
+    line_end: &[u8],
+) -> std::io::Result<()> {
+    let mut line = [0u8; 57];
+    let mut encoded = Vec::with_capacity(76 + line_end.len());
+    loop {
+        let mut read = 0;
+        while read < line.len() {
+            let count = data.read(&mut line[read..])?;
+            if count == 0 {
+                break;
+            }
+            read += count;
+        }
+        if read == 0 {
+            return Ok(());
+        }
+        encoded.clear();
+        for group in line[..read].chunks(3) {
+            let bytes = [
+                group[0],
+                *group.get(1).unwrap_or(&0),
+                *group.get(2).unwrap_or(&0),
+            ];
+            let bits = u32::from(bytes[0]) << 16 | u32::from(bytes[1]) << 8 | u32::from(bytes[2]);
+            for (index, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+                encoded.push(if index <= group.len() {
+                    BASE64_ALPHABET[(bits >> shift & 63) as usize]
+                } else {
+                    b'='
+                });
+            }
+        }
+        encoded.extend_from_slice(line_end);
+        out.write_all(&encoded)?;
+    }
 }
 
 /// How many bodies of `length` bytes make a file too large to read whole.

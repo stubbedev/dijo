@@ -79,14 +79,20 @@ impl Parser for Word2006MlParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let input = Input::Within(input, pages);
-        Ok(Box::new(move |xhtml| write(&input, &configs.office, xhtml)))
+        Ok(Box::new(move |xhtml| {
+            write(input, pages, &configs.office, xhtml)
+        }))
     }
 }
 
-/// `Word2006MLParser.parse`: a document Xerces fails on fails the parse, after what was written
-/// before, and is not ended.
-fn write(input: &Input, config: &OfficeParserConfig, xhtml: &mut Xhtml) -> Result<(), Failure> {
+/// `Word2006MLParser.parse` of `input`, whose pages are `pages`: a document Xerces fails on fails
+/// the parse, after what was written before, and is not ended.
+fn write(
+    input: &[u8],
+    pages: Pages,
+    config: &OfficeParserConfig,
+    xhtml: &mut Xhtml,
+) -> Result<(), Failure> {
     let inline = InlineParts::default();
     let links = HashMap::new();
     let mut flat = Flat {
@@ -98,7 +104,7 @@ fn write(input: &Input, config: &OfficeParserConfig, xhtml: &mut Xhtml) -> Resul
         extended: PropertiesReader::new(&EXTENDED_PROPERTIES),
         binary: BinaryData::default(),
     };
-    xml::parse_part(input, WHAT, &mut flat).map_err(|failure| match failure {
+    xml::parse_paged(input, pages, WHAT, &mut flat).map_err(|failure| match failure {
         Failure::Malformed(reason) => Failure::Malformed(format!("XML parse error: {reason}")),
         Failure::Stopped(Stop::LimitReached) => Failure::Malformed(LIMIT_RETHROWN.to_owned()),
         other => other,
@@ -284,7 +290,7 @@ impl BinaryData {
             decoded: Vec::new(),
         });
         decoding.decoded.clear();
-        decoding.decoder.decode(text, &mut decoding.decoded);
+        decoding.decoder.push(text, &mut decoding.decoded);
         decoding
             .spool
             .write_all(&decoding.decoded)

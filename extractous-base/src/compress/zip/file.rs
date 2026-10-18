@@ -39,7 +39,7 @@ pub enum NameSource {
 
 /// An entry of the central directory, or of a local header read front to back, as
 /// `ZipArchiveEntry`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZipEntry {
     pub name: String,
     pub raw_name: Vec<u8>,

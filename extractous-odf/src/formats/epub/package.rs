@@ -8,6 +8,7 @@ use crate::formats::element_metadata::{set_unless_equal, ElementHandlers, DUBLIN
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
+use crate::input::Input;
 use crate::java;
 
 const RENDITION_LAYOUT: &str = "epub:rendition:layout";
@@ -29,7 +30,7 @@ pub(super) fn attribute_value<'a>(
 /// The `full-path` of the first `rootfile` in `container.xml` that has one. Tika's `RootFinder`
 /// takes the last `rootfile`, matched ignoring case, and one without a `full-path` leaves the
 /// book without a package document (#88).
-pub(super) fn root(container: &[u8]) -> Result<Option<String>, Failure> {
+pub(super) fn root(container: &Input) -> Result<Option<String>, Failure> {
     struct RootFinder(Option<String>);
 
     impl SaxHandler for RootFinder {
@@ -57,7 +58,7 @@ pub(super) fn root(container: &[u8]) -> Result<Option<String>, Failure> {
     }
 
     let mut finder = RootFinder(None);
-    xml::parse_sax(container, "META-INF/container.xml", &mut finder)?;
+    xml::parse_part(container, "META-INF/container.xml", &mut finder)?;
     Ok(finder.0)
 }
 
@@ -208,7 +209,7 @@ pub(super) enum MetadataParser {
 /// Reads the metadata of the XML document `input`, which `what` names, into `metadata`, as
 /// Tika's `parser` does, failing as its `XMLParser` fails.
 pub(super) fn read_metadata(
-    input: &[u8],
+    input: &Input,
     what: &str,
     parser: MetadataParser,
     metadata: &mut TikaMetadata,
@@ -222,7 +223,7 @@ pub(super) fn read_metadata(
         date: None,
         rendition: (parser == MetadataParser::Package).then(Rendition::default),
     };
-    xml::parse_sax(input, what, &mut handler).map_err(|failure| match failure {
+    xml::parse_part(input, what, &mut handler).map_err(|failure| match failure {
         Failure::Malformed(reason) => Failure::Malformed(format!("XML parse error: {reason}")),
         other => other,
     })
@@ -277,9 +278,9 @@ impl Contents {
     }
 
     /// Reads the manifest and spine of the package document `input`.
-    pub(super) fn read(input: &[u8], what: &str) -> Result<Self, Failure> {
+    pub(super) fn read(input: &Input, what: &str) -> Result<Self, Failure> {
         let mut contents = Self::default();
-        xml::parse_sax(input, what, &mut contents)?;
+        xml::parse_part(input, what, &mut contents)?;
         Ok(contents)
     }
 }
@@ -378,7 +379,7 @@ fn is_regex_whitespace(character: char) -> bool {
 
 /// The items `encryption.xml` names encrypted, in document order, as Tika's `EncryptionHandler`
 /// collects them: the `URI` of each `CipherReference`, `null` for one without, as Java writes it.
-pub(super) fn encrypted_items(encryption: &[u8]) -> Result<Vec<String>, Failure> {
+pub(super) fn encrypted_items(encryption: &Input) -> Result<Vec<String>, Failure> {
     struct CipherReferences(Vec<String>);
 
     impl SaxHandler for CipherReferences {
@@ -408,6 +409,6 @@ pub(super) fn encrypted_items(encryption: &[u8]) -> Result<Vec<String>, Failure>
     }
 
     let mut references = CipherReferences(Vec::new());
-    xml::parse_sax(encryption, "META-INF/encryption.xml", &mut references)?;
+    xml::parse_part(encryption, "META-INF/encryption.xml", &mut references)?;
     Ok(references.0)
 }
