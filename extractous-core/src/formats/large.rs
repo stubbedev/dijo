@@ -7,7 +7,7 @@
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::fs::File;
-use std::io::{BufWriter, Write as _};
+use std::io::BufWriter;
 use std::path::PathBuf;
 
 use crate::config::ParserConfigs;
@@ -125,7 +125,10 @@ impl LargeFile {
 
     /// What `write` writes: a file larger than [`MAX_READ_WHOLE`], or one that decodes into
     /// more.
-    pub fn written(name: &str, write: impl FnOnce(&mut dyn Write) -> std::io::Result<()>) -> Self {
+    pub fn written(
+        name: &str,
+        write: impl FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
+    ) -> Self {
         let dir = crate::isolate::temp_dir()
             .join(format!("extractous-large-{name}-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
