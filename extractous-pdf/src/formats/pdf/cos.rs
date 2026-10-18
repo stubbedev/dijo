@@ -82,13 +82,14 @@ pub(super) struct Pdf<'d> {
 
 impl<'d> Pdf<'d> {
     /// The document `data`, whose cross-reference PDFBox reads as `resolution`, its pages
-    /// released as it is read.
+    /// released as it is read. The objects PDFBox read while it read the cross-reference stay
+    /// as it read them, but dictionaries, which may be streams, are read as other objects are.
     pub(super) fn new(
         data: &'d [u8],
         paging: Paging<'d>,
         resolution: &Resolution,
     ) -> Result<Self, Unported> {
-        let objects = resolution
+        let mut objects: HashMap<ObjectId, Slot> = resolution
             .placements()?
             .into_iter()
             .map(|(id, placement)| {
@@ -99,6 +100,18 @@ impl<'d> Pdf<'d> {
                 (id, slot)
             })
             .collect();
+        for (id, placement, object) in resolution.pooled()? {
+            if matches!(object, Object::Dictionary(_)) {
+                continue;
+            }
+            let slot = objects.entry(id).or_insert_with(|| Slot {
+                placement,
+                object: OnceCell::new(),
+            });
+            slot.object
+                .set(Some(object.clone()))
+                .expect("each object is pooled once");
+        }
         let spells_filespec = paging.find(data, b"Filespec").is_some();
         let pdf = Self {
             data,

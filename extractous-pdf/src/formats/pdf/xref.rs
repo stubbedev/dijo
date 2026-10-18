@@ -111,6 +111,9 @@ pub(super) struct Resolution {
     /// For an encrypted document whose objects PDFBox searched for, those it found: it searches
     /// their object streams once it can decrypt them ([`Resolution::object_stream_placements`]).
     encrypted_search: Option<HashMap<Key, Location>>,
+    /// The objects PDFBox read while it read the cross-reference, where it found them, which
+    /// its pool keeps for the rest of the document.
+    pooled: HashMap<Key, (Location, Object)>,
 }
 
 /// What decrypts the data of an object stream the search finds, the stream's key and
@@ -126,8 +129,9 @@ pub(super) fn resolve(data: &[u8], paging: &Paging) -> Result<Resolution, Unport
         Err(Thrown::Io) => None,
         Err(Thrown::Unported(unported)) => return Err(unported),
     };
+    let pooled = parser.lookup.pooled();
     let Some(trailer) = trailer.filter(|trailer| trailer.has(b"Root")) else {
-        return rebuild(data).map_err(|thrown| match thrown {
+        return rebuild(data, pooled).map_err(|thrown| match thrown {
             Thrown::Io => Unported(
                 "a document whose objects PDFBox fails to search for, as it rebuilds its trailer"
                     .to_owned(),
@@ -137,24 +141,40 @@ pub(super) fn resolve(data: &[u8], paging: &Paging) -> Result<Resolution, Unport
     };
     let mut table = parser.resolved.table;
     let mut encrypted_search = None;
-    if let Some(mut objects) = parser.brute.objects.take() {
+    if let Some(mut objects) = parser.lookup.brute.objects.take() {
         match trailer.has(b"Encrypt") {
             true => encrypted_search = Some(objects),
-            false => brute_force_object_streams(data, None, &mut objects, &mut table)?,
+            false => {
+                let placed = placed(&objects, &table);
+                brute_force_object_streams(data, None, &placed, &mut objects, &mut table)?;
+            }
         }
     }
     Ok(Resolution {
         table,
         trailer,
         encrypted_search,
+        pooled,
     })
+}
+
+/// Where PDFBox finds an object while it searches for object streams: where the document's
+/// table puts it, else where the search for objects found it.
+fn placed(
+    objects: &HashMap<Key, Location>,
+    table: &HashMap<Key, Location>,
+) -> HashMap<Key, Location> {
+    let mut placed = objects.clone();
+    placed.extend(table.iter().map(|(key, location)| (*key, *location)));
+    placed
 }
 
 /// `BruteForceParser.rebuildTrailer`, for a document without a trailer PDFBox can use: the
 /// objects a search finds, and a trailer of the catalog and the information dictionary found
 /// in a `trailer` of the document, or among the objects. The object streams are searched with
-/// no security handler, so an encrypted one reads as corrupt.
-fn rebuild(data: &[u8]) -> Read<Resolution> {
+/// no security handler, so an encrypted one reads as corrupt. The objects PDFBox read while it
+/// read the cross-reference stay `pooled`.
+fn rebuild(data: &[u8], pooled: HashMap<Key, (Location, Object)>) -> Read<Resolution> {
     let mut objects = search_objects(data)?;
     let mut table = objects.clone();
     let mut trailer = Dictionary::new();
@@ -162,17 +182,20 @@ fn rebuild(data: &[u8]) -> Read<Resolution> {
     if !search_trailer(data, &objects, &mut trailer)?
         && !search_trailer_items(data, &objects, &mut trailer)
     {
-        brute_force_object_streams(data, None, &mut objects, &mut table)?;
+        let placed = objects.clone();
+        brute_force_object_streams(data, None, &placed, &mut objects, &mut table)?;
         streams_searched = true;
         search_trailer_items(data, &objects, &mut trailer);
     }
     if !streams_searched {
-        brute_force_object_streams(data, None, &mut objects, &mut table)?;
+        let placed = objects.clone();
+        brute_force_object_streams(data, None, &placed, &mut objects, &mut table)?;
     }
     Ok(Resolution {
         table,
         trailer,
         encrypted_search: None,
+        pooled,
     })
 }
 
@@ -298,47 +321,85 @@ fn is_info(dict: &Dictionary) -> bool {
 /// The dictionary of the object `key` where the search found it, as `COSObject.getObject`
 /// reads it, or `None` where it is no dictionary or does not read.
 fn dereference(data: &[u8], objects: &HashMap<Key, Location>, key: Key) -> Option<Dictionary> {
-    match objects.get(&key)? {
+    match referenced(data, objects, key, &mut Vec::new())? {
+        Object::Dictionary(dict) => Some(dict),
+        _ => None,
+    }
+}
+
+/// `COSObject.getObject` of the object `key` while PDFBox finds the document's objects, which
+/// `objects` place: what it reads where they put it, `None` where they do not or it fails to
+/// read; a stream's dictionary stands for the stream. An object asked for while it is being
+/// read, among `reading`, reads as `None`, as a `COSObject` marked dereferenced does.
+fn referenced(
+    data: &[u8],
+    objects: &HashMap<Key, Location>,
+    key: Key,
+    reading: &mut Vec<Key>,
+) -> Option<Object> {
+    if reading.contains(&key) {
+        return None;
+    }
+    reading.push(key);
+    let object = read_placed(data, objects, key, reading);
+    reading.pop();
+    object
+}
+
+/// The object `key` where `objects` put it, as [`referenced`] reads it.
+fn read_placed(
+    data: &[u8],
+    objects: &HashMap<Key, Location>,
+    key: Key,
+    reading: &mut Vec<Key>,
+) -> Option<Object> {
+    match *objects.get(&key)? {
         Location::File(offset) => {
             let mut source = Source::new(data);
-            let found = file_object_dictionary(&mut source, *offset).ok()?;
-            (found.0 == key).then_some(found.1)
+            let (found, object) = file_object(&mut source, offset).ok()?;
+            (found == key).then_some(object)
         }
         Location::Stream(stream) => {
             let stream_key = Key {
-                number: *stream,
+                number: stream,
                 generation: 0,
             };
             let Location::File(offset) = *objects.get(&stream_key)? else {
                 return None;
             };
             let mut source = Source::new(data);
-            let (found, dict) = file_object_dictionary(&mut source, offset).ok()?;
+            let (found, Object::Dictionary(dict)) = file_object(&mut source, offset).ok()? else {
+                return None;
+            };
             if found != stream_key {
                 return None;
             }
             source.start_stream();
-            let raw = source.stream_data(direct_length(&dict).ok()?).ok()?;
+            let mut length = |key| Ok(referenced(data, objects, key, reading));
+            let raw = source
+                .stream_data(stream_length(&dict, &mut length).ok()?)
+                .ok()?;
             let decoded = decode(&dict, raw.data).ok()?;
-            compressed_dictionary(&dict, &decoded, key.number)
+            compressed_object(&dict, &decoded, key.number)
         }
     }
 }
 
-/// The key and dictionary of the object at `offset`, as `parseFileObject` starts reading it.
-fn file_object_dictionary(source: &mut Source, offset: i64) -> Read<(Key, Dictionary)> {
+/// The key and object at `offset`, as `parseFileObject` starts reading it: a stream's
+/// dictionary, the source standing after it.
+fn file_object(source: &mut Source, offset: i64) -> Read<(Key, Object)> {
     source.seek(offset)?;
     let number = source.read_object_number()?;
     let generation = source.read_generation_number()?;
     source.read_expected(b"obj")?;
     source.skip_spaces();
-    let dict = source.dictionary()?;
-    Ok((Key::new(number, generation)?, dict))
+    let object = source.lexer.file_object()?.flatten().ok_or(Thrown::Io)?;
+    Ok((Key::new(number, generation)?, object))
 }
 
-/// The dictionary of the object `number` in an object stream, which `parseObjectStreamObject`
-/// reads at its offset after `/First`.
-fn compressed_dictionary(stream: &Dictionary, decoded: &[u8], number: i64) -> Option<Dictionary> {
+/// The object `number` in an object stream, which `parseObjectStreamObject` reads at its
+/// offset after `/First`.
+fn compressed_object(stream: &Dictionary, decoded: &[u8], number: i64) -> Option<Object> {
     let count = int_entry(stream, b"N");
     let first = int_entry(stream, b"First");
     if count < 0 || first < 0 {
@@ -357,7 +418,7 @@ fn compressed_dictionary(stream: &Dictionary, decoded: &[u8], number: i64) -> Op
         }
     }
     let position = usize::try_from(first + offset?).ok()?;
-    Lexer::file(decoded, position).file_dictionary().ok()?
+    Lexer::file(decoded, position).file_object().ok()??
 }
 
 impl Resolution {
@@ -415,10 +476,25 @@ impl Resolution {
         let Some(objects) = &self.encrypted_search else {
             return Ok(HashMap::new());
         };
+        let placed = placed(objects, &self.table);
         let mut objects = objects.clone();
         let mut table = HashMap::new();
-        brute_force_object_streams(data, Some(decrypt), &mut objects, &mut table)?;
+        brute_force_object_streams(data, Some(decrypt), &placed, &mut objects, &mut table)?;
         placements(&table)
+    }
+
+    /// The objects PDFBox read while it read the cross-reference, which its pool keeps: where
+    /// each was found, and what it read there.
+    pub(super) fn pooled(&self) -> Result<Vec<(ObjectId, Placement, &Object)>, Unported> {
+        let locations: HashMap<Key, Location> = self
+            .pooled
+            .iter()
+            .map(|(key, (location, _))| (*key, *location))
+            .collect();
+        Ok(placements(&locations)?
+            .into_iter()
+            .map(|(id, placement)| (id, placement, &self.pooled[&Key::from_id(id)].1))
+            .collect())
     }
 
     /// The trailer, as PDFBox merges it.
@@ -752,20 +828,37 @@ impl<'a> Source<'a> {
     }
 }
 
-/// The `/Length` of a stream PDFBox reads while it finds the objects, which the port reads only
-/// when direct.
-fn direct_length(dict: &Dictionary) -> Read<Option<i64>> {
+/// What reads an indirect object while PDFBox finds the document's objects: what
+/// `COSObject.getObject` gives for its key, `None` for nothing.
+type Referenced<'r> = dyn FnMut(Key) -> Read<Option<Object>> + 'r;
+
+/// `COSParser.getLength` of a stream PDFBox reads while it finds the objects: its `/Length`,
+/// a reference to a number followed with `referenced`, a reference to nothing failing the
+/// stream and one to `null` reading as none.
+fn stream_length(dict: &Dictionary, referenced: &mut Referenced) -> Read<Option<i64>> {
     match dict.get(b"Length") {
         Err(_) => Ok(None),
         Ok(Object::Integer(length)) => Ok(Some(*length)),
         Ok(Object::Real(length)) => Ok(Some(*length as i64)),
-        Ok(Object::Reference(_)) => Err(Thrown::Unported(Unported(
-            "a stream PDFBox reads while it finds the objects, whose length is an object of its \
-             own"
-            .to_owned(),
-        ))),
+        Ok(Object::Reference(id)) => match referenced(Key::from_id(*id))? {
+            Some(Object::Integer(length)) => Ok(Some(length)),
+            Some(Object::Real(length)) => Ok(Some(length as i64)),
+            Some(Object::Null) => Ok(None),
+            _ => Err(Thrown::Io),
+        },
         Ok(_) => Err(Thrown::Io),
     }
+}
+
+/// [`stream_length`] of a stream PDFBox reads with the objects `objects` places.
+fn placed_length(
+    data: &[u8],
+    objects: &HashMap<Key, Location>,
+    dict: &Dictionary,
+) -> Read<Option<i64>> {
+    stream_length(dict, &mut |key| {
+        Ok(referenced(data, objects, key, &mut Vec::new()))
+    })
 }
 
 /// `Long.parseLong` of digits, which fails on none and on too many.
@@ -776,19 +869,37 @@ fn parse_long(digits: &[u8]) -> Option<i64> {
     std::str::from_utf8(digits).ok()?.parse().ok()
 }
 
-/// `COSDictionary.getLong(key, -1)` of a trailer, which the port reads only when direct.
-fn trailer_long(dict: &Dictionary, key: &[u8]) -> Read<i64> {
-    match dict.get(key) {
-        Err(_) => Ok(-1),
-        Ok(Object::Integer(value)) => Ok(*value),
-        Ok(Object::Real(value)) => Ok(*value as i64),
-        Ok(Object::Reference(_)) => Err(Thrown::Unported(Unported(format!(
-            "a /{} that is an object of its own, which the port does not resolve while it finds \
-             the objects",
-            String::from_utf8_lossy(key)
-        )))),
-        Ok(_) => Ok(-1),
-    }
+/// The number `COSDictionary.getDictionaryObject` gives for `key` of a trailer, a reference
+/// followed with `referenced`: `None` for anything else.
+fn trailer_number(
+    dict: &Dictionary,
+    key: &[u8],
+    referenced: &mut Referenced,
+) -> Read<Option<Object>> {
+    let value = match dict.get(key) {
+        Err(_) => return Ok(None),
+        Ok(Object::Reference(id)) => referenced(Key::from_id(*id))?,
+        Ok(value) => Some(value.clone()),
+    };
+    Ok(value.filter(|value| matches!(value, Object::Integer(_) | Object::Real(_))))
+}
+
+/// `COSDictionary.getLong(key, -1)` of a trailer, a reference followed with `referenced`.
+fn trailer_long(dict: &Dictionary, key: &[u8], referenced: &mut Referenced) -> Read<i64> {
+    Ok(match trailer_number(dict, key, referenced)? {
+        Some(Object::Integer(value)) => value,
+        Some(Object::Real(value)) => value as i64,
+        _ => -1,
+    })
+}
+
+/// `COSDictionary.getInt(key, -1)` of a trailer, a reference followed with `referenced`.
+fn trailer_int(dict: &Dictionary, key: &[u8], referenced: &mut Referenced) -> Read<i64> {
+    Ok(match trailer_number(dict, key, referenced)? {
+        Some(Object::Integer(value)) => i64::from(value as i32),
+        Some(Object::Real(value)) => i64::from(value as i32),
+        _ => -1,
+    })
 }
 
 /// `XrefTrailerResolver.XrefTrailerObj`.
@@ -848,14 +959,14 @@ impl Resolver {
 
     /// `setStartxref`: the sections from the one at `start` along their `/Prev` chain, or all
     /// of them in the order they stand when none starts there, merged oldest first.
-    fn resolve(&self, start: i64) -> Read<Resolved> {
+    fn resolve(&self, start: i64, referenced: &mut Referenced) -> Read<Resolved> {
         let mut chain = Vec::new();
         match self.sections.get(&start) {
             None => chain.extend(self.sections.keys().copied()),
             Some(mut section) => {
                 chain.push(start);
                 while let Some(trailer) = &section.trailer {
-                    let prev = trailer_long(trailer, b"Prev")?;
+                    let prev = trailer_long(trailer, b"Prev", referenced)?;
                     if prev == -1 {
                         break;
                     }
@@ -890,6 +1001,39 @@ impl Resolver {
     }
 }
 
+/// The indirect objects PDFBox reads while it reads the cross-reference, before the document
+/// holds a table: each where a search of the document finds it, and kept once read, as the
+/// document's pool keeps it.
+struct Lookup<'a> {
+    brute: BruteForce<'a>,
+    /// The objects read, by key, `None` for those not found or that fail to read.
+    pool: HashMap<Key, Option<Object>>,
+}
+
+impl Lookup<'_> {
+    /// `COSObject.getObject` of the object `key`.
+    fn referenced(&mut self, key: Key) -> Read<Option<Object>> {
+        if let Some(object) = self.pool.get(&key) {
+            return Ok(object.clone());
+        }
+        let data = self.brute.data;
+        let object = referenced(data, self.brute.objects()?, key, &mut Vec::new());
+        self.pool.insert(key, object.clone());
+        Ok(object)
+    }
+
+    /// The objects read and found, each with where the search found it.
+    fn pooled(&self) -> HashMap<Key, (Location, Object)> {
+        let Some(objects) = &self.brute.objects else {
+            return HashMap::new();
+        };
+        self.pool
+            .iter()
+            .filter_map(|(key, object)| Some((*key, (*objects.get(key)?, object.clone()?))))
+            .collect()
+    }
+}
+
 /// `COSParser` as far as the cross-reference goes.
 struct Parser<'a> {
     source: Source<'a>,
@@ -897,7 +1041,7 @@ struct Parser<'a> {
     paging: &'a Paging<'a>,
     resolver: Resolver,
     resolved: Resolved,
-    brute: BruteForce<'a>,
+    lookup: Lookup<'a>,
 }
 
 impl<'a> Parser<'a> {
@@ -907,9 +1051,12 @@ impl<'a> Parser<'a> {
             paging,
             resolver: Resolver::default(),
             resolved: Resolved::default(),
-            brute: BruteForce {
-                data,
-                objects: None,
+            lookup: Lookup {
+                brute: BruteForce {
+                    data,
+                    objects: None,
+                },
+                pool: HashMap::new(),
             },
         }
     }
@@ -953,7 +1100,7 @@ impl<'a> Parser<'a> {
                 }
                 self.hybrid_stream(prev)?;
                 let trailer = self.resolver.current_trailer().ok_or(Thrown::Io)?;
-                prev = trailer_long(trailer, b"Prev")?;
+                prev = trailer_long(trailer, b"Prev", &mut |key| self.lookup.referenced(key))?;
             } else {
                 prev = self.parse_xref_stream(prev, true)?;
             }
@@ -970,7 +1117,9 @@ impl<'a> Parser<'a> {
                 return Err(Thrown::Io);
             }
         }
-        self.resolved = self.resolver.resolve(start)?;
+        self.resolved = self
+            .resolver
+            .resolve(start, &mut |key| self.lookup.referenced(key))?;
         let trailer = self.resolved.trailer.clone();
         self.check_xref_offsets()?;
         Ok(trailer)
@@ -985,17 +1134,7 @@ impl<'a> Parser<'a> {
         if !trailer.has(b"XRefStm") {
             return Ok(());
         }
-        let mut offset =
-            match trailer.get(b"XRefStm") {
-                Ok(Object::Integer(value)) => i64::from(*value as i32),
-                Ok(Object::Real(value)) => i64::from(*value as i32),
-                Ok(Object::Reference(_)) => return Err(Thrown::Unported(Unported(
-                    "an /XRefStm that is an object of its own, which the port does not resolve \
-                     while it finds the objects"
-                        .to_owned(),
-                ))),
-                Ok(_) | Err(_) => -1,
-            };
+        let mut offset = trailer_int(trailer, b"XRefStm", &mut |key| self.lookup.referenced(key))?;
         let fixed = self.check_xref_offset(offset)?;
         if fixed > -1 && fixed != offset {
             offset = fixed;
@@ -1083,7 +1222,7 @@ impl<'a> Parser<'a> {
         if offset < 0 {
             return Ok(0);
         }
-        let fixed = self.brute.search_xref(offset);
+        let fixed = self.lookup.brute.search_xref(offset);
         Ok(if fixed > -1 { fixed } else { 0 })
     }
 
@@ -1181,7 +1320,8 @@ impl<'a> Parser<'a> {
     fn parse_xref_stream(&mut self, offset: i64, standalone: bool) -> Read<i64> {
         let dict = self.xref_stream_dictionary()?;
         self.source.start_stream();
-        let data = self.source.stream_data(direct_length(&dict)?)?.data;
+        let length = stream_length(&dict, &mut |key| self.lookup.referenced(key))?;
+        let data = self.source.stream_data(length)?.data;
         if standalone {
             self.resolver.next_section(offset);
             self.resolver.set_trailer(dict.clone());
@@ -1190,7 +1330,7 @@ impl<'a> Parser<'a> {
         for (key, location) in xref_stream_entries(&dict, &decoded)? {
             self.resolver.set(key, location);
         }
-        trailer_long(&dict, b"Prev")
+        trailer_long(&dict, b"Prev", &mut |key| self.lookup.referenced(key))
     }
 
     /// `checkXrefOffsets`: the table replaced by the objects a search finds, where an offset
@@ -1199,7 +1339,7 @@ impl<'a> Parser<'a> {
         if self.valid_xref_offsets()? {
             return Ok(());
         }
-        let objects = self.brute.objects()?;
+        let objects = self.lookup.brute.objects()?;
         if !objects.is_empty() {
             self.resolved.table = objects.clone();
         }
@@ -1731,10 +1871,12 @@ fn last_eof_marker(data: &[u8]) -> Read<i64> {
 
 /// `bfSearchForObjStreams`: the objects of the object streams the search finds, added to the
 /// table where the stream stands after the object's other copy, each stream's data decrypted
-/// with `decrypt`, if the search has a security handler.
+/// with `decrypt`, if the search has a security handler, and a length that is an object of its
+/// own read where `placed` puts it.
 fn brute_force_object_streams(
     data: &[u8],
     decrypt: Option<&Decrypt>,
+    placed: &HashMap<Key, Location>,
     objects: &mut HashMap<Key, Location>,
     table: &mut HashMap<Key, Location>,
 ) -> Result<(), Unported> {
@@ -1745,7 +1887,7 @@ fn brute_force_object_streams(
         .collect();
     offsets.sort_unstable();
     for (offset, stream_key) in offsets {
-        let numbers = match object_stream_numbers(data, offset, decrypt) {
+        let numbers = match object_stream_numbers(data, offset, decrypt, placed) {
             Ok(numbers) => numbers,
             Err(Thrown::Io) => continue,
             Err(Thrown::Unported(unported)) => return Err(unported),
@@ -1800,8 +1942,13 @@ fn loading_fails() -> Unported {
 
 /// `PDFObjectStreamParser.readObjectNumbers` of the object stream at `offset`, whose header
 /// PDFBox reads outside its handling of a corrupt stream, its data decrypted with `decrypt`,
-/// if given.
-fn object_stream_numbers(data: &[u8], offset: i64, decrypt: Option<&Decrypt>) -> Read<Vec<i64>> {
+/// if given, and a length that is an object of its own read where `placed` puts it.
+fn object_stream_numbers(
+    data: &[u8],
+    offset: i64,
+    decrypt: Option<&Decrypt>,
+    placed: &HashMap<Key, Location>,
+) -> Read<Vec<i64>> {
     let mut source = Source::new(data);
     let (number, generation) = source
         .seek(offset)
@@ -1811,7 +1958,7 @@ fn object_stream_numbers(data: &[u8], offset: i64, decrypt: Option<&Decrypt>) ->
         .map_err(|_| Thrown::Unported(loading_fails()))?;
     let dict = source.dictionary()?;
     source.start_stream();
-    let raw = source.stream_data(direct_length(&dict)?)?;
+    let raw = source.stream_data(placed_length(data, placed, &dict)?)?;
     let decrypted = match decrypt {
         None => Cow::Borrowed(raw.data),
         Some(decrypt) => {

@@ -1424,6 +1424,161 @@ mod tests {
         assert_same_as_tika_delegating(&as_paths(&moved), tika_name(), &DELEGATES);
     }
 
+    /// The offset the last `startxref` of `document` gives.
+    fn startxref(document: &[u8]) -> usize {
+        let at = document
+            .windows(b"startxref".len())
+            .rposition(|window| window == b"startxref")
+            .unwrap();
+        let rest = std::str::from_utf8(&document[at + b"startxref".len()..]).unwrap();
+        rest.split_whitespace().next().unwrap().parse().unwrap()
+    }
+
+    /// Writes the object `number` holding `object` at the end of `out`, returning its offset.
+    fn object_at(out: &mut Vec<u8>, number: usize, object: &[u8]) -> usize {
+        let offset = out.len();
+        out.extend_from_slice(format!("{number} 0 obj\n").as_bytes());
+        out.extend_from_slice(object);
+        out.extend_from_slice(b"\nendobj\n");
+        offset
+    }
+
+    /// The rows of a cross-reference stream of the widths `[1 4 2]` placing objects in the file
+    /// at `offsets`.
+    fn stream_rows(offsets: &[usize]) -> Vec<u8> {
+        offsets
+            .iter()
+            .flat_map(|&offset| {
+                let mut row = vec![1];
+                row.extend_from_slice(&(offset as u32).to_be_bytes());
+                row.extend_from_slice(&[0, 0]);
+                row
+            })
+            .collect()
+    }
+
+    /// A document of a page, updated with an information dictionary in a section whose trailer
+    /// gives its `/Prev` as an object of its own.
+    fn indirect_prev() -> Vec<u8> {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let mut out = document(&objects, b"", &[]);
+        let prev = startxref(&out);
+        let info = object_at(&mut out, 6, b"<< /Title (Opdateret) /Author (Kari) >>");
+        let number = object_at(&mut out, 7, prev.to_string().as_bytes());
+        let xref = out.len();
+        out.extend_from_slice(
+            format!(
+                "xref\n6 2\n{info:010} 00000 n \n{number:010} 00000 n \ntrailer\n<< /Size 8 \
+                 /Root 1 0 R /Info 6 0 R /Prev 7 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// A document of a page, updated in a hybrid section whose trailer gives its `/XRefStm` as an
+    /// object of its own, the stream placing the information dictionary the table leaves out.
+    fn indirect_xref_stream_offset() -> Vec<u8> {
+        let objects = page_objects(TEXT);
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let mut out = document(&objects, b"", &[]);
+        let prev = startxref(&out);
+        let info = object_at(&mut out, 6, b"<< /Title (Hybrid) /Author (Kari) >>");
+        let number_at = out.len();
+        let digits = 10;
+        let stream_at = number_at + "7 0 obj\n".len() + digits + "\nendobj\n".len();
+        let number = object_at(&mut out, 7, format!("{stream_at:0digits$}").as_bytes());
+        let rows = stream_rows(&[info]);
+        let mut stream = format!(
+            "<< /Type /XRef /Size 9 /W [1 4 2] /Index [6 1] /Length {} >>\nstream\n",
+            rows.len()
+        )
+        .into_bytes();
+        stream.extend_from_slice(&rows);
+        stream.extend_from_slice(b"\nendstream");
+        assert_eq!(object_at(&mut out, 8, &stream), stream_at);
+        let xref = out.len();
+        out.extend_from_slice(
+            format!(
+                "xref\n7 2\n{number:010} 00000 n \n{stream_at:010} 00000 n \ntrailer\n<< /Size 9 \
+                 /Root 1 0 R /Info 6 0 R /Prev {prev} /XRefStm 7 0 R >>\nstartxref\n{xref}\n\
+                 %%EOF\n"
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// A document of a page and an information dictionary whose cross-reference stream gives
+    /// its `/Length` as an object of its own.
+    fn indirect_xref_stream_length() -> Vec<u8> {
+        let mut objects = page_objects(TEXT);
+        objects.push("<< /Title (Str\\370mmen) /Author (Kari) >>".to_owned());
+        let mut out = b"%PDF-1.5\n".to_vec();
+        let mut offsets: Vec<usize> = objects
+            .iter()
+            .enumerate()
+            .map(|(index, object)| object_at(&mut out, index + 1, object.as_bytes()))
+            .collect();
+        let length_number = objects.len() + 1;
+        let stream_number = length_number + 1;
+        let rows_length = 7 * stream_number;
+        offsets.push(object_at(
+            &mut out,
+            length_number,
+            rows_length.to_string().as_bytes(),
+        ));
+        offsets.push(out.len());
+        let rows = stream_rows(&offsets);
+        assert_eq!(rows.len(), rows_length);
+        let mut stream = format!(
+            "<< /Type /XRef /Size {} /W [1 4 2] /Index [1 {stream_number}] /Root 1 0 R \
+             /Info 6 0 R /Length {length_number} 0 R >>\nstream\n",
+            stream_number + 1
+        )
+        .into_bytes();
+        stream.extend_from_slice(&rows);
+        stream.extend_from_slice(b"\nendstream");
+        let xref = object_at(&mut out, stream_number, &stream);
+        out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
+        out
+    }
+
+    /// The documents whose cross-reference gives what PDFBox reads as it reads it as objects
+    /// of their own, and the title each gives.
+    fn indirect_cross_references() -> [(Vec<u8>, &'static str); 3] {
+        [
+            (indirect_prev(), "Opdateret"),
+            (indirect_xref_stream_offset(), "Hybrid"),
+            (indirect_xref_stream_length(), "Str\u{f8}mmen"),
+        ]
+    }
+
+    #[test]
+    fn follows_the_references_of_the_cross_reference_as_pdfbox_does() {
+        for (input, title) in indirect_cross_references() {
+            let deferral =
+                PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
+            assert_eq!(deferral, None, "{title}");
+            let (xml, _) = native_xml(&input);
+            assert!(xml.contains(&format!("<title>{title}</title>")), "{xml}");
+            assert!(xml.contains("Den yngste var den smukkeste"), "{xml}");
+        }
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn follows_the_references_of_the_cross_reference_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-indirect-xref");
+        let paths: Vec<PathBuf> = indirect_cross_references()
+            .iter()
+            .enumerate()
+            .map(|(index, (input, _))| scratch.write(&format!("indirect-{index}.pdf"), input))
+            .collect();
+        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
+    }
+
     #[test]
     fn defers_a_needed_object_the_port_cannot_read() {
         let mut objects = page_objects(TEXT);
