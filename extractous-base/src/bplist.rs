@@ -1,8 +1,11 @@
 //! Binary property lists as dd-plist 1.30's `BinaryPropertyListParser` reads them, for Tika's
-//! `BPListDetector` and `PListParser` alike: offsets and lengths checked against the offset
-//! table, with Java's exact arithmetic; nesting up to 512 objects deep; cycles refused; each
-//! object parsed once however often it is referenced; and the `int` casts and array accesses
-//! Java makes, which fail as a `RuntimeException` rather than a `PropertyListFormatException`.
+//! `BPListDetector` and `PListParser` alike, read in place: [`Reader::validate`] fails where
+//! dd-plist's parse of the whole tree fails, with offsets and lengths checked against the offset
+//! table in Java's exact arithmetic, nesting up to 512 objects deep, cycles refused, each object
+//! checked once however often it is referenced, and the `int` casts and array accesses Java
+//! makes failing as a `RuntimeException` rather than a `PropertyListFormatException`. Each
+//! object is then read on demand ([`Reader::node`]), from the top object down, so that only the
+//! trailer and one bit per object are held, whatever the list's size.
 //!
 //! A port rather than a crate, as dd-plist's object model is what Tika reads and writes: a
 //! dictionary is keyed by its keys' `toString`, whatever their objects, which the detector
@@ -12,11 +15,12 @@
 //! and a dictionary keeps its null values, which dd-plist drops, though the detector still
 //! looks only at keys with values (#104).
 
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 
+use crate::input::{Pages, Paging};
 use crate::java::dtoa::java_double_to_string;
-use crate::text::charset::Charset;
+use crate::text::charset::{Charset, Pieces};
 
 const MAGIC: &[u8] = b"bplist";
 const HEADER_AND_TRAILER: usize = 40;
@@ -36,6 +40,17 @@ const ARRAY_TYPE: u8 = 0xA;
 const ORDERED_SET_TYPE: u8 = 0xB;
 const SET_TYPE: u8 = 0xC;
 const DICTIONARY_TYPE: u8 = 0xD;
+/// The keys `BPListDetector.detectOnKeys` tells lists apart by, in the order [`KindKeys`]
+/// numbers them.
+const KIND_KEYS: [&str; 7] = [
+    "nodes",
+    "edges",
+    "graphEncodingVersion",
+    "WebMainResource",
+    "Playlists",
+    "Tracks",
+    "Music Folder",
+];
 
 /// What dd-plist throws.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,52 +65,87 @@ fn format_error(reason: impl Into<String>) -> Thrown {
     Thrown::Format(reason.into())
 }
 
-/// An object of the list; `None` where dd-plist holds a null.
-pub type Value = Option<Rc<Object>>;
+/// The number of an object of a list, as references name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObjectId(i32);
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Object {
-    Dict(Dict),
-    Array(Vec<Value>),
-    /// A set's members, each reference once, in the order of their references.
-    Set(Vec<Value>),
-    String(String),
+/// An `NSNumber`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Number {
     Integer(i64),
     Real(f64),
     Boolean(bool),
-    Data(Vec<u8>),
-    /// Seconds since 2001-01-01.
-    Date(f64),
-    /// A UID.
-    Uid(u128),
 }
 
-/// A dictionary's key: a string, or another object, which dd-plist keys by its `toString`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Key {
-    String(String),
-    Other(Rc<Object>),
-}
-
-impl Key {
-    /// The key's `toString` where the port has it.
-    fn name(&self) -> Option<String> {
+impl Number {
+    /// `NSNumber.toString`.
+    pub fn text(self) -> String {
         match self {
-            Self::String(text) => Some(text.clone()),
-            Self::Other(object) => object.text(),
+            Self::Integer(value) => value.to_string(),
+            Self::Boolean(value) => value.to_string(),
+            Self::Real(value) if value.is_nan() => "nan".to_owned(),
+            Self::Real(value) if value == f64::INFINITY => "+infinity".to_owned(),
+            Self::Real(value) if value == f64::NEG_INFINITY => "-infinity".to_owned(),
+            Self::Real(value) => java_double_to_string(value),
         }
     }
 }
 
-/// An `NSDictionary`: its entries in the order of a `LinkedHashMap` keyed by their keys'
-/// `toString`, a key put again keeping its place and taking the new value, null values
-/// included.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Dict {
-    entries: Vec<(Key, Value)>,
-    positions: HashMap<String, usize>,
-    /// The keys put with a value, the keys of dd-plist's dictionary.
-    valued: HashSet<String>,
+/// An object of a list, read in place: what it holds is read on demand.
+#[derive(Debug, Clone, Copy)]
+pub enum Node<'a> {
+    /// What dd-plist holds as a null.
+    Null,
+    Number(Number),
+    /// Seconds since 2001-01-01.
+    Date(f64),
+    Data(&'a [u8]),
+    String(Text<'a>),
+    Uid(u128),
+    Array(Members),
+    /// An ordered or unordered set, of whose members dd-plist keeps each reference once.
+    Set(Members),
+    Dict(Pairs),
+}
+
+/// The bytes of a string and the charset that decodes them.
+#[derive(Debug, Clone, Copy)]
+pub struct Text<'a> {
+    bytes: &'a [u8],
+    charset: &'static str,
+}
+
+impl<'a> Text<'a> {
+    /// The string, as `NSString` decodes it.
+    pub fn decode(self) -> String {
+        Charset::named(self.charset)
+            .decode(self.bytes)
+            .expect("the JDK's Unicode and ASCII charsets decode natively")
+    }
+
+    /// The string decoded in pieces of at least `size` bytes each, as [`Text::decode`] decodes
+    /// it whole.
+    pub fn pieces(self, size: usize) -> Pieces<'a> {
+        Charset::named(self.charset)
+            .pieces(self.bytes, size)
+            .expect("the JDK's Unicode and ASCII charsets decode natively")
+    }
+}
+
+/// The references of an array or set, checked to lie within the offset table's bounds.
+#[derive(Debug, Clone, Copy)]
+pub struct Members {
+    base: i32,
+    count: i32,
+}
+
+/// The key and value references of a dictionary, checked to lie within the offset table's
+/// bounds.
+#[derive(Debug, Clone, Copy)]
+pub struct Pairs {
+    keys: i32,
+    values: i32,
+    count: i32,
 }
 
 /// What a property list holds, as `BPListDetector.detectOnKeys` tells it by the keys of its root
@@ -130,33 +180,29 @@ impl ListKind {
     }
 }
 
-impl Dict {
-    pub fn put(&mut self, key: Key, value: Value) {
-        if let Some(name) = key.name() {
-            if value.is_some() {
-                self.valued.insert(name.clone());
-            }
-            if let Some(&position) = self.positions.get(&name) {
-                self.entries[position].1 = value;
-                return;
-            }
-            self.positions.insert(name, self.entries.len());
+/// Which of the keys `BPListDetector.detectOnKeys` looks for a dictionary put with a value: the
+/// keys of dd-plist's dictionary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KindKeys(u8);
+
+impl KindKeys {
+    /// Notes that the key named `name` was put with a value.
+    pub fn put(&mut self, name: &str) {
+        if let Some(index) = KIND_KEYS.iter().position(|key| *key == name) {
+            self.0 |= 1 << index;
         }
-        self.entries.push((key, value));
     }
 
-    pub fn entries(&self) -> &[(Key, Value)] {
-        &self.entries
-    }
-
-    /// Whether `key` is a key of dd-plist's dictionary: put with a value.
-    fn contains(&self, key: &str) -> bool {
-        self.valued.contains(key)
+    fn has(self, name: &str) -> bool {
+        KIND_KEYS
+            .iter()
+            .position(|key| *key == name)
+            .is_some_and(|index| self.0 & 1 << index != 0)
     }
 
     /// `BPListDetector.detectOnKeys` of the dictionary's keys.
-    pub fn kind(&self) -> ListKind {
-        let has = |key: &str| self.contains(key);
+    pub fn kind(self) -> ListKind {
+        let has = |key: &str| self.has(key);
         if has("nodes") && has("edges") && has("graphEncodingVersion") {
             ListKind::Memgraph
         } else if has("WebMainResource") {
@@ -166,27 +212,6 @@ impl Dict {
         } else {
             ListKind::Plain
         }
-    }
-}
-
-impl Object {
-    /// `toString` of an object whose text the port writes: a string, a number, a UID.
-    pub fn text(&self) -> Option<String> {
-        Some(match self {
-            Object::String(text) => text.clone(),
-            Object::Integer(value) => value.to_string(),
-            Object::Boolean(value) => value.to_string(),
-            Object::Real(value) if value.is_nan() => "nan".to_owned(),
-            Object::Real(value) if *value == f64::INFINITY => "+infinity".to_owned(),
-            Object::Real(value) if *value == f64::NEG_INFINITY => "-infinity".to_owned(),
-            Object::Real(value) => java_double_to_string(*value),
-            Object::Uid(value) => format!("{value:x} ({value})"),
-            Object::Dict(_)
-            | Object::Array(_)
-            | Object::Set(_)
-            | Object::Data(_)
-            | Object::Date(_) => return None,
-        })
     }
 }
 
@@ -213,69 +238,230 @@ fn long(bytes: &[u8]) -> i64 {
         .fold(0i64, |value, &byte| value << 8 | i64::from(byte))
 }
 
-struct Parser<'a> {
+/// A binary property list, its trailer read, its objects read where they are as they are asked
+/// for, the pages of a mapped list released as they are read.
+pub struct Reader<'a> {
     bytes: &'a [u8],
+    pages: Pages<'a>,
+    paging: Paging<'a>,
     object_ref_size: i32,
     offset_size: i32,
     num_objects: i32,
     offset_table: i32,
-    parsed: HashMap<i32, Value>,
+    top: ObjectId,
 }
 
-/// `BinaryPropertyListParser.parse`: the root object of a binary property list.
-pub fn parse(bytes: &[u8]) -> Result<Value, Thrown> {
-    if bytes.len() < 8 {
-        return Err(format_error(
-            "The available binary property list data is too short.",
-        ));
+impl<'a> Reader<'a> {
+    /// `BinaryPropertyListParser.parse` up to the objects: the header and trailer of `bytes`,
+    /// whose pages are `pages`.
+    pub fn open(bytes: &'a [u8], pages: Pages<'a>) -> Result<Self, Thrown> {
+        if bytes.len() < 8 {
+            return Err(format_error(
+                "The available binary property list data is too short.",
+            ));
+        }
+        if !bytes.starts_with(MAGIC) || !bytes[6].is_ascii_digit() || !bytes[7].is_ascii_digit() {
+            return Err(format_error(
+                "The binary property list has an invalid file header",
+            ));
+        }
+        if bytes[6] != b'0' {
+            return Err(format_error(
+                "Unsupported binary property list format: Version 1.0 and later are not yet supported.",
+            ));
+        }
+        if bytes.len() < HEADER_AND_TRAILER {
+            return Err(format_error(
+                "The binary property list does not contain a complete object offset table.",
+            ));
+        }
+        let length = i64::try_from(bytes.len()).expect("a slice's length fits an i64");
+        let trailer = &bytes[bytes.len() - TRAILER..];
+        let field = |range: std::ops::Range<usize>| i64::from(long(&trailer[range]) as u32);
+        let offset_size = i64::from(trailer[6]);
+        let object_ref_size = i64::from(trailer[7]);
+        let num_objects = field(8..16);
+        let top_object = field(16..24);
+        let offset_table = field(24..32);
+        let corrupted =
+            || format_error("The binary property list contains a corrupted object offset table.");
+        if offset_size < 1
+            || object_ref_size < 1
+            || num_objects > i64::from(i32::MAX)
+            || top_object >= length - TRAILER as i64
+            || offset_table > length
+            || offset_table + (num_objects + 1) * offset_size > length
+        {
+            return Err(corrupted());
+        }
+        let int = |value: i64| i32::try_from(value).map_err(|_| corrupted());
+        Ok(Self {
+            bytes,
+            pages,
+            paging: Paging::new(pages),
+            object_ref_size: int(object_ref_size)?,
+            offset_size: int(offset_size)?,
+            num_objects: int(num_objects)?,
+            offset_table: int(offset_table)?,
+            top: ObjectId(int(top_object)?),
+        })
     }
-    if !bytes.starts_with(MAGIC) || !bytes[6].is_ascii_digit() || !bytes[7].is_ascii_digit() {
-        return Err(format_error(
-            "The binary property list has an invalid file header",
-        ));
-    }
-    if bytes[6] != b'0' {
-        return Err(format_error(
-            "Unsupported binary property list format: Version 1.0 and later are not yet supported.",
-        ));
-    }
-    if bytes.len() < HEADER_AND_TRAILER {
-        return Err(format_error(
-            "The binary property list does not contain a complete object offset table.",
-        ));
-    }
-    let length = i64::try_from(bytes.len()).expect("a slice's length fits an i64");
-    let trailer = &bytes[bytes.len() - TRAILER..];
-    let field = |range: std::ops::Range<usize>| i64::from(long(&trailer[range]) as u32);
-    let offset_size = i64::from(trailer[6]);
-    let object_ref_size = i64::from(trailer[7]);
-    let num_objects = field(8..16);
-    let top_object = field(16..24);
-    let offset_table = field(24..32);
-    let corrupted =
-        || format_error("The binary property list contains a corrupted object offset table.");
-    if offset_size < 1
-        || object_ref_size < 1
-        || num_objects > i64::from(i32::MAX)
-        || top_object >= length - TRAILER as i64
-        || offset_table > length
-        || offset_table + (num_objects + 1) * offset_size > length
-    {
-        return Err(corrupted());
-    }
-    let int = |value: i64| i32::try_from(value).map_err(|_| corrupted());
-    let mut parser = Parser {
-        bytes,
-        object_ref_size: int(object_ref_size)?,
-        offset_size: int(offset_size)?,
-        num_objects: int(num_objects)?,
-        offset_table: int(offset_table)?,
-        parsed: HashMap::new(),
-    };
-    parser.object(&mut Vec::new(), int(top_object)?)
-}
 
-impl Parser<'_> {
+    /// The list's top object.
+    pub fn top(&self) -> ObjectId {
+        self.top
+    }
+
+    /// How many objects the offset table numbers.
+    pub fn objects(&self) -> u64 {
+        u64::try_from(self.num_objects).expect("the trailer's object count is not negative")
+    }
+
+    /// The pages of the list's bytes.
+    pub fn pages(&self) -> Pages<'a> {
+        self.pages
+    }
+
+    /// Fails where dd-plist's parse of the whole tree from the top object fails, each object
+    /// checked once, as dd-plist parses each once.
+    pub fn validate(&self) -> Result<(), Thrown> {
+        let words = usize::try_from(self.num_objects)
+            .expect("the trailer's object count is not negative")
+            .div_ceil(64);
+        self.parse(&mut Vec::new(), &mut vec![0u64; words], self.top)
+    }
+
+    /// `parseObject`: checks the object `object` and what it holds, unless it was checked
+    /// already, with `stack` the objects that hold it and `parsed` a bit for each object
+    /// checked.
+    fn parse(
+        &self,
+        stack: &mut Vec<ObjectId>,
+        parsed: &mut [u64],
+        object: ObjectId,
+    ) -> Result<(), Thrown> {
+        if stack.len() >= MAX_NESTING_DEPTH {
+            return Err(format_error(
+                "The nesting depth of the property list exceeds the maximum supported depth of 512.",
+            ));
+        }
+        if stack.contains(&object) {
+            return Err(format_error(
+                "The given binary property list contains a cyclic reference.",
+            ));
+        }
+        let bit = usize::try_from(object.0)
+            .ok()
+            .filter(|&number| number < parsed.len() * 64);
+        if bit.is_some_and(|number| parsed[number / 64] & 1 << (number % 64) != 0) {
+            return Ok(());
+        }
+        stack.push(object);
+        let checked = self.parse_held(stack, parsed, object);
+        stack.pop();
+        checked?;
+        let number = bit.expect("an object read is numbered within the offset table");
+        parsed[number / 64] |= 1 << (number % 64);
+        Ok(())
+    }
+
+    /// Checks `object` and parses what it holds.
+    fn parse_held(
+        &self,
+        stack: &mut Vec<ObjectId>,
+        parsed: &mut [u64],
+        object: ObjectId,
+    ) -> Result<(), Thrown> {
+        match self.node(object)? {
+            Node::Array(members) | Node::Set(members) => {
+                for member in self.members(members) {
+                    self.parse(stack, parsed, member)?;
+                }
+            }
+            Node::Dict(pairs) => {
+                for (index, (key, value)) in self.pairs(pairs).enumerate() {
+                    self.parse(stack, parsed, key)?;
+                    if matches!(self.node(key)?, Node::Null) {
+                        return Err(format_error(format!(
+                            "The key #{} of the NSDictionary at offset {} is NULL.",
+                            index + 1,
+                            self.object_offset(object.0)?
+                        )));
+                    }
+                    self.parse(stack, parsed, value)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The members of an array or set, in the order of their references.
+    pub fn members(&self, members: Members) -> impl Iterator<Item = ObjectId> + '_ {
+        (0..members.count).map(move |index| self.reference(members.base, index))
+    }
+
+    /// The keys and values of a dictionary, each pair as it is stored.
+    pub fn pairs(&self, pairs: Pairs) -> impl Iterator<Item = (ObjectId, ObjectId)> + '_ {
+        (0..pairs.count).map(move |index| {
+            (
+                self.reference(pairs.keys, index),
+                self.reference(pairs.values, index),
+            )
+        })
+    }
+
+    /// The entries of a dictionary as dd-plist's `NSDictionary` holds them, a `LinkedHashMap`
+    /// keyed by its keys' `toString`: each key in the place it was first put, with the value it
+    /// was last put with, and each key without a `toString` the port has in a place of its own.
+    pub fn entries(&self, pairs: Pairs) -> Result<Vec<(ObjectId, ObjectId)>, Thrown> {
+        let mut entries: Vec<(ObjectId, ObjectId)> = Vec::new();
+        let mut positions: HashMap<String, usize> = HashMap::new();
+        for (key, value) in self.pairs(pairs) {
+            let Some(name) = self.name(key)? else {
+                entries.push((key, value));
+                continue;
+            };
+            match positions.entry(name) {
+                Entry::Occupied(position) => entries[*position.get()].1 = value,
+                Entry::Vacant(position) => {
+                    position.insert(entries.len());
+                    entries.push((key, value));
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    /// `BPListDetector.detectOnKeys` of the keys of a dictionary that are put with a value.
+    pub fn kind(&self, pairs: Pairs) -> Result<ListKind, Thrown> {
+        let mut keys = KindKeys::default();
+        for (key, value) in self.pairs(pairs) {
+            if matches!(self.node(value)?, Node::Null) {
+                continue;
+            }
+            if let Some(name) = self.name(key)? {
+                keys.put(&name);
+            }
+        }
+        Ok(keys.kind())
+    }
+
+    /// `toString` of an object whose text the port writes: a string, a number, a UID.
+    pub fn name(&self, object: ObjectId) -> Result<Option<String>, Thrown> {
+        Ok(match self.node(object)? {
+            Node::String(text) => Some(text.decode()),
+            Node::Number(number) => Some(number.text()),
+            Node::Uid(value) => Some(format!("{value:x} ({value})")),
+            Node::Null
+            | Node::Date(_)
+            | Node::Data(_)
+            | Node::Array(_)
+            | Node::Set(_)
+            | Node::Dict(_) => None,
+        })
+    }
+
     /// `safeAddOffset`: `offset + length`, failing past the offset table.
     fn safe_add(&self, offset: i32, length: i32, what: &str) -> Result<i32, Thrown> {
         offset
@@ -289,35 +475,13 @@ impl Parser<'_> {
     }
 
     /// The bytes `start..end`, both within the offset table's bounds by now.
-    fn slice(&self, start: i32, end: i32) -> &[u8] {
+    fn slice(&self, start: i32, end: i32) -> &'a [u8] {
         &self.bytes[start as usize..end as usize]
     }
 
-    /// `parseObject`: the object numbered `object`, parsed once.
-    fn object(&mut self, stack: &mut Vec<i32>, object: i32) -> Result<Value, Thrown> {
-        if stack.len() >= MAX_NESTING_DEPTH {
-            return Err(format_error(
-                "The nesting depth of the property list exceeds the maximum supported depth of 512.",
-            ));
-        }
-        if stack.contains(&object) {
-            return Err(format_error(
-                "The given binary property list contains a cyclic reference.",
-            ));
-        }
-        if let Some(value) = self.parsed.get(&object) {
-            return Ok(value.clone());
-        }
-        stack.push(object);
-        let value = self.object_at(stack, object);
-        stack.pop();
-        let value = value?;
-        self.parsed.insert(object, value.clone());
-        Ok(value)
-    }
-
-    fn object_at(&mut self, stack: &mut Vec<i32>, object: i32) -> Result<Value, Thrown> {
-        let offset = self.object_offset(object)?;
+    /// The object numbered `object`, as `parseObject` reads it before what it holds.
+    pub fn node(&self, object: ObjectId) -> Result<Node<'a>, Thrown> {
+        let offset = self.object_offset(object.0)?;
         let marker = *usize::try_from(offset)
             .ok()
             .and_then(|at| self.bytes.get(at))
@@ -328,11 +492,11 @@ impl Parser<'_> {
                 "The NSObject at offset {offset} has an unknown or unsupported type (0x{marker:02x})"
             ))
         };
-        let parsed = match kind {
+        let (node, end) = match kind {
             SIMPLE_TYPE => match info {
-                0x0 => return Ok(None),
-                0x8 => Object::Boolean(false),
-                0x9 => Object::Boolean(true),
+                0x0 => (Node::Null, offset + 1),
+                0x8 => (Node::Number(Number::Boolean(false)), offset + 1),
+                0x9 => (Node::Number(Number::Boolean(true)), offset + 1),
                 0xC | 0xD => {
                     return Err(format_error(format!(
                         "The NSObject at offset {offset} is a URL, which is not supported."
@@ -345,10 +509,10 @@ impl Parser<'_> {
                 let length = 1i32 << info;
                 let end = self.safe_add(offset, length + 1, "NSNumber")?;
                 let bytes = self.slice(offset + 1, end);
-                if kind == INT_TYPE {
-                    Object::Integer(long(bytes))
+                let number = if kind == INT_TYPE {
+                    Number::Integer(long(bytes))
                 } else {
-                    Object::Real(match length {
+                    Number::Real(match length {
                         8 => f64::from_bits(long(bytes) as u64),
                         4 => f64::from(f32::from_bits(long(bytes) as u32)),
                         _ => {
@@ -357,20 +521,22 @@ impl Parser<'_> {
                             )))
                         }
                     })
-                }
+                };
+                (Node::Number(number), end)
             }
             DATE_TYPE => {
                 if info != 0x3 {
                     return Err(unsupported());
                 }
                 let end = self.safe_add(offset, 9, "NSDate")?;
-                Object::Date(f64::from_bits(long(self.slice(offset + 1, end)) as u64))
+                let seconds = f64::from_bits(long(self.slice(offset + 1, end)) as u64);
+                (Node::Date(seconds), end)
             }
             DATA_TYPE => {
                 let (length, header) = self.length_and_offset(info, offset)?;
                 let start = offset + header;
                 let end = self.safe_add(start, length, "NSData")?;
-                Object::Data(self.slice(start, end).to_vec())
+                (Node::Data(self.slice(start, end)), end)
             }
             ASCII_STRING_TYPE | UTF16_STRING_TYPE | UTF8_STRING_TYPE => {
                 let (count, header) = self.length_and_offset(info, offset)?;
@@ -386,59 +552,40 @@ impl Parser<'_> {
                     _ => (self.utf8_length(start, count).ok_or_else(content)?, "UTF-8"),
                 };
                 let end = self.safe_add(start, length, "NSString content")?;
-                Object::String(
-                    Charset::named(charset)
-                        .decode(self.slice(start, end))
-                        .expect("the JDK's Unicode and ASCII charsets decode natively"),
-                )
+                let text = Text {
+                    bytes: self.slice(start, end),
+                    charset,
+                };
+                (Node::String(text), end)
             }
             UID_TYPE => self.uid(offset, i32::from(info) + 1)?,
             ARRAY_TYPE | ORDERED_SET_TYPE | SET_TYPE => {
                 let (count, header) = self.length_and_offset(info, offset)?;
                 let base = offset + header;
-                self.validate_references(base, count)?;
-                let mut members = Vec::new();
-                let mut seen = HashSet::new();
-                for index in 0..count {
-                    let reference = self.reference(base, index)?;
-                    if kind == ARRAY_TYPE || seen.insert(reference) {
-                        members.push(self.object(stack, reference)?);
-                    }
-                }
+                let end = self.validate_references(base, count)?;
+                let members = Members { base, count };
                 if kind == ARRAY_TYPE {
-                    Object::Array(members)
+                    (Node::Array(members), end)
                 } else {
-                    Object::Set(members)
+                    (Node::Set(members), end)
                 }
             }
             DICTIONARY_TYPE => {
                 let (count, header) = self.length_and_offset(info, offset)?;
                 let keys = offset + header;
-                self.validate_references(keys, count)?;
-                let values = keys + count * self.object_ref_size;
-                self.validate_references(values, count)?;
-                let mut dict = Dict::default();
-                for index in 0..count {
-                    let key_reference = self.reference(keys, index)?;
-                    let value_reference = self.reference(values, index)?;
-                    let key = self.object(stack, key_reference)?.ok_or_else(|| {
-                        format_error(format!(
-                            "The key #{} of the NSDictionary at offset {offset} is NULL.",
-                            index + 1
-                        ))
-                    })?;
-                    let value = self.object(stack, value_reference)?;
-                    let key = match &*key {
-                        Object::String(text) => Key::String(text.clone()),
-                        _ => Key::Other(key),
-                    };
-                    dict.put(key, value);
-                }
-                Object::Dict(dict)
+                let values = self.validate_references(keys, count)?;
+                let end = self.validate_references(values, count)?;
+                let pairs = Pairs {
+                    keys,
+                    values,
+                    count,
+                };
+                (Node::Dict(pairs), end)
             }
             _ => return Err(unsupported()),
         };
-        Ok(Some(Rc::new(parsed)))
+        self.paging.read((end - offset) as usize);
+        Ok(node)
     }
 
     /// `getObjectOffset`.
@@ -460,19 +607,20 @@ impl Parser<'_> {
         Ok(offset)
     }
 
-    /// `parseObjectReferenceFromList`, within the list `validate_references` checked.
-    fn reference(&self, base: i32, index: i32) -> Result<i32, Thrown> {
-        let at = base + index * self.object_ref_size;
-        Ok(unsigned_int(self.bytes, at, at + self.object_ref_size)? as i32)
+    /// `parseObjectReferenceFromList`, within a list `validate_references` checked.
+    fn reference(&self, base: i32, index: i32) -> ObjectId {
+        let at = (base + index * self.object_ref_size) as usize;
+        let end = at + self.object_ref_size as usize;
+        ObjectId(long(&self.bytes[at..end]) as u32 as i32)
     }
 
-    /// `validateObjectReferenceListLength`.
-    fn validate_references(&self, base: i32, count: i32) -> Result<(), Thrown> {
+    /// `validateObjectReferenceListLength`: where the list of `count` references at `base`
+    /// ends, failing past the offset table.
+    fn validate_references(&self, base: i32, count: i32) -> Result<i32, Thrown> {
         count
             .checked_mul(self.object_ref_size)
             .and_then(|size| base.checked_add(size))
             .filter(|&end| end <= self.offset_table)
-            .map(|_| ())
             .ok_or_else(|| {
                 format_error(format!(
                     "The length of the object reference list at offset {base} is larger than the amount of available data."
@@ -547,14 +695,14 @@ impl Parser<'_> {
         Some(length)
     }
 
-    /// `parseUid`: the UID of `length` bytes after the marker.
-    fn uid(&self, offset: i32, length: i32) -> Result<Object, Thrown> {
+    /// `parseUid`: the UID of `length` bytes after the marker, and where it ends.
+    fn uid(&self, offset: i32, length: i32) -> Result<(Node<'a>, i32), Thrown> {
         let end = self.safe_add(offset, length + 1, "UID")?;
         let value = self
             .slice(offset + 1, end)
             .iter()
             .fold(0u128, |value, &byte| value << 8 | u128::from(byte));
-        Ok(Object::Uid(value))
+        Ok((Node::Uid(value), end))
     }
 }
 
@@ -638,8 +786,25 @@ pub mod tests {
     }
 
     #[cfg(test)]
+    fn validated(bytes: &[u8]) -> Result<Reader<'_>, Thrown> {
+        let reader = Reader::open(bytes, Pages::IN_MEMORY)?;
+        reader.validate()?;
+        Ok(reader)
+    }
+
+    #[cfg(test)]
     fn thrown(bytes: &[u8]) -> Thrown {
-        parse(bytes).unwrap_err()
+        validated(bytes).err().expect("the list fails")
+    }
+
+    /// The pairs of the top dictionary of `reader`, as dd-plist holds them.
+    #[cfg(test)]
+    fn top_dict(reader: &Reader) -> Pairs {
+        let top = reader.node(reader.top()).unwrap();
+        let Node::Dict(pairs) = top else {
+            panic!("{top:?}");
+        };
+        pairs
     }
 
     #[test]
@@ -660,34 +825,63 @@ pub mod tests {
             ],
             0,
         );
-        let root = parse(&list).unwrap().unwrap();
-        let Object::Dict(dict) = &*root else {
-            panic!("{root:?}");
-        };
-        let entries: Vec<(String, Option<Object>)> = dict
-            .entries()
-            .iter()
-            .map(|(key, value)| match key {
-                Key::String(text) => (text.clone(), value.as_deref().cloned()),
-                Key::Other(object) => panic!("{object:?}"),
+        let reader = validated(&list).unwrap();
+        let entries: Vec<(String, Option<String>)> = reader
+            .entries(top_dict(&reader))
+            .unwrap()
+            .into_iter()
+            .map(|(key, value)| {
+                let value = match reader.node(value).unwrap() {
+                    Node::Null => None,
+                    Node::String(text) => Some(text.decode()),
+                    other => panic!("{other:?}"),
+                };
+                (reader.name(key).unwrap().unwrap(), value)
             })
             .collect();
         assert_eq!(
             entries,
             [
-                ("key".to_owned(), Some(Object::String("second".to_owned()))),
+                ("key".to_owned(), Some("second".to_owned())),
                 ("empty".to_owned(), None),
-                (
-                    "named".to_owned(),
-                    Some(Object::String("\u{20AC}uro".to_owned()))
-                ),
+                ("named".to_owned(), Some("\u{20AC}uro".to_owned())),
                 (
                     "na\u{ef}ve".to_owned(),
-                    Some(Object::String("caf\u{FFFD}\u{FFFD}".to_owned()))
+                    Some("caf\u{FFFD}\u{FFFD}".to_owned())
                 ),
             ]
         );
-        assert!(!dict.contains("empty"));
+    }
+
+    #[test]
+    fn names_lists_by_the_keys_put_with_a_value() {
+        use Item::*;
+        let kind = |items: &[Item]| {
+            let list = bplist(items, 0);
+            let reader = validated(&list).unwrap();
+            reader.kind(top_dict(&reader)).unwrap()
+        };
+        let archive = [Dict(vec![(1, 2)]), Ascii("WebMainResource"), Int(1)];
+        assert_eq!(kind(&archive), ListKind::WebArchive);
+        let null = [Dict(vec![(1, 2)]), Ascii("WebMainResource"), Null];
+        assert_eq!(kind(&null), ListKind::Plain);
+        let put_again = [
+            Dict(vec![(1, 2), (1, 3)]),
+            Ascii("WebMainResource"),
+            Int(1),
+            Null,
+        ];
+        assert_eq!(kind(&put_again), ListKind::WebArchive);
+    }
+
+    #[test]
+    fn checks_each_shared_object_once() {
+        let mut items: Vec<Item> = (1..=60u8)
+            .map(|next| Item::Array(vec![next, next]))
+            .collect();
+        items.push(Item::Ascii("leaf"));
+        let list = bplist(&items, 0);
+        assert!(validated(&list).is_ok());
     }
 
     #[test]
