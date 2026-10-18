@@ -31,6 +31,7 @@ use listener::{is_listened, render, Cell, Extracted, Listener, Out, Page, Settin
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::lines;
+use crate::formats::compound::{is_ms_graph_chart, CompoundDocumentParser};
 use crate::formats::embedded::Wrapping;
 use crate::formats::escher::{self, Content, Escher};
 use crate::formats::metadata::write_sheet_numbers;
@@ -119,13 +120,18 @@ impl Parser for XlsParser {
     }
 
     /// Fails encrypted workbooks the password does not open, and defers workbooks POI or Tika
-    /// throws on and macros extracted when asked to.
+    /// throws on and macros extracted when asked to. An MS Graph chart, which Tika's detection
+    /// of an embedded storage names a workbook, is read as `OfficeParser` reads it once it has
+    /// detected the chart: its summary information only.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Declined> {
+        if is_ms_graph_chart(input) {
+            return CompoundDocumentParser.prepare(input, metadata, configs);
+        }
         let workbook = Workbook::read(input, configs)?;
         Ok(Box::new(move |xhtml| workbook.write(xhtml)))
     }

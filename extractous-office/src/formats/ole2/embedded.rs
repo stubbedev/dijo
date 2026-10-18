@@ -3,11 +3,11 @@
 //! metadata it gives it. An OOXML package is handed on as its ZIP archive, an OLE 1.0 object as
 //! the file its record holds, an object with a `CONTENTS` stream as that stream, and any other
 //! storage as a compound document of its own, written so that POI iterates it as it iterated the
-//! storage.
+//! storage, and parsed by the parser of the type Tika's detection names the open storage.
 
 use crate::config::ParserConfigs;
 use crate::formats::embedded::Wrapping;
-use crate::formats::embedded::{RELATIONSHIP_ID, RESOURCE_NAME};
+use crate::formats::embedded::{PARSER_OVERRIDE, RELATIONSHIP_ID, RESOURCE_NAME};
 use crate::formats::metadata::office::{
     EMBEDDED_STORAGE_CLASS_ID, OCX_NAME, ORIGINAL_RESOURCE_NAME, RESOURCE_NAME_EXTENSION_INFERRED,
 };
@@ -19,7 +19,7 @@ use crate::formats::{Failure, Parser, Unported};
 use crate::java::equals_ignore_case;
 use crate::java::is_blank;
 use crate::java::to_lower_case;
-use crate::mime::{self, ole_directory_type, MediaType, Origin};
+use crate::mime::{self, ole_container_type, ole_directory_type, MediaType, Origin};
 use crate::ole2::{class_id_string, write, EntryId, EntryKind, Ole2, Unreadable};
 
 const CONTENT_TYPE: &str = "Content-Type";
@@ -27,7 +27,6 @@ const CONTENT_LENGTH: &str = "Content-Length";
 const OLE10_NATIVE: &str = "\u{1}Ole10Native";
 const OCX_NAME_ENTRY: &str = "\u{3}OCXNAME";
 const OUTLOOK: &str = "application/vnd.ms-outlook";
-const GRAPH: &str = "application/vnd.ms-graph";
 /// The streams `tryToGetMsgTitle` takes a message's title from, in order.
 const MESSAGE_TITLES: [&str; 3] = [
     "__substg1.0_0037001F",
@@ -194,12 +193,9 @@ pub(crate) fn office_document(
             metadata,
         }))));
     }
-    if kind == MediaType::named(GRAPH) {
-        return Err(Unported(
-            "an MS Graph storage, which Tika's detection names by its class as the open container \
-             Tika hands on, and by its streams as the bytes our Java parses"
-                .to_owned(),
-        ));
+    let opened = ole_container_type(file, directory);
+    if opened != detected {
+        metadata.set(PARSER_OVERRIDE, opened.to_string());
     }
     let storage = file.storage(directory).map_err(unreadable)?;
     let data = write(&storage).map_err(unreadable)?;
@@ -415,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_an_ms_graph_storage_to_tika() {
+    fn parses_an_ms_graph_storage_as_tika_detects_it_open() {
         let data = embedding(vec![
             (units("Workbook"), Node::Document(vec![1; 10])),
             (
@@ -423,18 +419,13 @@ mod tests {
                 Node::Document(b"..MSGraph.Chart.8..".to_vec()),
             ),
         ]);
-        let file = Ole2::open(&data).unwrap();
-        let object = file.child(file.root(), "_123").unwrap();
-        let handed = office_document(
-            &file,
-            object,
-            TikaMetadata::new(),
-            None,
-            &ParserConfigs::default(),
-        );
-        assert!(
-            matches!(&handed, Err(Unported(reason)) if reason.contains("MS Graph")),
-            "{handed:?}"
+        let embedded = handed_on(&data).unwrap();
+        let metadata = &embedded.metadata;
+        assert_eq!(metadata.get(CONTENT_TYPE), Some("application/vnd.ms-graph"));
+        assert_eq!(metadata.get(RESOURCE_NAME), Some("_123"));
+        assert_eq!(
+            metadata.get(PARSER_OVERRIDE),
+            Some("application/vnd.ms-excel")
         );
     }
 
@@ -447,6 +438,7 @@ mod tests {
         let embedded = handed_on(&data).unwrap();
         let metadata = &embedded.metadata;
         assert_eq!(metadata.get(CONTENT_TYPE), Some("application/msword"));
+        assert_eq!(metadata.get(PARSER_OVERRIDE), None);
         assert_eq!(metadata.get(RESOURCE_NAME), Some("_123.doc"));
         assert_eq!(metadata.get(CONTENT_LENGTH), Some("15"));
         assert_eq!(metadata.get(RELATIONSHIP_ID), Some("_123"));

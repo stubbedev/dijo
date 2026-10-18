@@ -10,12 +10,16 @@ use crate::formats::{Declined, Parser, Prepared, Unported};
 use crate::mime::{ole_directory_type, MediaType};
 use crate::ole2::{Ole2, Unreadable};
 
+/// `POIFSContainerDetector.MS_GRAPH_CHART`.
+const MS_GRAPH_CHART: &str = "application/vnd.ms-graph";
+
 /// The types `POIFSDocumentType` knows among those this parser reads, which `OfficeParser`
 /// sets as the content type.
-const DOCUMENT_TYPES: [&str; 3] = [
+const DOCUMENT_TYPES: [&str; 4] = [
     "application/vnd.ms-works",
     "application/vnd.ms-project",
     "application/sldworks",
+    MS_GRAPH_CHART,
 ];
 
 /// The entry of an encrypted package, on which `OfficeParser` throws for a document of a kind it
@@ -65,6 +69,17 @@ impl Parser for CompoundDocumentParser {
             Ok(())
         }))
     }
+}
+
+/// Whether POI's container detection names the compound document `input` an MS Graph chart by
+/// its `CompObj` stream. Tika hands such a chart stored in another document on as an open
+/// storage, which its detection names a workbook by its entry names alone, and `OfficeParser`,
+/// detecting it again from the storage itself, reads only its summary information, as this
+/// parser does.
+pub(crate) fn is_ms_graph_chart(input: &[u8]) -> bool {
+    Ole2::open(input).is_ok_and(|file| {
+        ole_directory_type(&file, file.root()) == MediaType::named(MS_GRAPH_CHART)
+    })
 }
 
 /// The summary information of a compound document, and the content type `OfficeParser` sets for

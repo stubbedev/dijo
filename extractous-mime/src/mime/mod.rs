@@ -28,6 +28,7 @@ pub mod uri;
 #[cfg(any(test, feature = "testing"))]
 pub use crate::ole2::tests::compound as compound_document;
 pub use detected::{Detected, Headers, OpenedFrom};
+pub use detectors::ole::container_type as ole_container_type;
 pub use detectors::ole::directory_type as ole_directory_type;
 pub use detectors::ole::is_ole10_native;
 pub use detectors::zip::{Intent, IworkDocument, IWORK_CONTENT_ENTRIES};
