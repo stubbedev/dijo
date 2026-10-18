@@ -348,6 +348,32 @@ pub mod tests {
         ended(records(entries))
     }
 
+    /// The records of a PAX 1.0 sparse file of `name` whose data, `data`, is one stretch from
+    /// its start, the count of its sparse map written with leading zeros for the map to fill its
+    /// record.
+    pub fn sparse_1_0_filling_a_record(name: &str, data: &[u8]) -> Vec<u8> {
+        let rest = format!("0\n{}\n", data.len());
+        let count = format!("{:0>width$}\n", 1, width = RECORD - rest.len() - 1);
+        let mut stored = format!("{count}{rest}").into_bytes();
+        stored.extend_from_slice(data);
+        let stored_name = format!("./GNUSparseFile.1/{name}");
+        let real_size = data.len().to_string();
+        records(&[
+            (
+                b"././@PaxHeader",
+                b'x',
+                &pax(&[
+                    ("path", &stored_name),
+                    ("GNU.sparse.major", "1"),
+                    ("GNU.sparse.minor", "0"),
+                    ("GNU.sparse.name", name),
+                    ("GNU.sparse.realsize", &real_size),
+                ]),
+            ),
+            (stored_name.as_bytes(), b'0', &stored),
+        ])
+    }
+
     /// `records` ended by two zero records.
     pub fn ended(mut records: Vec<u8>) -> Vec<u8> {
         records.resize(records.len() + 2 * RECORD, 0);

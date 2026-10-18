@@ -24,7 +24,9 @@ use crate::compress::seven_z::tests::seven_z;
 use crate::compress::snappy::tests::snappy;
 use crate::compress::tar_header::tests::tar;
 #[cfg(feature = "tika")]
-use crate::compress::tar_header::tests::{ended, old_gnu_sparse, pax, records};
+use crate::compress::tar_header::tests::{
+    ended, old_gnu_sparse, pax, records, sparse_1_0_filling_a_record,
+};
 #[cfg(feature = "tika")]
 use crate::compress::xz::tests::{lzma, xz};
 use crate::compress::zip::file::tests::zip;
@@ -526,6 +528,24 @@ fn reads_tar_archives_whose_headers_commons_compress_applies_again() {
     ];
     let paths: Vec<&Path> = written.iter().map(PathBuf::as_path).collect();
     crate::formats::parity::assert_read_where_tika_fails(&paths, "#184");
+}
+
+/// A TAR archive whose 1.0 sparse map fills its record, after which commons-compress skips the
+/// file's data, reads its data from the next header and that header from the next file's data,
+/// on which it throws, and the native parser reads the data that follows the map (#184).
+#[cfg(feature = "tika")]
+#[test]
+fn reads_a_tar_archive_whose_1_0_sparse_map_fills_its_record() {
+    let scratch = Scratch::new("archive-tar-filled-sparse-map");
+    let archive = ended(
+        [
+            sparse_1_0_filling_a_record("filled.txt", &[b'A'; 512]),
+            records(&[(b"after.txt", b'0', &[b'x'; 512])]),
+        ]
+        .concat(),
+    );
+    let written = scratch.write("filled-sparse-map.tar", &archive);
+    crate::formats::parity::assert_read_where_tika_fails(&[written.as_path()], "#184");
 }
 
 #[cfg(feature = "tika")]

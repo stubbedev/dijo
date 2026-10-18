@@ -9,7 +9,8 @@
 //! its recursion unwinds (#184): the global PAX headers again over the entry's own after a
 //! global header or a long name, and an old GNU sparse file's extension records read again from
 //! its data after any header. A PAX header without a sparse map leaves an old GNU sparse file its
-//! own sparse structs.
+//! own sparse structs. A 1.0 sparse map that fills its records is followed by the file's data,
+//! where commons-compress skips a whole record more (#184).
 //!
 //! Where commons-compress reads the next header from the data of a directory, which its stream
 //! never skips, the port skips that data as it skips a file's.
@@ -646,8 +647,7 @@ impl<'a> Stream<'a> {
 
     /// `TarUtils.parsePAX1XSparseHeaders`: the 1.0 sparse map before a file's data, decimal
     /// numbers on lines of their own, the count then an offset and a length for each, read from
-    /// the underlying stream, which then skips to the end of the record, or past a whole one
-    /// where the map fills its records.
+    /// the underlying stream, which then skips to the end of the record the map ends in.
     fn parse_pax1x_sparse_headers(&mut self) -> Result<Vec<Sparse>, Undecoded> {
         let mut read = 0u64;
         let count = self.number_line(&mut read)?;
@@ -672,7 +672,7 @@ impl<'a> Stream<'a> {
             }
             sparse.push(Sparse { offset, numbytes });
         }
-        let skip = RECORD as u64 - read % RECORD as u64;
+        let skip = read.next_multiple_of(RECORD as u64) - read;
         self.at = self.data.len().min(self.at.saturating_add(skip as usize));
         Ok(sparse)
     }
@@ -932,7 +932,9 @@ pub fn files<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::tar_header::tests::{ended, header, old_gnu_sparse, pax, records, tar};
+    use super::super::tar_header::tests::{
+        ended, header, old_gnu_sparse, pax, records, sparse_1_0_filling_a_record, tar,
+    };
     use super::*;
 
     fn names_and_contents(data: &[u8]) -> Vec<(String, bool, Vec<u8>)> {
@@ -1152,6 +1154,27 @@ mod tests {
             [
                 ("old.txt".to_owned(), false, SPARSE.to_vec()),
                 ("extended.txt".to_owned(), false, EXTENDED_CONTENT.to_vec()),
+            ]
+        );
+    }
+
+    /// A 1.0 sparse map that fills its record is followed by the file's data, where
+    /// commons-compress skips a record more (#184).
+    #[test]
+    fn reads_the_data_right_after_a_1_0_sparse_map_that_fills_its_record() {
+        let data = [b'A'; 512];
+        let archive = ended(
+            [
+                sparse_1_0_filling_a_record("filled.txt", &data),
+                records(&[(b"after.txt", b'0', &[b'x'; 512])]),
+            ]
+            .concat(),
+        );
+        assert_eq!(
+            names_and_contents(&archive),
+            [
+                ("filled.txt".to_owned(), false, data.to_vec()),
+                ("after.txt".to_owned(), false, vec![b'x'; 512]),
             ]
         );
     }
