@@ -11,7 +11,9 @@
 //! the parse fails as Tika's path fails it.
 
 use crate::config::ParserConfigs;
-use crate::formats::crypt::{self, PackageEncryption, ENCRYPTED_PACKAGE, ENCRYPTION_INFO};
+use crate::formats::crypt::{
+    self, PackageEncryption, Unopened, ENCRYPTED_PACKAGE, ENCRYPTION_INFO,
+};
 use crate::formats::docx::DocxParser;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
@@ -128,7 +130,10 @@ impl Package {
         let file = office::open(input, configs, MEDIA_TYPE, "protected package")?;
         let summaries = Summaries::read(&file, file.root())?;
         let info = file.root_document(ENCRYPTION_INFO).map_err(Unported)?;
-        let encryption = PackageEncryption::read(&info).map_err(|unopened| unopened.unported())?;
+        let encryption = PackageEncryption::read(&info).map_err(|unopened| match unopened {
+            Unopened::Disallowed(_) => Decline::Fails(crypt::encrypted(None)),
+            unopened => unopened.unported().into(),
+        })?;
         let key = encryption
             .verify(crypt::password(configs))
             .map_err(|unopened| unopened.unported())?

@@ -1,0 +1,196 @@
+//! The encrypted Word documents and workbooks `tests/fixtures/crypt/encrypt.py` writes from the
+//! plain ones LibreOffice writes, with XOR obfuscation and with RC4 CryptoAPI, opened with their
+//! password as Tika's path opens them, and failing without it as Tika's path fails; and those
+//! encrypted as nothing decrypts, failing whatever the password.
+
+use std::path::PathBuf;
+
+use crate::config::Password;
+use crate::Extractor;
+
+/// The password every fixture is encrypted with.
+const PASSWORD: &str = "tika";
+
+/// The encrypted fixtures, each with the plain document it is encrypted from.
+const ENCRYPTED: [(&str, &str); 4] = [
+    ("cryptoapi.doc", "plain.doc"),
+    ("xor.doc", "plain.doc"),
+    ("cryptoapi.xls", "plain.xls"),
+    ("xor.xls", "plain.xls"),
+];
+
+fn fixture(name: &str) -> PathBuf {
+    PathBuf::from("tests/fixtures/crypt").join(name)
+}
+
+fn text(name: &str, passwords: &[&str]) -> crate::errors::ExtractResult<String> {
+    Extractor::new()
+        .set_passwords(passwords.iter().copied().map(Password::new))
+        .extract_file_to_string(fixture(name).to_str().unwrap())
+        .map(|(text, _)| text)
+}
+
+#[test]
+fn reads_what_the_plain_document_holds_with_the_password_only() {
+    for (encrypted, plain) in ENCRYPTED {
+        let expected = text(plain, &[]).unwrap();
+        assert!(expected.contains("rypteret"), "{plain}: {expected}");
+        assert_eq!(
+            text(encrypted, &[PASSWORD]).unwrap(),
+            expected,
+            "{encrypted}"
+        );
+        for passwords in [&[][..], &["wrong"]] {
+            assert!(
+                matches!(text(encrypted, passwords), Err(crate::Error::Encrypted(_))),
+                "{encrypted} with {passwords:?}"
+            );
+        }
+    }
+}
+
+/// The fixtures encrypted as [MS-OFFCRYPTO] 2.3.1 does not allow, which nothing decrypts: AES in
+/// a Word document and a workbook, RC4 CryptoAPI in an OOXML package.
+const DISALLOWED: [&str; 3] = ["aes.doc", "aes.xls", "rc4.docx"];
+
+#[test]
+fn fails_on_disallowed_encryptions_as_encrypted_whatever_the_password() {
+    for name in DISALLOWED {
+        for passwords in [&[][..], &[PASSWORD], &["wrong"]] {
+            assert!(
+                matches!(text(name, passwords), Err(crate::Error::Encrypted(_))),
+                "{name} with {passwords:?}"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "tika")]
+mod tika {
+    use super::*;
+    use crate::config::ParserConfigs;
+    use crate::formats::parity;
+
+    const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
+
+    fn with_password(password: &str) -> ParserConfigs {
+        ParserConfigs::default().with_password(Some(&Password::new(password)))
+    }
+
+    /// Asserts that the document fails without the password and with a wrong one as Tika's
+    /// path fails on it.
+    fn assert_fails_as_tika_without_its_password(name: &str) {
+        for configs in [ParserConfigs::default(), with_password("wrong")] {
+            let (native, tika) = parity::errors(&fixture(name), &configs);
+            assert_eq!(native, tika, "{name}");
+        }
+    }
+
+    #[test]
+    fn opens_a_word_document_encrypted_with_crypto_api_as_tikas_path_does() {
+        parity::assert_same_as_tika_with_passwords(
+            &[fixture("cryptoapi.doc")],
+            TIKA_PARSER,
+            &[("cryptoapi.doc", PASSWORD)],
+        );
+    }
+
+    /// Tika's XHTML of the workbooks with the header and footer LibreOffice writes without
+    /// their codes, as the native parser writes them (#107).
+    fn without_header_and_footer_codes(xhtml: &str) -> String {
+        xhtml
+            .replace(
+                "&amp;C&amp;\"Times New Roman\"&amp;12&amp;A",
+                "&amp;\"Times New Roman\"",
+            )
+            .replace(
+                "&amp;C&amp;\"Times New Roman\"&amp;12Page &amp;P",
+                "&amp;\"Times New Roman\"Page",
+            )
+    }
+
+    #[test]
+    fn opens_workbooks_encrypted_with_crypto_api_and_xor_as_tikas_path_does() {
+        let names = ["cryptoapi.xls", "xor.xls"];
+        let documents: Vec<PathBuf> = names.into_iter().map(fixture).collect();
+        let documents: Vec<&std::path::Path> = documents.iter().map(PathBuf::as_path).collect();
+        parity::assert_same_xhtml_as_tika_with(
+            &documents,
+            TIKA_PARSER,
+            &with_password(PASSWORD),
+            without_header_and_footer_codes,
+        );
+        for name in names {
+            assert_fails_as_tika_without_its_password(name);
+        }
+    }
+
+    /// POI reads an obfuscated Word document's key and verifier from its table stream rather
+    /// than its FIB, and so opens it with no password; the native parser opens it with its own
+    /// (#164), and fails without it as Tika's path does.
+    #[test]
+    fn opens_an_obfuscated_word_document_where_tika_fails() {
+        parity::assert_read_where_tika_fails_with(
+            &[fixture("xor.doc").as_path()],
+            &with_password(PASSWORD),
+            "#164",
+        );
+        assert_fails_as_tika_without_its_password("xor.doc");
+    }
+
+    /// POI fails on the Word document encrypted with AES whatever the password, and on the
+    /// package encrypted with RC4 without its password, with the error the native parsers fail
+    /// with too.
+    #[test]
+    fn fails_on_disallowed_encryptions_as_tikas_path_does() {
+        let failing = [
+            ("aes.doc", ParserConfigs::default()),
+            ("aes.doc", with_password(PASSWORD)),
+            ("aes.doc", with_password("wrong")),
+            ("rc4.docx", ParserConfigs::default()),
+            ("rc4.docx", with_password("wrong")),
+        ];
+        for (name, configs) in failing {
+            let (native, tika) = parity::errors(&fixture(name), &configs);
+            assert_eq!(native, tika, "{name}");
+        }
+    }
+
+    /// Tika's path crashes on a workbook encrypted with AES, whatever the password, and on the
+    /// package encrypted with RC4 with its password, with the exception POI throws, in a
+    /// message that names a Java object's hash. The native parsers fail on them as encrypted
+    /// (#166).
+    #[test]
+    fn fails_on_disallowed_encryptions_as_encrypted_where_tika_crashes() {
+        let crashing = [
+            (
+                "aes.xls",
+                ParserConfigs::default(),
+                "Did not have a chain for cipher aes128",
+            ),
+            (
+                "aes.xls",
+                with_password(PASSWORD),
+                "Did not have a chain for cipher aes128",
+            ),
+            (
+                "aes.xls",
+                with_password("wrong"),
+                "Did not have a chain for cipher aes128",
+            ),
+            (
+                "rc4.docx",
+                with_password(PASSWORD),
+                "java.io.IOException: not supported",
+            ),
+        ];
+        for (name, configs, thrown) in crashing {
+            let (native, tika) = parity::errors(&fixture(name), &configs);
+            assert!(native.starts_with("Encrypted("), "{name}: {native}");
+            assert!(
+                tika.starts_with("ParseError(") && tika.contains(thrown),
+                "{name}: {tika}"
+            );
+        }
+    }
+}

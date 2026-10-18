@@ -18,7 +18,8 @@ use super::range::Span;
 use super::styles::StyleSheet;
 use super::text::{ComplexFileTable, Plex};
 use crate::config::ParserConfigs;
-use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Mode, Rc4Keys};
+use crate::formats::crypt::xor::{WordXorKey, Xor};
+use crate::formats::crypt::{self, BlockKeys, EncryptionInfo, Mode, Rc4Keys, Unopened};
 use crate::formats::escher::{self, Escher};
 use crate::formats::poi::{i16_at, i32_at, u16_at, u8_at, Read, Thrown};
 use crate::formats::{Decline, Unported};
@@ -42,6 +43,11 @@ const WRONG_PASSWORD: &str = "org.apache.poi.EncryptedDocumentException: documen
                               password is invalid - use \
                               Biff8EncryptionKey.setCurrentUserPasswort() to set password before \
                               opening";
+/// The exception POI throws on a document encrypted with AES, whatever the password: its
+/// standard decryptor takes no chunk size, which `getEncryptionInfo` sets before it checks the
+/// password.
+const UNCHUNKED_DECRYPTOR: &str = "org.apache.poi.EncryptedDocumentException: this decryptor \
+                                   doesn't support changing the chunk size";
 const DOP_SIZE: i32 = 500;
 const SED_SIZE: i32 = 12;
 const FSPA_SIZE: i32 = 26;
@@ -101,8 +107,8 @@ impl Document {
     ) -> Result<Word, Decline<'static>> {
         let mut main = document_bytes(file, root, WORD_DOCUMENT)?;
         let encryption = encryption(file, root, &main, configs)?;
-        if let Some(keys) = &encryption {
-            keys.decrypt_chunks(&mut main, RC4_REKEYING_INTERVAL, FIB_BASE);
+        if let Some(key) = &encryption {
+            key.decrypt(&mut main, FIB_BASE);
         }
         let fib = Fib::read(&main).map_err(unported)?;
         if let Some(pool) = file.child_ignoring_case(root, OBJECT_POOL) {
@@ -132,8 +138,8 @@ impl Document {
             Some(_) => document_bytes(file, root, DATA)?,
             None => Vec::new(),
         };
-        if let Some(keys) = &encryption {
-            let header = encryption_header_length(&main)?;
+        if let Some(key) = &encryption {
+            let header = key.plain_table();
             if table.len() < header {
                 return Err(Unported(
                     "the table stream is shorter than its plain encryption header, which POI \
@@ -142,8 +148,8 @@ impl Document {
                 )
                 .into());
             }
-            keys.decrypt_chunks(&mut table, RC4_REKEYING_INTERVAL, header);
-            keys.decrypt_chunks(&mut data, RC4_REKEYING_INTERVAL, 0);
+            key.decrypt(&mut table, header);
+            key.decrypt(&mut data, 0);
         }
         Ok(Word::Modern(Box::new(
             Self::from_streams(fib, main, table, data).map_err(unported)?,
@@ -291,19 +297,62 @@ impl Document {
     }
 }
 
-/// `getDocumentEntryBytes`: the stream named in any case, read whole.
-/// `getEncryptionInfo` and its password check: the keys of an encrypted document, `None` for one
+/// What decrypts the streams of an encrypted document.
+enum DocumentKey {
+    /// RC4, binary or CryptoAPI, past the encryption header at the table stream's start, of
+    /// the length `lKey` gives.
+    Rc4 { keys: Rc4Keys, header: usize },
+    /// XOR obfuscation, of the whole table stream.
+    Xor(WordXorKey),
+}
+
+impl DocumentKey {
+    /// The bytes of the table stream that stay plain.
+    fn plain_table(&self) -> usize {
+        match self {
+            DocumentKey::Rc4 { header, .. } => *header,
+            DocumentKey::Xor(_) => 0,
+        }
+    }
+
+    /// `data` decrypted in place past its first `from` bytes, which stay plain.
+    fn decrypt(&self, data: &mut [u8], from: usize) {
+        match self {
+            DocumentKey::Rc4 { keys, .. } => keys.decrypt_chunks(data, RC4_REKEYING_INTERVAL, from),
+            DocumentKey::Xor(key) => {
+                if let Some(obfuscated) = data.get_mut(from..) {
+                    key.decrypt(obfuscated, from);
+                }
+            }
+        }
+    }
+}
+
+/// `getEncryptionInfo` and its password check: the key of an encrypted document, `None` for one
 /// that is not, failing as Tika's path does where the password does not open it.
+///
+/// An obfuscated document holds its XOR key and verifier in `lKey` ([MS-DOC] 2.2.6.1). POI reads
+/// them from the table stream's first bytes instead, and so opens no such document (#164); this
+/// reads them where they are.
 fn encryption(
     file: &Ole2<'_>,
     root: EntryId,
     main: &[u8],
     configs: &ParserConfigs,
-) -> Result<Option<Rc4Keys>, Decline<'static>> {
+) -> Result<Option<DocumentKey>, Decline<'static>> {
     if !is_encrypted(main).map_err(unported)? {
         return Ok(None);
     }
     let flags = u16_at(main, 0xA).map_err(unported)?;
+    let password = crypt::password(configs);
+    let wrong_password = || Decline::Fails(crypt::encrypted(Some(WRONG_PASSWORD)));
+    if flags & OBFUSCATED != 0 {
+        let verifier = i32_at(main, ENCRYPTION_KEY_LENGTH).map_err(unported)? as u32;
+        return Xor::of_word_verifier(verifier)
+            .verify_word(password)
+            .map(|key| Some(DocumentKey::Xor(key)))
+            .ok_or_else(wrong_password);
+    }
     let table_name = if flags & TABLE_ONE_FLAG != 0 {
         TABLE_ONE
     } else {
@@ -312,15 +361,18 @@ fn encryption(
     let header_length = encryption_header_length(main)?;
     let table = document_bytes(file, root, table_name)?;
     let header = &table[..header_length.min(table.len())];
-    let mode = if flags & OBFUSCATED != 0 {
-        Mode::Xor
-    } else {
-        Mode::Unset
-    };
-    let info = EncryptionInfo::read(header, mode).map_err(|unopened| unopened.unported())?;
-    info.verify(crypt::password(configs))
-        .map(Some)
-        .ok_or_else(|| Decline::Fails(crypt::encrypted(Some(WRONG_PASSWORD))))
+    let info = EncryptionInfo::read(header, Mode::Unset).map_err(|unopened| match unopened {
+        Unopened::Disallowed(_) => Decline::Fails(crypt::encrypted(Some(UNCHUNKED_DECRYPTOR))),
+        unopened => unopened.unported().into(),
+    })?;
+    info.verify(password)
+        .map(|keys| {
+            Some(DocumentKey::Rc4 {
+                keys,
+                header: header_length,
+            })
+        })
+        .ok_or_else(wrong_password)
 }
 
 /// `lKey` of the FIB's base: the length of the encryption header at the table stream's start,
@@ -332,6 +384,7 @@ fn encryption_header_length(main: &[u8]) -> Result<usize, Unported> {
     })
 }
 
+/// `getDocumentEntryBytes`: the stream named in any case, read whole.
 fn document_bytes(file: &Ole2<'_>, root: EntryId, name: &str) -> Result<Vec<u8>, Unported> {
     let entry = file
         .child_ignoring_case(root, name)

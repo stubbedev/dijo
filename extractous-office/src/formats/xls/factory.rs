@@ -12,7 +12,8 @@ use std::collections::VecDeque;
 use super::records::{read_record, sid, CellRef, Record};
 use super::stream::RecordStream;
 use crate::config::ParserConfigs;
-use crate::formats::crypt::{self, ChunkedKeyStream, EncryptionInfo, Mode, Rc4Keys};
+use crate::formats::crypt::xor::{ExcelXorKey, Xor};
+use crate::formats::crypt::{self, ChunkedKeyStream, EncryptionInfo, Mode, Rc4Keys, Unopened};
 use crate::formats::poi::{thrown, Read};
 use crate::formats::{Decline, Unported};
 
@@ -126,7 +127,7 @@ impl<'a> Records<'a> {
         let info = file_pass_encryption(file_pass)?;
         let start = self.stream.position();
         let password = crypt::password(configs);
-        let keys = info.verify(password).ok_or_else(|| {
+        let key = info.verify(password).ok_or_else(|| {
             let given = if password == crypt::DEFAULT_PASSWORD {
                 "Default"
             } else {
@@ -137,7 +138,7 @@ impl<'a> Records<'a> {
                  salt/verifier/verifierHash"
             ))))
         })?;
-        decrypt_records(&keys, self.stream.data_mut(), start);
+        decrypt_records(&key, self.stream.data_mut(), start);
         Ok(())
     }
 
@@ -260,27 +261,70 @@ fn cells(record_sid: u16, record: Record) -> Read<Vec<(u16, Record)>> {
     }
 }
 
+/// The encryption of a workbook, as its `FILEPASS` record describes it.
+enum Encryption {
+    Rc4(EncryptionInfo),
+    Xor(Xor),
+}
+
+impl Encryption {
+    /// The key, where the password opens the encryption.
+    fn verify(&self, password: &str) -> Option<WorkbookKey> {
+        match self {
+            Encryption::Rc4(info) => info.verify(password).map(WorkbookKey::Rc4),
+            Encryption::Xor(xor) => xor.verify_excel(password).map(WorkbookKey::Xor),
+        }
+    }
+}
+
+/// What decrypts the records of a workbook.
+pub(super) enum WorkbookKey {
+    Rc4(Rc4Keys),
+    Xor(ExcelXorKey),
+}
+
 /// `FilePassRecord`'s encryption, which a workbook reads as CryptoAPI where its version allows.
-fn file_pass_encryption(data: &[u8]) -> Result<EncryptionInfo, Unported> {
+///
+/// A workbook encrypted with AES, which no Office application writes, fails as encrypted
+/// whatever the password. Tika's path fails on it with the `IllegalArgumentException` POI
+/// throws, in a message that names a Java object's hash (#166).
+fn file_pass_encryption(data: &[u8]) -> Result<Encryption, Decline<'static>> {
     let kind = data
         .get(..2)
         .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
         .ok_or_else(|| Unported("POI throws on a FILEPASS record without its type".to_owned()))?;
-    let mode =
-        match kind {
-            XOR_OBFUSCATION => Mode::Xor,
-            RC4_ENCRYPTION => Mode::CryptoApi,
-            _ => return Err(Unported(
+    let info = &data[2..];
+    match kind {
+        XOR_OBFUSCATION => Xor::read(info).map(Encryption::Xor),
+        RC4_ENCRYPTION => EncryptionInfo::read(info, Mode::CryptoApi).map(Encryption::Rc4),
+        _ => {
+            return Err(Unported(
                 "a FILEPASS record of an encryption type POI throws on, which fails Tika's parse"
                     .to_owned(),
-            )),
-        };
-    EncryptionInfo::read(&data[2..], mode).map_err(|unopened| unopened.unported())
+            )
+            .into())
+        }
+    }
+    .map_err(|unopened| match unopened {
+        Unopened::Disallowed(_) => Decline::Fails(crypt::encrypted(None)),
+        unopened => unopened.unported().into(),
+    })
 }
 
-/// The records of `data` from `start` decrypted in place as `Biff8DecryptingStream` reads them.
-pub(super) fn decrypt_records(keys: &Rc4Keys, data: &mut [u8], start: usize) {
-    let mut key_stream = ChunkedKeyStream::new(keys, RC4_REKEYING_INTERVAL);
+/// The records of `data` from `start` decrypted in place as `Biff8DecryptingStream` reads them:
+/// with RC4, each byte by its position in the stream; with XOR, each byte of a record by its
+/// position and the record's length.
+pub(super) fn decrypt_records(key: &WorkbookKey, data: &mut [u8], start: usize) {
+    enum Decrypting<'k> {
+        Rc4(ChunkedKeyStream<'k, Rc4Keys>),
+        Xor(&'k ExcelXorKey),
+    }
+    let mut decrypting = match key {
+        WorkbookKey::Rc4(keys) => {
+            Decrypting::Rc4(ChunkedKeyStream::new(keys, RC4_REKEYING_INTERVAL))
+        }
+        WorkbookKey::Xor(key) => Decrypting::Xor(key),
+    };
     let mut at = start;
     while at + 4 <= data.len() {
         let sid = u16::from_le_bytes([data[at], data[at + 1]]);
@@ -288,7 +332,11 @@ pub(super) fn decrypt_records(keys: &Rc4Keys, data: &mut [u8], start: usize) {
         let body = at + 4;
         let end = (body + length).min(data.len());
         if !NEVER_ENCRYPTED.contains(&sid) {
-            key_stream.decrypt(&mut data[body..end], body);
+            let record = &mut data[body..end];
+            match &mut decrypting {
+                Decrypting::Rc4(key_stream) => key_stream.decrypt(record, body),
+                Decrypting::Xor(key) => key.decrypt_record(record, body, length),
+            }
         }
         at = body + length;
     }
