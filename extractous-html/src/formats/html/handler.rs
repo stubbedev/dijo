@@ -16,8 +16,11 @@
 //! parsed as inline embedded documents. The parser reads a document differently from Tika's
 //! where the text of a data URI is in a charset it does not encode ([`difference`]).
 
-use super::dom::{Attribute, Dom, NodeData, NodeId, DOCUMENT};
+use std::convert::Infallible;
+
+use super::dom::Attribute;
 use super::url;
+use super::walk::{ParsedNode, Visitor};
 use super::JSoupParser;
 use crate::formats::data_uri;
 use crate::formats::embedded::{ResourceType, Wrapping, PARSER_OVERRIDE};
@@ -147,15 +150,22 @@ fn value<'a>(attributes: &[&'a Attribute], name: &str) -> Option<&'a str> {
 }
 
 /// The name a node takes in the SAX events, in upper case as `XHTMLDowngradeHandler` writes it.
-fn event_name(dom: &Dom, node: NodeId) -> Option<String> {
-    let name = match &dom.node(node).data {
-        NodeData::Document => "#document",
-        NodeData::Element { name, .. } => name,
-        NodeData::Comment(_) => "#comment",
-        NodeData::Doctype { .. } => "#doctype",
-        NodeData::Text(_) => return None,
+fn event_name(node: &ParsedNode<'_>) -> String {
+    let name = match node {
+        ParsedNode::Document => "#document",
+        ParsedNode::Element { name, .. } => name,
+        ParsedNode::Comment => "#comment",
+        ParsedNode::Doctype => "#doctype",
     };
-    Some(name.to_uppercase())
+    name.to_uppercase()
+}
+
+/// A node's attributes, as `XHTMLDowngradeHandler` passes them on.
+fn node_attributes<'a>(node: &ParsedNode<'a>) -> Vec<&'a Attribute> {
+    match node {
+        ParsedNode::Element { attributes, .. } => sax_attributes(attributes),
+        ParsedNode::Document | ParsedNode::Comment | ParsedNode::Doctype => Vec::new(),
+    }
 }
 
 /// The URL `HtmlHandler` resolves links against before a `base` element sets one.
@@ -183,8 +193,11 @@ impl Base {
     }
 }
 
-struct HtmlHandler<'x, 'h> {
+/// Tika's handlers, written to as the document is walked.
+pub(super) struct HtmlHandler<'x, 'h> {
     xhtml: &'x mut Xhtml<'h>,
+    /// The event names of the nodes started and not yet ended.
+    names: Vec<String>,
     /// The `Content-Location` links are resolved against.
     location: Option<String>,
     title: String,
@@ -198,47 +211,56 @@ struct HtmlHandler<'x, 'h> {
     meta_titles: Vec<String>,
 }
 
-/// Writes the document through Tika's handlers, links resolved against `base`.
-pub(super) fn write(dom: &Dom, base: Base, xhtml: &mut Xhtml) -> Result<(), Failure> {
-    let location = match base {
-        Base::Unknown => None,
-        Base::Located(location) => Some(location),
-        Base::Named(name) => {
-            xhtml.metadata_mut().set("Content-Location", name.as_str());
-            Some(name)
+impl<'x, 'h> HtmlHandler<'x, 'h> {
+    /// Tika's handlers, writing to `xhtml` with links resolved against `base`.
+    pub(super) fn new(base: Base, xhtml: &'x mut Xhtml<'h>) -> Self {
+        let location = match base {
+            Base::Unknown => None,
+            Base::Located(location) => Some(location),
+            Base::Named(name) => {
+                xhtml.metadata_mut().set("Content-Location", name.as_str());
+                Some(name)
+            }
+        };
+        HtmlHandler {
+            xhtml,
+            names: Vec::new(),
+            location,
+            title: String::new(),
+            body_level: 0,
+            discard_level: 0,
+            title_level: 0,
+            script_level: 0,
+            element_title: None,
+            meta_titles: Vec::new(),
         }
-    };
-    let mut handler = HtmlHandler {
-        xhtml,
-        location,
-        title: String::new(),
-        body_level: 0,
-        discard_level: 0,
-        title_level: 0,
-        script_level: 0,
-        element_title: None,
-        meta_titles: Vec::new(),
-    };
-    handler.node(dom, DOCUMENT)
+    }
+}
+
+impl Visitor for HtmlHandler<'_, '_> {
+    type Stop = Failure;
+
+    fn start(&mut self, node: &ParsedNode<'_>) -> Result<(), Failure> {
+        let name = event_name(node);
+        self.start_element(&name, &node_attributes(node))?;
+        self.names.push(name);
+        Ok(())
+    }
+
+    fn text(&mut self, text: &str) -> Result<(), Failure> {
+        self.characters(text)
+    }
+
+    fn end(&mut self, _node: &ParsedNode<'_>) -> Result<(), Failure> {
+        let name = self
+            .names
+            .pop()
+            .expect("the walk ends the nodes it started");
+        self.end_element(&name)
+    }
 }
 
 impl HtmlHandler<'_, '_> {
-    fn node(&mut self, dom: &Dom, node: NodeId) -> Result<(), Failure> {
-        if let NodeData::Text(text) = &dom.node(node).data {
-            if !text.is_empty() {
-                self.characters(text)?;
-            }
-            return Ok(());
-        }
-        let name = event_name(dom, node).unwrap_or_else(|| panic!("node {node} has no name"));
-        let attributes = sax_attributes(dom.attributes(node));
-        self.start_element(&name, &attributes)?;
-        for &child in &dom.node(node).children {
-            self.node(dom, child)?;
-        }
-        self.end_element(&name)
-    }
-
     fn start_element(&mut self, name: &str, attributes: &[&Attribute]) -> Result<(), Failure> {
         if name == "HTML" {
             if let Some(lang) = value(attributes, "lang") {
@@ -492,39 +514,50 @@ fn embedded_data_uri(attributes: &[&Attribute]) -> Option<data_uri::DataUri> {
         .and_then(data_uri::parse)
 }
 
-/// Where this parser reads a document differently from Tika's: where the text of a data URI it
-/// embeds is in a charset it does not encode, which it encodes in UTF-8.
-pub(super) fn difference(dom: &Dom) -> Option<Difference> {
-    let mut scan = Scan::default();
-    scan.node(dom, DOCUMENT).map(Difference::new)
+/// Whether `attributes` hold a data URI the parser may read differently from Tika's, as
+/// [`Scan`] finds, wherever the element stands.
+pub(super) fn reads_otherwise(attributes: &[Attribute]) -> bool {
+    embedded_data_uri(&sax_attributes(attributes)).is_some_and(|uri| uri.difference().is_some())
 }
 
+/// Where this parser reads a document differently from Tika's, as the document is walked: where
+/// the text of a data URI it embeds is in a charset it does not encode, which it encodes in
+/// UTF-8.
 #[derive(Default)]
-struct Scan {
+pub(super) struct Scan {
     script_level: usize,
+    found: Option<String>,
 }
 
 impl Scan {
-    fn node(&mut self, dom: &Dom, node: NodeId) -> Option<String> {
-        let name = event_name(dom, node)?;
-        let attributes = sax_attributes(dom.attributes(node));
-        if name == "SCRIPT" {
+    /// The first difference the walk came across.
+    pub(super) fn difference(self) -> Option<Difference> {
+        self.found.map(Difference::new)
+    }
+}
+
+impl Visitor for Scan {
+    type Stop = Infallible;
+
+    fn start(&mut self, node: &ParsedNode<'_>) -> Result<(), Infallible> {
+        if event_name(node) == "SCRIPT" {
             self.script_level += 1;
         }
-        if self.script_level == 0 {
-            if let Some(reason) = embedded_data_uri(&attributes).and_then(|uri| uri.difference()) {
-                return Some(reason);
-            }
+        if self.script_level == 0 && self.found.is_none() {
+            self.found = embedded_data_uri(&node_attributes(node)).and_then(|uri| uri.difference());
         }
-        for &child in &dom.node(node).children {
-            if let Some(reason) = self.node(dom, child) {
-                return Some(reason);
-            }
-        }
-        if name == "SCRIPT" {
+        Ok(())
+    }
+
+    fn text(&mut self, _text: &str) -> Result<(), Infallible> {
+        Ok(())
+    }
+
+    fn end(&mut self, node: &ParsedNode<'_>) -> Result<(), Infallible> {
+        if event_name(node) == "SCRIPT" {
             self.script_level -= 1;
         }
-        None
+        Ok(())
     }
 }
 
@@ -642,11 +675,12 @@ mod tests {
     /// unless it stands in a script, whose data Tika does not embed.
     #[test]
     fn reads_differently_a_data_uri_of_text_it_does_not_encode() {
-        let tree = |html: &str| super::super::tree_builder::parse(html);
+        let difference = |html: &str| super::super::scan(html).difference();
         let windows = "data:text/plain;charset=windows-1252,hej";
-        assert!(difference(&tree(&format!("<img src=\"{windows}\">"))).is_some());
-        assert!(difference(&tree(&format!("<script src=\"{windows}\"></script>"))).is_none());
-        assert!(difference(&tree("<img src=\"data:text/plain;charset=UTF-8,hej\">")).is_none());
+        assert!(difference(&format!("<img src=\"{windows}\">")).is_some());
+        assert!(difference(&format!("<script src=\"{windows}\"></script>")).is_none());
+        assert!(difference(&format!("<svg><script><image src=\"{windows}\"/>")).is_none());
+        assert!(difference("<img src=\"data:text/plain;charset=UTF-8,hej\">").is_none());
     }
 
     #[test]
