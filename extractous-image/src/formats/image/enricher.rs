@@ -6,8 +6,9 @@
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
+use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Failure, Unported};
+use crate::formats::{Decline, Failure, Unported};
 use crate::ocr::{
     self, Decoded, Format, ImageRead, OcrSettings, Orientation, ReadPages, Undecoded,
 };
@@ -20,6 +21,8 @@ const ORIENTATION: &str = "tiff:Orientation";
 const PAGE_NUMBER: &str = "tk:page:number";
 /// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
 const WARNING: &str = "tk:exception:warn";
+/// The exception our Java `HeifDecoder` throws when libheif cannot decode an image.
+const IO_EXCEPTION: &str = "java.io.IOException";
 
 /// What the enricher does with an image, decided before its document is written.
 pub(super) enum Enricher<'a> {
@@ -96,13 +99,15 @@ impl OcrReader {
 impl<'a> Enricher<'a> {
     /// The enricher of an image of `content_type` Tika hands one, `enriched`, unless OCR is
     /// skipped: the image decoded. An image the port cannot decode or read with tesseract is left
-    /// to Tika's path.
+    /// to Tika's path; one libheif cannot decode fails as the `IOException` Tika's path throws out
+    /// of the image parser `tika_name` (#173).
     pub(super) fn of(
         enriched: bool,
         content_type: &str,
         input: &'a [u8],
         configs: &ParserConfigs,
-    ) -> Result<Self, Unported> {
+        tika_name: &str,
+    ) -> Result<Self, Decline<'static>> {
         if !enriched || configs.ocr.skips_ocr() {
             return Ok(Self::Absent);
         }
@@ -113,17 +118,18 @@ impl<'a> Enricher<'a> {
             ))
         })?;
         let timeout = OcrSettings::of(&configs.ocr).timeout();
-        let decoded = ocr::decode(input, format, timeout).map_err(|undecoded| {
-            Unported::new(match undecoded {
-                #[cfg(not(feature = "static"))]
-                Undecoded::NoDecoder => format!(
-                    "an image of {base}, for which no decoder is bundled or installed: Tika's \
-                     path reports it unread"
-                ),
-                Undecoded::Failed(reason) => {
-                    format!("an image of {base} the port cannot decode for OCR: {reason}")
-                }
-            })
+        let decoded = ocr::decode(input, format, timeout).map_err(|undecoded| match undecoded {
+            #[cfg(not(feature = "static"))]
+            Undecoded::NoDecoder => Decline::from(Unported::new(format!(
+                "an image of {base}, for which no decoder is bundled or installed: Tika's path \
+                 reports it unread"
+            ))),
+            Undecoded::Failed(reason) => Decline::from(Unported::new(format!(
+                "an image of {base} the port cannot decode for OCR: {reason}"
+            ))),
+            Undecoded::Rejected(message) => Decline::Fails(
+                Thrown::Io(Exception::new(IO_EXCEPTION, message)).into_error(tika_name),
+            ),
         })?;
         Ok(Self::Reading {
             reader: OcrReader::of(configs)?,

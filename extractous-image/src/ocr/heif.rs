@@ -101,7 +101,7 @@ mod imp {
             true => "unknown error".into(),
             false => unsafe { CStr::from_ptr(error.message) }.to_string_lossy(),
         };
-        Err(Undecoded::Failed(format!("{attempt}: {message}")))
+        Err(Undecoded::Rejected(format!("{attempt}: {message}")))
     }
 
     struct OwnedContext(*mut Context);
@@ -331,7 +331,7 @@ mod imp {
             Outcome::Finished {
                 success: false,
                 failure,
-            } => Err(Undecoded::Failed(format!(
+            } => Err(Undecoded::Rejected(format!(
                 "Decoding the image for OCR failed: {failure}"
             ))),
             Outcome::Finished { success: true, .. } => {
