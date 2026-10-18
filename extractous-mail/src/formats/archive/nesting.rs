@@ -123,7 +123,7 @@ impl Scan {
             Some(Archiver::Tar) => tar::files(data).and_then(Limited::whole).ok(),
             Some(Archiver::Ar) => ar::files(data).and_then(Limited::whole).ok(),
             Some(Archiver::Cpio) => cpio::files(data).and_then(Limited::whole).ok(),
-            Some(Archiver::SevenZ) => seven_z::files(data, None).ok(),
+            Some(Archiver::SevenZ) => seven_z::files(data, None).and_then(Limited::whole).ok(),
             Some(Archiver::Arj | Archiver::Dump) | None if rar::is_rar(data) => {
                 rar::archive_files(data)
             }

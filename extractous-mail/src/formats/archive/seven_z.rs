@@ -3,7 +3,7 @@
 //! `handleEntryMetadata` gives them, their creation and modification times among it.
 
 use super::nesting::Scan;
-use super::{undecoded, write_files};
+use super::{undecoded, within_limit, write_files, Cut};
 use crate::compress::{seven_z, Undecoded};
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
@@ -37,10 +37,12 @@ impl Parser for SevenZParser {
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'static>> {
         let password = configs.password.as_ref().map(|password| password.expose());
+        const WHAT: &str = "the 7z archive";
         let files = seven_z::files(input, password).map_err(|failure| match failure {
             Undecoded::Encrypted => Decline::Fails(crypt::encrypted(Some(PASSWORD_REQUIRED))),
-            reason => undecoded("the 7z archive", reason),
+            reason => undecoded(WHAT, reason),
         })?;
+        let (files, cut) = within_limit(WHAT.to_owned(), files)?;
         if let Some(reason) = Scan::new().files(input.len(), &files) {
             return Err(Decline::Deferred(reason));
         }
@@ -49,7 +51,7 @@ impl Parser for SevenZParser {
                 xhtml.metadata_mut().set(PASSWORD_USED, "true");
             }
             xhtml.metadata_mut().set("Content-Type", SEVEN_Z);
-            let written = write_files(&files, xhtml);
+            let written = write_files(&files, xhtml).and_then(|()| Cut::end(cut));
             xhtml.end_document()?;
             written
         }))
