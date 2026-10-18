@@ -1014,7 +1014,6 @@ mod tests {
     #[test]
     #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
     fn spools_tikas_documents_as_tikas_path_does() {
-        use crate::formats::parity::Departure;
         const ACCESS_CELLS: &str = "its cells are written otherwise than Tika's path writes \
                                     them on purpose (#122), which only the rewrite of \
                                     extractous-office's tests makes alike (#153)";
@@ -1239,29 +1238,13 @@ mod tests {
             crate::formats::html::TWO_TITLES,
             crate::formats::image::TIKAS_TEST_BMP,
         ];
-        let html_bodies = [
-            ("single_mail.mbox", Departure::BlankLines("#140")),
-            (
-                "testEMLX_multipart_html.emlx",
-                Departure::BlankLines("#140"),
-            ),
-            (
-                "testEMLX_single_part_html.emlx",
-                Departure::BlankLines("#140"),
-            ),
-            (
-                "testEML_embedded_xhtml_and_img.eml",
-                Departure::BlankLines("#140"),
-            ),
-            ("testRFC822-ARC", Departure::BlankLines("#140")),
-            (
-                "testRFC822_multipart_attachments.eml",
-                Departure::BlankLines("#140"),
-            ),
-            ("test-outlook.msg", Departure::BlankLines("#119")),
-            ("test-outlook2003.msg", Departure::BlankLines("#119")),
-            ("testMSG_att_doc.msg", Departure::BlankLines("#119")),
-            ("testMSG_att_msg.msg", Departure::BlankLines("#119")),
+        let html_messages = [
+            "single_mail.mbox",
+            "testEMLX_multipart_html.emlx",
+            "testEMLX_single_part_html.emlx",
+            "testEML_embedded_xhtml_and_img.eml",
+            "testRFC822-ARC",
+            "testRFC822_multipart_attachments.eml",
         ];
         let mut differences = Vec::new();
         let mut spooling = 0;
@@ -1333,7 +1316,11 @@ mod tests {
                     "extractous::RFC822Parser"
                     | "extractous::EmlxParser"
                     | "extractous::MboxParser" => crate::formats::mail::DEPARTURES.to_vec(),
-                    "extractous::OfficeParser" => crate::formats::msg::RECIPIENT_NAMES.to_vec(),
+                    "extractous::OfficeParser" => [
+                        crate::formats::msg::RECIPIENT_NAMES,
+                        crate::formats::html::DEPARTURES,
+                    ]
+                    .concat(),
                     "extractous::XLIFF12Parser" | "extractous::XLZParser" => {
                         crate::formats::translation::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
                     }
@@ -1351,8 +1338,8 @@ mod tests {
                 if parser.name() == pdf::PdfParser.name() && name == pdf::MALFORMED_XFA {
                     departures.extend_from_slice(pdf::XFA_FAILURE);
                 }
-                if let Some((_, departure)) = html_bodies.iter().find(|(body, _)| *body == name) {
-                    departures.push(*departure);
+                if html_messages.contains(&name.as_ref()) {
+                    departures.extend_from_slice(crate::formats::html::DEPARTURES);
                 }
                 if crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS.contains(&name.as_ref()) {
                     departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
