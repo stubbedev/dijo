@@ -38,6 +38,14 @@ impl Exception {
         }
     }
 
+    /// This exception with the exception `cause` it wraps.
+    pub fn caused_by(self, cause: Exception) -> Self {
+        Self {
+            cause: Some(Box::new(cause)),
+            ..self
+        }
+    }
+
     /// `Throwable.toString`: the class, then the message, if there is one.
     fn to_java_string(&self) -> String {
         match &self.message {
@@ -73,6 +81,8 @@ pub enum Thrown {
     Io(Exception),
     /// A `RuntimeException`.
     Runtime(Exception),
+    /// A `TikaException`, which it passes on as it is.
+    Tika(Exception),
 }
 
 impl Thrown {
@@ -80,6 +90,12 @@ impl Thrown {
     /// `TikaException` `CompositeParser` wraps it in, as our Java reports it.
     pub fn into_error(self, tika_name: &str) -> Error {
         let (wrapped, cause) = match self {
+            Self::Tika(exception) => {
+                return Error::ParseError(format!(
+                    "Parse error occurred : {}",
+                    exception.describe()
+                ))
+            }
             Self::Io(cause) => (
                 format!("TIKA-198: Illegal IOException from {tika_name}"),
                 cause,
@@ -115,6 +131,23 @@ mod tests {
             "Parse error occurred : org.apache.tika.exception.TikaException: Unexpected \
              RuntimeException from org.example.Parser <- caused by \
              java.lang.NullPointerException"
+        );
+    }
+
+    #[test]
+    fn passes_tika_exceptions_on() {
+        let cause = Exception::new("java.io.IOException", "Hit max recursion depth");
+        let tika = Exception::new(
+            "org.apache.tika.exception.TikaException",
+            "Unable to extract",
+        )
+        .caused_by(cause);
+        assert_eq!(
+            Thrown::Tika(tika)
+                .into_error("org.example.Parser")
+                .to_string(),
+            "Parse error occurred : org.apache.tika.exception.TikaException: Unable to extract \
+             <- caused by java.io.IOException: Hit max recursion depth"
         );
     }
 

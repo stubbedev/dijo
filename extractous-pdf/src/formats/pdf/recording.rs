@@ -9,8 +9,9 @@ use std::ops::Range;
 
 use super::attachment::EmbeddedFile;
 use super::ocr::{EndPage, PageCheck};
-use crate::formats::embedded::Wrapping;
+use crate::formats::embedded::{Wrapping, EXCEPTION_WARNING};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::thrown::Exception;
 use crate::formats::xhtml::{within_budget, Stop, Xhtml};
 use crate::formats::xmp;
 use crate::formats::Failure;
@@ -77,6 +78,9 @@ pub(super) struct Recording {
     spans: Vec<Span>,
     /// The pages Tika's PDF parser wants OCR for that no tesseract reads, so far.
     unrecognized: usize,
+    /// The first `IOException` Tika's writer caught and recorded, which fails the extraction
+    /// once the document is written.
+    caught: Option<Exception>,
 }
 
 impl Recording {
@@ -91,6 +95,7 @@ impl Recording {
             text: String::new(),
             spans: Vec::new(),
             unrecognized: 0,
+            caught: None,
         }
     }
 
@@ -276,6 +281,18 @@ impl Recording {
             held: self.read_pages.len(),
         });
         self.read_pages.push(held);
+    }
+
+    /// `AbstractPDF2XHTML.handleCatchableIOE`: the `IOException` `exception` recorded as a
+    /// warning, the first kept to fail the extraction once the document is written.
+    pub(super) fn catch_io(&mut self, exception: Exception) {
+        self.add(EXCEPTION_WARNING, format!("{exception}\n"));
+        self.caught.get_or_insert(exception);
+    }
+
+    /// The first `IOException` caught, if any.
+    pub(super) fn caught(&self) -> Option<&Exception> {
+        self.caught.as_ref()
     }
 
     /// Counts a page Tika's PDF parser wants OCR for that no tesseract reads.

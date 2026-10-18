@@ -10,7 +10,7 @@ use lopdf::{Dictionary, Object};
 use super::attachment::{self, FileSpec, SpecKey, Written};
 use super::cos::{as_dict, decode_java, Identity, Pdf};
 use super::document::Page;
-use super::engine::{Engine, PageContent};
+use super::engine::{differ_past, Engine, PageContent};
 use super::form;
 use super::images::Images;
 use super::ocr::{Layer, PageCheck};
@@ -402,12 +402,18 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 continue;
             };
             let Some(annotation) = as_dict(object) else {
-                return Err(Unported(
-                    "an annotation that is not a dictionary, which PDFBox fails on".to_owned(),
-                )
-                .into());
+                pdf.differ(Difference::new(
+                    "the port leaves out an annotation that is not a dictionary, which PDFBox \
+                     fails on",
+                ));
+                continue;
             };
-            self.annotation(annotation)?;
+            match self.annotation(annotation) {
+                Err(WriteFailure::Unported(unported)) => {
+                    differ_past(pdf, "an annotation", unported);
+                }
+                annotated => annotated?,
+            }
         }
         Ok(())
     }
@@ -644,12 +650,20 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
     /// annotation led to, each parsed as an embedded document.
     fn embedded_documents(&mut self) -> Result<(), WriteFailure> {
         let pdf = self.pdf;
-        for (name, spec) in attachment::document_specs(pdf)? {
+        let specs = attachment::document_specs(pdf);
+        for (name, spec) in specs.specs {
             let spec = FileSpec::Complex(spec);
             if self.extracted.contains(&spec.key()) {
                 continue;
             }
-            for written in attachment::written(pdf, &name, "", spec, Vec::new())? {
+            let written = match attachment::written(pdf, &name, "", spec, Vec::new()) {
+                Ok(written) => written,
+                Err(unported) => {
+                    differ_past(pdf, "an embedded file", unported);
+                    continue;
+                }
+            };
+            for written in written {
                 let out = &mut *self.page.out;
                 match written {
                     Written::Link(attributes) => {
@@ -664,6 +678,9 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 }
             }
         }
+        if let Some(thrown) = specs.thrown {
+            self.page.out.catch_io(thrown);
+        }
         Ok(())
     }
 
@@ -675,8 +692,13 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             .catalog()
             .and_then(|catalog| pdf.dict(catalog, b"AcroForm"))
             .and_then(|form| pdf.get(form, b"XFA"));
-        if let Some(xfa) = xfa {
-            match xfa::extract(&xfa::bytes(pdf, xfa)?) {
+        let bytes = xfa.map(|xfa| xfa::bytes(pdf, xfa)).transpose();
+        let bytes = bytes.unwrap_or_else(|unported| {
+            differ_past(pdf, "the XFA form", unported);
+            None
+        });
+        if let Some(bytes) = bytes {
+            match xfa::extract(&bytes) {
                 Extracted::Read(form) => return self.xfa(&form),
                 Extracted::Failed {
                     paragraphs,
@@ -692,7 +714,11 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             }
         }
         let out = &mut *self.page.out;
-        let Some(lines) = form::lines(pdf, out)? else {
+        let lines = form::lines(pdf, out).unwrap_or_else(|unported| {
+            differ_past(pdf, "the form's fields", unported);
+            None
+        });
+        let Some(lines) = lines else {
             return Ok(());
         };
         out.start_element_with("div", &[("class", "acroform")])?;

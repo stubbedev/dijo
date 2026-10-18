@@ -60,6 +60,7 @@ use crate::formats::{
 use crate::input::{Pages, Paging};
 
 use cos::Pdf;
+use engine::differ_past;
 use ocr::{OcrCheck, PageOcr, RejectedThresholds};
 use recording::Recording;
 use security::{Access, Encryption, Opening, Refusal, WRONG_PASSWORD};
@@ -171,7 +172,7 @@ fn prepare<'a>(
                 None => recording.flush(xhtml, None),
                 Some(page_ocr) => write_read(&page_ocr, &mut recording, xhtml, configs),
             };
-            ended(xhtml, written, ocr_pages)
+            ended(xhtml, written, ocr_pages, recording.caught())
         }),
         Recorded::Large(loaded, settings) => {
             let metadata = metadata.clone();
@@ -184,12 +185,12 @@ fn prepare<'a>(
                     configs,
                     known,
                 };
-                let (written, unrecognized) = streamed.write(metadata, xhtml);
+                let (written, recording) = streamed.write(metadata, xhtml);
                 let ocr_pages = match settings.ocr.dispatches_every_page() {
                     true => loaded.pdf.pages().len(),
-                    false => unrecognized,
+                    false => recording.unrecognized_pages(),
                 };
-                ended(xhtml, written, ocr_pages)
+                ended(xhtml, written, ocr_pages, recording.caught())
             })
         }
     };
@@ -197,12 +198,28 @@ fn prepare<'a>(
 }
 
 /// The document `written` to `xhtml`, with the count of pages Tika's `PDFParser` handed its OCR
-/// parser, `ocr_pages`: none where our `TextLayerCheckingPdfParser` reads them.
-fn ended(xhtml: &mut Xhtml, written: Result<(), Failure>, ocr_pages: usize) -> Result<(), Failure> {
+/// parser, `ocr_pages`: none where our `TextLayerCheckingPdfParser` reads them. A document
+/// whose writer `caught` an `IOException` fails with the first, as `PDF2XHTML.process` throws
+/// it once the document is written.
+fn ended(
+    xhtml: &mut Xhtml,
+    written: Result<(), Failure>,
+    ocr_pages: usize,
+    caught: Option<&Exception>,
+) -> Result<(), Failure> {
     xhtml
         .metadata_mut()
         .set("pdf:ocr-page-count", ocr_pages.to_string());
-    written
+    written?;
+    let Some(cause) = caught else {
+        return Ok(());
+    };
+    let unable = Exception::new(
+        "org.apache.tika.exception.TikaException",
+        "Unable to extract PDF content",
+    );
+    let thrown = Thrown::Tika(unable.caused_by(cause.clone()));
+    Err(Failure::Extraction(thrown.into_error(TIKA_PDF_PARSER)))
 }
 
 /// The PDF settings the port reads, as Tika's `PDFParser` and our `TextLayerCheckingPdfParser`
@@ -403,12 +420,12 @@ struct Streamed<'s, 'a> {
 }
 
 impl Streamed<'_, '_> {
-    /// Extracts the document from `metadata` into `xhtml`, with the count of pages Tika's PDF
-    /// parser wants OCR for that no tesseract reads.
-    fn write(&self, metadata: TikaMetadata, xhtml: &mut Xhtml) -> (Result<(), Failure>, usize) {
+    /// Extracts the document from `metadata` into `xhtml`, with the recording it went through,
+    /// which counts what the writing met.
+    fn write(&self, metadata: TikaMetadata, xhtml: &mut Xhtml) -> (Result<(), Failure>, Recording) {
         let mut recording = new_recording(metadata, self.configs);
         let written = self.write_recording(&mut recording, xhtml);
-        (written, recording.unrecognized_pages())
+        (written, recording)
     }
 
     /// Extracts the document into `xhtml` through `recording`.
@@ -648,11 +665,15 @@ fn extract(
     }
     let encrypted = loaded.access != Access::Unencrypted;
     out.set("pdf:encrypted", encrypted.to_string());
-    let has_fields = form::has_fields(pdf)?;
-    let version = loaded.version;
-    metadata::document(pdf, out, version, has_fields)?;
-    form::signatures(pdf, out)?;
-    if is_illustrator(pdf)? {
+    let has_fields = form::has_fields(pdf).unwrap_or_else(|unported| {
+        differ_past(pdf, "the form's fields", unported);
+        false
+    });
+    metadata::document(pdf, out, loaded.version, has_fields)?;
+    if let Err(unported) = form::signatures(pdf, out) {
+        differ_past(pdf, "the form's signatures", unported);
+    }
+    if is_illustrator(pdf) {
         out.set("Content-Type", "application/illustrator");
     }
     let tagged = match settings.marked_content {
@@ -665,16 +686,15 @@ fn extract(
 }
 
 /// `PDFParser.checkIllustrator`: whether the first page holds Illustrator's private data.
-fn is_illustrator(pdf: &Pdf) -> Result<bool, Unported> {
+fn is_illustrator(pdf: &Pdf) -> bool {
     let pages = pdf.pages();
     let Some(page) = pages.first() else {
-        return Ok(false);
+        return false;
     };
-    Ok(pdf
-        .dict(page.dict, b"PieceInfo")
+    pdf.dict(page.dict, b"PieceInfo")
         .and_then(|piece_info| pdf.dict(piece_info, b"Illustrator"))
         .and_then(|illustrator| pdf.dict(illustrator, b"Private"))
-        .is_some())
+        .is_some()
 }
 
 #[cfg(test)]
@@ -2386,6 +2406,88 @@ mod tests {
              IOException from org.apache.tika.parser.pdf.PDFParser <- caused by \
              java.io.IOException: Error: End-of-File, expected line at offset 9"
         );
+    }
+
+    /// A page of text whose tree of embedded files nests `depth` nodes below its root, the last
+    /// naming a file.
+    fn nested_embedded_files(depth: usize) -> Vec<u8> {
+        let first = 7;
+        let mut extra = vec![format!("<< /Kids [{first} 0 R] >>")];
+        for level in 0..depth {
+            let number = first + level;
+            extra.push(match level + 1 == depth {
+                true => format!(
+                    "<< /Names [(fil.txt) {}] >>",
+                    "<< /Type /Filespec /F (fil.txt) >>"
+                ),
+                false => format!("<< /Kids [{} 0 R] >>", number + 1),
+            });
+        }
+        let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
+        cataloged(
+            "<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles 6 0 R >> >>",
+            &extra,
+            "",
+        )
+    }
+
+    #[test]
+    fn fails_a_tree_of_embedded_files_deeper_than_tika_follows_once_written() {
+        let configs = ParserConfigs::default();
+        let shallow = nested_embedded_files(MAX_RECURSION_DEPTH);
+        assert!(PdfParser
+            .prepare(&shallow, &TikaMetadata::new(), &configs)
+            .is_ok());
+        let deep = nested_embedded_files(MAX_RECURSION_DEPTH + 1);
+        let reading = PdfParser
+            .prepare(&deep, &TikaMetadata::new(), &configs)
+            .unwrap_or_else(|declined| panic!("{declined:?}"));
+        let mut out = crate::formats::StringOut::default();
+        let chain = crate::formats::Chain::Stream {
+            output: crate::formats::Output::Text,
+            encoding: "UTF-8",
+        };
+        let (metadata, _, written) = chain.write_to(&mut out, |handler| {
+            Xhtml::write(
+                handler,
+                TikaMetadata::new(),
+                &crate::formats::embedded::ParseContext::new(&configs),
+                reading,
+            )
+        });
+        assert!(out.0.contains("Metadata"), "{}", out.0);
+        assert_eq!(
+            metadata.values(EXCEPTION_WARNING),
+            ["java.io.IOException: Hit max recursion depth\n"]
+        );
+        let Err(Failure::Extraction(error)) = written else {
+            panic!("{written:?}");
+        };
+        assert_eq!(
+            error.to_string(),
+            "Parse error occurred : org.apache.tika.exception.TikaException: Unable to extract \
+             PDF content <- caused by java.io.IOException: Hit max recursion depth"
+        );
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn fails_a_tree_of_embedded_files_deeper_than_tika_follows_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-embedded-depth");
+        let path = scratch.write("deep.pdf", &nested_embedded_files(MAX_RECURSION_DEPTH + 1));
+        let (native, tika) = crate::formats::parity::errors(&path, &ParserConfigs::default());
+        assert_eq!(native, tika);
+    }
+
+    #[test]
+    fn reads_past_an_annotation_that_is_no_dictionary_noting_the_difference() {
+        let mut objects = page_objects(TEXT);
+        objects[2] = objects[2].replace("/Contents 4 0 R", "/Contents 4 0 R /Annots [42]");
+        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+        let input = document(&objects, b"", &[]);
+        let (Difference(difference), xhtml) = differing_reading(&input, &ParserConfigs::default());
+        assert!(difference.contains("annotation"), "{difference}");
+        assert!(xhtml.contains("konge"), "{xhtml}");
     }
 
     /// A page of text under thresholds our Java's `PdfConfig` rejects.
