@@ -19,7 +19,7 @@ pub mod formats {
     pub(crate) use extractous_core::parity;
     pub(crate) use extractous_html::formats::{html, text};
     #[cfg(all(test, feature = "tika"))]
-    pub(crate) use extractous_small::formats::dc_xml;
+    pub(crate) use extractous_small::formats::{class_file, dc_xml};
 
     pub mod archive;
     pub mod cms;

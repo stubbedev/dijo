@@ -61,16 +61,18 @@ pub type Departures<'a> = &'a [Departure<'a>];
 pub const ANCHORED_BLOCKS: Departures<'static> =
     &[Departure::BlankLines("#136"), Departure::Elements("#136")];
 
-/// The documents of Tika's tests that depart by [`ANCHORED_BLOCKS`], by file name: a table in a
-/// paragraph, notes of several paragraphs, and attachments and embedded objects in paragraphs.
+/// The documents of Tika's tests and of the repository's corpora that depart by
+/// [`ANCHORED_BLOCKS`], by file name: a table in a paragraph, notes of several paragraphs, and
+/// attachments and embedded objects in paragraphs.
 #[cfg(feature = "tika")]
-pub const ANCHORED_BLOCK_DOCUMENTS: [&str; 6] = [
+pub const ANCHORED_BLOCK_DOCUMENTS: [&str; 7] = [
     "testPages.pages",
     "testWORD_endnote_table.docx",
     "testWORD_numbered_list.docx",
     "testWORD_2003ml.xml",
     "test-incremental-updates.eml",
     "testRFC822_normal_zip",
+    "nested.zip",
 ];
 
 /// The metadata of an extraction, as the two paths are compared on it.

@@ -1762,18 +1762,7 @@ fn is_closing_tags(text: &str) -> bool {
 /// compared.
 #[cfg(feature = "tika")]
 pub fn assert_same_as_tika_rewriting(documents: &[&Path], tika_name: &str, rewrite: NativeRewrite) {
-    let expected = Expected::Same(Naming {
-        tika_name,
-        delegates: &[],
-        departures: &[],
-    });
-    compare(
-        documents,
-        &ParserConfigs::default(),
-        expected,
-        Some((rewrite, None)),
-        Adjustments::default(),
-    );
+    assert_same_as_tika_departing_rewriting(documents, tika_name, &[], Some((rewrite, None)));
 }
 
 /// [`assert_same_as_tika_rewriting`], with both texts then rewritten by `normalise`.
@@ -1784,17 +1773,11 @@ pub fn assert_same_as_tika_normalising(
     rewrite: NativeRewrite,
     normalise: Normalisation,
 ) {
-    let expected = Expected::Same(Naming {
-        tika_name,
-        delegates: &[],
-        departures: &[],
-    });
-    compare(
+    assert_same_as_tika_departing_rewriting(
         documents,
-        &ParserConfigs::default(),
-        expected,
+        tika_name,
+        &[],
         Some((rewrite, Some(normalise))),
-        Adjustments::default(),
     );
 }
 
@@ -1849,6 +1832,19 @@ fn with_rewrite(
 /// native parser gives on purpose otherwise than Tika's path.
 #[cfg(feature = "tika")]
 pub fn assert_same_as_tika_departing(documents: &[&Path], tika_name: &str, departures: Departures) {
+    assert_same_as_tika_departing_rewriting(documents, tika_name, departures, None);
+}
+
+/// [`assert_same_as_tika_departing`], with each native result rewritten by the rewrite of
+/// `rewrite`, if any, and both texts then by its normalisation, if any, before they are
+/// compared.
+#[cfg(feature = "tika")]
+pub fn assert_same_as_tika_departing_rewriting(
+    documents: &[&Path],
+    tika_name: &str,
+    departures: Departures,
+    rewrite: Option<(NativeRewrite, Option<Normalisation>)>,
+) {
     let expected = Expected::Same(Naming {
         tika_name,
         delegates: &[],
@@ -1858,7 +1854,7 @@ pub fn assert_same_as_tika_departing(documents: &[&Path], tika_name: &str, depar
         documents,
         &ParserConfigs::default(),
         expected,
-        None,
+        rewrite,
         Adjustments::default(),
     );
 }
