@@ -1,10 +1,11 @@
 //! OpenDocument files, packaged and flat, and EPUB books too large to read whole, extracted under
-//! a memory budget far below their size: a part or chapter decoded past what a spool holds in
-//! memory, and base64 binary data decoded to a spool.
+//! a memory budget far below their size: a part or chapter whose declared size is past what a
+//! spool holds in memory decoded straight to a file, and base64 binary data, whose size nothing
+//! declares, decoded to a spool.
 
 use std::io::{self, Write};
 
-use extractous_core::large::{write_base64, Binary, LargeFile, SPOOLING_BUDGET};
+use extractous_core::large::{write_base64, Binary, LargeFile, BUDGET, SPOOLING_BUDGET};
 use extractous_core::{Extractor, Metadata};
 
 use crate::input::MAX_READ_WHOLE;
@@ -116,11 +117,8 @@ fn reads_a_package_too_large_to_read_whole_spooling_its_content() {
             ],
         )
     });
-    let (text, metadata) = file.extract_with(
-        &Extractor::new(),
-        SPOOLING_BUDGET,
-        "extractous::OpenDocumentParser",
-    );
+    let (text, metadata) =
+        file.extract_with(&Extractor::new(), BUDGET, "extractous::OpenDocumentParser");
     assert_read_to_its_end(&file, &text, &metadata);
 }
 
@@ -192,7 +190,6 @@ fn reads_a_book_too_large_to_read_whole_a_chapter_at_a_time() {
             ],
         )
     });
-    let (text, metadata) =
-        file.extract_with(&Extractor::new(), SPOOLING_BUDGET, "extractous::EpubParser");
+    let (text, metadata) = file.extract_with(&Extractor::new(), BUDGET, "extractous::EpubParser");
     assert_read_to_its_end(&file, &text, &metadata);
 }

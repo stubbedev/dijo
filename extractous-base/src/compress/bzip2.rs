@@ -7,7 +7,7 @@ use crate::input::Input;
 
 /// The content of the first bzip2 stream of `data`, or why it is not decoded natively.
 pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> {
-    spool_limited(::bzip2::bufread::BzDecoder::new(data), data.len())
+    spool_limited(::bzip2::bufread::BzDecoder::new(data), data.len(), None)
 }
 
 #[cfg(any(test, feature = "testing"))]

@@ -380,7 +380,7 @@ impl<'a> ZipFile<'a> {
     /// `getInputStream(entry)` read to its end into memory, `None` for an entry encrypted or
     /// compressed a way the port does not decompress.
     pub fn read(&self, entry: &ZipEntry) -> Option<Content<'a>> {
-        self.read_into(entry, Pages::IN_MEMORY, |_| Decoding::in_memory())
+        self.read_into(entry, Pages::IN_MEMORY, |_, _| Decoding::in_memory())
             .map(|read| read.expect("memory takes what is decoded"))
     }
 
@@ -397,17 +397,20 @@ impl<'a> ZipFile<'a> {
     /// [`ZipFile::spool`] keeping nothing but the length decoded, to tell whether the entry
     /// reads whole.
     pub fn verify(&self, entry: &ZipEntry) -> Option<Decoded<u64>> {
-        self.read_into(entry, Pages::IN_MEMORY, Decoding::discarded)
-            .map(|read| read.expect("nothing fails to take what is decoded"))
+        self.read_into(entry, Pages::IN_MEMORY, |compressed, _| {
+            Decoding::discarded(compressed)
+        })
+        .map(|read| read.expect("nothing fails to take what is decoded"))
     }
 
     /// `getInputStream(entry)` read to its end into what `decoding` makes of the length of its
-    /// data, where the data of the archive has the pages `pages`.
+    /// data and the size the archive declares it decodes into, where the data of the archive
+    /// has the pages `pages`.
     fn read_into<W: Held>(
         &self,
         entry: &ZipEntry,
         pages: Pages<'a>,
-        decoding: impl FnOnce(usize) -> Decoding<W>,
+        decoding: impl FnOnce(usize, Option<u64>) -> Decoding<W>,
     ) -> Option<std::result::Result<Decoded<W::Bytes<'a>>, Undecoded>> {
         if entry.uses_encryption() {
             return None;
@@ -422,14 +425,20 @@ impl<'a> ZipFile<'a> {
             } else {
                 Decoded::Truncated(W::stored(raw, pages))
             })),
-            DEFLATED => Some(inflate_into(raw, decoding(raw.len()))),
-            method => decode_into(
-                method,
-                entry.flags,
+            DEFLATED => Some(inflate_into(
                 raw,
-                u64::try_from(entry.size).ok()?,
-                decoding(raw.len()),
-            ),
+                decoding(raw.len(), u64::try_from(entry.size).ok()),
+            )),
+            method => {
+                let size = u64::try_from(entry.size).ok()?;
+                decode_into(
+                    method,
+                    entry.flags,
+                    raw,
+                    size,
+                    decoding(raw.len(), Some(size)),
+                )
+            }
         }
     }
 }

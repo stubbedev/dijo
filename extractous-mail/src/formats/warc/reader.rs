@@ -7,7 +7,7 @@ use super::headers::{Headers, NotSole};
 use super::ragel::{Flow, Unsigned, ERROR};
 use super::tables::{WARC, WARC_FIRST_FINAL, WARC_START};
 use super::text::TextBuffer;
-use crate::compress::{Decoding, Limited, Undecoded};
+use crate::compress::{gzip, Decoding, Limited, Undecoded};
 use crate::input::{Input, Pages};
 use crate::java;
 use crate::java::time::{civil, format_instant};
@@ -68,7 +68,7 @@ const FCOMMENT: u8 = 16;
 fn gunzip(input: &[u8]) -> Result<Input<'static>, String> {
     let thrown = |what: &str| what.to_owned();
     let unspooled = |undecoded: Undecoded| format!("IOException: {undecoded}");
-    let mut out = Decoding::spooled(input.len());
+    let mut out = Decoding::spooled(input.len(), gzip::declared_size(input));
     let mut chunk = vec![0; 64 * 1024];
     let mut at = 0;
     while at < input.len() {

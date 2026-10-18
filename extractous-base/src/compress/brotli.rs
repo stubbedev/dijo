@@ -9,6 +9,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>, Undecoded> 
     spool_limited(
         brotli_decompressor::Decompressor::new(data, 64 * 1024),
         data.len(),
+        None,
     )
 }
 

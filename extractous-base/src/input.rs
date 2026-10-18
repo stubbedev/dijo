@@ -252,6 +252,10 @@ impl Drop for Paging<'_> {
     }
 }
 
+/// The most memory a [`Spool`] reserves on what a stream says it holds, which may be wrong: a
+/// document's own declaration costs no more than this until its bytes come.
+const SPOOL_RESERVED: u64 = 1 << 20;
+
 /// Collects a stream of a document's bytes, as Tika's `CachingSource` caches a stream: in memory
 /// up to [`MAX_READ_WHOLE`], and beyond it in a temporary file of its own, mapped once complete,
 /// which is deleted once its map is dropped.
@@ -264,12 +268,15 @@ pub struct Spool {
 }
 
 impl Spool {
-    /// A spool for a stream of `expected` bytes, if the stream says how many.
+    /// A spool for a stream of `expected` bytes, if the stream says how many. What it says is a
+    /// hint, not a limit: a stream that says it is larger than [`MAX_READ_WHOLE`] goes to the
+    /// file from its first byte, one that says it is smaller has up to a mebibyte
+    /// of memory reserved for it, and any stream holds what it holds, more or less than it says.
     pub fn new(expected: Option<u64>) -> Self {
         let large = expected.is_some_and(|length| length > MAX_READ_WHOLE);
-        let capacity = expected.filter(|_| !large).unwrap_or(0);
+        let capacity = expected.filter(|_| !large).unwrap_or(0).min(SPOOL_RESERVED);
         Self {
-            memory: Vec::with_capacity(usize::try_from(capacity).expect("at most MAX_READ_WHOLE")),
+            memory: Vec::with_capacity(usize::try_from(capacity).expect("at most SPOOL_RESERVED")),
             file: None,
             large,
         }
@@ -403,5 +410,23 @@ mod tests {
         assert!(large.is_mapped());
         assert_eq!(large.len() as u64, MAX_READ_WHOLE + (1 << 20) + 3);
         assert!(large.ends_with(b"\x07end"));
+    }
+
+    #[test]
+    fn spools_streams_said_to_be_large_to_a_file_from_the_first() {
+        let mut said_large = Spool::new(Some(MAX_READ_WHOLE + 1));
+        said_large.write_all(b"abc").unwrap();
+        let said_large = said_large.finish().unwrap();
+        assert!(said_large.is_mapped());
+        assert_eq!(&*said_large, b"abc");
+
+        let chunk = vec![7u8; 1 << 20];
+        let mut said_small = Spool::new(Some(3));
+        for _ in 0..=MAX_READ_WHOLE >> 20 {
+            said_small.write_all(&chunk).unwrap();
+        }
+        let said_small = said_small.finish().unwrap();
+        assert!(said_small.is_mapped());
+        assert_eq!(said_small.len() as u64, MAX_READ_WHOLE + (1 << 20));
     }
 }

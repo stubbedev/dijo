@@ -64,6 +64,14 @@ impl BodyDecoder {
         }
     }
 
+    /// About the most bytes a body of `encoded` bytes decodes into.
+    pub(super) fn decoded_length(&self, encoded: u64) -> u64 {
+        match self {
+            BodyDecoder::Base64 { .. } => encoded / 4 * 3,
+            BodyDecoder::Identity | BodyDecoder::QuotedPrintable { .. } => encoded,
+        }
+    }
+
     /// Decodes the next `chunk` of the body into `out`.
     pub(super) fn feed(&mut self, chunk: &[u8], out: &mut Vec<u8>) {
         match self {
