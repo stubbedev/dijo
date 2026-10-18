@@ -893,7 +893,7 @@ mod tests {
         for path in paths {
             let input = std::fs::read(&path).unwrap();
             let ours = decoded(&input).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            let theirs = super::super::heif::decode(&input, None).unwrap();
+            let theirs = super::super::heif::libheif(&input).unwrap();
             let (ours, theirs) = (ours.gray(), theirs.gray());
             assert_eq!(ours.dimensions(), theirs.dimensions(), "{}", path.display());
             let largest = ours

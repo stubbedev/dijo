@@ -13,6 +13,13 @@ pub(crate) fn decode(input: &[u8], timeout: Option<Duration>) -> Result<Bitmap, 
     imp::decode(input, timeout)
 }
 
+/// The primary image of a HEIC or HEIF file decoded by libheif on every platform, the decoder
+/// the native AVIF decoder is held to.
+#[cfg(test)]
+pub(crate) fn libheif(input: &[u8]) -> Result<Bitmap, Undecoded> {
+    imp::libheif(input, None)
+}
+
 #[cfg(feature = "static")]
 mod imp {
     use std::ffi::{c_char, c_int, c_void, CStr};
@@ -121,9 +128,14 @@ mod imp {
         }
     }
 
+    /// The primary image decoded by the platform's decoder, the linked libheif.
+    pub(super) fn decode(input: &[u8], timeout: Option<Duration>) -> Result<Bitmap, Undecoded> {
+        libheif(input, timeout)
+    }
+
     /// The primary image decoded to RGB with its transformations applied, as `heif.cc` decodes
     /// it for Java. The linked libheif runs no external program, so takes no timeout.
-    pub(super) fn decode(input: &[u8], _: Option<Duration>) -> Result<Bitmap, Undecoded> {
+    pub(super) fn libheif(input: &[u8], _: Option<Duration>) -> Result<Bitmap, Undecoded> {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
             unsafe { heif_init(std::ptr::null()) };
@@ -335,7 +347,54 @@ mod imp {
         }
     }
 
+    /// The primary image decoded by the platform's decoder: macOS's `sips`, and elsewhere
+    /// libheif.
     pub(super) fn decode(input: &[u8], timeout: Option<Duration>) -> Result<Bitmap, Undecoded> {
+        if cfg!(target_os = "macos") {
+            return converted(input, timeout, |image, png| {
+                let mut command = Command::new(MAC_OS_PROGRAM);
+                command
+                    .args(["-s", "format", "png"])
+                    .arg(image)
+                    .arg("--out")
+                    .arg(png);
+                Ok(command)
+            });
+        }
+        libheif(input, timeout)
+    }
+
+    /// The primary image decoded by libheif: the bundled heif-png, or else `heif-dec` on the
+    /// `PATH`.
+    pub(super) fn libheif(input: &[u8], timeout: Option<Duration>) -> Result<Bitmap, Undecoded> {
+        converted(input, timeout, |image, png| {
+            let bundled = crate::bundle::bundled_heif_decoder().map_err(|e| {
+                Undecoded::Failed(format!("Cannot unpack the bundled heif-png: {e}"))
+            })?;
+            let mut command = match bundled {
+                Some(bundled) => {
+                    let mut command = Command::new(bundled);
+                    command.env_remove(PLUGIN_PATH);
+                    command
+                }
+                None => {
+                    let mut command = Command::new(PROGRAM);
+                    command.arg("--quiet");
+                    command
+                }
+            };
+            command.arg(image).arg(png);
+            Ok(command)
+        })
+    }
+
+    /// The primary image converted to a PNG by the program `command` builds for the image's and
+    /// the PNG's paths, and read back.
+    fn converted(
+        input: &[u8],
+        timeout: Option<Duration>,
+        command: impl FnOnce(&Path, &Path) -> Result<Command, Undecoded>,
+    ) -> Result<Bitmap, Undecoded> {
         let scratch = Scratch::new()?;
         let image = scratch.0.join("image.heif");
         let png = scratch.0.join("image.png");
@@ -345,33 +404,7 @@ mod imp {
                 image.display()
             ))
         })?;
-        if cfg!(target_os = "macos") {
-            let outcome = run(
-                Command::new(MAC_OS_PROGRAM)
-                    .args(["-s", "format", "png"])
-                    .arg(&image)
-                    .arg("--out")
-                    .arg(&png),
-                timeout,
-            )?;
-            return decoded(outcome, &png);
-        }
-        let bundled = crate::bundle::bundled_heif_decoder()
-            .map_err(|e| Undecoded::Failed(format!("Cannot unpack the bundled heif-png: {e}")))?;
-        if let Some(bundled) = bundled {
-            let outcome = run(
-                Command::new(bundled)
-                    .env_remove(PLUGIN_PATH)
-                    .arg(&image)
-                    .arg(&png),
-                timeout,
-            )?;
-            return decoded(outcome, &png);
-        }
-        let outcome = run(
-            Command::new(PROGRAM).arg("--quiet").arg(&image).arg(&png),
-            timeout,
-        )?;
+        let outcome = run(&mut command(&image, &png)?, timeout)?;
         decoded(outcome, &png)
     }
 }
