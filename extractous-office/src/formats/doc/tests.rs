@@ -234,7 +234,7 @@ fn decrypts_an_encrypted_document_with_its_password_only() {
         ParserConfigs::default().with_password(Some(&crate::config::Password::new(password)))
     };
     let opened = configs("tika");
-    let (file, _) = plan(&input, &opened).unwrap();
+    let (file, _, _) = plan(&input, &opened).unwrap();
     let mut text = String::new();
     planned(read(&file, &opened, &mut |out| {
         if let Out::Text(units) = out {

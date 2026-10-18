@@ -29,7 +29,7 @@ use extractor::{extract, Flush, Out};
 use crate::config::ParserConfigs;
 use crate::formats::poi::{planned, written, Halt};
 
-use crate::formats::embedded::{record_exception, Wrapping};
+use crate::formats::embedded::{record_exception, record_stream_exception, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
@@ -161,6 +161,9 @@ fn write(out: Vec<Out<'_>>, xhtml: &mut Xhtml) -> Result<(), Failure> {
             Out::Add(name, value) => xhtml.metadata_mut().add(name, value),
             Out::Set(name, value) => xhtml.metadata_mut().set(name, value),
             Out::Warning(exception) => record_exception(xhtml.metadata_mut(), &exception),
+            Out::StreamException(exception) => {
+                record_stream_exception(xhtml.metadata_mut(), &exception)
+            }
         }
     }
     Ok(())

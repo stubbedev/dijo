@@ -504,7 +504,10 @@ fn table_content(
                         Ok(Ole::Nothing) => Cell::Text(String::new()),
                         Ok(Ole::Link(path)) => Cell::Text(path),
                         Ok(Ole::Resource(document)) => Cell::Resource(document),
-                        Ok(Ole::Storage(document)) => Cell::Storage(document),
+                        Ok(Ole::Storage(document)) => {
+                            difference = difference.or_else(|| document.difference());
+                            Cell::Storage(document)
+                        }
                         Err(thrown) => return Err(thrown),
                     },
                     Some(other) => {

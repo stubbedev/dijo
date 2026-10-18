@@ -157,6 +157,7 @@ pub(super) fn extract<'a>(
     write_metadata(&message, &mut scratch)?;
     let (body, content_ids, read_otherwise) = body(&message)?;
     let attachments = attachments(file, &message, &content_ids, configs)?;
+    let read_otherwise = read_otherwise.or_else(|| attachments.iter().find_map(Handed::difference));
     Ok((
         Extracted {
             message,

@@ -9,7 +9,7 @@ use std::borrow::Cow;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::embedded::Wrapping;
+use crate::formats::embedded::{record_stream_exception, Wrapping};
 use crate::formats::embedded::{PARSER_OVERRIDE, RELATIONSHIP_ID, RESOURCE_NAME};
 use crate::formats::metadata::office::{
     EMBEDDED_STORAGE_CLASS_ID, OCX_NAME, ORIGINAL_RESOURCE_NAME, RESOURCE_NAME_EXTENSION_INFERRED,
@@ -17,8 +17,9 @@ use crate::formats::metadata::office::{
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::msg::{EmbeddedMessage, MsgParser};
 use crate::formats::ole10_native::{self, Ole10Native, Unread};
+use crate::formats::poi::{safely_allocate_check, Thrown};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Failure, Parser, Unported};
+use crate::formats::{Difference, Failure, Parser, Unported};
 use crate::input::Input;
 use crate::java::equals_ignore_case;
 use crate::java::is_blank;
@@ -84,13 +85,16 @@ pub(crate) fn handed_on(data: Node<'_>) -> Result<Input<'_>, Failure> {
 
 /// What `handleEmbeddedOfficeDoc` hands on: a document, which Tika parses from its bytes, as
 /// the native path parses a storage written as a compound document of its own, where Tika
-/// parses the storage itself, handed on as an open container that spools empty (#116); or an
+/// parses the storage itself, handed on as an open container that spools empty (#116); an
 /// Outlook message stored in another document, which Tika's `OfficeParser` reads from its
-/// storage as a message embedded in another, and the native one reads alike.
+/// storage as a message embedded in another, and the native one reads alike; or nothing, where
+/// POI throws reading the object, which Tika records in the embedding document's metadata
+/// before it goes on.
 #[derive(Debug)]
 pub(crate) enum Handed<'a> {
     Document(Embedded<'a>),
     Message(Box<StoredMessage<'a>>),
+    Recorded(Thrown),
 }
 
 /// An Outlook message read from its storage, with the metadata Tika hands it on with.
@@ -124,6 +128,23 @@ impl Handed<'_> {
                     |child| message.write(child),
                 )
             }
+            Handed::Recorded(thrown) => {
+                record_stream_exception(xhtml.metadata_mut(), &thrown.to_string());
+                Ok(())
+            }
+        }
+    }
+
+    /// Where the native reading of what is handed on differs from Tika's, if it does: the
+    /// exception POI throws on an object, recorded as the port tells it, where Tika records
+    /// POI's.
+    pub(crate) fn difference(&self) -> Option<Difference> {
+        match self {
+            Handed::Recorded(Thrown::Told(reason)) => Some(Difference(format!(
+                "an embedded object POI throws on, which Tika records with POI's exception: \
+                 {reason}"
+            ))),
+            Handed::Recorded(Thrown::Java(_)) | Handed::Document(_) | Handed::Message(_) => None,
         }
     }
 
@@ -138,6 +159,7 @@ impl Handed<'_> {
                     metadata,
                 }))
             }
+            Handed::Recorded(thrown) => Handed::Recorded(thrown),
         }
     }
 }
@@ -215,13 +237,13 @@ pub(crate) fn office_document<'a>(
         == MediaType::parse("application/x-tika-msoffice-embedded; format=ole10_native")
             .expect("a media type")
     {
-        return Ok(ole_native(file, directory, &resource, metadata)?.map(Handed::Document));
+        return ole_native(file, directory, &resource, metadata);
     }
     if kind
         == MediaType::parse("application/x-tika-msoffice-embedded; format=comp_obj")
             .expect("a media type")
     {
-        return Ok(contents(file, directory, &resource, metadata)?.map(Handed::Document));
+        return contents(file, directory, &resource, metadata);
     }
     let outlook = kind == MediaType::named(OUTLOOK);
     let resource = if outlook {
@@ -299,7 +321,7 @@ fn unreadable(Unreadable(reason): Unreadable) -> Unported {
     ))
 }
 
-/// A document entry, in place, failing as POI's cast and read do.
+/// An OOXML package's entry, in place, failing as POI's cast and read do.
 fn read_document<'a>(file: &Ole2<'a>, entry: EntryId) -> Result<Content<'a>, Unported> {
     if file.kind(entry) != EntryKind::Document {
         return Err(Unported(
@@ -309,22 +331,31 @@ fn read_document<'a>(file: &Ole2<'a>, entry: EntryId) -> Result<Content<'a>, Unp
     file.content(entry).map_err(unreadable)
 }
 
-/// `handleOLENative`: the file an OLE 1.0 object's record holds.
+/// `handleOLENative`: the file an OLE 1.0 object's record holds, or what POI throws reading
+/// the record, which Tika records.
 fn ole_native<'a>(
     file: &Ole2<'a>,
     directory: EntryId,
     resource: &str,
     mut metadata: TikaMetadata,
-) -> Result<Option<Embedded<'a>>, Unported> {
+) -> Result<Option<Handed<'a>>, Unported> {
     let entry = file
         .child_ignoring_case(directory, OLE10_NATIVE)
         .ok_or_else(|| Unported("an OLE 1.0 object without its record".to_owned()))?;
-    let record = read_document(file, entry)?;
-    if record.len() > ole10_native::MAX_RECORD_LENGTH as usize {
-        return Err(Unported(format!(
-            "an OLE 1.0 object's record of {} bytes is longer than POI reads",
-            record.len()
-        )));
+    if file.kind(entry) != EntryKind::Document {
+        return Ok(Some(Handed::Recorded(Thrown::new(
+            "an OLE 1.0 object's record that is a directory, which POI casts to a stream",
+        ))));
+    }
+    let record = match file.content(entry) {
+        Ok(record) => record,
+        Err(Unreadable(reason)) => return Ok(Some(Handed::Recorded(Thrown::new(reason)))),
+    };
+    if let Err(thrown) = safely_allocate_check(
+        record.len() as i64,
+        i64::from(ole10_native::MAX_RECORD_LENGTH),
+    ) {
+        return Ok(Some(Handed::Recorded(thrown)));
     }
     let parsed = match record.bytes() {
         Cow::Borrowed(bytes) => Ole10Native::parse(bytes),
@@ -333,11 +364,7 @@ fn ole_native<'a>(
     let native = match parsed {
         Ok(native) => native,
         Err(Unread::Invalid) => return Ok(None),
-        Err(Unread::Failed(message)) => {
-            return Err(Unported(format!(
-                "POI fails on an OLE 1.0 object's record, which Tika records: {message}"
-            )))
-        }
+        Err(Unread::Failed(message)) => return Ok(Some(Handed::Recorded(Thrown::new(message)))),
     };
     match &native.label {
         Some(label) => metadata.set(RESOURCE_NAME, format!("{resource}/{label}")),
@@ -347,19 +374,20 @@ fn ole_native<'a>(
         metadata.add(ORIGINAL_RESOURCE_NAME, name.clone());
     }
     metadata.set(CONTENT_LENGTH, native.data.len().to_string());
-    Ok(Some(Embedded {
+    Ok(Some(Handed::Document(Embedded {
         data: native.data.into(),
         metadata,
-    }))
+    })))
 }
 
-/// `handleCompObj`: an object's `CONTENTS` stream, named by the type Tika detects in it.
+/// `handleCompObj`: an object's `CONTENTS` stream, named by the type Tika detects in it, or
+/// the failure to read it, which Tika records.
 fn contents<'a>(
     file: &Ole2<'a>,
     directory: EntryId,
     resource: &str,
     mut metadata: TikaMetadata,
-) -> Result<Option<Embedded<'a>>, Unported> {
+) -> Result<Option<Handed<'a>>, Unported> {
     let entry = match file
         .child(directory, "CONTENTS")
         .or_else(|| file.child(directory, "Contents"))
@@ -382,7 +410,15 @@ fn contents<'a>(
             entry
         }
     };
-    let data = read_document(file, entry)?;
+    if file.kind(entry) != EntryKind::Document {
+        return Err(Unported(
+            "an object's contents stream is a directory, which Tika fails on".to_owned(),
+        ));
+    }
+    let data = match file.content(entry) {
+        Ok(data) => data,
+        Err(Unreadable(reason)) => return Ok(Some(Handed::Recorded(Thrown::new(reason)))),
+    };
     let detected = mime::detect(&data.bytes(), Origin::Bytes)
         .map_err(|error| Unported(format!("Tika's detection fails on an object: {error:?}")))?
         .media_type;
@@ -391,10 +427,10 @@ fn contents<'a>(
     metadata.set(RESOURCE_NAME, with_extension(resource, extension));
     metadata.set(RESOURCE_NAME_EXTENSION_INFERRED, "true");
     metadata.set(CONTENT_LENGTH, data.len().to_string());
-    Ok(Some(Embedded {
+    Ok(Some(Handed::Document(Embedded {
         data: Node::Document(data),
         metadata,
-    }))
+    })))
 }
 
 /// `extractOCXName`: the name an ActiveX control's storage gives it.
@@ -476,6 +512,7 @@ mod tests {
         {
             Handed::Document(embedded) => Some(embedded),
             Handed::Message(message) => panic!("a document, not {message:?}"),
+            Handed::Recorded(thrown) => panic!("a document, not {thrown:?}"),
         }
     }
 
@@ -561,6 +598,38 @@ mod tests {
             Some("application/vnd.ms-outlook")
         );
         assert_eq!(stored.metadata.get(RESOURCE_NAME), Some("Hi\u{fffd}.msg"));
+    }
+
+    /// An OLE 1.0 object whose record POI throws on is handed on as nothing but its exception,
+    /// which Tika records in the embedding document's metadata before it goes on.
+    #[test]
+    fn records_an_ole_1_object_poi_throws_on() {
+        let mut body = vec![2, 0];
+        body.extend(b"label.txt\0C:\\dir\\file.txt\0");
+        body.extend([0, 0, 3, 0]);
+        body.extend(5i32.to_le_bytes());
+        body.extend(b"C:\\x\0");
+        body.extend(5i32.to_le_bytes());
+        body.extend(b"hello");
+        let mut record = i32::try_from(body.len()).unwrap().to_le_bytes().to_vec();
+        record.extend(body);
+        let data = embedding(vec![(units("\u{1}Ole10Native"), Node::Owned(record))]);
+        let file = Ole2::open(&data).unwrap();
+        let object = file.child(file.root(), "_123").unwrap();
+        let handed = office_document(
+            &file,
+            object,
+            TikaMetadata::new(),
+            None,
+            &ParserConfigs::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let Handed::Recorded(thrown) = &handed else {
+            panic!("a recorded exception, not {handed:?}");
+        };
+        assert!(thrown.to_string().starts_with("Buffer overrun"), "{thrown}");
+        assert!(handed.difference().is_some());
     }
 
     #[test]

@@ -43,7 +43,7 @@ use crate::formats::ole2::office;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::{planned, written, Halt};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::ole2::Ole2;
 
 const MEDIA_TYPE: &str = "application/msword";
@@ -83,41 +83,47 @@ impl Parser for DocParser {
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let (file, summaries) = plan(input, configs)?;
-        Ok(Box::new(move |xhtml| {
-            summaries.write(xhtml.metadata_mut());
-            xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-            written(read(&file, configs, &mut |out| write(out, xhtml)))
-        }))
+        let (file, summaries, difference) = plan(input, configs)?;
+        unless_different(
+            Box::new(move |xhtml| {
+                summaries.write(xhtml.metadata_mut());
+                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+                written(read(&file, configs, &mut |out| write(out, xhtml))).map(|_| ())
+            }),
+            difference,
+        )
     }
 }
 
 /// The compound document of a Word document and its summary information, the document read as
-/// far as writing it, its events let go.
+/// far as writing it, its events let go, and where Tika's extractor writes it otherwise than
+/// the native reading, if it does.
 fn plan<'a>(
     input: &'a [u8],
     configs: &ParserConfigs,
-) -> Result<(Ole2<'a>, Summaries), Decline<'static>> {
+) -> Result<(Ole2<'a>, Summaries, Option<Difference>), Decline<'static>> {
     let file = office::open(input, configs, MEDIA_TYPE, "Word document")?;
-    planned(read(&file, configs, &mut |_| Ok::<(), Infallible>(())))?;
+    let difference = planned(read(&file, configs, &mut |_| Ok::<(), Infallible>(())))?;
     let summaries = Summaries::read(&file, file.root())?;
-    Ok((file, summaries))
+    Ok((file, summaries, difference))
 }
 
 /// What Tika's extractor makes of the Word document in a compound document, handed to `sink`
-/// as it is made.
+/// as it is made, and where it differs from the native reading, if it does.
 fn read<E>(
     file: &Ole2<'_>,
     configs: &ParserConfigs,
     sink: &mut Sink<'_, E>,
-) -> Result<(), Halt<E>> {
+) -> Result<Option<Difference>, Halt<E>> {
     let root = file.root();
     match Word::read(file, root, configs)? {
         Word::Modern(streams) => {
             let document = streams.document()?;
             extract(&document, file, root, configs, sink)
         }
-        Word::Old(document) => paragraphs(document.paragraph_text(), sink).map_err(Halt::Written),
+        Word::Old(document) => paragraphs(document.paragraph_text(), sink)
+            .map(|()| None)
+            .map_err(Halt::Written),
     }
 }
 

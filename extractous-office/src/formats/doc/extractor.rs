@@ -27,7 +27,7 @@ use crate::formats::metadata::office::{
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::formats::poi::{Halt, Read, Thrown};
-use crate::formats::Unported;
+use crate::formats::{Difference, Unported};
 use crate::java::parse_int;
 use crate::ole2::{EntryId, EntryKind, Node, Ole2};
 use crate::unicode::is_whitespace;
@@ -274,14 +274,15 @@ struct Extractor<'s, 'd, E> {
 }
 
 /// `WordExtractor.parse(root, xhtml)`: its events handed to `sink` as they are made, the
-/// metadata of the document's features after them.
+/// metadata of the document's features after them; and where they differ from Tika's, if
+/// they do.
 pub(super) fn extract<'s, 'd, E>(
     document: &'s Document<'d>,
     file: &'s Ole2<'d>,
     root: EntryId,
     configs: &'s ParserConfigs,
     sink: &'s mut Sink<'s, E>,
-) -> Step<(), E> {
+) -> Step<Option<Difference>, E> {
     let save_locations = match &document.save_locations {
         None => Vec::new(),
         Some(locations) => locations
@@ -308,7 +309,7 @@ pub(super) fn extract<'s, 'd, E>(
         extractor.emit(Out::Add(ORIGINAL_RESOURCE_NAME, location))?;
     }
     let has_comments = extractor.body()?;
-    extractor.object_pool()?;
+    let difference = extractor.object_pool()?;
     let (has_hidden_text, has_track_changes) = features(document)?;
     let revision_authors = revision_authors(document)?;
     if has_comments {
@@ -323,7 +324,7 @@ pub(super) fn extract<'s, 'd, E>(
     if has_track_changes {
         extractor.emit(Out::Set(HAS_TRACK_CHANGES, "true".to_owned()))?;
     }
-    Ok(())
+    Ok(difference)
 }
 
 /// `extractFeatures`' authors: the distinct authors of the revisions, in the order the
@@ -905,12 +906,14 @@ impl<'d, E> Extractor<'_, 'd, E> {
     }
 
     /// The object pool's storages of embedded objects, each handed on as
-    /// `handleEmbeddedOfficeDoc` hands it on, its streams in place.
-    fn object_pool(&mut self) -> Step<(), E> {
+    /// `handleEmbeddedOfficeDoc` hands it on, its streams in place; and where they differ from
+    /// Tika's, if they do.
+    fn object_pool(&mut self) -> Step<Option<Difference>, E> {
         let file = self.file;
         let Some(pool) = file.child(self.root, OBJECT_POOL) else {
-            return Ok(());
+            return Ok(None);
         };
+        let mut difference = None;
         if file.kind(pool) == EntryKind::Document {
             return Err(Thrown::new(
                 "java.lang.ClassCastException: the object pool is a document, which Tika casts to \
@@ -925,10 +928,11 @@ impl<'d, E> Extractor<'_, 'd, E> {
             if let Some(embedded) =
                 office_document(file, entry, TikaMetadata::new(), None, self.configs)?
             {
+                difference = difference.or_else(|| embedded.difference());
                 self.emit(Out::Embedded(embedded, Wrapping::PackageEntry))?;
             }
         }
-        Ok(())
+        Ok(difference)
     }
 }
 

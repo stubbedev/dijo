@@ -41,10 +41,13 @@ use crate::formats::escher::{self, Escher};
 use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
-use crate::formats::ole2::{office_document, Summaries};
+use crate::formats::ole2::{office_document, Handed, Summaries};
 use crate::formats::poi::{written, Halt, Thrown, Unread, OFFICE_PARSER};
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared, Unported, PASSWORD_USED};
+use crate::formats::{
+    unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared, Unported,
+    PASSWORD_USED,
+};
 use crate::input::{self, Pages, Paging, Spool};
 use crate::ole2::{Content, EntryId, EntryKind, Ole2, Unreadable};
 
@@ -170,8 +173,9 @@ impl Parser for XlsParser {
         if reads_only_the_summary(input) {
             return CompoundDocumentParser.prepare(input, metadata, configs);
         }
-        let workbook = Workbook::read(input, pages, configs)?;
-        Ok(Box::new(move |xhtml| workbook.write(xhtml)))
+        let mut workbook = Workbook::read(input, pages, configs)?;
+        let difference = workbook.difference.take();
+        unless_different(Box::new(move |xhtml| workbook.write(xhtml)), difference)
     }
 }
 
@@ -188,10 +192,12 @@ pub(super) fn poi_throws(reason: &str) -> Decline<'static> {
     Unread::from(Thrown::new(reason)).declined()
 }
 
-/// A workbook read: the summary information, the type `OfficeParser` sets, and its content.
+/// A workbook read: the summary information, the type `OfficeParser` sets, its content, and
+/// where the native reading of it differs from Tika's, if it does.
 struct Workbook<'a> {
     summaries: Summaries,
     media_type: &'static str,
+    difference: Option<Difference>,
     content: WorkbookContent<'a>,
 }
 
@@ -268,6 +274,7 @@ impl<'a> Workbook<'a> {
             return Ok(Workbook {
                 summaries,
                 media_type,
+                difference: None,
                 content: WorkbookContent::Old(stream),
             });
         };
@@ -282,17 +289,20 @@ impl<'a> Workbook<'a> {
         })?;
         let planned = plan(stream.clone(), pages, configs)?;
         let mut storages = Vec::new();
+        let mut difference = None;
         for child in file.children(root) {
             if file.name(child).starts_with(EMBEDDED_STORAGE_PREFIX)
                 && file.kind(child) != EntryKind::Document
             {
-                office_document(&file, child, TikaMetadata::new(), None, configs)?;
+                let handed = office_document(&file, child, TikaMetadata::new(), None, configs)?;
+                difference = difference.or_else(|| handed.as_ref().and_then(Handed::difference));
                 storages.push(child);
             }
         }
         Ok(Workbook {
             summaries,
             media_type,
+            difference,
             content: WorkbookContent::Biff8(Box::new(Biff8 {
                 file,
                 stream,

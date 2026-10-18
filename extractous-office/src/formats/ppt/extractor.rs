@@ -56,13 +56,32 @@ pub(super) enum Out<'a> {
     Set(&'static str, String),
     /// An exception Tika records as a warning before it goes on, as Java prints its first line.
     Warning(String),
+    /// An exception Tika records as an embedded stream exception before it goes on.
+    StreamException(String),
 }
 
-fn recorded(reason: &str) -> Unported {
-    Unported(format!(
-        "an embedded object or picture Tika fails on and records with Java's stack trace: \
-         {reason}"
-    ))
+/// How Tika records what POI or Tika throws on a picture or object before it goes on past it.
+#[derive(Debug, Clone, Copy)]
+enum Recording {
+    /// `recordException`: as a warning.
+    Warning,
+    /// `recordEmbeddedStreamException`.
+    Stream,
+}
+
+/// Why an embedded object is not handed on: POI or Tika throws on it, which Tika records before
+/// it goes on past it, or the presentation is not read as Tika reads it.
+enum Skip {
+    Recorded(Thrown),
+    Unread(Unread),
+}
+
+/// The embedding of an object shape: none, its record, or what POI throws looking for it,
+/// which Tika records before it goes on past the shape.
+enum Embedding<'s, 'a> {
+    None,
+    Found(&'s super::records::Record<'a>),
+    Thrown(Thrown),
 }
 
 /// Where the extractor hands its events on, whatever they borrow.
@@ -486,7 +505,15 @@ impl<'s, 'a> Extractor<'s, 'a> {
             if shape.kind != Kind::Object {
                 continue;
             }
-            let Some(object) = self.object_of(shape)? else {
+            let embedding = match self.embedding(shape)? {
+                Embedding::None => continue,
+                Embedding::Thrown(thrown) => {
+                    self.record(thrown, Recording::Stream);
+                    continue;
+                }
+                Embedding::Found(embedding) => embedding,
+            };
+            let Some(object) = self.object_of(embedding)? else {
                 continue;
             };
             let id = shape.property(PICTURE_ID)?.to_string();
@@ -496,20 +523,22 @@ impl<'s, 'a> Extractor<'s, 'a> {
                 vec![("class", "embedded".to_owned()), ("id", id.clone())],
             ));
             self.end("div");
-            let prog_id = self.prog_id(shape)?;
-            let Some(data) = self.readable(self.objects[object].data(self.show)?)? else {
+            let Some(data) =
+                self.readable(self.objects[object].data(self.show)?, Recording::Stream)?
+            else {
                 continue;
             };
-            self.data_stream(data, &id, prog_id.as_deref())?;
+            self.data_stream(data, &id, prog_id(embedding).as_deref())?;
         }
         Ok(())
     }
 
     /// The data of a picture or an object, or none where POI fails reading it, which Tika
-    /// records before it goes on, where the native reading leaves the picture or object out.
+    /// records as `recording` says before it goes on past the picture or object.
     fn readable(
         &mut self,
         data: Result<Cow<'a, [u8]>, UnreadData>,
+        recording: Recording,
     ) -> Result<Option<Cow<'a, [u8]>>, Unread> {
         match data {
             Ok(data) => Ok(Some(data)),
@@ -518,103 +547,124 @@ impl<'s, 'a> Extractor<'s, 'a> {
                 Ok(None)
             }
             Err(UnreadData::Recorded(reason)) => {
-                let Unported(reason) = super::pictures::recorded(reason);
-                self.difference.get_or_insert(Difference(reason));
+                self.record(Thrown::new(reason), recording);
                 Ok(None)
             }
             Err(UnreadData::Unported(unported)) => Err(unported.into()),
         }
     }
 
+    /// Records what POI or Tika throws on a picture or object as Tika records it, before it
+    /// goes on past it. Where the port tells the exception otherwise than Java, the reading
+    /// differs from Tika's.
+    fn record(&mut self, thrown: Thrown, recording: Recording) {
+        if let Thrown::Told(reason) = &thrown {
+            self.note(Some(Difference(format!(
+                "an embedded object or picture POI or Tika throws on, which Tika records with \
+                 Java's exception: {reason}"
+            ))));
+        }
+        let exception = thrown.to_string();
+        self.out.push(match recording {
+            Recording::Warning => Out::Warning(exception),
+            Recording::Stream => Out::StreamException(exception),
+        });
+    }
+
+    /// Keeps the first way the reading differs from Tika's.
+    fn note(&mut self, difference: Option<Difference>) {
+        if let Some(difference) = difference {
+            self.difference.get_or_insert(difference);
+        }
+    }
+
     /// `getExEmbed`: the last embedding of the document's objects with the shape's object id.
-    fn embedding(
-        &self,
-        shape: &Shape<'_>,
-    ) -> Result<Option<&'s super::records::Record<'a>>, Unread> {
+    /// An embedding without its OLE object atom makes POI throw a `NullPointerException`, which
+    /// Tika records; one too short for its object id an `ArrayIndexOutOfBoundsException`, which
+    /// fails the parse.
+    fn embedding(&self, shape: &Shape<'_>) -> Result<Embedding<'s, 'a>, Unread> {
         let Some(objects) = self.show.objects() else {
-            return Ok(None);
+            return Ok(Embedding::None);
         };
         let id = shape.property(PICTURE_ID)?;
-        let mut found = None;
+        let mut found = Embedding::None;
         for child in objects.children() {
             if child.kind != kind::EX_EMBED && child.kind != kind::EX_CONTROL {
                 continue;
             }
-            let atom = child
+            let Some(atom) = child
                 .children()
                 .get(1)
                 .filter(|atom| atom.kind == kind::EX_OLE_OBJ_ATOM)
-                .ok_or_else(|| recorded("an embedding without its OLE object atom"))?;
-            if atom
-                .int(8)
-                .map_err(|_| recorded("a short OLE object atom"))?
-                == id
-            {
-                found = Some(child);
+            else {
+                return Ok(Embedding::Thrown(Thrown::new(
+                    "java.lang.NullPointerException: an embedding without its OLE object atom",
+                )));
+            };
+            if atom.int(8)? == id {
+                found = Embedding::Found(child);
             }
         }
         Ok(found)
     }
 
-    /// `getObjectData`: the last object whose persist id the shape's embedding names.
-    fn object_of(&self, shape: &Shape<'_>) -> Result<Option<usize>, Unread> {
-        let Some(embedding) = self.embedding(shape)? else {
-            return Ok(None);
-        };
-        let reference = embedding.children()[1]
-            .int(16)
-            .map_err(|_| recorded("a short OLE object atom"))?;
+    /// `getObjectData`: the last object whose persist id the shape's `embedding` names.
+    fn object_of(&self, embedding: &super::records::Record<'_>) -> Result<Option<usize>, Unread> {
+        let reference = embedding.children()[1].int(16)?;
         Ok(self
             .objects
             .iter()
             .rposition(|object| object.persist_id == reference))
     }
 
-    /// `getProgId`: the program id of the shape's embedding.
-    fn prog_id(&self, shape: &Shape<'_>) -> Result<Option<String>, Unread> {
-        Ok(self.embedding(shape)?.and_then(|embedding| {
-            embedding
-                .children()
-                .iter()
-                .skip(2)
-                .rev()
-                .find(|child| child.kind == kind::C_STRING && child.instance() == 2)
-                .map(|string| String::from_utf16_lossy(&string.utf16()))
-        }))
-    }
-
     /// `handleDataStream`: an object handed on as the compound document Tika's detection names
-    /// it, or as itself.
+    /// it, or as itself; where POI or Tika throws on it, the exception recorded as a warning.
     fn data_stream(
         &mut self,
         data: Cow<'a, [u8]>,
         id: &str,
         prog_id: Option<&str>,
     ) -> Result<(), Unread> {
+        match self.handed_object(data, id, prog_id) {
+            Ok(Some(handed)) => {
+                self.note(handed.difference());
+                self.out.push(Out::Object(handed));
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(Skip::Recorded(thrown)) => {
+                self.record(thrown, Recording::Warning);
+                Ok(())
+            }
+            Err(Skip::Unread(unread)) => Err(unread),
+        }
+    }
+
+    /// What `handleDataStream` hands on of an object.
+    fn handed_object(
+        &self,
+        data: Cow<'a, [u8]>,
+        id: &str,
+        prog_id: Option<&str>,
+    ) -> Result<Option<Handed<'a>>, Skip> {
         let media_type = if prog_id == Some("Excel.Chart.8") {
             MediaType::named("application/vnd.ms-excel")
         } else {
-            detect(&data)?
+            detect(&data).map_err(Skip::Recorded)?
         };
         if media_type == MediaType::parse(COMP_OBJ).expect("a media type")
             || media_type == MediaType::named(MSOFFICE)
         {
-            if let Some(embedded) =
-                embedded_office_document(data, TikaMetadata::new(), id, self.configs)?
-            {
-                self.out.push(Out::Object(embedded));
-            }
-            return Ok(());
+            return embedded_office_document(data, TikaMetadata::new(), id, self.configs);
         }
         let mut metadata = TikaMetadata::new();
         metadata.set(RESOURCE_NAME, id);
         metadata.set(RELATIONSHIP_ID, id);
         metadata.set(CONTENT_TYPE, media_type.to_string());
-        self.out.push(Out::Object(Handed::Document(Embedded {
+        Ok(Some(Handed::Document(Embedded {
             data: Node::from(data),
             metadata,
-        })));
-        Ok(())
+        })))
     }
 
     /// `handleSlideEmbeddedPictures`: each picture, with the slides that show it, read from the
@@ -624,15 +674,26 @@ impl<'s, 'a> Extractor<'s, 'a> {
         let pictures = self.pictures;
         let store = self.lookup_store()?;
         let mut slides_of: BTreeMap<usize, BTreeSet<i32>> = BTreeMap::new();
+        let mut recorded = Vec::new();
         for slide in &show.slides {
             let record = show.slide_record(slide)?;
             let sheet = show.slide_sheet(slide, &record)?;
             let shapes = sheet_shapes(&sheet)?;
-            collect_picture_slides(&shapes, slide.number, pictures, &store, &mut slides_of)?;
+            collect_picture_slides(
+                &shapes,
+                slide.number,
+                pictures,
+                &store,
+                &mut slides_of,
+                &mut recorded,
+            )?;
+        }
+        for thrown in recorded {
+            self.record(thrown, Recording::Stream);
         }
         for picture in &pictures.pictures {
             let media_type = picture.kind.media_type();
-            let Some(data) = self.readable(pictures.data(picture))? else {
+            let Some(data) = self.readable(pictures.data(picture), Recording::Stream)? else {
                 continue;
             };
             let name = format!(
@@ -692,11 +753,20 @@ impl<'s, 'a> Extractor<'s, 'a> {
             if self.processed.contains(&self.objects[at].persist_id) {
                 continue;
             }
-            let Some(data) = self.readable(self.objects[at].data(self.show)?)? else {
+            let Some(data) =
+                self.readable(self.objects[at].data(self.show)?, Recording::Warning)?
+            else {
                 index += 1;
                 continue;
             };
-            let media_type = detect(&data)?;
+            let media_type = match detect(&data) {
+                Ok(media_type) => media_type,
+                Err(thrown) => {
+                    self.record(thrown, Recording::Warning);
+                    index += 1;
+                    continue;
+                }
+            };
             let name = format!(
                 "embedded-{index}{}",
                 mime::registered_extension(&media_type)
@@ -704,19 +774,26 @@ impl<'s, 'a> Extractor<'s, 'a> {
             let mut metadata = TikaMetadata::new();
             metadata.set(RESOURCE_NAME_EXTENSION_INFERRED, "true");
             if ole2::is_ole(&data) {
-                let file = Ole2::open_stream(&data).map_err(|Unreadable(reason)| {
-                    recorded(&format!(
-                        "POI cannot open an embedded compound document: {reason}"
-                    ))
-                })?;
+                let file = match Ole2::open_stream(&data) {
+                    Ok(file) => file,
+                    Err(unreadable) => {
+                        self.record(cannot_open(unreadable), Recording::Warning);
+                        index += 1;
+                        continue;
+                    }
+                };
                 if file.children(file.root()).next().is_none() {
                     return Ok(());
                 }
-                if let Some(embedded) =
-                    embedded_office_document(data, metadata, &name, self.configs)?
-                {
-                    self.out
-                        .push(Out::Embedded(embedded, Wrapping::PackageEntry));
+                match embedded_office_document(data, metadata, &name, self.configs) {
+                    Ok(Some(embedded)) => {
+                        self.note(embedded.difference());
+                        self.out
+                            .push(Out::Embedded(embedded, Wrapping::PackageEntry));
+                    }
+                    Ok(None) => {}
+                    Err(Skip::Recorded(thrown)) => self.record(thrown, Recording::Warning),
+                    Err(Skip::Unread(unread)) => return Err(unread.into()),
                 }
             } else if !data.is_empty() {
                 metadata.set(RESOURCE_NAME, name);
@@ -735,6 +812,24 @@ impl<'s, 'a> Extractor<'s, 'a> {
     }
 }
 
+/// What POI's `POIFSFileSystem` throws where it cannot open a compound document.
+fn cannot_open(Unreadable(reason): Unreadable) -> Thrown {
+    Thrown::new(format!(
+        "POI cannot open an embedded compound document: {reason}"
+    ))
+}
+
+/// The program id of an object shape's `embedding` (`getProgId`).
+fn prog_id(embedding: &super::records::Record<'_>) -> Option<String> {
+    embedding
+        .children()
+        .iter()
+        .skip(2)
+        .rev()
+        .find(|child| child.kind == kind::C_STRING && child.instance() == 2)
+        .map(|string| String::from_utf16_lossy(&string.utf16()))
+}
+
 /// `handleEmbeddedOfficeDoc` of the root of a compound document read from a stream: the document
 /// Tika hands on, if any, its streams in place where the compound document is.
 fn embedded_office_document<'a>(
@@ -742,7 +837,7 @@ fn embedded_office_document<'a>(
     metadata: TikaMetadata,
     name: &str,
     configs: &ParserConfigs,
-) -> Result<Option<Handed<'a>>, Unread> {
+) -> Result<Option<Handed<'a>>, Skip> {
     match data {
         Cow::Borrowed(data) => office_document_of(data, metadata, name, configs),
         Cow::Owned(data) => {
@@ -756,19 +851,11 @@ fn office_document_of<'a>(
     metadata: TikaMetadata,
     name: &str,
     configs: &ParserConfigs,
-) -> Result<Option<Handed<'a>>, Unread> {
-    let file = Ole2::open_stream(data).map_err(|Unreadable(reason)| {
-        recorded(&format!(
-            "POI cannot open an embedded compound document: {reason}"
-        ))
-    })?;
-    Ok(office_document(
-        &file,
-        file.root(),
-        metadata,
-        Some(name),
-        configs,
-    )?)
+) -> Result<Option<Handed<'a>>, Skip> {
+    let file =
+        Ole2::open_stream(data).map_err(|unreadable| Skip::Recorded(cannot_open(unreadable)))?;
+    office_document(&file, file.root(), metadata, Some(name), configs)
+        .map_err(|unported| Skip::Unread(unported.into()))
 }
 
 /// The blip store picture shapes look their pictures up in, or none where the document has no
@@ -778,14 +865,16 @@ enum LookupStore {
     Group(Option<Vec<StoreEntry>>),
 }
 
-/// `collectPictureSlides`: the slide number of each picture the shapes show, in groups too.
+/// `collectPictureSlides`: the slide number of each picture the shapes show, in groups too. A
+/// shape whose picture POI's lookup throws on is skipped, its exception kept in `recorded`, as
+/// Tika records it.
 fn collect_picture_slides(
     shapes: &[Shape<'_>],
     slide: i32,
     pictures: &Pictures<'_>,
-
     store: &LookupStore,
     slides_of: &mut BTreeMap<usize, BTreeSet<i32>>,
+    recorded: &mut Vec<Thrown>,
 ) -> Result<(), Unread> {
     for shape in shapes {
         if shape.kind.is_picture() {
@@ -795,23 +884,25 @@ fn collect_picture_slides(
                 );
             };
             let index = shape.property(BLIP_TO_DISPLAY)?;
-            if let Some(picture) = pictures.of_entry(store.as_deref(), index)? {
-                slides_of.entry(picture.index).or_default().insert(slide);
+            match pictures.of_entry(store.as_deref(), index) {
+                Ok(Some(picture)) => {
+                    slides_of.entry(picture.index).or_default().insert(slide);
+                }
+                Ok(None) => {}
+                Err(thrown) => recorded.push(thrown),
             }
         } else if shape.kind.is_group() {
-            collect_picture_slides(&shape.children, slide, pictures, store, slides_of)?;
+            collect_picture_slides(&shape.children, slide, pictures, store, slides_of, recorded)?;
         }
     }
     Ok(())
 }
 
 /// Tika's detection of an embedded object.
-fn detect(data: &[u8]) -> Result<MediaType, Unread> {
+fn detect(data: &[u8]) -> Result<MediaType, Thrown> {
     mime::detect(data, Origin::Bytes)
         .map(|detection| detection.media_type)
-        .map_err(|error| {
-            recorded(&format!("Tika's detection fails on an object: {error:?}")).into()
-        })
+        .map_err(|error| Thrown::new(format!("Tika's detection fails on an object: {error:?}")))
 }
 
 /// `removePBreak`: a fragment without the carriage return that ends it, or that a final line
