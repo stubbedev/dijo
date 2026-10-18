@@ -16,9 +16,10 @@ use sha2::{Sha256, Sha384, Sha512};
 
 use crate::config::{ParserConfigs, Password};
 use crate::errors::Error;
-use crate::formats::Unported;
+use crate::formats::{Decline, Unported};
+use crate::ole2::Content;
 
-use agile::{Agile, AgileKey};
+use agile::{Agile, AgileKey, SEGMENT};
 
 /// `Decryptor.DEFAULT_PASSWORD`, which Office encrypts a document with when it is only to be
 /// write protected.
@@ -338,35 +339,81 @@ pub enum PackageKey {
     Agile(AgileKey),
 }
 
+/// The length of the package the `EncryptedPackage` stream `stream` holds, which the stream
+/// starts with.
+pub fn package_length(stream: &Content<'_>) -> Result<usize, Unopened> {
+    let length = stream
+        .range(0, 8)
+        .map(|bytes| i64::from_le_bytes(bytes[..].try_into().expect("eight bytes")))
+        .ok_or_else(|| Unopened::Thrown("the encrypted package has no length".to_owned()))?;
+    usize::try_from(length)
+        .map_err(|_| Unopened::Unported("an encrypted package of a negative length".to_owned()))
+}
+
 impl PackageKey {
-    /// `Decryptor.getDataStream(directory)` read whole: the package the `EncryptedPackage`
-    /// stream holds, past the length it starts with.
-    pub fn decrypt(&self, stream: &[u8]) -> Result<Vec<u8>, Unopened> {
-        let length = stream
-            .get(..8)
-            .map(|bytes| i64::from_le_bytes(bytes.try_into().expect("eight bytes")))
-            .ok_or_else(|| Unopened::Thrown("the encrypted package has no length".to_owned()))?;
-        let length = usize::try_from(length).map_err(|_| {
-            Unopened::Unported("an encrypted package of a negative length".to_owned())
-        })?;
-        let encrypted = &stream[8..];
+    /// `Decryptor.getDataStream(directory)` read to its end: the package the `EncryptedPackage`
+    /// stream `stream` holds, past the length it starts with, handed to `write` as it is
+    /// decrypted, a chunk of at most 4096 bytes at a time. Fails, after the chunks before, where
+    /// Java's cipher stream fails or POI's reads short.
+    pub fn decrypt<E: From<Unopened>>(
+        &self,
+        stream: &Content<'_>,
+        mut write: impl FnMut(&[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let length = package_length(stream)?;
+        let encrypted = stream.len() - 8;
+        let chunk_at = |offset: usize, length: usize| {
+            stream
+                .range(8 + offset, length)
+                .expect("a chunk lies within the stream")
+        };
         match self {
             PackageKey::Standard(key) => {
-                let needed = (length / 16 + 1) * 16;
-                let read = &encrypted[..needed.min(encrypted.len())];
-                if !read.len().is_multiple_of(16) || read.len() < length {
+                let read = ((length / 16 + 1) * 16).min(encrypted);
+                if !read.is_multiple_of(16) || read < length {
                     return Err(Unopened::Unported(
                         "an encrypted package shorter than its length, which Java's cipher \
                          stream fails on"
                             .to_owned(),
-                    ));
+                    )
+                    .into());
                 }
-                let mut plain = key.decrypt_ecb(read);
-                plain.truncate(length);
-                Ok(plain)
+                let mut offset = 0;
+                while offset < length {
+                    let chunk = SEGMENT.min(read - offset);
+                    let plain = key.decrypt_ecb(&chunk_at(offset, chunk));
+                    write(&plain[..chunk.min(length - offset)])?;
+                    offset += chunk;
+                }
             }
-            PackageKey::Agile(key) => key.decrypt(encrypted, length),
+            PackageKey::Agile(key) => {
+                let mut offset = 0;
+                for number in 0u32.. {
+                    if offset >= length {
+                        break;
+                    }
+                    if offset >= encrypted {
+                        return Err(Unopened::Unported(
+                            "an encrypted package that ends before its length, which POI reads \
+                             short"
+                                .to_owned(),
+                        )
+                        .into());
+                    }
+                    let chunk = chunk_at(offset, SEGMENT.min(encrypted - offset));
+                    let wanted = (length - offset).min(SEGMENT);
+                    write(&key.decrypt_segment(number, &chunk, wanted)?)?;
+                    offset += SEGMENT;
+                }
+            }
         }
+        Ok(())
+    }
+}
+
+impl From<Unopened> for Decline<'_> {
+    fn from(unopened: Unopened) -> Self {
+        unopened.unported().into()
     }
 }
 
