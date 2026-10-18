@@ -1,4 +1,3 @@
-#[cfg(feature = "tika")]
 use std::io::Write as _;
 #[cfg(feature = "tika")]
 use std::path::{Path, PathBuf};
@@ -21,7 +20,6 @@ use crate::formats::parity::{
 use crate::formats::Parser;
 
 /// The JDK's own sRGB profile, whose header names no device model.
-#[cfg(feature = "tika")]
 const JDK_SRGB: &[u8] = include_bytes!("../../../../../extractous-image/models/jdk-srgb.icc");
 
 /// Images extracted, pages never read by OCR, and the images read by OCR as Tika reads them.
@@ -83,7 +81,6 @@ fn hex(data: &[u8]) -> String {
     data.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-#[cfg(feature = "tika")]
 fn zlib(data: &[u8]) -> Vec<u8> {
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     encoder.write_all(data).unwrap();
@@ -165,7 +162,6 @@ fn jpeg() -> Vec<u8> {
 }
 
 /// An ICC colour space of the JDK's sRGB profile, named an sRGB device's when `srgb`.
-#[cfg(feature = "tika")]
 fn icc(srgb: bool) -> String {
     let mut profile = JDK_SRGB.to_vec();
     if srgb {
@@ -291,6 +287,169 @@ fn extracts_images_of_every_colour_space_and_mask_as_tikas_path_does() {
         assert_eq!(deferral(&input, &configs), None, "{configs:?}");
         assert_same(std::slice::from_ref(&path), &configs);
     }
+}
+
+/// PDFBox's CMYK profile, which an ICC colour space of the fixtures embeds too.
+const CMYK_PROFILE: &[u8] = include_bytes!("../../../../models/pdf/CGATS001Compat-v2-micro.icc");
+
+/// The images of [`colour_space_images`] in the CIE-based colour spaces, Lab, CalRGB and
+/// CalGray, and a separation over Lab.
+const CIE_IMAGES: [usize; 5] = [7, 10, 11, 12, 13];
+
+/// [`colour_space_images`] drawing the images `drawn` of them, each once.
+fn colour_space_images_drawing(drawn: impl Iterator<Item = usize>) -> Vec<u8> {
+    let content: String = drawn
+        .map(|index| format!("q 20 0 0 20 {} 600 cm /Im{index} Do Q ", 22 * index))
+        .collect();
+    colour_space_images(&content)
+}
+
+/// Images in the colour spaces PDFBox converts with profiles, CIE XYZ and tint transforms:
+/// DeviceCMYK, ICC CMYK and RGB profiles, palettes over them, separations and DeviceN over
+/// each kind of function, Lab, CalRGB and CalGray, each of several rows and columns and of one,
+/// which Java2D draws, drawn by `content`.
+fn colour_space_images(content: &str) -> Vec<u8> {
+    let image8 = |space: &str, width: usize, height: usize, components: usize, seed: u8| {
+        image(
+            &format!("/Width {width} /Height {height} /ColorSpace {space} /BitsPerComponent 8"),
+            "",
+            &samples(width * height * components, seed),
+        )
+    };
+    let cmyk_profile = 23;
+    let rgb_profile = 24;
+    let exponential = 25;
+    let calculator = 26;
+    let sampled = 27;
+    let two_inks = 28;
+    let lab = "[/Lab << /WhitePoint [0.9505 1 1.089] /Range [-100 100 -100 100] >>]";
+    let images =
+        vec![
+        image8("/DeviceCMYK", 3, 2, 4, 1),
+        image8("/DeviceCMYK", 5, 1, 4, 2),
+        image8(&format!("[/ICCBased {cmyk_profile} 0 R]"), 3, 2, 4, 3),
+        image(
+            &format!(
+                "/Width 3 /Height 2 /ColorSpace [/Indexed /DeviceCMYK 2 <{}>] \
+                 /BitsPerComponent 8",
+                hex(&samples(12, 4))
+            ),
+            "",
+            &[0, 1, 2, 2, 1, 0],
+        ),
+        image(
+            &format!(
+                "/Width 3 /Height 2 /ColorSpace [/Indexed [/ICCBased {rgb_profile} 0 R] 2 <{}>] \
+                 /BitsPerComponent 8",
+                hex(&samples(9, 5))
+            ),
+            "",
+            &[2, 1, 0, 0, 1, 2],
+        ),
+        image8(&format!("[/Separation /Spot /DeviceRGB {exponential} 0 R]"), 3, 2, 1, 6),
+        image(
+            &format!(
+                "/Width 4 /Height 2 /ColorSpace [/Separation /Spot2 /DeviceCMYK {calculator} 0 R] \
+                 /BitsPerComponent 4"
+            ),
+            "",
+            &[0x0f, 0x7a, 0x31, 0xc8],
+        ),
+        image8(&format!("[/Separation /Spot3 {lab} {sampled} 0 R]"), 3, 2, 1, 7),
+        image8(&format!("[/DeviceN [/A /B] /DeviceCMYK {two_inks} 0 R]"), 3, 2, 2, 8),
+        image8(
+            &format!(
+                "[/DeviceN [/Cyan /Spot] /DeviceCMYK {two_inks} 0 R << /Subtype /DeviceN \
+                 /Process << /ColorSpace /DeviceCMYK /Components [/Cyan /Magenta /Yellow /Black] \
+                 >> /Colorants << /Spot [/Separation /Spot /DeviceRGB {exponential} 0 R] >> >>]"
+            ),
+            3,
+            2,
+            2,
+            9,
+        ),
+        image8(lab, 3, 2, 3, 10),
+        image8(
+            "[/CalRGB << /WhitePoint [1 1 1] /Gamma [2.2 2.2 2.2] /Matrix [0.4124 0.2126 0.0193 \
+             0.3576 0.7152 0.1192 0.1805 0.0722 0.9505] >>]",
+            3,
+            2,
+            3,
+            11,
+        ),
+        image8("[/CalRGB << /WhitePoint [0.9505 1 1.089] >>]", 3, 2, 3, 12),
+        image8("[/CalGray << /WhitePoint [1 1 1] /Gamma 2.2 >>]", 3, 2, 1, 13),
+        image(
+            "/Width 2 /Height 2 /ColorSpace /DeviceCMYK /BitsPerComponent 16",
+            "/FlateDecode",
+            &zlib(&samples(32, 14)),
+        ),
+        image(
+            "/Width 3 /Height 2 /ColorSpace /DeviceCMYK /BitsPerComponent 8 /SMask 29 0 R",
+            "",
+            &samples(24, 15),
+        ),
+        image8(&format!("[/ICCBased {cmyk_profile} 0 R]"), 1, 3, 4, 16),
+    ];
+    let mut objects = images;
+    objects.extend([
+        stream("/N 4", "", CMYK_PROFILE),
+        icc(false),
+        "<< /FunctionType 2 /Domain [0 1] /C0 [1 1 1] /C1 [0.2 0.4 0.9] /N 1.5 >>".to_owned(),
+        stream(
+            "/FunctionType 4 /Domain [0 1] /Range [0 1 0 1 0 1 0 1]",
+            "",
+            b"{ dup 0.5 mul exch dup 0.25 mul exch 0 exch }",
+        ),
+        stream(
+            "/FunctionType 0 /Domain [0 1] /Range [0 100 -128 127 -128 127] /Size [2] \
+             /BitsPerSample 8",
+            "",
+            &[255, 128, 128, 64, 200, 60],
+        ),
+        stream(
+            "/FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1 0 1]",
+            "",
+            b"{ 0 0 }",
+        ),
+        image(
+            "/Width 3 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 \
+             /Matte [0.1 0.2 0.3 0.4]",
+            "",
+            &samples(6, 17),
+        ),
+    ]);
+    drawing(content, &xobjects(17), &objects)
+}
+
+#[cfg(feature = "tika")]
+#[test]
+fn converts_the_colour_spaces_as_tikas_path_does() {
+    let scratch = Scratch::new("pdf-colour-spaces");
+    let drawn = (0..17).filter(|index| !CIE_IMAGES.contains(index));
+    let path = scratch.write("colours.pdf", &colour_space_images_drawing(drawn));
+    let configs = without_page_ocr(false);
+    let input = std::fs::read(&path).unwrap();
+    assert_eq!(deferral(&input, &configs), None);
+    assert_same(std::slice::from_ref(&path), &configs);
+}
+
+/// Tika's native image lacks the JDK's CIE XYZ profile, so that PDFBox's conversion of a CIE
+/// colour throws a `CMMException` Tika does not catch and the whole document fails; the
+/// native parser converts the colours as PDFBox does on the JVM (#125), which the colour
+/// space's own test checks.
+#[test]
+fn converts_cie_based_images_where_tikas_native_image_fails() {
+    let input = colour_space_images_drawing(CIE_IMAGES.into_iter());
+    let configs = without_page_ocr(false);
+    assert_eq!(deferral(&input, &configs), None);
+    let (xml, _) = extracting(&input, &configs);
+    let names: Vec<String> = CIE_IMAGES
+        .iter()
+        .enumerate()
+        .map(|(number, _)| format!("image-{number}.png"))
+        .collect();
+    assert_eq!(image_names(&xml), names, "{xml}");
 }
 
 /// The names of the images the XHTML `xml` shows, in order.
@@ -515,19 +674,11 @@ fn defers_images_the_port_does_not_write() {
     let cases = [
         (
             image(
-                "/Width 2 /Height 2 /ColorSpace /DeviceCMYK /BitsPerComponent 8",
-                "",
-                &samples(16, 1),
-            ),
-            "an image in the colour space DeviceCMYK",
-        ),
-        (
-            image(
                 "/Width 46 /Height 56 /ColorSpace /DeviceCMYK /BitsPerComponent 8",
                 "/DCTDecode",
                 &jpeg,
             ),
-            "an image in the colour space DeviceCMYK",
+            "a JPEG image in the colour space DeviceCMYK",
         ),
         (
             image(

@@ -23,6 +23,7 @@ mod encoding;
 mod engine;
 mod font;
 mod form;
+mod function;
 mod images;
 mod matrix;
 mod metadata;
