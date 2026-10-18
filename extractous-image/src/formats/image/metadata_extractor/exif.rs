@@ -2,13 +2,14 @@
 //! a TIFF file or an Exif segment, read into the directories of Exif: IFD0, its Exif and GPS
 //! sub-IFDs, the interoperability IFD, the thumbnail or the further pages that follow IFD0, and
 //! the IPTC, ICC, Photoshop and PrintIM data some tags hold, and Apple's maker note. Other maker
-//! notes, XMP held in a tag and Panasonic's raw IFD0 are left to Tika's path.
+//! notes and Panasonic's raw IFD0 are left to Tika's path; XMP held in a tag is read by [`xmp`].
 
 use std::collections::HashSet;
 
 use super::reader::{Bounds, Reader};
 use super::{
-    apple, icc, iptc, java_string, photoshop, Directory, Kind, Metadata, Rational, Unported, Value,
+    apple, icc, iptc, java_string, photoshop, xmp, Directory, Kind, Metadata, Rational, Unported,
+    Value,
 };
 use crate::text::charset::Charset;
 use tags::*;
@@ -336,7 +337,9 @@ impl Handler<'_> {
             return Ok(true);
         }
         if tag == TAG_APPLICATION_NOTES && matches!(kind, Some(Kind::ExifIfd0 | Kind::ExifSubIfd)) {
-            return Err(Unported::new("XMP held in a TIFF tag, which XMPCore reads").into());
+            let bytes = reader.null_terminated_bytes(offset, byte_count)?;
+            xmp::extract(bytes, self.metadata)?;
+            return Ok(true);
         }
         if tag == apple::TAG_RUN_TIME && kind == Some(Kind::AppleMakernote) {
             let bytes = reader.bytes(offset, byte_count)?;

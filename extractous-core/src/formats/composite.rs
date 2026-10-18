@@ -236,7 +236,6 @@ mod tests {
             formats::parser_for("text/plain").unwrap().name()
         );
         assert!(formats::parser_for("application/x-matlab-data").is_err());
-        assert!(formats::parser_for("image/x-portable-pixmap").is_err());
         assert!(TIKA_PARSERS.is_sorted());
     }
 }

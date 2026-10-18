@@ -38,6 +38,55 @@ const LOCALTIME: &str = "/etc/localtime";
 #[cfg(unix)]
 const ETC_TIMEZONE: &str = "/etc/timezone";
 const GMT: &str = "GMT";
+/// The three-letter IDs `ZoneInfoFile.oldMappings` maps to regions.
+const JDK_ALIASES: [(&str, &str); 25] = [
+    ("ACT", "Australia/Darwin"),
+    ("AET", "Australia/Sydney"),
+    ("AGT", "America/Argentina/Buenos_Aires"),
+    ("ART", "Africa/Cairo"),
+    ("AST", "America/Anchorage"),
+    ("BET", "America/Sao_Paulo"),
+    ("BST", "Asia/Dhaka"),
+    ("CAT", "Africa/Harare"),
+    ("CNT", "America/St_Johns"),
+    ("CST", "America/Chicago"),
+    ("CTT", "Asia/Shanghai"),
+    ("EAT", "Africa/Addis_Ababa"),
+    ("ECT", "Europe/Paris"),
+    ("IET", "America/Indiana/Indianapolis"),
+    ("IST", "Asia/Kolkata"),
+    ("JST", "Asia/Tokyo"),
+    ("MIT", "Pacific/Apia"),
+    ("NET", "Asia/Yerevan"),
+    ("NST", "Pacific/Auckland"),
+    ("PLT", "Asia/Karachi"),
+    ("PNT", "America/Phoenix"),
+    ("PRT", "America/Puerto_Rico"),
+    ("PST", "America/Los_Angeles"),
+    ("SST", "Pacific/Guadalcanal"),
+    ("VST", "Asia/Ho_Chi_Minh"),
+];
+/// The `SystemV` zones the JDK keeps at a fixed offset, in hours.
+const JDK_FIXED_ZONES: [(&str, i64); 7] = [
+    ("SystemV/AST4", -4),
+    ("SystemV/EST5", -5),
+    ("SystemV/CST6", -6),
+    ("SystemV/MST7", -7),
+    ("SystemV/PST8", -8),
+    ("SystemV/YST9", -9),
+    ("SystemV/HST10", -10),
+];
+/// The `SystemV` zones the JDK keeps with daylight saving rules of its own, which no region has.
+const JDK_SYSTEM_V_DAYLIGHT_ZONES: [&str; 6] = [
+    "SystemV/AST4ADT",
+    "SystemV/EST5EDT",
+    "SystemV/CST6CDT",
+    "SystemV/MST7MDT",
+    "SystemV/PST8PDT",
+    "SystemV/YST9YDT",
+];
+/// The names of the time zone database the JDK leaves out of its own.
+const NOT_IN_JDK: [&str; 4] = ["Factory", "GMT+0", "GMT-0", "ROC"];
 
 /// A time zone as `ZoneInfo` models it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +174,32 @@ impl TimeZone {
                 Some(zone) => Ok(zone),
                 None => Ok(Self::fixed(system_gmt_offset()?)),
             },
+        }
+    }
+
+    /// The zone of the JDK's time zone database named `id`, as `TimeZone.getTimeZone` finds it
+    /// by a region ID or an alias, with the rules of the database bundled into the binary, or
+    /// `None` for a name the JDK does not know, for which it answers GMT. Custom `GMT` offsets
+    /// are not names and are not looked up here.
+    pub fn jdk_named(id: &str) -> Result<Option<Self>, String> {
+        if let Some((_, hours)) = JDK_FIXED_ZONES.iter().find(|(name, _)| *name == id) {
+            return Ok(Some(Self::fixed(hours * SECONDS_PER_HOUR)));
+        }
+        if JDK_SYSTEM_V_DAYLIGHT_ZONES.contains(&id) {
+            return Err(format!(
+                "the JDK's zone {id}, whose daylight saving rules the bundled database lacks"
+            ));
+        }
+        if NOT_IN_JDK.contains(&id) {
+            return Ok(None);
+        }
+        let region = JDK_ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == id)
+            .map_or(id, |(_, region)| *region);
+        match jiff_tzdb::get(region) {
+            Some((name, tzif)) if name == region => Self::from_tzif_bytes(tzif, region),
+            _ => Ok(None),
         }
     }
 

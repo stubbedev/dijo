@@ -8,6 +8,8 @@ use super::*;
 #[cfg(feature = "tika")]
 use crate::compress::ar::tests::ar;
 #[cfg(feature = "tika")]
+use crate::compress::brotli::tests::brotli;
+#[cfg(feature = "tika")]
 use crate::compress::bzip2::tests::bzip2;
 #[cfg(feature = "tika")]
 use crate::compress::cpio::tests::cpio;
@@ -32,12 +34,12 @@ use crate::compress::zlib::tests::zlib;
 use crate::compress::zstd::tests::zstd;
 #[cfg(feature = "tika")]
 use crate::formats::parity::{
-    assert_same_as_tika, assert_same_as_tika_rewriting, conformance_corpus, documents,
-    NativeRewrite,
+    assert_same_as_tika, assert_same_as_tika_departing_rewriting, assert_same_as_tika_rewriting,
+    conformance_corpus, documents, Departure, NativeRewrite,
 };
 use crate::formats::parity::{Scratch, ZSTD_WITHOUT_ZSTD_JNI};
 #[cfg(feature = "tika")]
-use crate::formats::Parser;
+use crate::formats::{class_file, Parser};
 
 #[cfg(feature = "tika")]
 const ROOTS: [&str; 2] = ["../test_files/documents", "../quality/corpus"];
@@ -69,14 +71,15 @@ fn assert_parity(
     assert_parity_departing(parser, tika_name, roots, limited, None)
 }
 
-/// [`assert_parity`], with each native result rewritten by `departure`, if any.
+/// [`assert_parity`], with each native result rewritten by `rewrite`, if any, and each archive
+/// compared [by its contents](assert_same_as_tika_by_contents).
 #[cfg(feature = "tika")]
 fn assert_parity_departing(
     parser: &dyn Parser,
     tika_name: &str,
     roots: &[&Path],
     limited: &[(&str, &str)],
-    departure: Option<NativeRewrite>,
+    rewrite: Option<NativeRewrite>,
 ) -> Vec<String> {
     let (parsed, deferred) = documents(parser, roots);
     eprintln!(
@@ -91,12 +94,82 @@ fn assert_parity_departing(
         limited.len(),
         "parsed only {excluded:?} of the documents excluded from the comparison"
     );
-    let paths: Vec<&Path> = compared.iter().map(PathBuf::as_path).collect();
-    match departure {
-        Some(departure) => assert_same_as_tika_rewriting(&paths, tika_name, departure),
-        None => assert_same_as_tika(&paths, tika_name),
-    }
+    let compared: Vec<&Path> = compared.iter().map(PathBuf::as_path).collect();
+    assert_same_as_tika_by_contents(&compared, tika_name, rewrite);
     names(&deferred)
+}
+
+/// How the comparison of an archive departs for the documents it holds.
+#[cfg(feature = "tika")]
+#[derive(PartialEq)]
+struct Contents {
+    /// The departures of the documents it holds.
+    departures: Vec<Departure<'static>>,
+    /// Whether it holds class files, whose access keywords Tika misreads (#132).
+    class_files: bool,
+}
+
+/// Asserts that the native parser of each of `archives`, which Tika's path parses with
+/// `tika_name`, extracts what Tika's path does, each native result rewritten by `rewrite`, if
+/// any, and each archive departing as the documents it holds depart: those the HTML parser reads
+/// by their white space (#84), class files by the access keywords Tika misreads (#132), and the
+/// [`ANCHORED_BLOCK_DOCUMENTS`](crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS) by where their
+/// blocks fall (#136).
+#[cfg(feature = "tika")]
+fn assert_same_as_tika_by_contents(
+    archives: &[&Path],
+    tika_name: &str,
+    rewrite: Option<NativeRewrite>,
+) {
+    let mut groups: Vec<(Contents, Vec<&Path>)> = Vec::new();
+    for archive in archives {
+        let parsers = parsers_of(archive);
+        let holds = |parser: &dyn Parser| parsers.iter().any(|name| name == parser.name());
+        let mut departures = Vec::new();
+        if holds(&crate::formats::html::JSoupParser) {
+            departures.extend_from_slice(crate::formats::html::DEPARTURES);
+        }
+        if crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS
+            .iter()
+            .any(|name| archive.ends_with(name))
+        {
+            departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
+        }
+        let contents = Contents {
+            departures,
+            class_files: holds(&class_file::ClassParser),
+        };
+        match groups.iter_mut().find(|(group, _)| *group == contents) {
+            Some((_, archives)) => archives.push(archive),
+            None => groups.push((contents, vec![archive])),
+        }
+    }
+    for (contents, archives) in &groups {
+        let rewrite = if contents.class_files {
+            Some((
+                rewrite.unwrap_or(class_file::as_written),
+                Some(class_file::without_misread_access as fn(&mut String)),
+            ))
+        } else {
+            rewrite.map(|rewrite| (rewrite, None))
+        };
+        assert_same_as_tika_departing_rewriting(archives, tika_name, &contents.departures, rewrite);
+    }
+}
+
+/// The native names of the parsers the native path hands the document at `path`, and those it
+/// holds at any depth, to; none where the native path fails on it, which leaves no text to
+/// compare.
+#[cfg(feature = "tika")]
+fn parsers_of(path: &Path) -> Vec<String> {
+    crate::Extractor::new()
+        .extract_file_to_string(path.to_str().expect("a UTF-8 path"))
+        .map(|(_, mut metadata)| {
+            metadata
+                .remove("tk:parsed-by-full-set")
+                .unwrap_or_else(|| panic!("no parsers recorded for {}", path.display()))
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(feature = "tika")]
@@ -284,7 +357,7 @@ fn extracts_tikas_test_zip_archives_as_tikas_path_does() {
         ],
         Some(as_tika_checks_zips),
     );
-    assert_eq!(deferred, ["droste.zip", "moby.zip"]);
+    assert_eq!(deferred, ["droste.zip"]);
 }
 
 #[cfg(feature = "tika")]
@@ -321,6 +394,7 @@ fn extracts_compressed_files_as_tikas_path_does() {
             ("notes.lz4", lz4(text)),
             ("notes.txt.xz", xz(text)),
             ("notes.lzma", lzma(text)),
+            ("notes.txt.br", brotli(text)),
         ],
     );
 }
@@ -352,10 +426,7 @@ fn extracts_tikas_test_compressed_files_as_tikas_path_does() {
         &[&conformance_corpus()],
         &[("testZSTD.zst", ZSTD_WITHOUT_ZSTD_JNI)],
     );
-    assert_eq!(
-        deferred,
-        ["TIKA-216.tgz", "quine.gz", "testLZMA_oom", "testZ_oom.Z"]
-    );
+    assert_eq!(deferred, ["TIKA-216.tgz", "quine.gz"]);
 }
 
 #[cfg(feature = "tika")]
@@ -416,11 +487,7 @@ fn extracts_tikas_test_tar_ar_and_cpio_archives_as_tikas_path_does() {
         &[&conformance_corpus()],
         &[],
     );
-    assert_eq!(
-        deferred,
-        ["test-documents.cpio"],
-        "an old binary cpio archive"
-    );
+    assert_eq!(deferred, Vec::<String>::new());
 }
 
 #[cfg(feature = "tika")]
@@ -465,10 +532,16 @@ fn extracts_tikas_test_7z_archives_as_tikas_path_does() {
         .partition(|path| path.ends_with("full_encrypted.7z"));
     assert_eq!(headers_encrypted.len(), 1);
     crate::formats::parity::assert_fails_as_tika(&[headers_encrypted[0].as_path()]);
+    let protected = ("test7Z_protected_passTika.7z", "Tika");
+    let (protected_paths, plain): (Vec<PathBuf>, Vec<PathBuf>) = parsed
+        .into_iter()
+        .partition(|path| path.ends_with(protected.0));
+    let plain: Vec<&Path> = plain.iter().map(PathBuf::as_path).collect();
+    assert_same_as_tika_by_contents(&plain, SEVEN_Z_PARSER, None);
     crate::formats::parity::assert_same_as_tika_with_passwords_but(
-        &parsed,
+        &protected_paths,
         SEVEN_Z_PARSER,
-        &[("test7Z_protected_passTika.7z", "Tika")],
+        &[protected],
         crate::formats::parity::WrongPassword::Defers,
     );
 }

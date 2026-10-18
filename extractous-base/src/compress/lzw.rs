@@ -162,7 +162,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Vec<u8>, Undecoded> {
     }
     let memory_kib = ((1u64 << max_code_size) * 6) >> 10;
     if max_code_size == 31 || memory_kib > u64::from(MEMORY_LIMIT_KIB) {
-        return Err(throws(format!(
+        return Err(Undecoded::MemoryLimit(format!(
             "{memory_kib} KiB of memory would be needed, beyond the limit of {MEMORY_LIMIT_KIB} KiB"
         )));
     }
@@ -260,7 +260,10 @@ pub mod tests {
     #[test]
     fn fails_where_commons_compress_fails() {
         assert!(decode(&compressed(&[300])).is_err());
-        assert!(decode(&[0x1F, 0x9D, 0x99]).is_err());
+        assert!(matches!(
+            decode(&[0x1F, 0x9D, 0x99]),
+            Err(Undecoded::MemoryLimit(_))
+        ));
         assert!(decode(&[0x1F, 0x9D, 0x88]).is_err());
         assert!(decode(b"\x1F\x8B\x90").is_err());
     }

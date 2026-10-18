@@ -40,7 +40,7 @@ pub(super) fn describe(directory: &Directory, tag: i32) -> Described {
         Kind::AppleMakernote => apple::describe(directory, tag),
         Kind::AppleRunTime => apple::describe_run_time(directory, tag),
         Kind::Heif => heif::describe(directory, tag),
-        Kind::PrintIm | Kind::Error => Ok(base(directory, tag)),
+        Kind::PrintIm | Kind::Xmp | Kind::Error => Ok(base(directory, tag)),
     }
 }
 
