@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::input::{Pages, Paging, WINDOW};
-use crate::text::charset::Charset;
+use crate::text::charset::{Charset, Pieces};
 
 const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
 const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
@@ -114,7 +114,9 @@ pub enum Event<'a> {
     End(&'a Name),
     /// Text inside an element, in the pieces of markup and references it comes in. A CDATA
     /// section is reported even when it is empty, as SAX's `startCDATA` and `endCDATA` report
-    /// it; other text only when it is not.
+    /// it; other text only when it is not. A long run of character data in a document that is
+    /// decoded may come in several parts, each ending where a piece of it as SAX reports it
+    /// ends.
     Text(&'a str, TextKind),
     /// A comment outside the document type declaration, its text between `<!--` and `-->`.
     Comment(&'a str),
@@ -203,6 +205,7 @@ pub(crate) fn parse_paged(
     let mut parser = Parser {
         text: Text::new(bytes, detected, reader, start, paging),
         position: 0,
+        mark: 0,
         document_types,
         entities: HashMap::new(),
         expansions: Cell::new(0),
@@ -249,22 +252,48 @@ enum Reader {
 /// the encoding from, then a chunk of 28; it reads on byte by byte until the declaration ends.
 const FIRST_READS: usize = 4 + 28;
 
+/// How many bytes of the document a reader decodes into the window at a time.
+const CHUNK: usize = 64 << 10;
+
 /// The document's characters, decoded as Xerces decodes them, line ends normalized, up to the
 /// first character its reader cannot deliver. A UTF-8 document without carriage returns is read
-/// where it lies; any other is held decoded, as UTF-8. The byte offsets the switch to a declared
-/// encoding needs are decoded again for the few characters of the declaration.
+/// where it lies; any other is decoded a chunk at a time into a window, as UTF-8, which drops
+/// the characters the parser no longer needs as it moves on. The byte offsets the switch to a
+/// declared encoding needs are decoded again for the few characters of the declaration.
 struct Text<'a> {
-    text: Cow<'a, str>,
-    /// Whether the characters stop at a malformed sequence rather than at the end.
+    /// The characters from `base` on that are decoded and not yet dropped.
+    window: Cow<'a, str>,
+    /// Where the window starts among all the characters, in bytes of their UTF-8.
+    base: usize,
+    /// What decodes the characters past the window, until it has decoded all it can.
+    source: Option<Source<'a>>,
+    /// Whether the characters stop at a malformed sequence rather than at the end, once the
+    /// source has decoded all it can.
     malformed: bool,
+    paging: &'a Paging<'a>,
     bytes: &'a [u8],
     start: usize,
-    /// The reader the characters were decoded with.
+    /// The reader the characters are decoded with.
     reader: Reader,
     /// Where the reads in chunks made before the declaration is scanned end.
     first_read_end: usize,
     /// The encoding name Xerces records for the document before its declaration.
     detected: &'static str,
+}
+
+/// A reader decoding the characters past the window, and the state of their line ends.
+struct Source<'a> {
+    decoder: Decoder<'a>,
+    line_ends: LineEnds,
+}
+
+impl<'a> Source<'a> {
+    fn new(reader: Reader, bytes: &'a [u8], start: usize) -> Self {
+        Self {
+            decoder: Decoder::new(reader, bytes, start),
+            line_ends: LineEnds::default(),
+        }
+    }
 }
 
 impl<'a> Text<'a> {
@@ -273,32 +302,30 @@ impl<'a> Text<'a> {
         detected: &'static str,
         reader: Reader,
         start: usize,
-        paging: &Paging,
+        paging: &'a Paging<'a>,
     ) -> Text<'a> {
-        let (text, malformed) = match reader {
+        let in_place = match reader {
             Reader::Utf8 => {
                 let body = &bytes[start.min(bytes.len())..];
                 let checked = Utf8Check::of(body, paging);
-                let valid = checked.valid(body);
-                let malformed = checked.malformed;
-                if checked.carriage_return {
-                    (Cow::Owned(normalize_line_ends(valid)), malformed)
-                } else {
-                    (Cow::Borrowed(valid), malformed)
-                }
+                (!checked.carriage_return).then(|| (checked.valid(body), checked.malformed))
             }
-            _ => {
-                let mut text = String::with_capacity(bytes.len().saturating_sub(start));
-                let malformed = decode_normalized(reader, bytes, start, |c, _| {
-                    text.push(c);
-                    true
-                });
-                (Cow::Owned(text), malformed)
-            }
+            _ => None,
+        };
+        let (window, source, malformed) = match in_place {
+            Some((valid, malformed)) => (Cow::Borrowed(valid), None, malformed),
+            None => (
+                Cow::Owned(String::new()),
+                Some(Source::new(reader, bytes, start)),
+                false,
+            ),
         };
         Text {
-            text,
+            window,
+            base: 0,
+            source,
             malformed,
+            paging,
             bytes,
             start,
             reader,
@@ -307,10 +334,70 @@ impl<'a> Text<'a> {
         }
     }
 
+    /// Where the decoded characters end.
+    fn end(&self) -> usize {
+        self.base + self.window.len()
+    }
+
+    /// Whether all the characters the reader delivers are decoded.
+    fn complete(&self) -> bool {
+        self.source.is_none()
+    }
+
+    /// The characters from `at` to the window's end.
+    fn from(&self, at: usize) -> &str {
+        &self.window[at - self.base..]
+    }
+
+    /// The characters of `range`, which the window holds.
+    fn slice(&self, range: std::ops::Range<usize>) -> &str {
+        &self.window[range.start - self.base..range.end - self.base]
+    }
+
+    /// Decodes more characters into the window, first dropping those before `keep` once they
+    /// are the larger part of it: whether it decoded any, or found that the reader delivers no
+    /// more, which a complete text never does again.
+    fn fill(&mut self, keep: usize) -> bool {
+        let Some(source) = &mut self.source else {
+            return false;
+        };
+        let window = self.window.to_mut();
+        let dropped = keep - self.base;
+        if dropped > window.len() / 2 {
+            window.drain(..dropped);
+            self.base = keep;
+        }
+        let length = window.len();
+        let read = source.decoder.read();
+        let finished = loop {
+            if !source.decoder.decode_into(&mut source.line_ends, window) {
+                break true;
+            }
+            if window.len() > length {
+                break false;
+            }
+        };
+        self.paging.read(source.decoder.read() - read);
+        if finished {
+            self.malformed = source.decoder.malformed;
+            self.source = None;
+        }
+        true
+    }
+
+    /// Whether the reader delivers exactly `count` characters, decoding them as far as telling
+    /// needs into the window, which still holds them from the start.
+    fn holds_exactly(&mut self, count: usize) -> bool {
+        let held = |text: &Self| text.window.chars().take(count + 1).count();
+        while held(self) <= count && self.fill(0) {}
+        held(self) == count
+    }
+
     /// Switches to the declared encoding, as `XMLEntityScanner.setEncoding` does: the
     /// characters the first reader decoded stay, and a new reader takes over where the first
     /// stopped reading bytes, which loses what a malformed sequence left unread in the first.
-    /// `declaration_end` counts the characters up to the end of the declaration.
+    /// `declaration_end` counts the characters up to the end of the declaration, which the
+    /// window still holds from the start.
     fn switch(&mut self, declared: &str, declaration_end: usize) -> Result<()> {
         if declared == self.detected {
             return Ok(());
@@ -346,47 +433,80 @@ impl<'a> Text<'a> {
             first_read += 1;
             previous_end = end;
         }
-        let holds_first_read_only = self.text.chars().take(first_read + 1).count() == first_read;
         let (kept, resume) = if declaration_end > first_read {
             (declaration_end, ends[declaration_end - 1])
-        } else if holds_first_read_only && self.malformed {
+        } else if self.holds_exactly(first_read) && self.malformed {
             (first_read, self.first_read_end)
         } else {
             (first_read, previous_end.max(self.first_read_end))
         };
         let kept_bytes = self
-            .text
+            .window
             .char_indices()
             .nth(kept)
-            .map_or(self.text.len(), |(index, _)| index);
-        let text = self.text.to_mut();
-        text.truncate(kept_bytes);
+            .map_or(self.window.len(), |(index, _)| index);
+        self.window = Cow::Owned(self.window[..kept_bytes].to_owned());
         self.reader = reader;
-        self.malformed = decode_normalized(reader, self.bytes, resume, |c, _| {
-            text.push(c);
-            true
-        });
+        self.source = Some(Source::new(reader, self.bytes, resume));
+        self.malformed = false;
         Ok(())
     }
 }
 
-/// `text` with each `\r\n` and lone `\r` made a `\n`.
+/// Makes each `\r\n` and lone `\r` a `\n` as decoded text comes in, a character or a run at a
+/// time.
+#[derive(Default)]
+struct LineEnds {
+    /// Whether the last character that came in was a carriage return.
+    after_return: bool,
+}
+
+impl LineEnds {
+    fn push(&mut self, text: &mut String, c: char) {
+        match c {
+            '\n' if self.after_return => {}
+            '\r' => text.push('\n'),
+            c => text.push(c),
+        }
+        self.after_return = c == '\r';
+    }
+
+    fn push_str(&mut self, text: &mut String, run: &str) {
+        let mut rest = run;
+        if self.after_return && !rest.is_empty() {
+            self.after_return = false;
+            rest = rest.strip_prefix('\n').unwrap_or(rest);
+        }
+        while let Some(at) = memchr::memchr(b'\r', rest.as_bytes()) {
+            text.push_str(&rest[..at]);
+            text.push('\n');
+            rest = &rest[at + 1..];
+            if rest.is_empty() {
+                self.after_return = true;
+                return;
+            }
+            rest = rest.strip_prefix('\n').unwrap_or(rest);
+        }
+        text.push_str(rest);
+    }
+}
+
 /// What a check of UTF-8 bytes found, a window at a time.
 struct Utf8Check {
-    /// How many bytes from the start are valid UTF-8.
+    /// How many bytes from the start are valid UTF-8 and checked.
     valid_up_to: usize,
     /// Whether a malformed sequence ends them, rather than the end.
     malformed: bool,
-    /// Whether a carriage return stands among them.
+    /// Whether a carriage return ends them, where the check stopped, as such characters need
+    /// their line ends normalized.
     carriage_return: bool,
 }
 
 impl Utf8Check {
-    /// Checks `bytes` a window at a time, each window counted read by `paging`, a character
-    /// cut by a window's end checked with the next.
+    /// Checks `bytes` a window at a time up to the first carriage return, each window counted
+    /// read by `paging`, a character cut by a window's end checked with the next.
     fn of(bytes: &[u8], paging: &Paging) -> Self {
         let mut at = 0;
-        let mut carriage_return = false;
         while at < bytes.len() {
             let end = bytes.len().min(at + WINDOW);
             let window = &bytes[at..end];
@@ -397,21 +517,28 @@ impl Utf8Check {
                 }
                 Err(error) => (error.valid_up_to(), true),
             };
-            carriage_return |= memchr::memchr(b'\r', &window[..good]).is_some();
+            if let Some(carriage_return) = memchr::memchr(b'\r', &window[..good]) {
+                paging.read(carriage_return);
+                return Self {
+                    valid_up_to: at + carriage_return,
+                    malformed: false,
+                    carriage_return: true,
+                };
+            }
             paging.read(good);
             at += good;
             if malformed {
                 return Self {
                     valid_up_to: at,
                     malformed,
-                    carriage_return,
+                    carriage_return: false,
                 };
             }
         }
         Self {
             valid_up_to: at,
             malformed: false,
-            carriage_return,
+            carriage_return: false,
         }
     }
 
@@ -422,21 +549,6 @@ impl Utf8Check {
         let valid = &bytes[..self.valid_up_to];
         unsafe { std::str::from_utf8_unchecked(valid) }
     }
-}
-
-fn normalize_line_ends(text: &str) -> String {
-    let mut normalized = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find('\r') {
-        normalized.push_str(&rest[..at]);
-        normalized.push('\n');
-        rest = &rest[at + 1..];
-        if let Some(after) = rest.strip_prefix('\n') {
-            rest = after;
-        }
-    }
-    normalized.push_str(rest);
-    normalized
 }
 
 /// `XMLEntityManager.getEncodingInfo`: the encoding the first four bytes imply, its reader, and
@@ -500,42 +612,192 @@ fn decode(
     start: usize,
     mut sink: impl FnMut(char, usize) -> bool,
 ) -> bool {
-    let body = &bytes[start.min(bytes.len())..];
-    match reader {
-        Reader::Utf8 => {
-            let (valid, malformed) = match std::str::from_utf8(body) {
-                Ok(text) => (text, false),
-                Err(error) => (
-                    std::str::from_utf8(&body[..error.valid_up_to()])
-                        .expect("the prefix up to the error is valid UTF-8"),
-                    true,
-                ),
-            };
-            for (offset, c) in valid.char_indices() {
-                if !sink(c, start + offset + c.len_utf8()) {
-                    return false;
-                }
-            }
-            malformed
+    let mut decoder = Decoder::new(reader, bytes, start);
+    while let Some((c, end)) = decoder.next_char() {
+        if !sink(c, end) {
+            return false;
         }
-        Reader::Utf16 { big_endian } => {
-            let units = body.len() / 2;
-            let odd = body.len() % 2 == 1;
-            let last_chunk = utf16_last_chunk_start(body.len());
-            let mut index = 0;
-            while index < units {
+    }
+    decoder.malformed
+}
+
+/// A reader decoding the bytes from where it starts as Xerces' reader does, a character or a
+/// chunk at a time. UTF-8 stops at the first malformed sequence. UTF-16 makes an unpaired
+/// surrogate U+FFFE, and an odd final byte fails the read in which it falls, dropping the
+/// characters of that read. UCS-4 makes a code point outside Unicode U+FFFE and drops a final
+/// partial unit. A Java decoder decodes as `new String(bytes, charset)` does, and gives each
+/// character the end of the bytes as its end.
+struct Decoder<'a> {
+    bytes: &'a [u8],
+    reading: Reading<'a>,
+    /// Whether the reader has delivered all it can.
+    finished: bool,
+    /// Whether a malformed sequence stopped the reader, once it has finished.
+    malformed: bool,
+}
+
+/// Where a reader stands in the bytes.
+enum Reading<'a> {
+    /// At `at`, the bytes up to `checked` valid, and `malformed_after` them a malformed sequence.
+    Utf8 {
+        at: usize,
+        checked: usize,
+        malformed_after: bool,
+    },
+    /// At the `index`th of the `units` whole units from `start`.
+    Utf16 {
+        big_endian: bool,
+        start: usize,
+        index: usize,
+        units: usize,
+        odd: bool,
+        /// Where the read that meets an odd final byte starts, from `start`.
+        last_chunk: usize,
+    },
+    /// At the `index`th of the `units` whole units from `start`.
+    Ucs4 {
+        big_endian: bool,
+        start: usize,
+        index: usize,
+        units: usize,
+    },
+    /// At `at` in the `piece` of text the decoder of `pieces` gave last.
+    Java {
+        pieces: Pieces<'a>,
+        piece: String,
+        at: usize,
+    },
+}
+
+impl<'a> Decoder<'a> {
+    fn new(reader: Reader, bytes: &'a [u8], start: usize) -> Self {
+        let start = start.min(bytes.len());
+        let length = bytes.len() - start;
+        let reading = match reader {
+            Reader::Utf8 => Reading::Utf8 {
+                at: start,
+                checked: start,
+                malformed_after: false,
+            },
+            Reader::Utf16 { big_endian } => Reading::Utf16 {
+                big_endian,
+                start,
+                index: 0,
+                units: length / 2,
+                odd: length % 2 == 1,
+                last_chunk: utf16_last_chunk_start(length),
+            },
+            Reader::Ucs4 { big_endian } => Reading::Ucs4 {
+                big_endian,
+                start,
+                index: 0,
+                units: length / 4,
+            },
+            Reader::Java(charset) => Reading::Java {
+                pieces: charset
+                    .pieces(&bytes[start..], CHUNK)
+                    .expect("the reader is only chosen for a charset that decodes"),
+                piece: String::new(),
+                at: 0,
+            },
+        };
+        Self {
+            bytes,
+            reading,
+            finished: false,
+            malformed: false,
+        }
+    }
+
+    fn finish(&mut self, malformed: bool) {
+        self.finished = true;
+        self.malformed = malformed;
+    }
+
+    /// How far into the bytes the reader has read.
+    fn read(&self) -> usize {
+        match &self.reading {
+            Reading::Utf8 { checked, .. } => *checked,
+            Reading::Utf16 { start, index, .. } => start + 2 * index,
+            Reading::Ucs4 { start, index, .. } => start + 4 * index,
+            Reading::Java { pieces, .. } => self.bytes.len() - pieces.unread(),
+        }
+    }
+
+    /// The valid UTF-8 from where a UTF-8 reader stands, a chunk more checked once it has
+    /// delivered all it checked: `None` once it has finished.
+    fn utf8_run(&mut self) -> Option<&'a str> {
+        let bytes = self.bytes;
+        let Reading::Utf8 {
+            at,
+            checked,
+            malformed_after,
+        } = &mut self.reading
+        else {
+            unreachable!("a UTF-8 run is read by a UTF-8 reader")
+        };
+        if *at == *checked && !*malformed_after && *at < bytes.len() {
+            let end = bytes.len().min(*at + CHUNK);
+            (*checked, *malformed_after) = match std::str::from_utf8(&bytes[*at..end]) {
+                Ok(_) => (end, false),
+                Err(error) if error.error_len().is_none() && end < bytes.len() => {
+                    (*at + error.valid_up_to(), false)
+                }
+                Err(error) => (*at + error.valid_up_to(), true),
+            };
+        }
+        if *at == *checked {
+            let malformed = *malformed_after;
+            self.finish(malformed);
+            return None;
+        }
+        Some(unsafe { std::str::from_utf8_unchecked(&bytes[*at..*checked]) })
+    }
+
+    /// Marks `length` bytes of a UTF-8 run delivered.
+    fn utf8_advance(&mut self, length: usize) {
+        if let Reading::Utf8 { at, .. } = &mut self.reading {
+            *at += length;
+        }
+    }
+
+    /// The next character and the byte offset after it, or `None` once the reader has finished.
+    fn next_char(&mut self) -> Option<(char, usize)> {
+        if self.finished {
+            return None;
+        }
+        let bytes = self.bytes;
+        match &mut self.reading {
+            Reading::Utf8 { .. } => {
+                let c = self.utf8_run()?.chars().next()?;
+                self.utf8_advance(c.len_utf8());
+                Some((c, self.utf8_at()))
+            }
+            Reading::Utf16 {
+                big_endian,
+                start,
+                index,
+                units,
+                odd,
+                last_chunk,
+            } => {
+                let (odd, units) = (*odd, *units);
+                if *index >= units {
+                    self.finish(odd);
+                    return None;
+                }
                 let unit = |i: usize| {
-                    let pair = [body[2 * i], body[2 * i + 1]];
-                    if big_endian {
+                    let pair = [bytes[*start + 2 * i], bytes[*start + 2 * i + 1]];
+                    if *big_endian {
                         u16::from_be_bytes(pair)
                     } else {
                         u16::from_le_bytes(pair)
                     }
                 };
-                let first = unit(index);
+                let first = unit(*index);
                 let (c, used) = match first {
-                    0xD800..=0xDBFF if index + 1 < units => {
-                        let second = unit(index + 1);
+                    0xD800..=0xDBFF if *index + 1 < units => {
+                        let second = unit(*index + 1);
                         if (0xDC00..=0xDFFF).contains(&second) {
                             let code = 0x10000
                                 + ((u32::from(first) - 0xD800) << 10)
@@ -548,45 +810,96 @@ fn decode(
                     0xD800..=0xDFFF => ('\u{FFFE}', 1),
                     _ => (char::from_u32(u32::from(first)).unwrap_or('\u{FFFE}'), 1),
                 };
-                index += used;
-                if odd && 2 * index > last_chunk {
-                    break;
+                *index += used;
+                let end = *start + 2 * *index;
+                if odd && 2 * *index > *last_chunk {
+                    self.finish(true);
+                    return None;
                 }
-                if !sink(c, start + 2 * index) {
-                    return false;
-                }
+                Some((c, end))
             }
-            odd
-        }
-        Reader::Ucs4 { big_endian } => {
-            for (index, quad) in body.as_chunks::<4>().0.iter().enumerate() {
-                let quad = *quad;
-                let code = if big_endian {
+            Reading::Ucs4 {
+                big_endian,
+                start,
+                index,
+                units,
+            } => {
+                if *index >= *units {
+                    self.finish(false);
+                    return None;
+                }
+                let at = *start + 4 * *index;
+                let quad = [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]];
+                let code = if *big_endian {
                     u32::from_be_bytes(quad)
                 } else {
                     u32::from_le_bytes(quad)
                 };
-                if !sink(
-                    char::from_u32(code).unwrap_or('\u{FFFE}'),
-                    start + 4 * (index + 1),
-                ) {
-                    return false;
+                *index += 1;
+                Some((char::from_u32(code).unwrap_or('\u{FFFE}'), at + 4))
+            }
+            Reading::Java { pieces, piece, at } => loop {
+                if let Some(c) = piece[*at..].chars().next() {
+                    *at += c.len_utf8();
+                    return Some((c, bytes.len()));
+                }
+                match pieces.next() {
+                    Some(next) => {
+                        *piece = next;
+                        *at = 0;
+                    }
+                    None => {
+                        self.finish(false);
+                        return None;
+                    }
+                }
+            },
+        }
+    }
+
+    /// Where a UTF-8 reader stands.
+    fn utf8_at(&self) -> usize {
+        match self.reading {
+            Reading::Utf8 { at, .. } => at,
+            _ => unreachable!("only a UTF-8 reader stands at a UTF-8 offset"),
+        }
+    }
+
+    /// Decodes a chunk more onto `text`, its line ends normalized by `line_ends`, the chunk
+    /// perhaps empty: whether the reader may deliver more.
+    fn decode_into(&mut self, line_ends: &mut LineEnds, text: &mut String) -> bool {
+        if self.finished {
+            return false;
+        }
+        match &mut self.reading {
+            Reading::Utf8 { .. } => {
+                if let Some(run) = self.utf8_run() {
+                    line_ends.push_str(text, run);
+                    self.utf8_advance(run.len());
                 }
             }
-            false
-        }
-        Reader::Java(charset) => {
-            let text = charset
-                .decode(body)
-                .expect("the reader is only chosen for a charset that decodes");
-            let end = bytes.len();
-            for c in text.chars() {
-                if !sink(c, end) {
-                    return false;
+            Reading::Java { pieces, piece, at } => {
+                if *at < piece.len() {
+                    line_ends.push_str(text, &piece[*at..]);
+                    *at = piece.len();
+                } else {
+                    match pieces.next() {
+                        Some(next) => line_ends.push_str(text, &next),
+                        None => self.finish(false),
+                    }
                 }
             }
-            false
+            Reading::Utf16 { .. } | Reading::Ucs4 { .. } => {
+                let target = text.len() + CHUNK;
+                while text.len() < target {
+                    match self.next_char() {
+                        Some((c, _)) => line_ends.push(text, c),
+                        None => break,
+                    }
+                }
+            }
         }
+        !self.finished
     }
 }
 
@@ -648,7 +961,11 @@ struct Default {
 
 struct Parser<'a> {
     text: Text<'a>,
+    /// Where the parser stands among the characters, in bytes of their UTF-8.
     position: usize,
+    /// Where the characters start that the parser still refers to behind its position, which
+    /// the window keeps.
+    mark: usize,
     document_types: DocumentTypes,
     entities: HashMap<String, Entity>,
     /// The entities expanded so far, as Xerces counts them against its limit.
@@ -690,9 +1007,19 @@ impl Scopes {
 }
 
 impl Parser<'_> {
-    /// The characters from the position on.
+    /// The characters from the position on that the window holds.
     fn rest(&self) -> &str {
-        &self.text.text[self.position..]
+        self.text.from(self.position)
+    }
+
+    /// Decodes more characters into the window, keeping those from the mark or the position on.
+    fn fill(&mut self) -> bool {
+        self.text.fill(self.mark.min(self.position))
+    }
+
+    /// Fills the window until it holds `length` bytes from the position on, or all there are.
+    fn buffer(&mut self, length: usize) {
+        while self.text.end() - self.position < length && self.fill() {}
     }
 
     /// The end of the characters: where the document ends, or the error of the sequence the
@@ -704,18 +1031,16 @@ impl Parser<'_> {
         Ok(None)
     }
 
-    fn peek_at(&self, offset: usize) -> Result<Option<char>> {
+    fn peek_at(&mut self, offset: usize) -> Result<Option<char>> {
+        self.buffer(4 * (offset + 1));
         match self.rest().chars().nth(offset) {
             Some(c) => Ok(Some(c)),
             None => self.text_end(),
         }
     }
 
-    fn peek(&self) -> Result<Option<char>> {
-        match self.rest().chars().next() {
-            Some(c) => Ok(Some(c)),
-            None => self.text_end(),
-        }
+    fn peek(&mut self) -> Result<Option<char>> {
+        self.peek_at(0)
     }
 
     fn next(&mut self) -> Result<Option<char>> {
@@ -736,8 +1061,9 @@ impl Parser<'_> {
 
     /// Whether the text goes on with the ASCII `literal`, read up to the first character that
     /// differs.
-    fn starts_with(&self, literal: &str) -> Result<bool> {
+    fn starts_with(&mut self, literal: &str) -> Result<bool> {
         debug_assert!(literal.is_ascii());
+        self.buffer(literal.len());
         let rest = self.rest().as_bytes();
         let compared = rest.len().min(literal.len());
         if !rest.iter().zip(literal.as_bytes()).all(|(a, b)| a == b) {
@@ -769,13 +1095,18 @@ impl Parser<'_> {
 
     fn skip_spaces(&mut self) -> Result<bool> {
         let start = self.position;
-        let skipped = self
-            .rest()
-            .bytes()
-            .take_while(|&b| is_space(char::from(b)))
-            .count();
-        self.position += skipped;
-        if self.position == self.text.text.len() {
+        loop {
+            let skipped = self
+                .rest()
+                .bytes()
+                .take_while(|&b| is_space(char::from(b)))
+                .count();
+            self.position += skipped;
+            if self.position < self.text.end() || !self.fill() {
+                break;
+            }
+        }
+        if self.position == self.text.end() {
             self.text_end()?;
         }
         Ok(self.position > start)
@@ -805,44 +1136,32 @@ impl Parser<'_> {
         name.clear();
         name.push_str(&self.rest()[..length]);
         self.position += length;
-        if self.position == self.text.text.len() {
+        if self.position == self.text.end() {
             self.text_end()?;
         }
         Ok(())
     }
 
-    /// The length in bytes of the run of name characters at the position.
-    fn name_length(&self) -> usize {
-        let rest = self.rest();
-        let bytes = rest.as_bytes();
+    /// The length in bytes of the run of name characters at the position, which the window
+    /// then holds.
+    fn name_length(&mut self) -> usize {
         let mut length = 0;
-        while length < bytes.len() {
-            let byte = bytes[length];
-            if byte.is_ascii() {
-                if !is_ascii_name_char(byte) {
-                    break;
-                }
-                length += 1;
-            } else {
-                let c = rest[length..]
-                    .chars()
-                    .next()
-                    .expect("a character starts here");
-                if !is_name_char(c) {
-                    break;
-                }
-                length += c.len_utf8();
+        loop {
+            let (run, stopped) = name_run(self.text.from(self.position + length));
+            length += run;
+            if stopped || !self.fill() {
+                return length;
             }
         }
-        length
     }
 
-    /// Where the run of characters Xerces accepts from the position on ends: at the end, at a
-    /// character it rejects, or at an ASCII byte `stops` picks.
-    fn scan_plain(&self, stops: impl Fn(u8) -> bool) -> usize {
-        let text = self.text.text.as_ref();
+    /// Moves the position to where the run of characters Xerces accepts from it ends in the
+    /// window: at the window's end, at a character it rejects, or at an ASCII byte `stops`
+    /// picks.
+    fn scan_buffered(&mut self, stops: impl Fn(u8) -> bool) {
+        let text = self.rest();
         let bytes = text.as_bytes();
-        let mut at = self.position;
+        let mut at = 0;
         while at < bytes.len() {
             let byte = bytes[at];
             if byte.is_ascii() {
@@ -858,17 +1177,29 @@ impl Parser<'_> {
                 at += c.len_utf8();
             }
         }
-        at
+        self.position += at;
+    }
+
+    /// Moves the position to where the run of characters Xerces accepts from it ends: at the
+    /// end, at a character it rejects, or at an ASCII byte `stops` picks.
+    fn scan_plain(&mut self, stops: impl Fn(u8) -> bool) {
+        loop {
+            self.scan_buffered(&stops);
+            if self.position < self.text.end() || !self.fill() {
+                return;
+            }
+        }
     }
 
     /// Reads up to and past the ASCII `terminator`, each character on the way one Xerces
     /// accepts in `what`, as a loop of [`Parser::skip`] and [`Parser::expect_char`] would; the
-    /// characters before the terminator.
+    /// characters before the terminator, which the window holds until the mark moves on.
     fn until(&mut self, terminator: &str, what: &str) -> Result<std::ops::Range<usize>> {
         let first = terminator.as_bytes()[0];
         let start = self.position;
+        self.mark = start;
         loop {
-            self.position = self.scan_plain(|byte| byte == first);
+            self.scan_plain(|byte| byte == first);
             let end = self.position;
             if self.skip(terminator)? {
                 return Ok(start..end);
@@ -880,7 +1211,7 @@ impl Parser<'_> {
     /// Whether an XML declaration starts the document. Xerces' `skipString` reads all five
     /// characters of `<?xml` before it compares them, so a malformed sequence among them fails
     /// the parse even when the document starts otherwise.
-    fn declaration_follows(&self) -> Result<bool> {
+    fn declaration_follows(&mut self) -> Result<bool> {
         self.peek_at(4)?;
         Ok(self.starts_with("<?xml")? && self.peek_at(5)?.is_some_and(is_space))
     }
@@ -895,6 +1226,7 @@ impl Parser<'_> {
         }
         let mut seen_doctype = false;
         loop {
+            self.mark = self.position;
             self.skip_spaces()?;
             match self.peek()? {
                 None => return fatal("the document has no root element"),
@@ -923,6 +1255,7 @@ impl Parser<'_> {
         let mut scopes = Scopes::new();
         self.element(&mut scopes, handler)?;
         loop {
+            self.mark = self.position;
             self.skip_spaces()?;
             match self.peek()? {
                 None => return Ok(()),
@@ -1004,7 +1337,7 @@ impl Parser<'_> {
             if !is_encoding_name(&encoding) {
                 return malformed(format!("invalid encoding name {encoding}"));
             }
-            let declaration_end = self.text.text[..self.position].chars().count();
+            let declaration_end = self.text.slice(0..self.position).chars().count();
             self.text.switch(&encoding, declaration_end)?;
         }
         Ok(())
@@ -1043,7 +1376,7 @@ impl Parser<'_> {
         handler: &mut dyn FnMut(Event<'_>) -> Flow,
     ) -> std::result::Result<(), Stop> {
         let text = self.comment()?;
-        match handler(Event::Comment(&self.text.text[text])) {
+        match handler(Event::Comment(self.text.slice(text))) {
             Flow::Continue => Ok(()),
             Flow::Stop => Err(Stop::Handler),
         }
@@ -1056,7 +1389,7 @@ impl Parser<'_> {
         handler: &mut dyn FnMut(Event<'_>) -> Flow,
     ) -> std::result::Result<(), Stop> {
         let (target, data) = self.processing_instruction()?;
-        match handler(Event::ProcessingInstruction(&target, &self.text.text[data])) {
+        match handler(Event::ProcessingInstruction(&target, self.text.slice(data))) {
             Flow::Continue => Ok(()),
             Flow::Stop => Err(Stop::Handler),
         }
@@ -1133,6 +1466,7 @@ impl Parser<'_> {
     /// skips it, reading none of it.
     fn skip_internal_subset(&mut self) -> Result<()> {
         loop {
+            self.mark = self.position;
             match self.peek()? {
                 None => return malformed("the internal subset does not end"),
                 Some(c) => {
@@ -1147,6 +1481,7 @@ impl Parser<'_> {
 
     fn internal_subset(&mut self) -> Result<()> {
         loop {
+            self.mark = self.position;
             self.skip_spaces()?;
             if self.skip("]")? {
                 return Ok(());
@@ -1516,26 +1851,13 @@ impl Parser<'_> {
         &mut self,
         handler: &mut dyn FnMut(Event<'_>) -> Flow,
     ) -> std::result::Result<(), Stop> {
-        let emit = |handler: &mut dyn FnMut(Event<'_>) -> Flow,
-                    text: &str,
-                    kind: TextKind|
-         -> std::result::Result<(), Stop> {
-            if (text.is_empty() && kind != TextKind::CData)
-                || handler(Event::Text(text, kind)) == Flow::Continue
-            {
-                Ok(())
-            } else {
-                Err(Stop::Handler)
-            }
-        };
         loop {
-            let data_start = self.position;
-            self.character_data()?;
-            let data = &self.text.text[data_start..self.position];
+            let data = self.character_data(handler)?;
             match self.peek()? {
-                None => return emit(handler, data, TextKind::Data),
+                None => return emit_text(handler, self.text.slice(data), TextKind::Data),
                 Some('<') => {
-                    emit(handler, data, TextKind::Data)?;
+                    emit_text(handler, self.text.slice(data), TextKind::Data)?;
+                    self.buffer(2);
                     if self.rest().as_bytes().get(1).is_some_and(|&byte| {
                         byte == b'/' || (byte.is_ascii() && is_name_start(char::from(byte)))
                     }) {
@@ -1545,7 +1867,7 @@ impl Parser<'_> {
                         self.report_comment(handler)?;
                     } else if self.skip("<![CDATA[")? {
                         let section = self.until("]]>", "a CDATA section")?;
-                        emit(handler, &self.text.text[section], TextKind::CData)?;
+                        emit_text(handler, self.text.slice(section), TextKind::CData)?;
                     } else if self.skip("<?")? {
                         self.report_processing_instruction(handler)?;
                     } else if self.peek_at(1)? == Some('/')
@@ -1557,12 +1879,12 @@ impl Parser<'_> {
                     }
                 }
                 Some('&') => {
-                    emit(handler, data, TextKind::Data)?;
+                    emit_text(handler, self.text.slice(data), TextKind::Data)?;
                     self.position += 1;
                     let reference = self.reference()?;
                     let mut expansion = String::new();
                     let expanded = self.expand_in_content(reference, &mut expansion, 0);
-                    emit(handler, &expansion, TextKind::Reference)?;
+                    emit_text(handler, &expansion, TextKind::Reference)?;
                     expanded?;
                 }
                 Some(_) => unreachable!("character data runs up to markup or a reference"),
@@ -1571,15 +1893,41 @@ impl Parser<'_> {
     }
 
     /// Reads a run of character data up to markup, a reference or the end, failing on `]]>`
-    /// and on a character Xerces rejects in content.
-    fn character_data(&mut self) -> Result<()> {
+    /// and on a character Xerces rejects in content: where the part of it not yet handed to
+    /// `handler` lies. A run that outgrows a decoded window is handed over in parts as the
+    /// window moves on, each ending where a SAX piece of the run ends, so that the run's pieces
+    /// stay those of the whole run.
+    fn character_data(
+        &mut self,
+        handler: &mut dyn FnMut(Event<'_>) -> Flow,
+    ) -> std::result::Result<std::ops::Range<usize>, Stop> {
+        let mut start = self.position;
+        self.mark = start;
+        let mut split_from = CHUNK;
         loop {
-            self.position = self.scan_plain(|byte| matches!(byte, b'<' | b'&' | b']'));
+            self.scan_buffered(|byte| matches!(byte, b'<' | b'&' | b']'));
+            if self.position == self.text.end() && !self.text.complete() {
+                let length = self.position - start;
+                if length >= split_from {
+                    let settled = settled_sax_pieces(self.text.slice(start..self.position));
+                    if settled == 0 {
+                        split_from = 2 * length;
+                    } else {
+                        let part = start..start + settled;
+                        emit_text(handler, self.text.slice(part), TextKind::Data)?;
+                        start += settled;
+                        self.mark = start;
+                        split_from = CHUNK;
+                    }
+                }
+                self.fill();
+                continue;
+            }
             match self.peek()? {
-                None | Some('<' | '&') => return Ok(()),
+                None | Some('<' | '&') => return Ok(start..self.position),
                 Some(_) => {
                     if self.starts_with("]]>")? {
-                        return malformed("]]> in content");
+                        return fatal("]]> in content");
                     }
                     self.expect_char("content")?;
                 }
@@ -1826,6 +2174,101 @@ impl Parser<'_> {
     }
 }
 
+/// Hands `handler` the text of an element, unless it is empty text other than a CDATA section.
+fn emit_text(
+    handler: &mut dyn FnMut(Event<'_>) -> Flow,
+    text: &str,
+    kind: TextKind,
+) -> std::result::Result<(), Stop> {
+    if (text.is_empty() && kind != TextKind::CData)
+        || handler(Event::Text(text, kind)) == Flow::Continue
+    {
+        Ok(())
+    } else {
+        Err(Stop::Handler)
+    }
+}
+
+/// The length in bytes of the run of name characters `text` starts with, and whether a
+/// character other than a name character ends it, rather than the end of `text`.
+fn name_run(text: &str) -> (usize, bool) {
+    let bytes = text.as_bytes();
+    let mut length = 0;
+    while length < bytes.len() {
+        let byte = bytes[length];
+        if byte.is_ascii() {
+            if !is_ascii_name_char(byte) {
+                return (length, true);
+            }
+            length += 1;
+        } else {
+            let c = text[length..]
+                .chars()
+                .next()
+                .expect("a character starts here");
+            if !is_name_char(c) {
+                return (length, true);
+            }
+            length += c.len_utf8();
+        }
+    }
+    (length, false)
+}
+
+/// Whether the JDK's scanner reads on over the character `byte` is part of in a run of character
+/// data: anything but a line break, `]` and a character outside the Basic Multilingual Plane, the
+/// characters whose UTF-8 starts with a byte of 0xF0 or more.
+fn is_content_byte(byte: u8) -> bool {
+    !matches!(byte, b'\n' | b']') && byte < 0xF0
+}
+
+/// The end of the run the JDK's scanner reads from `start`: line breaks, then content.
+fn scanned_run(text: &str, start: usize) -> usize {
+    let rest = &text[start..];
+    let content = rest.trim_start_matches('\n');
+    let end = content
+        .bytes()
+        .position(|byte| !is_content_byte(byte))
+        .unwrap_or(content.len());
+    start + (rest.len() - content.len()) + end
+}
+
+fn after_brackets(text: &str, start: usize) -> usize {
+    let rest = &text[start..];
+    start + rest.len() - rest.trim_start_matches(']').len()
+}
+
+/// Where the piece that starts at `start` of the character data `text`, whose line ends are
+/// normalized, ends, as the JDK's SAX parser reports such data in pieces: a run of line breaks
+/// and content, any `]`s, a second such run and its `]`s; or a run up to and with a character
+/// outside the Basic Multilingual Plane. A piece that ends before the end of `text` ends there
+/// whatever follows `text`.
+pub(crate) fn sax_piece_end(text: &str, start: usize) -> usize {
+    let mut position = scanned_run(text, start);
+    if let Some(character) = text[position..].chars().next() {
+        if character >= '\u{10000}' {
+            position += character.len_utf8();
+        } else {
+            position = after_brackets(text, position);
+            position = after_brackets(text, scanned_run(text, position));
+        }
+    }
+    position
+}
+
+/// Where the last of the SAX pieces of the start of a run of character data ends that ends
+/// before the end of `text`, the start of the run: zero if none does.
+fn settled_sax_pieces(text: &str) -> usize {
+    let mut settled = 0;
+    loop {
+        let end = sax_piece_end(text, settled);
+        if end >= text.len() {
+            return settled;
+        }
+        settled = end;
+    }
+}
+
 /// The prefix of an attribute's qualified name, if it has one.
 fn attribute_prefix(attribute: &Attribute) -> Option<&str> {
     let prefix_length = attribute.qualified_name.len() - attribute.local_name.len();
@@ -1858,16 +2301,21 @@ mod tests {
             (check.valid_up_to, check.malformed, check.carriage_return),
             (bytes.len(), false, false)
         );
-        bytes[WINDOW + 4] = b'\r';
         bytes[WINDOW + 8] = 0xFF;
         let check = Utf8Check::of(&bytes, &paging);
         assert_eq!(
             (check.valid_up_to, check.malformed, check.carriage_return),
-            (WINDOW + 8, true, true)
+            (WINDOW + 8, true, false)
         );
         assert_eq!(
             check.valid(&bytes),
             std::str::from_utf8(&bytes[..WINDOW + 8]).unwrap()
+        );
+        bytes[WINDOW + 4] = b'\r';
+        let check = Utf8Check::of(&bytes, &paging);
+        assert_eq!(
+            (check.valid_up_to, check.malformed, check.carriage_return),
+            (WINDOW + 4, false, true)
         );
         let cut = &"a\u{e6}".as_bytes()[..2];
         let check = Utf8Check::of(cut, &paging);
@@ -2134,5 +2582,120 @@ mod tests {
         assert!(parse(b"<a><b></a>", &mut |_| Flow::Continue).is_err());
         assert!(parse(b"<a/><b/>", &mut |_| Flow::Continue).is_err());
         assert!(parse(b"<a>]]></a>", &mut |_| Flow::Continue).is_err());
+    }
+
+    /// The character data of the one element of `document`, checked to come in data events that
+    /// each end where a SAX piece of the whole ends.
+    fn run_text(document: &[u8]) -> String {
+        let mut parts = Vec::new();
+        let result = parse(document, &mut |event| {
+            if let Event::Text(text, kind) = event {
+                assert_eq!(kind, TextKind::Data);
+                parts.push(text.to_owned());
+            }
+            Flow::Continue
+        });
+        assert_eq!(result, Ok(()));
+        let whole = parts.concat();
+        let mut piece_ends = Vec::new();
+        let mut at = 0;
+        while at < whole.len() {
+            at = sax_piece_end(&whole, at);
+            piece_ends.push(at);
+        }
+        let mut end = 0;
+        for part in &parts {
+            end += part.len();
+            assert!(
+                piece_ends.binary_search(&end).is_ok(),
+                "a part ends at {end}"
+            );
+        }
+        whole
+    }
+
+    /// `head`, then each of `parts` from where it says among the bytes after `head`, the gaps
+    /// filled with `x`, then `</a>`.
+    fn cut_document(head: &[u8], parts: &[(usize, &[u8])]) -> Vec<u8> {
+        let mut document = head.to_vec();
+        for &(at, part) in parts {
+            document.resize(head.len() + at, b'x');
+            document.extend_from_slice(part);
+        }
+        document.extend_from_slice(b"</a>");
+        document
+    }
+
+    /// What `document` holds between `head` and `</a>`, decoded by `charset`, its line ends
+    /// normalized.
+    fn expected_text(document: &[u8], head: &[u8], charset: &str) -> String {
+        Charset::named(charset)
+            .decode(&document[head.len()..document.len() - 4])
+            .unwrap()
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+    }
+
+    #[test]
+    fn reads_line_ends_and_characters_cut_by_chunk_ends_as_whole() {
+        let head = b"<a>";
+        let parts: [(usize, &[u8]); 5] = [
+            (CHUNK - 4, b"\r\n"),
+            (2 * CHUNK - 4, "\u{e6}".as_bytes()),
+            (3 * CHUNK - 5, b"\ry\n\n"),
+            (4 * CHUNK - 5, "\u{20ac}".as_bytes()),
+            (5 * CHUNK - 6, "\u{1F600}]\r".as_bytes()),
+        ];
+        let utf8 = cut_document(head, &parts);
+        let expected = expected_text(&utf8, head, "UTF-8");
+        assert_eq!(run_text(&utf8), expected);
+
+        let utf16: Vec<u8> = std::str::from_utf8(&utf8)
+            .unwrap()
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(run_text(&[&[0xFF, 0xFE], &utf16[..]].concat()), expected);
+
+        let cyrillic = b"<?xml version=\"1.0\" encoding=\"windows-1251\"?><a>";
+        let document = cut_document(
+            cyrillic,
+            &[
+                (CHUNK - 4, b"\r\n"),
+                (2 * CHUNK - 4, b"\r\xcc"),
+                (3 * CHUNK - 5, b"\xe0\r"),
+            ],
+        );
+        assert_eq!(
+            run_text(&document),
+            expected_text(&document, cyrillic, "windows-1251")
+        );
+
+        let japanese = b"<?xml version=\"1.0\" encoding=\"Shift_JIS\"?><a>";
+        let document = cut_document(
+            japanese,
+            &[(CHUNK - 4, b"\x82\xa0"), (2 * CHUNK - 3, b"\r\n\x82\xa2")],
+        );
+        assert_eq!(
+            run_text(&document),
+            expected_text(&document, japanese, "Shift_JIS")
+        );
+    }
+
+    #[test]
+    fn hands_over_a_long_run_of_decoded_text_in_parts() {
+        let line = "Linje med \u{e6}, \u{f8} og \u{e5}\r\n";
+        let run = line.repeat(16 * CHUNK / line.len());
+        let document = format!("<a>{run}</a>");
+        let mut parts = 0;
+        parse(document.as_bytes(), &mut |event| {
+            if let Event::Text(..) = event {
+                parts += 1;
+            }
+            Flow::Continue
+        })
+        .unwrap();
+        assert!(parts > 1, "the run comes in {parts} parts");
+        assert_eq!(run_text(document.as_bytes()), run.replace("\r\n", "\n"));
     }
 }

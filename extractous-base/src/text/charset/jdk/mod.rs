@@ -311,6 +311,11 @@ pub struct Pieces<'a> {
 }
 
 impl Pieces<'_> {
+    /// How many of the bytes are still to be decoded.
+    pub fn unread(&self) -> usize {
+        self.rest.len()
+    }
+
     /// Where the next piece ends.
     fn cut(&self) -> usize {
         let rest = self.rest;
