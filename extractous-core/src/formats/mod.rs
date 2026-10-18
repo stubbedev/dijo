@@ -1264,8 +1264,10 @@ mod tests {
                     )),
                     _ => None,
                 };
-                // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared, and that of
-                // #118 the source language XLIFF stores as `original`.
+                // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared, that of
+                // #118 the source language XLIFF stores as `original`, and that of #124 the page
+                // counts Tika's IDMLParser adds up across the documents it parses, so that the
+                // second parse of a document, under a byte budget, counts twice.
                 let mut departures: Vec<crate::formats::parity::Departure> = match parser.name() {
                     "extractous::RFC822Parser"
                     | "extractous::EmlxParser"
@@ -1273,6 +1275,9 @@ mod tests {
                     "extractous::OfficeParser" => crate::formats::msg::RECIPIENT_NAMES.to_vec(),
                     "extractous::XLIFF12Parser" | "extractous::XLZParser" => {
                         crate::formats::translation::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
+                    }
+                    "extractous::IDMLParser" => {
+                        crate::formats::idml::ACCUMULATED_PAGE_COUNTS.to_vec()
                     }
                     _ => Vec::new(),
                 };
