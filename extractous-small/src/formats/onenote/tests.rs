@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_normalising, conformance_corpus,
-    deferral, documents, ComparedMetadata,
+    assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_normalising,
+    assert_same_as_tika_rewriting, conformance_corpus, deferral, documents, ComparedMetadata,
 };
 
 fn name(path: &Path) -> String {
@@ -89,7 +89,11 @@ fn extracts_tikas_test_documents_as_tikas_path_does() {
     }
     assert_eq!(parsed.len(), 15, "{parsed:?}");
     let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&paths, OneNoteParser.tika_name());
+    assert_same_as_tika_rewriting(
+        &paths,
+        OneNoteParser.tika_name(),
+        as_tika_names_packaged_objects,
+    );
 }
 
 #[test]
@@ -118,7 +122,11 @@ fn falls_back_on_damaged_packages_as_tikas_path_does() {
         .filter(|path| deferral(&OneNoteParser, path).is_none())
         .collect();
     assert_eq!(compared.len(), damaged.len(), "{damaged:?}");
-    assert_same_as_tika(&compared, OneNoteParser.tika_name());
+    assert_same_as_tika_rewriting(
+        &compared,
+        OneNoteParser.tika_name(),
+        as_tika_names_packaged_objects,
+    );
 }
 
 /// The run of truncated.one's legacy dump that Tika's dump leaves out, counting whitespace by

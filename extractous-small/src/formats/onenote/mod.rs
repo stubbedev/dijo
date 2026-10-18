@@ -202,5 +202,23 @@ fn set_found_metadata(metadata: &mut TikaMetadata, found: Found) {
     }
 }
 
+/// For a parity comparison (#129): a native result as Tika's path writes what the fixes of the
+/// FSSHTTPB reading change. The GUID of each embedded document's relationship ID becomes the
+/// MD5-named UUID Tika makes of its bytes, and each array index out of bounds takes the message
+/// the native image of Tika's path gives it.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub fn as_tika_names_packaged_objects(
+    text: &mut String,
+    metadata: &mut crate::formats::parity::ComparedMetadata,
+    _: &crate::formats::parity::ComparedMetadata,
+) {
+    let rewrite = |value: &mut String| *value = fsshttpb::as_tika_names(value);
+    rewrite(text);
+    metadata
+        .iter_mut()
+        .flat_map(|(_, values)| values.iter_mut())
+        .for_each(rewrite);
+}
+
 #[cfg(all(test, feature = "tika"))]
 mod tests;
