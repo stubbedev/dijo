@@ -4,7 +4,10 @@
 //! query as the SQL Jackcess writes for it.
 //!
 //! The port reads the whole database while it prepares, so that what Jackcess would throw is
-//! known before anything is written. A database under Office encryption is decrypted with the
+//! known before anything is written, then again as it writes it, a row at a time. Its pages are
+//! read in place from the input, one at a time, decoded where they are encoded; what it holds is
+//! the system catalog, the definition of the table being read and the queries' definitions, as
+//! Jackcess does. A database under Office encryption is decrypted with the
 //! password given, and fails as encrypted without the right one. A damaged database fails as
 //! Tika's path fails on it, rethrown as `JackcessParser` rethrows what Jackcess throws; where
 //! Jackcess throws reading pages past the first, the failure is a reading that may differ from
@@ -40,9 +43,11 @@ use buffer::{Exception, Kind, Thrown, CLASS_CAST};
 use column::{DataType, Decimal, Value};
 use database::Database;
 use ole::Ole;
-use pages::Pages;
+
 use properties::{PropertyMap, PropertyMaps};
 use query::Sql;
+
+use std::convert::Infallible;
 
 use crate::config::{ParserConfigs, Password};
 use crate::errors::Error;
@@ -55,7 +60,7 @@ use crate::formats::thrown::{Exception as JavaException, Thrown as Rethrown, TIK
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{
     html, java_file_name, mark_password_used, noted, unless_different, Decline, Difference,
-    Failure, InputFile, Opened, Parser, Prepared, StringOut,
+    Failure, Footprint, InputFile, Opened, Parser, Prepared, StringOut,
 };
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::java::time::civil::civil_from_days;
@@ -101,6 +106,14 @@ impl Parser for JackcessParser {
         &["application/x-msaccess"]
     }
 
+    /// It reads the database's pages in place, one at a time, twice: once to its end as far as
+    /// deciding whether it extracts the database, then as it writes it, each row as it is read.
+    /// What grows is what Jackcess holds: the system catalog, a table's definition, the rows of
+    /// `MSysComplexColumns` and the queries' definitions.
+    fn footprint(&self) -> Footprint {
+        Footprint::Bounded
+    }
+
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -111,11 +124,14 @@ impl Parser for JackcessParser {
     }
 }
 
-/// What the parse writes: metadata in the order it is set, the tables and the queries.
-struct Extraction {
-    metadata: Vec<Entry>,
-    tables: Vec<TableContent>,
-    queries: Vec<String>,
+/// What the parse writes, in the order it reads it: metadata in the order it is set, then each
+/// table, its rows one at a time, then the queries.
+enum Event {
+    Entry(Entry),
+    Table { name: String, headers: Vec<String> },
+    Row(Vec<Cell>),
+    TableEnd,
+    Query(String),
 }
 
 /// A metadata change.
@@ -124,12 +140,6 @@ enum Entry {
     /// `Metadata.add(KeyPrefix, name, value)`.
     AddPrefixed(&'static str, String, String),
     AddMulti(&'static str, String),
-}
-
-struct TableContent {
-    name: String,
-    headers: Vec<String>,
-    rows: Vec<Vec<Cell>>,
 }
 
 enum Cell {
@@ -141,25 +151,47 @@ enum Cell {
     Storage(Handed<'static>),
 }
 
-impl Extraction {
-    fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        let metadata = xhtml.metadata_mut();
-        for entry in &self.metadata {
+/// Where the parse hands its events on as it reads them.
+type Sink<'s, E> = dyn FnMut(Event) -> Result<(), E> + 's;
+
+/// Why reading the database as it hands its events on stops: Jackcess throws, or the port does
+/// not read it, or handing an event on failed.
+enum Halt<E> {
+    Thrown(Thrown),
+    Written(E),
+}
+
+impl<E> From<Thrown> for Halt<E> {
+    fn from(thrown: Thrown) -> Self {
+        Halt::Thrown(thrown)
+    }
+}
+
+/// Hands `event` on to `sink`.
+fn emit<E>(sink: &mut Sink<'_, E>, event: Event) -> Result<(), Halt<E>> {
+    sink(event).map_err(Halt::Written)
+}
+
+/// Writes an event as `JackcessExtractor` writes what it stands for.
+fn write(event: Event, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    match event {
+        Event::Entry(entry) => {
+            let metadata = xhtml.metadata_mut();
             match entry {
-                Entry::Set(name, value) => metadata.set(name, value.clone()),
+                Entry::Set(name, value) => metadata.set(name, value),
                 Entry::AddPrefixed(prefix, name, value) => {
-                    metadata.add_prefixed(prefix, name, value.clone())
+                    metadata.add_prefixed(prefix, &name, value)
                 }
                 Entry::AddMulti(name, value) => {
-                    crate::formats::ole2::add_multi(metadata, name, value)
+                    crate::formats::ole2::add_multi(metadata, name, &value)
                 }
             }
         }
-        for table in self.tables {
-            xhtml.start_element_with("table", &[("name", &table.name)])?;
+        Event::Table { name, headers } => {
+            xhtml.start_element_with("table", &[("name", &name)])?;
             xhtml.start_element("thead")?;
             xhtml.start_element("tr")?;
-            for header in &table.headers {
+            for header in &headers {
                 xhtml.start_element("th")?;
                 xhtml.characters(header)?;
                 xhtml.end_element("th")?;
@@ -167,34 +199,36 @@ impl Extraction {
             xhtml.end_element("tr")?;
             xhtml.end_element("thead")?;
             xhtml.start_element("tbody")?;
-            for row in table.rows {
-                xhtml.start_element("tr")?;
-                for cell in row {
-                    xhtml.start_element("td")?;
-                    match cell {
-                        Cell::Text(text) => xhtml.characters(&text)?,
-                        Cell::Resource(document) => xhtml.parse_embedded_input_opened(
-                            &handed_on(document.data)?,
-                            &document.metadata,
-                            Wrapping::Bare,
-                            Opened::Alone,
-                        )?,
-                        Cell::Storage(handed) => handed.write(xhtml, Wrapping::PackageEntry)?,
-                    }
-                    xhtml.end_element("td")?;
+        }
+        Event::Row(cells) => {
+            xhtml.start_element("tr")?;
+            for cell in cells {
+                xhtml.start_element("td")?;
+                match cell {
+                    Cell::Text(text) => xhtml.characters(&text)?,
+                    Cell::Resource(document) => xhtml.parse_embedded_input_opened(
+                        &handed_on(document.data)?,
+                        &document.metadata,
+                        Wrapping::Bare,
+                        Opened::Alone,
+                    )?,
+                    Cell::Storage(handed) => handed.write(xhtml, Wrapping::PackageEntry)?,
                 }
-                xhtml.end_element("tr")?;
+                xhtml.end_element("td")?;
             }
+            xhtml.end_element("tr")?;
+        }
+        Event::TableEnd => {
             xhtml.end_element("tbody")?;
             xhtml.end_element("table")?;
         }
-        for sql in self.queries {
+        Event::Query(sql) => {
             xhtml.start_element_with("div", &[("type", "sqlQuery")])?;
             xhtml.characters(&sql)?;
             xhtml.end_element("div")?;
         }
-        Ok(())
     }
+    Ok(())
 }
 
 /// `JackcessExtractor.toString`: a value as its column's or property's type writes it; a value
@@ -351,31 +385,47 @@ fn database_name(file: &InputFile) -> &str {
 }
 
 /// Reads the database as `JackcessParser.parse` does, under the password `configs` gives, if
-/// any. What Jackcess throws opening the file, before it reads a page past the first, the
-/// parse fails with as Tika's path does. What it throws reading the database the port reads it
-/// to fail with, but Jackcess may throw on a damaged database elsewhere and otherwise: Tika's
-/// path extracts such a database in a build with Tika.
-fn prepare<'a>(input: &[u8], configs: &'a ParserConfigs) -> Result<Prepared<'a>, Decline<'a>> {
+/// any, twice: once to its end as far as deciding whether it is extracted, its events let go,
+/// so that what Jackcess throws is known before anything is written; then as it is written,
+/// each row handed on as it is read. What Jackcess throws opening the file, before it reads a
+/// page past the first, the parse fails with as Tika's path does. What it throws reading the
+/// database the port reads it to fail with, but Jackcess may throw on a damaged database
+/// elsewhere and otherwise: Tika's path extracts such a database in a build with Tika.
+fn prepare<'a>(input: &'a [u8], configs: &'a ParserConfigs) -> Result<Prepared<'a>, Decline<'a>> {
     let password = configs.password.as_ref().map_or("", Password::expose);
     let pages = Database::pages(input, password).map_err(|thrown| match thrown {
         Thrown::Exception(exception) => Decline::Fails(failure(&exception, UNKNOWN_DATABASE)),
         Thrown::Unported(what) => deferred(what),
     })?;
     let refused = pages.refused();
-    match extract(pages, configs) {
-        Ok((extraction, difference)) => unless_different(
+    let planned = Database::open(pages)
+        .map_err(Halt::Thrown)
+        .and_then(|database| {
+            let difference = extract(&database, configs, &mut |_| Ok::<(), Infallible>(()))?;
+            Ok((database, difference))
+        });
+    match planned {
+        Ok((database, difference)) => unless_different(
             Box::new(move |xhtml| {
                 mark_password_used(xhtml.metadata_mut(), configs);
-                extraction.write(xhtml)
+                extract(&database, configs, &mut |event| write(event, xhtml))
+                    .map(|_| ())
+                    .map_err(|halt| match halt {
+                        Halt::Written(failure) => failure,
+                        Halt::Thrown(thrown) => Failure::Extraction(Error::ParseError(format!(
+                            "the database reads otherwise the second time it is read: {thrown:?}"
+                        ))),
+                    })
             }),
             refused.or(difference),
         ),
-        Err(Thrown::Unported(what)) => Err(deferred(what)),
-        Err(Thrown::Exception(exception)) => Err(Decline::Differs {
+        Err(Halt::Written(never)) => match never {},
+        Err(Halt::Thrown(Thrown::Unported(what))) => Err(deferred(what)),
+        Err(Halt::Thrown(Thrown::Exception(exception))) => Err(Decline::Differs {
             difference: refused.unwrap_or_else(|| {
                 Difference(format!(
                     "a damaged database, which Jackcess may throw on elsewhere and otherwise than \
-                 the port: {}",
+                     the port: {}",
                     exception.java(UNKNOWN_DATABASE)
                 ))
             }),
@@ -387,109 +437,105 @@ fn prepare<'a>(input: &[u8], configs: &'a ParserConfigs) -> Result<Prepared<'a>,
     }
 }
 
-/// Reads the database of `pages` as `JackcessExtractor.parse` does.
-fn extract(
-    pages: Pages<'_>,
+/// Reads `database` as `JackcessExtractor.parse` does, its events handed to `sink` as they are
+/// read: and where the native reading differs from Tika's, if it does.
+fn extract<E>(
+    database: &Database<'_>,
     configs: &ParserConfigs,
-) -> Result<(Extraction, Option<Difference>), Thrown> {
-    let database = Database::open(pages)?;
-    let mut metadata = Vec::new();
-    let add_all = |maps: PropertyMaps, prefix: &'static str, metadata: &mut Vec<Entry>| {
+    sink: &mut Sink<'_, E>,
+) -> Result<Option<Difference>, Halt<E>> {
+    let add_all = |maps: PropertyMaps, prefix: &'static str, sink: &mut Sink<'_, E>| {
         for property in maps.default_map().iter() {
             let value = text(property.value.as_ref(), property.data_type)?;
-            metadata.push(Entry::AddPrefixed(prefix, property.name.clone(), value));
+            emit(
+                sink,
+                Event::Entry(Entry::AddPrefixed(prefix, property.name.clone(), value)),
+            )?;
         }
-        Ok::<_, Thrown>(())
+        Ok::<_, Halt<E>>(())
     };
-    add_all(
-        database.database_properties()?,
-        PROPERTY_PREFIX,
-        &mut metadata,
-    )?;
+    add_all(database.database_properties()?, PROPERTY_PREFIX, sink)?;
     add_all(
         database.user_defined_properties()?,
         USER_PROPERTY_PREFIX,
-        &mut metadata,
+        sink,
     )?;
-    summary(&database.summary_properties()?.default_map(), &mut metadata)?;
-    let mut tables = Vec::new();
+    summary(&database.summary_properties()?.default_map(), sink)?;
     let mut difference = None;
     for info in database.tables()? {
         let table = database.load_table(&info)?;
-        let (content, read_otherwise) = table_content(&database, &table, info.page, configs)?;
+        let read_otherwise = table_rows(database, &table, info.page, configs, sink)?;
         difference = difference.or(read_otherwise);
-        tables.push(content);
     }
-    let mut queries = Vec::new();
     for definition in database.queries()? {
-        queries.push(match query::sql(&definition)? {
+        let sql = match query::sql(&definition)? {
             Sql::Text(text) => text,
             Sql::Unsupported => "unsupported query type".to_owned(),
-        });
+        };
+        emit(sink, Event::Query(sql))?;
     }
-    Ok((
-        Extraction {
-            metadata,
-            tables,
-            queries,
-        },
-        difference,
-    ))
+    Ok(difference)
 }
 
 /// The summary properties: the title, author and company as Tika's properties, the others under
 /// their own names.
-fn summary(map: &PropertyMap, metadata: &mut Vec<Entry>) -> Result<(), Thrown> {
+fn summary<E>(map: &PropertyMap, sink: &mut Sink<'_, E>) -> Result<(), Halt<E>> {
     let mut found = Vec::new();
     if let Some(title) = map.get(TITLE_PROPERTY) {
-        metadata.push(Entry::Set(
-            TITLE,
-            text(title.value.as_ref(), title.data_type)?,
-        ));
+        let value = text(title.value.as_ref(), title.data_type)?;
+        emit(sink, Event::Entry(Entry::Set(TITLE, value)))?;
         found.push(title.name.clone());
     }
     if let Some(author) = map
         .get(AUTHOR_PROPERTY)
         .filter(|author| author.value.is_some())
     {
-        metadata.push(Entry::AddMulti(
-            CREATOR,
-            text(author.value.as_ref(), author.data_type)?,
-        ));
+        let value = text(author.value.as_ref(), author.data_type)?;
+        emit(sink, Event::Entry(Entry::AddMulti(CREATOR, value)))?;
         found.push(author.name.clone());
     }
     if let Some(company) = map.get(COMPANY_PROPERTY) {
-        metadata.push(Entry::Set(
-            COMPANY,
-            text(company.value.as_ref(), company.data_type)?,
-        ));
+        let value = text(company.value.as_ref(), company.data_type)?;
+        emit(sink, Event::Entry(Entry::Set(COMPANY, value)))?;
         found.push(company.name.clone());
     }
     for property in map.iter() {
         if !found.contains(&property.name) {
             let value = text(property.value.as_ref(), property.data_type)?;
-            metadata.push(Entry::AddPrefixed(
-                SUMMARY_PREFIX,
-                property.name.clone(),
-                value,
-            ));
+            emit(
+                sink,
+                Event::Entry(Entry::AddPrefixed(
+                    SUMMARY_PREFIX,
+                    property.name.clone(),
+                    value,
+                )),
+            )?;
         }
     }
     Ok(())
 }
 
 /// A table's headers and rows as `JackcessExtractor` writes them, each column with its own
-/// values, where Tika gives two columns of one name both the later one's (#122).
-fn table_content(
+/// values, where Tika gives two columns of one name both the later one's (#122): handed to
+/// `sink` a row at a time as they are read; and where the native reading differs from Tika's,
+/// if it does.
+fn table_rows<E>(
     database: &Database<'_>,
     table: &table::Table,
     page: i32,
     configs: &ParserConfigs,
-) -> Result<(TableContent, Option<Difference>), Thrown> {
+    sink: &mut Sink<'_, E>,
+) -> Result<Option<Difference>, Halt<E>> {
     let mut difference = None;
     let columns = &table.columns;
+    emit(
+        sink,
+        Event::Table {
+            name: table.name.clone(),
+            headers: columns.iter().map(|column| column.name.clone()).collect(),
+        },
+    )?;
     let mut rich: Option<Vec<bool>> = None;
-    let mut rows = Vec::new();
     for row in table.rows(&database.pages, vec![true; columns.len()]) {
         let row = row?;
         let rich = match &rich {
@@ -502,18 +548,19 @@ fn table_content(
             cells.push(match column.data_type {
                 DataType::Ole => match value {
                     None => Cell::Text(String::new()),
-                    Some(Value::Binary(bytes)) => match ole::read(bytes, configs) {
-                        Ok(Ole::Nothing) => Cell::Text(String::new()),
-                        Ok(Ole::Link(path)) => Cell::Text(path),
-                        Ok(Ole::Resource(document)) => Cell::Resource(document),
-                        Ok(Ole::Storage(document)) => {
+                    Some(Value::Binary(bytes)) => match ole::read(bytes, configs)? {
+                        Ole::Nothing => Cell::Text(String::new()),
+                        Ole::Link(path) => Cell::Text(path),
+                        Ole::Resource(document) => Cell::Resource(document),
+                        Ole::Storage(document) => {
                             difference = difference.or_else(|| document.difference());
                             Cell::Storage(document)
                         }
-                        Err(thrown) => return Err(thrown),
                     },
                     Some(other) => {
-                        return Err(Thrown::runtime(CLASS_CAST, format!("{other:?} as byte[]")))
+                        return Err(
+                            Thrown::runtime(CLASS_CAST, format!("{other:?} as byte[]")).into()
+                        )
                     }
                 },
                 DataType::Binary => match value {
@@ -522,7 +569,9 @@ fn table_content(
                         Cell::Resource(Embedded::owned(bytes.clone(), TikaMetadata::new()))
                     }
                     Some(other) => {
-                        return Err(Thrown::runtime(CLASS_CAST, format!("{other:?} as byte[]")))
+                        return Err(
+                            Thrown::runtime(CLASS_CAST, format!("{other:?} as byte[]")).into()
+                        )
                     }
                 },
                 data_type => {
@@ -537,16 +586,10 @@ fn table_content(
                 }
             });
         }
-        rows.push(cells);
+        emit(sink, Event::Row(cells))?;
     }
-    Ok((
-        TableContent {
-            name: table.name.clone(),
-            headers: columns.iter().map(|column| column.name.clone()).collect(),
-            rows,
-        },
-        difference,
-    ))
+    emit(sink, Event::TableEnd)?;
+    Ok(difference)
 }
 
 /// `isRichText` of each column: a memo whose `TextFormat` property is the byte of rich text.

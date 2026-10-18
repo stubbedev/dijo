@@ -2,10 +2,12 @@ use std::path::Path;
 #[cfg(feature = "tika")]
 use std::path::PathBuf;
 
+use super::buffer::Buffer;
 use super::format;
 #[cfg(feature = "tika")]
-#[cfg(feature = "tika")]
 use super::pages::rc4;
+use super::pages::PAGE_TYPE_DATA;
+use super::table::{row_end, row_start};
 use super::*;
 use crate::config::Password;
 use crate::formats::crypt::Hash;
@@ -816,4 +818,74 @@ fn reads_ole_objects_with_empty_names() {
         ole::read(&value, &ParserConfigs::default()),
         Ok(Ole::Nothing)
     ));
+}
+
+/// A database too large to read whole is read a page at a time and written a row at a time, in
+/// memory that does not grow with it: a table of a data page repeated past `MAX_READ_WHOLE`,
+/// which a reference usage map gives it.
+#[test]
+fn extracts_databases_too_large_to_read_whole_in_bounded_memory() {
+    use crate::input::MAX_READ_WHOLE;
+    use extractous_core::large::LargeFile;
+
+    let mut file = fixture("jet4-turkish.mdb");
+    let format = format::detect(&file).unwrap();
+    let size = format.page_size;
+    let database = Database::open(Database::pages(&file, "").unwrap()).unwrap();
+    let table = database
+        .tables()
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("a table");
+    drop(database);
+    let definition = usize::try_from(table.page).unwrap();
+    let data_page = file
+        .chunks(size)
+        .position(|page| {
+            page[0] == PAGE_TYPE_DATA
+                && i32::from_le_bytes(page[4..8].try_into().unwrap()) == table.page
+        })
+        .expect("a data page of the table");
+    let data = file[data_page * size..(data_page + 1) * size].to_vec();
+    let owned_at = definition * size + format.offset_owned_pages;
+    let map_row = i32::from(file[owned_at] as i8);
+    let map_page = usize::from(file[owned_at + 1])
+        | usize::from(file[owned_at + 2]) << 8
+        | usize::from(file[owned_at + 3]) << 16;
+    let (start, end) = {
+        let page = Buffer::new(&file[map_page * size..(map_page + 1) * size]);
+        (
+            usize::try_from(row_start(&page, map_row, format).unwrap()).unwrap(),
+            usize::try_from(row_end(&page, map_row, format).unwrap()).unwrap(),
+        )
+    };
+    let first_copy = file.len() / size;
+    let copies = usize::try_from(MAX_READ_WHOLE).unwrap() / size + 1;
+    let usage_page = first_copy + copies;
+    let data_start = format.offset_usage_map_page_data;
+    assert!(
+        usage_page < (size - data_start) * 8,
+        "one usage map page maps them all"
+    );
+    let mut usage = vec![0u8; size];
+    usage[0] = 0x05;
+    usage[1] = 0x01;
+    for page in std::iter::once(data_page).chain(first_copy..usage_page) {
+        usage[data_start + page / 8] |= 1 << (page % 8);
+    }
+    let row = &mut file[map_page * size + start..map_page * size + end];
+    row.fill(0);
+    row[0] = 0x01;
+    let pointer = format.offset_reference_map_page_numbers;
+    row[pointer..pointer + 4].copy_from_slice(&i32::try_from(usage_page).unwrap().to_le_bytes());
+    let large = LargeFile::new("large.mdb", &file, copies as u64, |_| data.clone(), &usage);
+    drop(file);
+    let mut lines = 0u64;
+    let metadata = large.extract_lines("extractous::JackcessParser", |_| lines += 1);
+    assert!(
+        lines > copies as u64,
+        "{lines} lines of {copies} pages of rows"
+    );
+    assert_eq!(metadata["Content-Type"], ["application/x-msaccess"]);
 }

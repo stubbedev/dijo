@@ -378,7 +378,7 @@ impl Table {
             table: self,
             pages,
             wanted,
-            owned: self.owned_pages.pages().collect::<Vec<_>>().into_iter(),
+            owned: Box::new(self.owned_pages.pages()),
             page: None,
             row: 0,
             ended: false,
@@ -447,7 +447,7 @@ pub(super) struct Rows<'s> {
     table: &'s Table,
     pages: &'s Pages<'s>,
     wanted: Vec<bool>,
-    owned: std::vec::IntoIter<i32>,
+    owned: Box<dyn Iterator<Item = i32> + 's>,
     /// The page whose rows are being read, and how many it has.
     page: Option<(Cow<'s, [u8]>, i32)>,
     row: i32,

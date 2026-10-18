@@ -1731,8 +1731,7 @@ mod tests {
     }
 
     /// A file too large to read whole is mapped, and goes to its native parser where that
-    /// parser reads only bounded parts of its input; a parser whose memory grows with its input
-    /// leaves it to Tika, which streams it, or in a build without Tika reads it mapped too.
+    /// parser reads only bounded parts of its input.
     #[test]
     fn files_too_large_to_read_whole_go_to_parsers_of_bounded_memory() {
         let files = LargeFiles::new("routing");
@@ -1740,23 +1739,10 @@ mod tests {
             (&files.wave, "extractous::AudioParser"),
             (&files.mp4, "extractous::MP4Parser"),
             (&files.pdf, pdf::PdfParser.name()),
+            (&files.database, "extractous::JackcessParser"),
         ] {
             let routed = route_file(path).unwrap();
             assert_eq!(routed.parser.name(), parser);
-            assert!(routed.input.is_mapped());
-        }
-        #[cfg(feature = "tika")]
-        assert!(matches!(
-            route_file(&files.database),
-            Err(Unsupported::TooLarge {
-                parser: "extractous::JackcessParser",
-                limit: input::MAX_READ_WHOLE,
-            })
-        ));
-        #[cfg(not(feature = "tika"))]
-        {
-            let routed = route_file(&files.database).unwrap();
-            assert_eq!(routed.parser.name(), "extractous::JackcessParser");
             assert!(routed.input.is_mapped());
         }
     }
