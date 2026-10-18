@@ -164,6 +164,109 @@ impl ToSrgb {
 /// How many pixels one call to LittleCMS converts.
 const CONVERT_CHUNK: usize = 1 << 16;
 
+/// `ICC_ColorSpace.toRGB`: one colour of a profile's colour space converted to sRGB, each
+/// component scaled from the colour space's range to 16 bits and run through a LittleCMS
+/// transform to the JDK's sRGB profile with the perceptual intent `ColorTransform.Any` asks
+/// for. Java2D's drawing of an image of such a colour space converts each pixel so too.
+pub struct IccToRgb {
+    transform: Transform,
+    minimum: Vec<f32>,
+    maximum: Vec<f32>,
+}
+
+impl IccToRgb {
+    /// The conversion from the profile `profile`, or none where `ICC_Profile` refuses it or
+    /// LittleCMS cannot make one.
+    pub fn new(profile: &[u8]) -> Option<Self> {
+        let components = accepted_components(profile)?;
+        let (minimum, maximum) = component_ranges(&profile[16..20], components);
+        let embedded = Profile::open(profile)?;
+        let srgb = Profile::open(JDK_SRGB).expect("the JDK's sRGB profile opens");
+        let transform = Transform::new(
+            &embedded,
+            format(components, 2),
+            &srgb,
+            format(3, 2),
+            lcms::Intent::Perceptual,
+        )?;
+        Some(Self {
+            transform,
+            minimum,
+            maximum,
+        })
+    }
+
+    /// `getMinValue` and `getMaxValue` of each component.
+    pub fn ranges(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
+        self.minimum
+            .iter()
+            .copied()
+            .zip(self.maximum.iter().copied())
+    }
+
+    /// The sRGB colour of `value`, each component from 0 to 1.
+    pub fn to_rgb(&self, value: &[f32]) -> [f32; 3] {
+        let input: Vec<u16> = self
+            .minimum
+            .iter()
+            .zip(&self.maximum)
+            .enumerate()
+            .map(|(i, (&min, &max))| {
+                let scaled =
+                    (value.get(i).copied().unwrap_or(0.0) - min) * (65535.0 / (max - min)) + 0.5;
+                scaled as i32 as u16
+            })
+            .collect();
+        let mut output = [0u16; 3];
+        unsafe {
+            lcms::cmsDoTransform(
+                self.transform.0,
+                input.as_ptr().cast::<c_void>(),
+                output.as_mut_ptr().cast::<c_void>(),
+                1,
+            );
+        }
+        output.map(|component| f32::from(component) / 65535.0)
+    }
+}
+
+/// `ColorModel.getGray8TosRGB8LUT`: the sRGB level of each 8-bit grey level of a grey profile,
+/// the blue of an 8-bit perceptual transform, as Java2D draws a grey image of that profile;
+/// none where LittleCMS cannot make the transform.
+pub fn gray_to_srgb_levels(profile: &[u8]) -> Option<[u8; 256]> {
+    let embedded = Profile::open(profile)?;
+    let srgb = Profile::open(JDK_SRGB).expect("the JDK's sRGB profile opens");
+    let transform = Transform::new(
+        &embedded,
+        format(1, 1),
+        &srgb,
+        format(3, 1),
+        lcms::Intent::Perceptual,
+    )?;
+    let levels: [u8; 256] = std::array::from_fn(|level| level as u8);
+    let mut converted = [0u8; 256 * 3];
+    unsafe {
+        lcms::cmsDoTransform(
+            transform.0,
+            levels.as_ptr().cast::<c_void>(),
+            converted.as_mut_ptr().cast::<c_void>(),
+            256,
+        );
+    }
+    Some(std::array::from_fn(|level| converted[level * 3 + 2]))
+}
+
+/// `ICC_ColorSpace`'s range of each of the `components` components of a colour space whose
+/// header names `space`: L* from 0 to 100 and a* and b* from -128 to 127 for Lab, almost 2 for
+/// XYZ, 0 to 1 otherwise.
+fn component_ranges(space: &[u8], components: usize) -> (Vec<f32>, Vec<f32>) {
+    match space {
+        b"Lab " => (vec![0.0, -128.0, -128.0], vec![100.0, 127.0, 127.0]),
+        b"XYZ " => (vec![0.0; 3], vec![1.0 + 32767.0 / 32768.0; 3]),
+        _ => (vec![0.0; components], vec![1.0; components]),
+    }
+}
+
 /// The count of components of a profile `ICC_Profile.getInstance` accepts, or none for one it
 /// refuses: one `ProfileDataVerifier` finds damaged, or whose header names a class, a colour
 /// space, a connection space or a rendering intent it does not know.

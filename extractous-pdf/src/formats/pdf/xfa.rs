@@ -120,16 +120,23 @@ impl SaxHandler for Nodes {
     }
 }
 
+/// What `XFAExtractor.extract` makes of a form's XML.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Extracted {
+    Read(Form),
+    /// XML the pull parser fails on: the paragraphs written before the failure, which ends the
+    /// `xfa_content` div there, and the failure, which `extractAcroForm` records before it reads
+    /// the AcroForm's fields instead.
+    Failed {
+        paragraphs: Vec<String>,
+        failure: String,
+    },
+}
+
 /// `XFAExtractor.extract` of the form's XML.
-pub(super) fn extract(input: &[u8]) -> Result<Form, Unported> {
+pub(super) fn extract(input: &[u8]) -> Result<Extracted, Unported> {
     let mut nodes = Nodes::default();
-    if xml::parse_sax(input, "the XFA form", &mut nodes).is_err() {
-        return Err(Unported(
-            "an XFA form whose XML does not parse, where Tika records the failure and reads the \
-             AcroForm"
-                .to_owned(),
-        ));
-    }
+    let parsed = xml::parse_sax(input, "the XFA form", &mut nodes);
     if nodes.document_type {
         return Err(Unported(
             "an XFA form with a document type declaration, which Woodstox reads without DTD \
@@ -137,11 +144,23 @@ pub(super) fn extract(input: &[u8]) -> Result<Form, Unported> {
                 .to_owned(),
         ));
     }
-    Ok(Reader {
+    let form = Reader {
         nodes: &nodes.nodes,
         next: 0,
     }
-    .form())
+    .form();
+    Ok(match parsed {
+        Ok(()) => Extracted::Read(form),
+        Err(Failure::Malformed(reason)) => Extracted::Failed {
+            paragraphs: form.paragraphs,
+            failure: format!("javax.xml.stream.XMLStreamException: {reason}"),
+        },
+        Err(other) => {
+            return Err(Unported(format!(
+                "an XFA form whose XML fails otherwise than malformed: {other:?}"
+            )))
+        }
+    })
 }
 
 /// The pull parser over the form's events.
@@ -196,20 +215,24 @@ impl<'n> Reader<'n> {
     }
 
     /// `scrapeTextUntil` writing paragraphs: one at the end of each `p`, and what is left at
-    /// the end of the element unless it is blank.
+    /// the end of the element unless it is blank, or unless the XML fails before it ends.
     fn paragraphs(&mut self, namespace: &str, local_name: &str, paragraphs: &mut Vec<String>) {
         let mut buffer = String::new();
+        let mut ended = false;
         while let Some(node) = self.next() {
             match node {
                 Node::Text(text) => buffer.push_str(text),
-                Node::End { .. } if node.ends(namespace, local_name) => break,
+                Node::End { .. } if node.ends(namespace, local_name) => {
+                    ended = true;
+                    break;
+                }
                 Node::End { local_name, .. } if local_name == "p" => {
                     paragraphs.push(std::mem::take(&mut buffer));
                 }
                 _ => {}
             }
         }
-        if !is_blank(&buffer) {
+        if ended && !is_blank(&buffer) {
             paragraphs.push(buffer);
         }
     }
@@ -310,9 +333,15 @@ mod tests {
     }
 
     #[test]
-    fn defers_forms_whose_xml_fails() {
-        assert!(extract(b"<a><b></a>").is_err());
-        assert!(extract(b"").is_err());
+    fn keeps_the_paragraphs_written_before_the_xml_fails() {
+        let failed = |input: &[u8]| match extract(input).unwrap() {
+            Extracted::Failed { paragraphs, .. } => paragraphs,
+            Extracted::Read(form) => panic!("{form:?}"),
+        };
+        assert_eq!(failed(b""), Vec::<String>::new());
+        let form = b"<form><text>En<p>to</p>tre</text><field name=\"f\"/>\
+                     <text>fire<p>fem</p>seks</tex></form>";
+        assert_eq!(failed(form), ["Ento", "tre", "firefem"]);
     }
 
     #[test]
@@ -333,7 +362,7 @@ mod tests {
 </xdp:xdp>"#;
         assert_eq!(
             extract(form).unwrap(),
-            Form {
+            Extracted::Read(Form {
                 paragraphs: vec!["Ansøgning".to_owned()],
                 fields: vec![
                     ("navn".to_owned(), "Dit fulde\n navn: Kari".to_owned()),
@@ -341,7 +370,7 @@ mod tests {
                     ("adresse".to_owned(), "adresse: ".to_owned()),
                     ("gate".to_owned(), "gate: Storgata".to_owned()),
                 ],
-            }
+            })
         );
     }
 }

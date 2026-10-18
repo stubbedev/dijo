@@ -2,7 +2,8 @@
 //! read by their bits per component through its decode array and converted by its colour
 //! space, its colour key, mask or soft mask applied as alpha, as the image Java writes.
 
-use image::{GrayImage, RgbaImage};
+use image::imageops::{self, FilterType};
+use image::{GrayImage, ImageBuffer, Pixel, RgbaImage};
 use lopdf::Object;
 
 use super::super::cos::float_value;
@@ -32,12 +33,14 @@ pub(super) fn image(image: &PdImage) -> Result<Bitmap, Unwritten> {
             }
             None => None,
         };
-        return apply_mask(base, alpha, Mask::Soft(matte));
+        let smooth = (image.interpolates(), soft_mask.interpolates());
+        return apply_mask(base, alpha, Mask::Soft(matte), smooth);
     }
     if let Some(mask) = mask.filter(PdImage::is_stencil) {
         let base = rgb_image(image, image.color_key())?;
         let alpha = rgb_image(&mask, None)?;
-        return apply_mask(base, alpha, Mask::Stencil);
+        let smooth = (image.interpolates(), mask.interpolates());
+        return apply_mask(base, alpha, Mask::Stencil, smooth);
     }
     rgb_image(image, image.color_key())
 }
@@ -248,41 +251,46 @@ fn java_round(value: f32) -> i32 {
     (f64::from(value) + 0.5).floor() as i32
 }
 
-/// `PDImageXObject.applyMask` of a mask the size of its image: the image as `TYPE_INT_ARGB`,
-/// its alpha the mask's grey levels, inverted for a stencil mask, its colours unmixed from a
-/// soft mask's matte.
-fn apply_mask(image: Bitmap, mask: Bitmap, kind: Mask) -> Result<Bitmap, Unwritten> {
-    if image.dimensions() != mask.dimensions() {
-        return Err(Unported(
-            "a mask of other dimensions than its image, which Java2D scales".to_owned(),
-        )
-        .into());
-    }
-    let (width, height) = image.dimensions();
+/// `PDImageXObject.applyMask`: the image as `TYPE_INT_ARGB`, its alpha the mask's grey levels,
+/// inverted for a stencil mask, its colours unmixed from a soft mask's matte. Where the image
+/// and the mask differ in size, the smaller is scaled to the larger's width and height, which
+/// Java2D draws (#125): here nearest neighbour, or Catmull-Rom where the image or the mask asks
+/// to be interpolated, as `smooth` says of each. A mask with an alpha of its own, from a colour
+/// key, is drawn onto black, as Java2D draws it into a grey image.
+fn apply_mask(
+    image: Bitmap,
+    mask: Bitmap,
+    kind: Mask,
+    (smooth_image, smooth_mask): (bool, bool),
+) -> Result<Bitmap, Unwritten> {
+    let (image_width, image_height) = image.dimensions();
+    let (mask_width, mask_height) = mask.dimensions();
+    let (width, height) = (image_width.max(mask_width), image_height.max(mask_height));
     let alpha: GrayImage = match mask {
         Bitmap::Gray(gray) => gray,
-        Bitmap::Rgb(rgb) => GrayImage::from_fn(width, height, |x, y| {
+        Bitmap::Rgb(rgb) => GrayImage::from_fn(mask_width, mask_height, |x, y| {
             let [red, green, blue] = rgb.get_pixel(x, y).0;
             image::Luma([luma(red, green, blue)])
         }),
-        Bitmap::Rgba(_) => {
-            return Err(Unported(
-                "a mask with a colour key of its own, which Java2D draws into grey".to_owned(),
-            )
-            .into())
-        }
+        Bitmap::Rgba(rgba) => GrayImage::from_fn(mask_width, mask_height, |x, y| {
+            let [red, green, blue, alpha] = rgba.get_pixel(x, y).0;
+            let over_black = |c: u8| mul8(c, alpha);
+            image::Luma([luma(over_black(red), over_black(green), over_black(blue))])
+        }),
     };
-    let mut argb = match image {
+    let alpha = scaled(alpha, (width, height), smooth_mask);
+    let argb = match image {
         Bitmap::Rgba(rgba) => rgba,
-        Bitmap::Rgb(rgb) => RgbaImage::from_fn(width, height, |x, y| {
+        Bitmap::Rgb(rgb) => RgbaImage::from_fn(image_width, image_height, |x, y| {
             let [red, green, blue] = rgb.get_pixel(x, y).0;
             image::Rgba([red, green, blue, 255])
         }),
-        Bitmap::Gray(gray) => RgbaImage::from_fn(width, height, |x, y| {
+        Bitmap::Gray(gray) => RgbaImage::from_fn(image_width, image_height, |x, y| {
             let level = gray.get_pixel(x, y).0[0];
             image::Rgba([level, level, level, 255])
         }),
     };
+    let mut argb = scaled(argb, (width, height), smooth_image);
     for (pixel, mask) in argb.pixels_mut().zip(alpha.pixels()) {
         let a = mask.0[0];
         match kind {
@@ -310,6 +318,30 @@ fn unmatted(component: u8, alpha: u8, matte: f32) -> u8 {
     let half = m / 255 + (1 << (FRACTION - 1));
     let value = ((i32::from(component) * FACTOR - m) / i32::from(alpha) + half) >> FRACTION;
     value.clamp(0, 255) as u8
+}
+
+/// `image` at `size`, nearest neighbour unless `smooth`, as it is where it is that size.
+fn scaled<P>(
+    image: ImageBuffer<P, Vec<u8>>,
+    (width, height): (u32, u32),
+    smooth: bool,
+) -> ImageBuffer<P, Vec<u8>>
+where
+    P: Pixel<Subpixel = u8> + 'static,
+{
+    if image.dimensions() == (width, height) {
+        return image;
+    }
+    let filter = match smooth {
+        true => FilterType::CatmullRom,
+        false => FilterType::Nearest,
+    };
+    imageops::resize(&image, width, height, filter)
+}
+
+/// Java2D's `mul8table`: the product of two levels, as levels.
+fn mul8(a: u8, b: u8) -> u8 {
+    ((u32::from(a) * u32::from(b) + 127) / 255) as u8
 }
 
 fn thrown(message: &str) -> Unwritten {

@@ -9,6 +9,7 @@ use super::super::content::InlineImage;
 use super::super::cos::{float_value, int_value, Pdf};
 use super::super::Unported;
 use super::colorspace::{self, ColorSpace};
+use super::filters;
 use super::{Thrown, Unwritten};
 
 const IO_EXCEPTION: &str = "java.io.IOException";
@@ -16,16 +17,6 @@ const IO_EXCEPTION: &str = "java.io.IOException";
 pub(super) const JPEG: [&[u8]; 2] = [b"DCTDecode", b"DCT"];
 pub(super) const JP2: [&[u8]; 1] = [b"JPXDecode"];
 pub(super) const JB2: [&[u8]; 1] = [b"JBIG2Decode"];
-/// The filters `lopdf` does not decode, by what PDFBox decodes them with.
-const IMAGE_FILTERS: [(&[u8], &str); 7] = [
-    (b"DCTDecode", "DCTDecode"),
-    (b"DCT", "DCTDecode"),
-    (b"JPXDecode", "JPXDecode"),
-    (b"CCITTFaxDecode", "CCITTFaxDecode"),
-    (b"CCF", "CCITTFaxDecode"),
-    (b"JBIG2Decode", "JBIG2Decode"),
-    (b"Crypt", "Crypt"),
-];
 
 /// The file types `PDImage.getSuffix` names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,18 +73,27 @@ impl<'p> PdImage<'p> {
         let Some(raw) = data.filter(|data| !data.is_empty()) else {
             return Ok(None);
         };
-        let filters = get2(pdf, &parameters, b"F", b"Filter");
-        if let Some(filter) = filter_names(pdf, filters)
-            .into_iter()
-            .find_map(|name| image_filter(name))
-        {
-            return Err(Unported(format!(
-                "an inline image of the filter {filter}, which PDFBox decodes as it reads the \
-                 image"
-            )));
-        }
+        let filters = filter_names(pdf, get2(pdf, &parameters, b"F", b"Filter"));
         let decode_parameters = get2(pdf, &parameters, b"DP", b"DecodeParms");
-        let decoded = pdf.decode_data(Cow::Borrowed(&raw), filters, decode_parameters, &[])?;
+        let height = get2(pdf, &parameters, b"H", b"Height")
+            .and_then(int_value)
+            .unwrap_or(0);
+        let decoded = match filters::decoded(
+            pdf,
+            Cow::Borrowed(&raw),
+            &filters,
+            decode_parameters,
+            height,
+        ) {
+            Ok(decoded) => decoded,
+            Err(Unwritten::Unported(unported)) => return Err(unported),
+            Err(failed) => {
+                return Err(Unported(format!(
+                    "an inline image whose data fails to decode, which ends PDFBox's reading of \
+                     its page's images: {failed:?}"
+                )))
+            }
+        };
         if decoded.is_empty() {
             return Ok(None);
         }
@@ -129,6 +129,11 @@ impl<'p> PdImage<'p> {
             Source::Inline { .. } => (short, long),
         };
         get2(self.pdf, self.dict(), first, second)
+    }
+
+    /// `getInterpolate`.
+    pub(super) fn interpolates(&self) -> bool {
+        matches!(self.get(b"Interpolate", b"I"), Some(Object::Boolean(true)))
     }
 
     /// `isStencil`.
@@ -190,11 +195,7 @@ impl<'p> PdImage<'p> {
                 match value {
                     Some(value) => colorspace::create(self.pdf, value, self.resources),
                     None if self.is_stencil() => Ok(ColorSpace::Gray),
-                    None if self.has_filter(&JP2) => Err(Unwritten::Unported(Unported(
-                        "a JPEG 2000 image without a colour space, which PDFBox takes from the \
-                         image it cannot decode"
-                            .to_owned(),
-                    ))),
+                    None if self.has_filter(&JP2) => Err(filters::missing_jpeg_2000_reader()),
                     None => Err(Unwritten::Stream(Thrown::new(
                         IO_EXCEPTION,
                         "could not determine color space".to_owned(),
@@ -317,29 +318,19 @@ impl<'p> PdImage<'p> {
         }
     }
 
-    /// `createInputStream()`: the data decoded by every filter, or why it is not: a JPEG 2000
-    /// image Java has no reader for, and filters the port does not decode.
+    /// `createInputStream()`: the data decoded by every filter, JPEG and CCITT ones included,
+    /// or why it is not: a JPEG 2000 image Java has no reader for, and filters the port does not
+    /// decode.
     pub(super) fn data(&self) -> Result<Vec<u8>, Unwritten> {
         match &self.source {
             Source::Inline { decoded, .. } => Ok(decoded.clone()),
-            Source::XObject(stream) => {
-                let filters = self.filters();
-                if let Some(filter) = filters.iter().find_map(|name| image_filter(name)) {
-                    if filter == "JPXDecode" {
-                        return Err(Unwritten::MissingReader(Thrown::new(
-                            "org.apache.pdfbox.filter.MissingImageReaderException",
-                            "Cannot read JPEG2000 image: Java Advanced Imaging (JAI) Image I/O \
-                             Tools are not installed"
-                                .to_owned(),
-                        )));
-                    }
-                    return Err(Unported(format!(
-                        "an image of the filter {filter}, which the port does not decode"
-                    ))
-                    .into());
-                }
-                Ok(self.pdf.decode(stream)?)
-            }
+            Source::XObject(stream) => filters::decoded(
+                self.pdf,
+                self.pdf.raw(stream)?,
+                &self.filters(),
+                self.pdf.get(&stream.dict, b"DecodeParms"),
+                self.height(),
+            ),
         }
     }
 
@@ -426,12 +417,4 @@ fn filter_names<'a>(pdf: &'a Pdf, value: Option<&'a Object>) -> Vec<&'a [u8]> {
             .collect(),
         _ => Vec::new(),
     }
-}
-
-/// The filter PDFBox decodes `name` with, when `lopdf` does not.
-fn image_filter(name: &[u8]) -> Option<&'static str> {
-    IMAGE_FILTERS
-        .iter()
-        .find(|(filter, _)| *filter == name)
-        .map(|(_, java)| *java)
 }

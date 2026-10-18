@@ -4,11 +4,15 @@
 //! that does not bear on which images are drawn, such as the transformation matrices and the
 //! clipping, is left out.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use lopdf::{Dictionary, Object, Stream};
 
 use super::super::content::{InlineImage, Lexer, Token};
 use super::super::cos::{as_dict, int_value, Identity, Pdf};
 use super::super::document::Page;
+use super::super::font::Font;
 use super::super::writer::WriteFailure;
 use super::super::Unported;
 
@@ -53,6 +57,9 @@ struct State<'p> {
     stroke: Paint<'p>,
     /// `RenderingMode`: whether text is filled, stroked, both or neither.
     rendering_mode: i32,
+    /// The font `Tf` set, which tells how many glyphs a string shows; none where it names no
+    /// font, where PDFBox shows Helvetica.
+    font: Option<(Identity, &'p Dictionary)>,
 }
 
 impl State<'_> {
@@ -61,6 +68,7 @@ impl State<'_> {
             fill: Paint::Plain,
             stroke: Paint::Plain,
             rendering_mode: 0,
+            font: None,
         }
     }
 }
@@ -85,9 +93,8 @@ struct Engine<'p, 'f> {
     color_operators: bool,
     /// Whether a text object is open, outside which PDFBox shows no text.
     in_text: bool,
-    /// Whether images are only looked for, for text painted with a pattern.
-    probing: bool,
-    probed: bool,
+    /// The fonts read so far, which tell how many glyphs a string shows.
+    fonts: HashMap<Identity, Rc<Font>>,
     found: Found<'f, 'p>,
 }
 
@@ -107,8 +114,7 @@ pub(super) fn run<'p>(
         nesting: 0,
         color_operators: true,
         in_text: false,
-        probing: false,
-        probed: false,
+        fonts: HashMap::new(),
         found,
     };
     if page.has_contents(pdf) {
@@ -271,9 +277,10 @@ impl<'p> Engine<'p, '_> {
             }
             "BT" => self.in_text = true,
             "ET" => self.in_text = false,
+            "Tf" => self.set_font(operands),
             "Tj" | "'" | "\"" | "TJ" => {
-                if self.in_text && shows_glyphs(name, operands) {
-                    self.show_text()?;
+                if self.in_text {
+                    self.show_text(name, operands)?;
                 }
             }
             "S" | "s" => {
@@ -400,49 +407,84 @@ impl<'p> Engine<'p, '_> {
         )
     }
 
-    /// `ImageGraphicsEngine.showGlyph` for each glyph of a text: the patterns its colours
-    /// paint with, which the port follows only when they draw no image, since it does not
-    /// count the glyphs.
-    fn show_text(&mut self) -> Result<(), WriteFailure> {
+    /// `SetFontAndSize`, as far as the font goes.
+    fn set_font(&mut self, operands: &[Object]) {
+        let pdf = self.pdf;
+        let font = match operands.first() {
+            Some(Object::Name(name)) => self
+                .resources
+                .and_then(|resources| pdf.dict(resources, b"Font"))
+                .and_then(|fonts| pdf.get_identified(fonts, name))
+                .and_then(|(identity, object)| Some((identity, as_dict(object)?))),
+            _ => return,
+        };
+        self.state().font = font;
+    }
+
+    /// `ImageGraphicsEngine.showGlyph` for each glyph a text operator shows: the patterns its
+    /// colours paint with, filled then stroked, once a glyph.
+    fn show_text(&mut self, name: &str, operands: &[Object]) -> Result<(), WriteFailure> {
         let mode = self.state().rendering_mode;
-        let fills = matches!(mode, 0 | 2 | 4 | 6);
-        let strokes = matches!(mode, 1 | 2 | 5 | 6);
         let mut paints = Vec::new();
-        if fills {
+        if matches!(mode, 0 | 2 | 4 | 6) {
             paints.push(self.state().fill.clone());
         }
-        if strokes {
+        if matches!(mode, 1 | 2 | 5 | 6) {
             paints.push(self.state().stroke.clone());
         }
-        for paint in paints {
-            if !matches!(paint, Paint::Pattern { .. }) {
-                continue;
-            }
-            let probing = std::mem::replace(&mut self.probing, true);
-            let probed = std::mem::replace(&mut self.probed, false);
-            let result = self.process_color(&paint);
-            let draws = self.probed;
-            self.probing = probing;
-            self.probed = probed || draws;
-            result?;
-            if draws {
-                return Err(Unported(
-                    "text painted with a tiling pattern that draws images, which PDFBox draws \
-                     once a glyph"
-                        .to_owned(),
-                )
-                .into());
+        paints.retain(|paint| matches!(paint, Paint::Pattern { .. }));
+        if paints.is_empty() {
+            return Ok(());
+        }
+        let strings: Vec<&[u8]> = match (name, operands) {
+            ("TJ", [Object::Array(items), ..]) => items
+                .iter()
+                .filter_map(|item| match item {
+                    Object::String(bytes, _) => Some(bytes.as_slice()),
+                    _ => None,
+                })
+                .collect(),
+            ("\"", [_, _, Object::String(bytes, _), ..]) => vec![bytes],
+            ("Tj" | "'", [Object::String(bytes, _), ..]) => vec![bytes],
+            _ => return Ok(()),
+        };
+        let glyphs = strings
+            .into_iter()
+            .map(|string| self.glyphs(string))
+            .sum::<Result<usize, Unported>>()?;
+        for _ in 0..glyphs {
+            for paint in &paints {
+                self.process_color(paint)?;
             }
         }
         Ok(())
     }
 
-    /// Hands an image on, or notes that one is drawn while probing.
-    fn found(&mut self, drawn: Drawn<'p>) -> Result<(), WriteFailure> {
-        if self.probing {
-            self.probed = true;
-            return Ok(());
+    /// How many glyphs `string` shows in the current font, one a code it reads.
+    fn glyphs(&mut self, string: &[u8]) -> Result<usize, Unported> {
+        let Some((identity, dict)) = self.state().font else {
+            return Ok(string.len());
+        };
+        let font = match self.fonts.get(&identity) {
+            Some(font) => Rc::clone(font),
+            None => {
+                let font = Rc::new(Font::load(self.pdf, identity, dict)?);
+                self.fonts.insert(identity, Rc::clone(&font));
+                font
+            }
+        };
+        let mut count = 0;
+        let mut rest = string;
+        while !rest.is_empty() {
+            let code = font.read_code(rest)?;
+            rest = &rest[code.length.min(rest.len())..];
+            count += 1;
         }
+        Ok(count)
+    }
+
+    /// Hands an image on.
+    fn found(&mut self, drawn: Drawn<'p>) -> Result<(), WriteFailure> {
         (self.found)(drawn)
     }
 
@@ -520,18 +562,5 @@ impl<'p> Engine<'p, '_> {
         }
         let resources = self.resources;
         self.found(Drawn::Inline { image, resources })
-    }
-}
-
-/// Whether a text-showing operator shows any glyph: a string of at least one byte.
-fn shows_glyphs(name: &str, operands: &[Object]) -> bool {
-    let nonempty =
-        |object: &Object| matches!(object, Object::String(bytes, _) if !bytes.is_empty());
-    match name {
-        "TJ" => {
-            matches!(operands.first(), Some(Object::Array(items)) if items.iter().any(nonempty))
-        }
-        "\"" => operands.get(2).is_some_and(nonempty),
-        _ => operands.first().is_some_and(nonempty),
     }
 }

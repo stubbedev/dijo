@@ -125,8 +125,10 @@ text-reference:
 
 # Regenerate the PDFBox resources the Rust PDF parser reads, from the PDFBox jars Tika's native image holds: the
 # glyph lists, the Unicode mirroring pairs, the fallback font it measures fonts it finds no program for with, the
-# standard 14 fonts' metrics without their kerning pairs, the built-in simple font encodings, and FontBox's
-# predefined CFF strings, charsets and encodings.
+# standard 14 fonts' metrics without their kerning pairs, the built-in simple font encodings, FontBox's
+# predefined CFF strings, charsets and encodings, the codes FontBox gives the texts of a CMap that uses one
+# of its bundled maps, the CMYK profile PDFBox converts DeviceCMYK with, the JDK's CIE XYZ profile, and the
+# colours PDFBox's CIE-based colour spaces give on the JVM.
 [unix]
 pdf-resources:
     #!/usr/bin/env bash
@@ -141,6 +143,9 @@ pdf-resources:
     done
     unzip -p "$pdfbox" org/apache/pdfbox/resources/text/BidiMirroring.txt > "$models/BidiMirroring.txt"
     unzip -p "$pdfbox" org/apache/pdfbox/resources/ttf/LiberationSans-Regular.ttf > "$models/LiberationSans-Regular.ttf"
+    unzip -p "$pdfbox" org/apache/pdfbox/resources/icc/CGATS001Compat-v2-micro.icc \
+        > "$models/CGATS001Compat-v2-micro.icc"
+    java -Djava.awt.headless=true extractous-pdf/tests/fixtures/pdf/JdkCieXyzProfile.java "$models/jdk-ciexyz.icc"
     for font in Courier Courier-Bold Courier-BoldOblique Courier-Oblique Helvetica Helvetica-Bold \
         Helvetica-BoldOblique Helvetica-Oblique Times-Roman Times-Bold Times-BoldItalic Times-Italic Symbol \
         ZapfDingbats; do
@@ -149,6 +154,10 @@ pdf-resources:
     done
     java -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/PdfEncodings.java "$models/encodings.tsv"
     java -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/CffTables.java "$models/cff.tsv"
+    java -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/UsedCMapCodes.java "$jars/pdf/fontbox-3.0.8.jar" \
+        extractous-pdf/tests/fixtures/pdf/used-cmap-codes.tsv
+    java -Djava.awt.headless=true -cp "$jars/pdf/*" extractous-pdf/tests/fixtures/pdf/CieColours.java \
+        extractous-pdf/tests/fixtures/pdf/cie-colours.tsv
 
 # Regenerate what Apache Tika's JSoupParser makes of the HTML inputs of the corpora, of synthetic inputs and of
 # html5lib's tree construction tests, the trees jsoup builds for them, and the trees html5lib's tests expect,

@@ -3,18 +3,22 @@
 //! ([`engine`]), numbered across the document, an image XObject drawn again under its own
 //! number, where `ImageGraphicsEngine` numbers it 0, or, under
 //! `setExtractUniqueInlineImagesOnly`, skipped; each written as an `img` element and its file,
-//! as `writeToBuffer` writes it, parsed as an embedded document. JPEG, JPEG 2000 and JBIG2 data
-//! is copied as it is; other images, and those with masks, are read as PDFBox reads them
-//! ([`sampled`]) and written as PNG, with the Content-Type of PNG where Tika keeps that of the
-//! data it does not copy (#131).
+//! as `writeToBuffer` writes it, parsed as an embedded document. JPEG data in grey or RGB,
+//! JPEG 2000 data in grey or RGB without masks, and JBIG2 data is copied as it is; other images,
+//! and those with masks, are read as PDFBox reads them ([`sampled`], [`filters`]) and written
+//! as PNG, with the Content-Type of PNG where Tika keeps that of the data it does not copy
+//! (#131), a JPEG of another colour space as a JPEG and a CCITT image as a TIFF, with the
+//! `image` crate's encoders where Tika uses Java's ([`written`], #125).
 
 mod colorspace;
 mod engine;
+mod filters;
 mod image;
 mod png;
 mod sampled;
 #[cfg(test)]
 mod tests;
+mod written;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -95,9 +99,6 @@ impl From<Unported> for Unwritten {
 /// The images of a document being extracted: those numbered so far, by the image XObject.
 pub(super) struct Images {
     unique_only: bool,
-    /// Whether our `TextLayerCheckingPdfParser` weighs the text of each page, the text OCR
-    /// reads in its images included.
-    assessed_with_ocr: bool,
     /// `processedInlineImages`.
     processed: HashMap<Identity, usize>,
     /// `inlineImageCounter`.
@@ -105,10 +106,9 @@ pub(super) struct Images {
 }
 
 impl Images {
-    pub(super) fn new(unique_only: bool, assessed_with_ocr: bool) -> Self {
+    pub(super) fn new(unique_only: bool) -> Self {
         Self {
             unique_only,
-            assessed_with_ocr,
             processed: HashMap::new(),
             counter: 0,
         }
@@ -163,14 +163,6 @@ impl Images {
         page_number: usize,
         writer: &mut PageWriter,
     ) -> Result<(), WriteFailure> {
-        if self.assessed_with_ocr {
-            return Err(Unported(
-                "an image our TextLayerCheckingPdfParser weighs the OCR text of with its \
-                 page's text"
-                    .to_owned(),
-            )
-            .into());
-        }
         let mut metadata = TikaMetadata::new();
         let (extension, content_type) = match image.suffix() {
             _ if image.has_masks() => ("png", "image/png"),
@@ -195,7 +187,10 @@ impl Images {
             xmp_metadata(pdf, image.metadata(), &mut metadata)?;
         }
         match write_to_buffer(image, extension) {
-            Ok(data) => writer.out.embedded(EmbeddedFile { metadata, data })?,
+            Ok(data) => {
+                writer.embeds = true;
+                writer.out.embedded(EmbeddedFile { metadata, data })?;
+            }
             Err(Unwritten::Stream(thrown)) => {
                 writer
                     .out
@@ -225,11 +220,7 @@ fn write_to_buffer(image: &PdImage, extension: &str) -> Result<Vec<u8>, Unwritte
         "jpg" => {
             let color_space = image.color_space()?;
             if !matches!(color_space.name(), "DeviceGray" | "DeviceRGB") {
-                return Err(Unported(format!(
-                    "a JPEG image in the colour space {}, which Java decodes and encodes anew",
-                    color_space.name()
-                ))
-                .into());
+                return Ok(written::jpeg(&sampled::image(image)?));
             }
             copied(image.data_until(&JPEG)?)
         }
@@ -239,15 +230,12 @@ fn write_to_buffer(image: &PdImage, extension: &str) -> Result<Vec<u8>, Unwritte
                 return copied(image.data_until(&JP2)?);
             }
             sampled::image(image)?;
-            Err(
-                Unported("a JPEG 2000 image Java decodes, which the port does not".to_owned())
-                    .into(),
-            )
+            unreachable!("Java has no JPEG 2000 reader, so the image does not decode")
         }
-        "tif" if image.color_space()?.is_device_gray() => Err(Unported(
-            "a CCITT image, which Java writes as a TIFF with its CCITT T.6 writer".to_owned(),
-        )
-        .into()),
+        "tif" if image.color_space()?.is_device_gray() => {
+            Ok(written::tiff(&written::bitonal(&sampled::image(image)?)))
+        }
+        "tif" => Ok(written::tiff(&sampled::image(image)?)),
         "jb2" => copied(image.data_until(&JB2)?),
         _ => Ok(png::write(&sampled::image(image)?)),
     }
