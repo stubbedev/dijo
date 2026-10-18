@@ -2,6 +2,7 @@
 //! one found in HTML, ended by a quote, and the document it holds, which the HTML and Markdown
 //! parsers embed inline.
 
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use regex::{Captures, Regex};
@@ -19,6 +20,9 @@ use crate::text::charset::Charset;
 static PARSE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?s)data:([^,]*?)(base64)?,(.*)$").expect("the pattern is valid")
 });
+
+/// RFC 2397's media type of a data URI that names none.
+const DEFAULT_MEDIA_TYPE: &str = "text/plain;charset=US-ASCII";
 
 /// `EXTRACT_PATTERN`.
 static EXTRACT: LazyLock<Regex> = LazyLock::new(|| {
@@ -67,9 +71,23 @@ impl DataUri {
         }
     }
 
+    /// The media type, as RFC 2397 defaults it: `text/plain;charset=US-ASCII` where the URI
+    /// names none, and `text/plain` where it names parameters alone. Tika's `build` throws on
+    /// those instead, failing the document (#157).
+    fn media_type(&self) -> Cow<'_, str> {
+        let named = self.media_type.trim_end_matches(';');
+        if named.is_empty() {
+            Cow::Borrowed(DEFAULT_MEDIA_TYPE)
+        } else if named.starts_with(';') {
+            Cow::Owned(format!("text/plain{named}"))
+        } else {
+            Cow::Borrowed(&self.media_type)
+        }
+    }
+
     /// `getMediaType().toString()`, where the media type parses.
     pub fn content_type(&self) -> Option<String> {
-        MediaType::parse(&self.media_type).map(|parsed| parsed.to_string())
+        MediaType::parse(&self.media_type()).map(|parsed| parsed.to_string())
     }
 
     /// The document it holds, parsed as an inline document of its media type, if it has one, in
@@ -134,7 +152,7 @@ impl DataUri {
         if self.base64 || self.data.is_empty() {
             return Ok(Encoding::Utf8);
         }
-        let media_type = MediaType::parse(&self.media_type)
+        let media_type = MediaType::parse(&self.media_type())
             .ok_or_else(|| Thrown::Runtime(Exception::bare("java.lang.NullPointerException")))?;
         let Some(name) = media_type.parameter("charset") else {
             return Ok(Encoding::Utf8);
@@ -180,10 +198,23 @@ mod tests {
         assert_eq!(text.bytes().unwrap(), b"K\xf8b enhavn ?");
         assert_eq!(parse("data:,").unwrap().bytes().unwrap(), b"");
         assert!(parse("data:text").is_none());
-        assert!(matches!(
-            parse("data:,hej").unwrap().bytes(),
-            Err(Thrown::Runtime(_))
-        ));
+        let plain = parse("data:,h\u{e6}j").unwrap();
+        assert_eq!(plain.bytes().unwrap(), b"h?j");
+        assert_eq!(
+            plain.content_type().as_deref(),
+            Some("text/plain; charset=US-ASCII")
+        );
+        let parameters = parse("data:;charset=ISO-8859-1,h\u{e6}j").unwrap();
+        assert_eq!(parameters.bytes().unwrap(), b"h\xe6j");
+        assert_eq!(
+            parameters.content_type().as_deref(),
+            Some("text/plain; charset=ISO-8859-1")
+        );
+        let encoded = parse("data:;base64,SGVq").unwrap();
+        assert_eq!(
+            encoded.content_type().as_deref(),
+            Some("text/plain; charset=US-ASCII")
+        );
         assert!(matches!(
             parse("data:text/plain;charset=-x,hej").unwrap().bytes(),
             Err(Thrown::Runtime(_))
