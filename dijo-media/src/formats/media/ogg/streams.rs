@@ -383,7 +383,9 @@ pub(super) fn opus<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Opus, Thrown
     })
 }
 
-/// The FLAC stream info Tika reads, `FlacInfo`, its sample count in Java's `int` arithmetic.
+/// The FLAC stream info Tika reads, `FlacInfo`, its sample count all 36 bits of it. vorbis-java
+/// shifts the top four bits by 30 rather than 32 in an `int`, which overflows, so that long
+/// streams get a wrong duration (#186).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FlacInfo {
     pub(super) sample_rate: i32,
@@ -400,15 +402,15 @@ fn flac_info(data: &[u8], offset: usize) -> Result<FlacInfo, Thrown> {
         .iter()
         .map(|&b| i32::from(b))
         .collect();
-    let samples = ((next[3] & 0x0f) << 30)
-        .wrapping_add(next[4] << 24)
-        .wrapping_add(next[5] << 16)
-        .wrapping_add(next[6] << 8)
-        .wrapping_add(next[7]);
+    let samples = next[4..]
+        .iter()
+        .fold(i64::from(next[3] & 0x0f), |samples, &byte| {
+            (samples << 8) | i64::from(byte)
+        });
     Ok(FlacInfo {
         sample_rate: (next[0] << 12) + (next[1] << 4) + ((next[2] & 0xf0) >> 4),
         channels: ((next[2] & 0x0e) >> 1) + 1,
-        samples: i64::from(samples),
+        samples,
     })
 }
 
@@ -623,5 +625,14 @@ mod tests {
         assert_eq!(read.sample_rate, 44100);
         assert_eq!(read.channels, 2);
         assert_eq!(read.samples, 88200);
+    }
+
+    /// The sample count takes all 36 bits, where vorbis-java's `int` arithmetic shifts the top
+    /// four by 30 and overflows (#186).
+    #[test]
+    fn reads_a_sample_count_past_32_bits() {
+        let mut info = vec![0u8; 34];
+        info[10..18].copy_from_slice(&[0x0A, 0xC4, 0x42, 0xF3, 0x00, 0x00, 0x00, 0x05]);
+        assert_eq!(flac_info(&info, 0).unwrap().samples, (3 << 32) + 5);
     }
 }
