@@ -419,7 +419,7 @@ fn reads_the_header_and_boxes_of_jpeg_xl_images() {
         ("tiff:ImageWidth", "96"),
         ("tiff:ImageLength", "80"),
         ("tiff:BitsPerSample", "8"),
-        ("tiff:Make", "Dijo"),
+        ("tiff:Make", "Extractous"),
         ("tiff:Orientation", "6"),
         ("dc:title", "Fyret"),
         ("tk:parsed-by", "dijo::JXLParser"),

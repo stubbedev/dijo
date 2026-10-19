@@ -266,7 +266,7 @@ fn extracts_jpeg_xl_images_too_large_to_read_whole_in_bounded_memory() {
         ("tiff:ImageLength", "80"),
         ("tiff:BitsPerSample", "8"),
         ("tiff:Orientation", "6"),
-        ("tiff:Make", "Dijo"),
+        ("tiff:Make", "Extractous"),
         ("dc:title", "Fyret"),
     ] {
         assert_eq!(metadata[name], [expected], "{name}: {metadata:?}");
