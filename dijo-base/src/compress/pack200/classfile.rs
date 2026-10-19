@@ -291,6 +291,25 @@ impl<'c> Out<'c> {
         Ok(())
     }
 
+    /// Writes `value` in `size` bytes, failing where it does not fit them as a signed number.
+    fn signed(&mut self, value: i64, size: u8) -> Result<()> {
+        let bits = 8 * u32::from(size.clamp(1, 4));
+        if value < -(1i64 << (bits - 1)) || value >= 1i64 << (bits - 1) {
+            return Err(malformed(format!(
+                "the signed value {value} does not fit in {size} bytes"
+            )));
+        }
+        self.sized(value, size)
+    }
+
+    /// Writes `value` in `size` bytes, failing where it is negative or does not fit them.
+    fn unsigned(&mut self, value: i64, size: u8) -> Result<()> {
+        if value < 0 {
+            return Err(malformed(format!("the negative value {value} where none is")));
+        }
+        self.sized(value, size)
+    }
+
     /// Writes the count `count` of `what` in two bytes.
     fn count(&mut self, count: usize, what: &str) -> Result<()> {
         let count = u16::try_from(count)
@@ -559,8 +578,8 @@ fn padding(at: usize) -> usize {
     (4 - (at + 1) % 4) % 4
 }
 
-/// The length in bytes of `instruction`, at the byte offset `at`, as [`Writer::instruction`]
-/// writes it.
+/// The length in bytes of `instruction`, at the byte offset `at`, as
+/// [`Builder::instruction`] writes it.
 fn length(instruction: &Instruction, at: usize) -> Result<usize> {
     let (aload, opcode) = expand(instruction.opcode);
     if instruction.wide {
@@ -569,7 +588,10 @@ fn length(instruction: &Instruction, at: usize) -> Result<usize> {
     let length = match (opcode, &instruction.operand) {
         (170, Operand::TableSwitch { labels, .. }) => 13 + padding(at) + 4 * labels.len(),
         (171, Operand::LookupSwitch { cases, .. }) => 9 + padding(at) + 8 * cases.len(),
-        (253, Operand::RefEscape { size, .. }) => *size as usize,
+        (253, Operand::RefEscape { size, .. }) => usize::try_from(*size)
+            .ok()
+            .filter(|size| (1..=4).contains(size))
+            .ok_or_else(|| malformed(format!("a reference escape of {size} bytes")))?,
         (254, Operand::ByteEscape(bytes)) => bytes.len(),
         (16 | 18 | 21..=25 | 54..=58 | 169 | 188, _) => 2,
         (17 | 19 | 20 | 132 | 153..=168 | 178..=184 | 187 | 189 | 192 | 193 | 198 | 199, _) => 3,
@@ -612,5 +634,190 @@ fn argument_slots(descriptor: &[u16]) -> Result<usize> {
             }
             _ => return Err(bad()),
         };
+    }
+}
+
+impl Builder<'_> {
+    /// Writes the `Code` attribute `attribute` of the method `method`, of the code `code`:
+    /// its locals those not of arguments, as transmitted, plus the argument slots of the
+    /// method and `this` for a method that is not static.
+    fn code(&self, out: &mut Out, attribute: &Use, code: &Code, method: &Member) -> Result<()> {
+        let instructions = &code
+            .bytecode
+            .as_ref()
+            .ok_or_else(|| malformed("a code without its bytecodes"))?
+            .instructions;
+        let mut starts = Vec::with_capacity(instructions.len());
+        let mut indexes = Vec::with_capacity(instructions.len());
+        let mut boundaries = Vec::with_capacity(instructions.len() + 1);
+        let mut at = 0usize;
+        for instruction in instructions {
+            starts.push(at);
+            indexes.push(boundaries.len());
+            boundaries.push(at);
+            if expand(instruction.opcode).0 {
+                boundaries.push(at + 1);
+            }
+            let length = length(instruction, at)?;
+            if length == 0 {
+                return Err(malformed("an empty escape in a code"));
+            }
+            at += length;
+            if at > usize::from(u16::MAX) {
+                return Err(malformed("a code of more than 65535 bytes"));
+            }
+        }
+        boundaries.push(at);
+        let bcis = Bcis { boundaries };
+        let is_static = self.definitions.access(Context::Method, method.flags) & ACC_STATIC != 0;
+        let locals = code.max_na_locals
+            + argument_slots(self.pool.descr(method.descr).1)?
+            + usize::from(!is_static);
+        out.attribute(self.pool.text(&attribute.name), |out| {
+            out.count(code.max_stack, "stack slots")?;
+            out.count(locals, "locals")?;
+            out.u4(at as u32);
+            for ((instruction, &start), &index) in instructions.iter().zip(&starts).zip(&indexes) {
+                let before = out.bytes.len();
+                self.instruction(out, instruction, start, index, &bcis)?;
+                if out.bytes.len() - before != length(instruction, start)? {
+                    return Err(malformed(format!(
+                        "the packed bytecode {} written in other than its length",
+                        instruction.opcode
+                    )));
+                }
+            }
+            out.count(code.handlers.len(), "exception handlers")?;
+            for handler in &code.handlers {
+                out.unsigned(bcis.decode(handler.start), 2)?;
+                out.unsigned(bcis.decode(handler.end), 2)?;
+                out.unsigned(bcis.decode(handler.catch), 2)?;
+                let class = handler.class.map(|class| Key::Class(ClassRef::Pool(class)));
+                out.reference(class.as_ref(), 2)?;
+            }
+            out.count(code.attributes.len(), "attributes of a code")?;
+            for attribute in &code.attributes {
+                self.attribute(out, attribute, Some(&bcis))?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Writes `instruction`, at the byte offset `at` and the bytecode index `index` of a code
+    /// of the boundaries `bcis`, as the class file has it: the packed forms expanded, its
+    /// labels the differences of the byte offsets of their targets from its own.
+    fn instruction(
+        &self,
+        out: &mut Out,
+        instruction: &Instruction,
+        at: usize,
+        index: usize,
+        bcis: &Bcis,
+    ) -> Result<()> {
+        let unbuildable = || {
+            malformed(format!(
+                "the packed bytecode {}{} with the operand {:?}",
+                instruction.opcode,
+                if instruction.wide { " after wide" } else { "" },
+                instruction.operand
+            ))
+        };
+        let label = |label: i32| -> Result<i64> {
+            let target = index as i64 + i64::from(label);
+            let target = usize::try_from(target)
+                .ok()
+                .and_then(|target| bcis.boundaries.get(target))
+                .ok_or_else(|| malformed(format!("a branch to the instruction {target}")))?;
+            Ok(*target as i64 - at as i64)
+        };
+        let (aload, opcode) = expand(instruction.opcode);
+        if instruction.wide {
+            out.u1(WIDE);
+            out.u1(opcode);
+            return match (opcode, &instruction.operand) {
+                (21..=25 | 54..=58 | 169, Operand::Local(local)) => {
+                    out.unsigned(i64::from(*local), 2)
+                }
+                (132, Operand::Iinc { local, constant }) => {
+                    out.unsigned(i64::from(*local), 2)?;
+                    out.sized(i64::from(*constant), 2)
+                }
+                _ => Err(unbuildable()),
+            };
+        }
+        if aload {
+            out.u1(ALOAD_0);
+        }
+        if opcode < 253 {
+            out.u1(opcode);
+        }
+        match (opcode, &instruction.operand) {
+            (_, Operand::None) if is_simple(opcode) => Ok(()),
+            (16 | 188, Operand::Byte(value)) => out.sized(i64::from(*value), 1),
+            (17, Operand::Short(value)) => out.sized(i64::from(*value), 2),
+            (21..=25 | 54..=58 | 169, Operand::Local(local)) => out.unsigned(i64::from(*local), 1),
+            (132, Operand::Iinc { local, constant }) => {
+                out.unsigned(i64::from(*local), 1)?;
+                out.sized(i64::from(*constant), 1)
+            }
+            (153..=168 | 198 | 199, Operand::Label(target)) => out.signed(label(*target)?, 2),
+            (200 | 201, Operand::Label(target)) => out.signed(label(*target)?, 4),
+            (
+                170,
+                Operand::TableSwitch {
+                    default,
+                    low,
+                    labels,
+                },
+            ) => {
+                out.bytes.resize(out.bytes.len() + padding(at), 0);
+                out.signed(label(*default)?, 4)?;
+                let high = i64::from(*low) + labels.len() as i64 - 1;
+                out.signed(i64::from(*low), 4)?;
+                out.signed(high, 4)?;
+                for &target in labels {
+                    out.signed(label(target)?, 4)?;
+                }
+                Ok(())
+            }
+            (171, Operand::LookupSwitch { default, cases }) => {
+                out.bytes.resize(out.bytes.len() + padding(at), 0);
+                out.signed(label(*default)?, 4)?;
+                out.signed(cases.len() as i64, 4)?;
+                for &(value, target) in cases {
+                    out.signed(i64::from(value), 4)?;
+                    out.signed(label(target)?, 4)?;
+                }
+                Ok(())
+            }
+            (18, Operand::Ref(key)) => out.reference(Some(key), 1),
+            (19 | 20 | 178..=184 | 187 | 189 | 192 | 193, Operand::Ref(key)) => {
+                out.reference(Some(key), 2)
+            }
+            (185, Operand::Ref(key @ Key::Imethod(method))) => {
+                out.reference(Some(key), 2)?;
+                let (_, descr) = self.pool.imethods[*method];
+                let slots = argument_slots(self.pool.descr(descr).1)? + 1;
+                out.unsigned(slots as i64, 1)?;
+                out.u1(0);
+                Ok(())
+            }
+            (197, Operand::MultiArray { class, dimensions }) => {
+                out.reference(Some(class), 2)?;
+                out.unsigned(i64::from(*dimensions), 1)
+            }
+            (253, Operand::RefEscape { key, size }) => {
+                let size = u8::try_from(*size)
+                    .ok()
+                    .filter(|size| (1..=4).contains(size))
+                    .ok_or_else(unbuildable)?;
+                out.reference(Some(key), size)
+            }
+            (254, Operand::ByteEscape(bytes)) => {
+                out.bytes.extend_from_slice(bytes);
+                Ok(())
+            }
+            _ => Err(unbuildable()),
+        }
     }
 }
