@@ -495,7 +495,6 @@ impl<'a, 'p> Listener<'a, 'p> {
     /// The text of the shared string at `index`: when planning, only whether the table holds
     /// it.
     fn shared_string(&mut self, index: i32) -> Result<String, Uncaught> {
-        let plans = self.plans();
         let Some(strings) = &mut self.shared_strings else {
             return Err(Uncaught::Stored(Thrown::tika(
                 "sstRecord should have been initialized before a ref to the shared string table",
@@ -505,9 +504,6 @@ impl<'a, 'p> Listener<'a, 'p> {
             .ok()
             .filter(|&index| index < strings.len())
             .ok_or_else(|| Uncaught::Thrown(index_out_of_bounds(index, strings.len())))?;
-        if plans {
-            return Ok(String::new());
-        }
         let string = strings.get(index).map_err(Uncaught::Thrown)?;
         Ok(if self.settings.phonetic_runs {
             let phonetic = string

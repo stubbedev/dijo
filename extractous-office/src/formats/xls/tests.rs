@@ -239,8 +239,8 @@ fn writes_cells_in_a_table_per_sheet() {
         &[
             "<h1>One</h1>",
             "<td>label</td></tr>",
-            "<tr><td>shared</td><td>2.5</td></tr>",
-            "<tr><td>3/15/23</td></tr>",
+            "<tr>\t<td>shared</td>\t<td>2.5</td></tr>",
+            "<tr>\t<td>3/15/23</td></tr>",
             "</table>",
             "<div class=\"outside\">again</div>",
         ],
@@ -268,9 +268,52 @@ fn writes_cells_that_come_in_order_as_they_come() {
         &[
             "<h1>One</h1>",
             "<td>label</td></tr>",
-            "<tr><td>shared</td></tr>",
-            "<tr><td>more</td>",
+            "<tr>\t<td>shared</td></tr>",
+            "<tr>\t<td>more</td>",
             "<td>3/15/23</td></tr>",
+            "</table>",
+        ],
+    );
+}
+
+/// The cell of a shared string `index` at `row` and `column`.
+fn shared_label(row: u16, column: u16, index: i32) -> Vec<u8> {
+    let mut shared = cell(row, column, 0);
+    shared.extend(index.to_le_bytes());
+    record(sid::LABEL_SST, &shared)
+}
+
+/// Planning counts the cells of shared strings as writing does, blank ones left out: a
+/// hyperlink from one links it, and one out of order holds its sheet.
+#[test]
+fn plans_the_cells_of_shared_strings_as_they_are_written() {
+    let mut stream = globals(&["One"], &["shared", "  "]);
+    stream.extend(bof(0x10));
+    stream.extend(label(0, 0, "first"));
+    stream.extend(shared_label(0, 1, 0));
+    stream.extend(shared_label(0, 2, 1));
+    stream.extend(label(0, 3, "last"));
+    stream.extend(hyperlink(0, 1, "linked.xls"));
+    stream.extend(record(sid::EOF, &[]));
+    assert!(plan(&stream).unwrap().found.plans[0].is_streamed());
+    assert_in_order(
+        &xhtml(&stream),
+        &[
+            "<td>first</td>\t<td><a href=\"linked.xls\">shared</a></td>\t<td />\t<td>last</td>",
+            "</table>",
+        ],
+    );
+    let mut stream = globals(&["One"], &["shared"]);
+    stream.extend(bof(0x10));
+    stream.extend(label(1, 0, "later"));
+    stream.extend(shared_label(0, 0, 0));
+    stream.extend(record(sid::EOF, &[]));
+    assert!(!plan(&stream).unwrap().found.plans[0].is_streamed());
+    assert_in_order(
+        &xhtml(&stream),
+        &[
+            "<td>shared</td></tr>",
+            "<tr>\t<td>later</td></tr>",
             "</table>",
         ],
     );
@@ -365,8 +408,8 @@ fn writes_cells_as_their_records_mean_them() {
         &xhtml,
         &[
             "<h1>S</h1>",
-            "<td>TRUE</td><td>FALSE</td><td>#DIV/0!</td>",
-            "<td>1/1/04</td><td><a href=\"y.xls\"><a href=\"x.xls\">linked</a></a></td>",
+            "<td>TRUE</td>\t<td>FALSE</td>\t<td>#DIV/0!</td>",
+            "<td>1/1/04</td>\t<td><a href=\"y.xls\"><a href=\"x.xls\">linked</a></a></td>",
             "<div class=\"outside\">Page \tQ</div>",
         ],
     );
