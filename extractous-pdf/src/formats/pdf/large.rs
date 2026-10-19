@@ -7,8 +7,15 @@ use extractous_core::Extractor;
 
 use super::truetype::programs::of_glyphs;
 use super::PdfParser;
+use crate::config::{PdfOcrStrategy, PdfParserConfig};
 use crate::formats::Parser;
 use crate::input::MAX_READ_WHOLE;
+
+/// An extractor that OCRs no page: the pages of these documents hold too little text not to be
+/// OCRed otherwise, and a page rendered for tesseract takes more than [`BUDGET`] on its own.
+fn without_ocr() -> Extractor {
+    Extractor::new().set_pdf_config(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR))
+}
 
 /// A document of `count` pages, each of the same number of objects, its page dictionary first,
 /// after the catalog, object 1, and the page tree, object 2.
@@ -142,7 +149,7 @@ fn extracts_documents_of_thousands_of_pages_in_memory_bounded_by_the_page() {
     .write("images.pdf");
     let size = std::fs::metadata(file.path()).unwrap().len();
     assert!(size > 80 << 20, "the document is {size} bytes");
-    let (text, metadata) = file.extract_with(&Extractor::new(), BUDGET, PdfParser.name());
+    let (text, metadata) = file.extract_with(&without_ocr(), BUDGET, PdfParser.name());
     assert_eq!(metadata["xmpTPg:NPages"], [count.to_string()]);
     let expected: Vec<String> = (0..count).map(|index| format!("Page {index}")).collect();
     assert_eq!(pages_text(&text), expected);
@@ -187,7 +194,7 @@ fn extracts_documents_of_a_font_per_page_in_bounded_memory() {
         },
     }
     .write("fonts.pdf");
-    let (text, metadata) = file.extract(PdfParser.name());
+    let (text, metadata) = file.extract_with(&without_ocr(), BUDGET, PdfParser.name());
     assert_eq!(metadata["xmpTPg:NPages"], [count.to_string()]);
     let expected: Vec<String> = (0..count).map(|index| format!("Page {index}")).collect();
     assert_eq!(pages_text(&text), expected);

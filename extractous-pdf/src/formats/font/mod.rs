@@ -242,12 +242,14 @@ mod large {
         assert_eq!(metadata["dcterms:created"].len(), 1);
     }
 
-    /// Metrics too large to read whole are read twice, keeping none of their comments.
+    /// Metrics too large to read whole are read twice, keeping none of their comments. Their
+    /// average width is FontBox's, summed in a `float`, which drifts from the width they all
+    /// have over so many.
     #[test]
     fn reads_metrics_too_large_to_read_whole_in_bounded_memory() {
         let metric = b"C 65 ; WX 500 ; N A ; B 0 0 600 700 ;\n".to_vec();
         let comment = b"Comment A comment written as it is read again\n".to_vec();
-        let count = bodies_past_limit(metric.len() + comment.len()) / 2;
+        let count = bodies_past_limit(metric.len() + comment.len());
         let head = format!(
             "StartFontMetrics 2.0\nComment Creation Date: Mon Jan  1 00:00:00 2024\n\
              FontName Large\nStartCharMetrics {count}\n"
@@ -266,7 +268,14 @@ mod large {
         );
         let (text, metadata) = file.extract(AdobeFontMetricParser.name());
         assert_eq!(metadata["dcterms:created"], ["Mon Jan  1 00:00:00 2024"]);
-        assert_eq!(metadata["AvgCharacterWidth"], ["500.0"]);
+        let (total, widths) = (0..count).fold((0.0f32, 0.0f32), |(total, widths), _| {
+            (total + 500.0, widths + 1.0)
+        });
+        assert_eq!(
+            metadata["AvgCharacterWidth"],
+            [float_to_string(total / widths)]
+        );
+        assert_ne!(metadata["AvgCharacterWidth"], ["500.0"]);
         assert_eq!(metadata[FONT_NAME], ["Large"]);
         assert!(
             text.contains("A comment written as it is read again"),
