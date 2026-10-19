@@ -5210,9 +5210,9 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/testPACK200.pack": {
-    "mime_type": "undetected",
-    "outcome": "fails",
-    "similarity": 0.0
+    "mime_type": "application/x-java-pack200",
+    "outcome": "works",
+    "similarity": 0.98989898989899
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/testSVG.svg": {
     "mime_type": "image/svg+xml",

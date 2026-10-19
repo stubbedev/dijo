@@ -1,6 +1,6 @@
 # Conformance with Apache Tika
 
-Every test document of Apache Tika's parser modules, extracted natively and with the same Tika version on the JVM, OCR off on both sides. A file works when the native text and title match Tika's text with an F1 score of at least 0.95 over their tokens, or when one of our own parsers reads its format on purpose differently (subtitles, notebooks, FictionBook, Apple Mail, iWork 2013+). 1051 of 1094 files work or are empty on both sides.
+Every test document of Apache Tika's parser modules, extracted natively and with the same Tika version on the JVM, OCR off on both sides. A file works when the native text and title match Tika's text with an F1 score of at least 0.95 over their tokens, or when one of our own parsers reads its format on purpose differently (subtitles, notebooks, FictionBook, Apple Mail, iWork 2013+). 1052 of 1094 files work or are empty on both sides.
 
 | Media type | Files | Work | Differ | Fail | Files that differ or fail (F1) |
 |---|---|---|---|---|---|
@@ -150,6 +150,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/x-itunes-ipa | 1 | 0 | 1 | 0 | testIPA.ipa (0.94) |
 | application/x-java-jnilib | 1 | 1 | 0 | 0 |  |
 | application/x-java-keystore | 1 | 1 | 0 | 0 |  |
+| application/x-java-pack200 | 1 | 1 | 0 | 0 |  |
 | application/x-lz4 | 1 | 1 | 0 | 0 |  |
 | application/x-mach-o-executable | 4 | 4 | 0 | 0 |  |
 | application/x-mach-o-universal | 2 | 2 | 0 | 0 |  |
@@ -269,7 +270,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | text/x-matlab | 3 | 3 | 0 | 0 |  |
 | text/x-robots | 2 | 2 | 0 | 0 |  |
 | text/x-vcalendar | 1 | 1 | 0 | 0 |  |
-| undetected | 34 | 33 | 0 | 1 | testPACK200.pack (0.00) |
+| undetected | 33 | 33 | 0 | 0 |  |
 | video/mp4 | 7 | 7 | 0 | 0 |  |
 | video/quicktime | 2 | 2 | 0 | 0 |  |
 | video/webm | 2 | 2 | 0 | 0 |  |
