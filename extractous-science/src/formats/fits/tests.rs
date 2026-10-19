@@ -1,11 +1,4 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_read_where_tika_reads_nothing, conformance_corpus, documents, WITHOUT_SCIENTIFIC_MODULE,
-};
 
 /// A header of `cards`, each padded to 80 characters, ended and padded to a whole block.
 fn header(cards: &[&str]) -> Vec<u8> {
@@ -81,17 +74,6 @@ fn stops_at_what_follows_the_last_extension() {
     let mut bytes = file();
     bytes.extend_from_slice(&[0; 2880]);
     assert_eq!(units(Bytes::new(&bytes)).unwrap().len(), 2);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn reads_tikas_test_files_which_tikas_path_leaves_empty() {
-    let (parsed, deferred) = documents(&FitsParser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 3, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_read_where_tika_reads_nothing(&paths, &[WITHOUT_SCIENTIFIC_MODULE]);
 }
 
 #[test]

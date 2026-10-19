@@ -15,8 +15,6 @@ static ALLOCATOR: memory::CountingAllocator<extractous_core::large::Peak<std::al
 /// The parsers, at the paths they have in `extractous-core`.
 pub mod formats {
     pub(crate) use extractous_base::formats::*;
-    #[cfg(all(test, feature = "tika"))]
-    pub(crate) use extractous_core::parity;
 
     pub mod epub;
     #[cfg(test)]

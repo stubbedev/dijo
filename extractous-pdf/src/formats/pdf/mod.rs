@@ -90,21 +90,6 @@ const MAX_RECURSION_DEPTH: usize = 100;
 pub(super) use crate::formats::Unported;
 use crate::ocr::{tesseract_runs as ocr_runs, OcrSettings};
 
-/// For the parity tests: the failure of an XFA form's XML, which Tika records as the stack trace
-/// of the JDK StAX reader's exception and the native parser as the failure its own XML parser reports
-/// (#125).
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub const XFA_FAILURE: crate::formats::parity::Departures =
-    &[crate::formats::parity::Departure::Values(
-        crate::formats::embedded::EXCEPTION_WARNING,
-        "#125",
-    )];
-
-/// For the parity tests: the document of Tika's tests whose XFA form's XML fails, which departs
-/// by [`XFA_FAILURE`].
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub const MALFORMED_XFA: &str = "testPDF_malformedXFA.pdf";
-
 /// Tika's `PDFParser`, wrapped in our `TextLayerCheckingPdfParser` when tesseract runs.
 pub struct PdfParser;
 
@@ -470,19 +455,8 @@ impl Streamed<'_, '_> {
 }
 
 /// A detail in which a streamed document is read otherwise than Tika's path, met after its
-/// first pages were written: a failure where Tika's path would have taken the document.
-#[cfg(feature = "tika")]
-fn late_difference(_: &mut Xhtml, Difference(reason): Difference) -> Result<(), Failure> {
-    Err(Failure::Extraction(Error::ParseError(format!(
-        "The PDF parser met {reason} after it had written the document's first pages, where \
-         Tika's path would have taken the whole document"
-    ))))
-}
-
-/// A detail in which a streamed document is read otherwise than Tika's path, met after its
 /// first pages were written: recorded as the difference of a document read so from the start
 /// is, where there is no Tika.
-#[cfg(not(feature = "tika"))]
 fn late_difference(xhtml: &mut Xhtml, difference: Difference) -> Result<(), Failure> {
     let warning = difference.warning(PdfParser.name());
     crate::formats::embedded::record_exception(xhtml.metadata_mut(), &warning);
@@ -757,20 +731,11 @@ fn is_illustrator(pdf: &Pdf) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::config::PdfOcrStrategy;
     use crate::config::{PdfParserConfig, TesseractOcrConfig};
     use crate::formats::embedded::EXCEPTION_WARNING;
-    use crate::formats::parity::documents;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_same_as_tika_delegating, assert_same_as_tika_delegating_departing_with,
-        assert_same_as_tika_delegating_with, conformance_corpus, Scratch,
-    };
+    use crate::formats::testing::documents;
     use std::collections::BTreeMap;
     use std::path::Path;
-    #[cfg(feature = "tika")]
-    use std::path::PathBuf;
 
     pub(super) const CORPORA: [&str; 2] = ["../quality/corpus", "../test_files/documents"];
 
@@ -795,12 +760,6 @@ mod tests {
                 Self::Doubtful => false,
             }
         }
-
-        /// Whether the port reads pages of a document for this reason by OCR.
-        #[cfg(feature = "tika")]
-        fn reads_by_ocr(self) -> bool {
-            ocr_runs() && matches!(self, Self::Ocr | Self::Unmapped | Self::Doubtful)
-        }
     }
 
     /// The documents of the corpora whose pages OCR reads, or which the port leaves to Tika,
@@ -816,33 +775,8 @@ mod tests {
         ("thai.pdf", Why::Unmapped),
     ];
 
-    #[cfg(feature = "tika")]
-    pub(super) fn tika_name() -> &'static str {
-        PdfParser.tika_name()
-    }
-
-    #[cfg(feature = "tika")]
-    pub(super) fn as_paths(paths: &[PathBuf]) -> Vec<&Path> {
-        paths.iter().map(PathBuf::as_path).collect()
-    }
-
     fn corpora() -> Vec<&'static Path> {
         CORPORA.iter().map(Path::new).collect()
-    }
-
-    /// The documents of the corpora whose pages OCR reads, when tesseract runs.
-    #[cfg(feature = "tika")]
-    fn read_by_ocr() -> Vec<PathBuf> {
-        NOT_THE_TEXT_LAYER
-            .iter()
-            .filter(|(_, why)| why.reads_by_ocr())
-            .filter_map(|(name, _)| {
-                CORPORA
-                    .iter()
-                    .map(|corpus| Path::new(corpus).join(name))
-                    .find(|path| path.is_file())
-            })
-            .collect()
     }
 
     fn deferral_of(path: &Path) -> String {
@@ -945,12 +879,6 @@ mod tests {
         [&haystack[..at], replacement, &haystack[at + needle.len()..]].concat()
     }
 
-    #[cfg(feature = "tika")]
-    fn deferral(path: &Path) -> Option<String> {
-        let input = std::fs::read(path).unwrap();
-        PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
-    }
-
     /// A page of Helvetica text drawn by `content`.
     pub(super) fn page_objects(content: &str) -> Vec<String> {
         vec![
@@ -1044,85 +972,6 @@ mod tests {
         "BT /F1 12 Tf 72 720 Td (Det var en gang en konge, som havde tre d\\370tre.) Tj \
                         0 -14 Td (Den yngste var den smukkeste af dem alle sammen.) Tj ET";
 
-    /// A document of one page scanned at 300 dpi, the image in grey and no text on it.
-    #[cfg(feature = "tika")]
-    fn scanned(image: &[u8]) -> Vec<u8> {
-        use std::io::Write;
-        const POINTS_PER_PIXEL: f64 = 72.0 / 300.0;
-        let gray = image::load_from_memory(image).unwrap().to_luma8();
-        let mut encoder =
-            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-        encoder.write_all(gray.as_raw()).unwrap();
-        let mut hex: String = encoder
-            .finish()
-            .unwrap()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        hex.push('>');
-        let width = f64::from(gray.width()) * POINTS_PER_PIXEL;
-        let height = f64::from(gray.height()) * POINTS_PER_PIXEL;
-        let content = format!("q {width:.2} 0 0 {height:.2} 0 0 cm /Scan Do Q");
-        let objects = [
-            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
-            format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width:.2} {height:.2}] \
-                 /Contents 4 0 R /Resources << /XObject << /Scan 5 0 R >> >> >>"
-            ),
-            format!(
-                "<< /Length {} >>\nstream\n{content}\nendstream",
-                content.len() + 1
-            ),
-            format!(
-                "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceGray \
-                 /BitsPerComponent 8 /Filter [/ASCIIHexDecode /FlateDecode] /Length {} >>\n\
-                 stream\n{hex}\nendstream",
-                gray.width(),
-                gray.height(),
-                hex.len() + 1
-            ),
-        ];
-        document(&objects.each_ref().map(String::as_str), b"", &[])
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_right_to_left_scanned_pages_by_ocr_as_tikas_path_does() {
-        assert!(ocr_runs(), "tesseract is not installed");
-        let scratch = Scratch::new("pdf-right-to-left");
-        let image = std::fs::read("../test_files/documents/ara-ocr.png").unwrap();
-        let scan = scratch.write("ara-ocr.pdf", &scanned(&image));
-        let input = std::fs::read(&scan).unwrap();
-        for language in [TesseractOcrConfig::AUTO_LANGUAGE, "ara"] {
-            let configs = ParserConfigs {
-                ocr: TesseractOcrConfig::new().set_language(language),
-                ..ParserConfigs::default()
-            };
-            let recorded = record(
-                &input,
-                Pages::IN_MEMORY,
-                &TikaMetadata::new(),
-                &configs,
-                RECORDING_LIMIT,
-            );
-            assert!(
-                matches!(
-                    recorded,
-                    Ok((
-                        Recorded::Whole {
-                            page_ocr: Some(_),
-                            ..
-                        },
-                        _
-                    ))
-                ),
-                "the scan is not read by OCR with {language}"
-            );
-            assert_same_as_tika_delegating_with(&[&scan], tika_name(), &DELEGATES, &configs);
-        }
-    }
-
     /// The PDF parser with a recording limit of nothing: it streams every document whose first
     /// page OCR does not read.
     struct Streaming;
@@ -1161,14 +1010,14 @@ mod tests {
         let mut streamed = 0;
         for path in &paths {
             let path = path.to_str().unwrap();
-            let routed = crate::formats::parity::route_file(path).unwrap();
+            let routed = crate::formats::testing::route_file(path).unwrap();
             let input = &routed.input;
             let recorded = record(input, input.pages(), &TikaMetadata::new(), &configs, 0);
             streamed += usize::from(matches!(recorded, Ok((Recorded::Large(..), _))));
             for output in [crate::formats::Output::Text, crate::formats::Output::Xml] {
                 for limit in [200, usize::MAX >> 1] {
                     let extract = |parser: &dyn Parser| {
-                        let extracted = crate::formats::parity::parse_to_string(
+                        let extracted = crate::formats::testing::parse_to_string(
                             parser,
                             input,
                             &routed.detected,
@@ -1192,38 +1041,6 @@ mod tests {
             }
         }
         assert!(streamed > 20, "{streamed} documents streamed");
-    }
-
-    /// Standard 14 fonts without an `/Encoding` take their AFM file's, whose unencoded glyphs
-    /// have the code -1.
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_standard_fonts_in_their_own_encoding_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-builtin-encoding");
-        let paths: Vec<PathBuf> = ["Helvetica", "Times-Bold", "Courier", "Symbol"]
-            .iter()
-            .map(|font| {
-                let mut objects = page_objects(TEXT);
-                objects[4] = format!("<< /Type /Font /Subtype /Type1 /BaseFont /{font} >>");
-                let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-                scratch.write(&format!("{font}.pdf"), &document(&objects, b"", &[]))
-            })
-            .collect();
-        for path in &paths {
-            assert_eq!(deferral(path), None, "{}", path.display());
-        }
-        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_documents_with_a_byte_order_mark_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-recovered");
-        let objects = page_objects(TEXT);
-        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        let plain = scratch.write("plain.pdf", &document(&objects, b"", &[]));
-        let marked = scratch.write("marked.pdf", &document(&objects, b"\xef\xbb\xbf", &[]));
-        assert_same_as_tika_delegating(&[&plain, &marked], tika_name(), &DELEGATES);
     }
 
     /// A document of a form with a field of each kind, a non-terminal field holding `address`
@@ -1254,17 +1071,6 @@ mod tests {
             .map(str::to_owned),
         );
         objects
-    }
-
-    /// A page showing `codes` in a composite font of the CMap `encoding` whose descendant, not
-    /// embedded, is of the character collection `ordering` of `kind`.
-    #[cfg(feature = "tika")]
-    fn composite(encoding: &str, ordering: &str, kind: &str, codes: &str) -> Vec<u8> {
-        document(
-            &composite_objects(encoding, ordering, kind, codes),
-            b"",
-            &[],
-        )
     }
 
     /// The objects of [`composite`].
@@ -1308,40 +1114,6 @@ mod tests {
         document(&objects, b"", &[])
     }
 
-    /// Embedded programs FontBox reads, of each cmap format, the text read of their cmaps, where
-    /// format 13 maps A to C to one glyph, and one of PostScript outlines that `TTFParser` fails,
-    /// which makes the font damaged.
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_embedded_true_type_programs_as_tikas_path_does() {
-        use truetype::programs::{format2, format8, long_subtable, program, with_cmap};
-        let scratch = Scratch::new("pdf-true-type-programs");
-        let programs = [
-            ("format4.pdf", program(&[])),
-            ("format2.pdf", with_cmap(format2())),
-            ("format8.pdf", with_cmap(format8())),
-            (
-                "format13.pdf",
-                with_cmap(long_subtable(13, &[1, 0x41, 0x43, 2])),
-            ),
-            ("cff.pdf", program(&[(b"CFF ", vec![1, 0, 4, 1])])),
-        ];
-        let configs = with_pdf(PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR));
-        let paths: Vec<PathBuf> = programs
-            .iter()
-            .map(|(name, program)| {
-                let input = embedded_composite(program, "000100020003");
-                let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &configs);
-                assert_eq!(deferral, None, "{name}");
-                let (_, xhtml) = prepared_reading(&input, &configs);
-                let whole = !matches!(*name, "format13.pdf" | "cff.pdf");
-                assert_eq!(xhtml.contains("ABC"), whole, "{name}: {xhtml}");
-                scratch.write(name, &input)
-            })
-            .collect();
-        assert_same_as_tika_delegating_with(&as_paths(&paths), tika_name(), &DELEGATES, &configs);
-    }
-
     /// An OpenType program, which PDFBox reads with `OTFParser`, and a cmap mapping a code to the
     /// glyph past the last, where FontBox throws, are read with the font damaged.
     #[test]
@@ -1354,84 +1126,6 @@ mod tests {
             let (difference, _) = differing_reading(&input, &ParserConfigs::default());
             assert!(difference.0.contains(why), "{difference:?}");
         }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn maps_predefined_cmaps_to_unicode_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-predefined-cmaps");
-        let documents = [
-            (
-                "unijis.pdf",
-                composite(
-                    "UniJIS-UCS2-H",
-                    "Japan1",
-                    "CIDFontType0",
-                    "30423044304630483048",
-                ),
-            ),
-            (
-                "rksj.pdf",
-                composite("90ms-RKSJ-H", "Japan1", "CIDFontType0", "82a082a282a441"),
-            ),
-            (
-                "uniks.pdf",
-                composite("UniKS-UCS2-H", "Korea1", "CIDFontType2", "D55CAE00"),
-            ),
-            (
-                "gbk.pdf",
-                composite("GBK-EUC-H", "GB1", "CIDFontType0", "D6D0CEC4"),
-            ),
-            (
-                "b5.pdf",
-                composite("ETen-B5-H", "CNS1", "CIDFontType0", "A4A4A4E5"),
-            ),
-            (
-                "identity.pdf",
-                composite("Identity-H", "Japan1", "CIDFontType0", "034B034C"),
-            ),
-            (
-                "vertical.pdf",
-                composite("UniJIS-UCS2-HW-V", "Japan1", "CIDFontType0", "30423044"),
-            ),
-        ];
-        let paths: Vec<PathBuf> = documents
-            .iter()
-            .map(|(name, bytes)| scratch.write(name, bytes))
-            .collect();
-        // The pages show next to no glyphs, which Tika would read by OCR: the text layer alone
-        // is compared.
-        let pdf = PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR);
-        let configs = with_pdf(pdf.clone());
-        for (_, bytes) in &documents {
-            let deferral = PdfParser.defers(bytes, &TikaMetadata::new(), &configs);
-            assert_eq!(deferral, None);
-        }
-        assert_same_as_tika_delegating_with(&as_paths(&paths), tika_name(), &DELEGATES, &configs);
-        for ((_, bytes), text) in documents.iter().zip([
-            "\u{3042}\u{3044}\u{3046}\u{3048}\u{3048}",
-            "\u{3042}\u{3044}\u{3046}A",
-            "\u{d55c}\u{ae00}",
-            "\u{4e2d}\u{6587}",
-            "\u{4e2d}\u{6587}",
-        ]) {
-            let (xml, _) = crate::Extractor::new()
-                .set_xml_output(true)
-                .set_pdf_config(pdf.clone())
-                .extract_bytes_to_string(bytes)
-                .unwrap();
-            assert!(xml.contains(text), "{text}: {xml}");
-        }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_form_fields_and_signatures_as_tikas_path_does() {
-        let objects = form_objects("", "");
-        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        let scratch = Scratch::new("pdf-form");
-        let form = scratch.write("form.pdf", &document(&objects, b"", &[]));
-        assert_same_as_tika_delegating(&[&form], tika_name(), &DELEGATES);
     }
 
     #[test]
@@ -1494,62 +1188,6 @@ mod tests {
         document(&objects, b"", &[])
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn parses_embedded_files_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-embedded");
-        let embedding = scratch.write("embedding.pdf", &embedding("", ""));
-        assert_same_as_tika_delegating(&[&embedding], tika_name(), &DELEGATES);
-    }
-
-    /// A document of a page drawn by `content` with a file attachment annotation embedding a
-    /// text file of `text`.
-    #[cfg(feature = "tika")]
-    fn attaching(content: &str, text: &str) -> Vec<u8> {
-        let mut objects = page_objects(content);
-        objects[2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
-                      /Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R] >>"
-            .to_owned();
-        objects.extend([
-            "<< /Type /Annot /Subtype /FileAttachment /Rect [0 0 10 10] /FS 7 0 R >>".to_owned(),
-            "<< /Type /Filespec /F (vedlagt.txt) /EF << /F 8 0 R >> >>".to_owned(),
-            format!(
-                "<< /Type /EmbeddedFile /Length {} >>\nstream\n{text}\nendstream",
-                text.len()
-            ),
-        ]);
-        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        document(&objects, b"", &[])
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn weighs_the_files_an_annotation_embeds_with_the_page_as_tikas_path_does() {
-        assert!(ocr_runs(), "tesseract is not installed");
-        let scratch = Scratch::new("pdf-annotation-file");
-        let prose = "Det var en gang en konge, som havde tre d\u{f8}tre, og den yngste var den \
-                     smukkeste af dem alle sammen.";
-        let documents = [
-            (
-                "few-glyphs.pdf",
-                attaching("BT /F1 12 Tf 72 720 Td (Kort.) Tj ET", prose),
-            ),
-            ("prose.pdf", attaching(TEXT, prose)),
-            (
-                "noise.pdf",
-                attaching(TEXT, &"#%&/ {}[] 0x7f ~^ ".repeat(40)),
-            ),
-        ];
-        let paths: Vec<PathBuf> = documents
-            .iter()
-            .map(|(name, bytes)| scratch.write(name, bytes))
-            .collect();
-        for path in &paths {
-            assert_eq!(deferral(path), None, "{}", path.display());
-        }
-        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
-    }
-
     /// The text of the file that [`shared_annotation`] embeds.
     const SHARED_FILE: &str = "Delt vedh\u{e6}ftning.";
 
@@ -1592,16 +1230,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn parses_the_file_of_an_annotation_two_pages_share_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-shared-annotation");
-        let [listed, held] = shared_annotations();
-        let listed = scratch.write("listed.pdf", &listed);
-        let held = scratch.write("held.pdf", &held);
-        assert_same_as_tika_delegating(&[&listed, &held], tika_name(), &DELEGATES);
-    }
-
     #[test]
     fn parses_each_embedded_file_once_and_every_name_of_the_tree() {
         // Tika extracts the Mac copy apart, under its name `  ` before `UF`, keeps only the
@@ -1615,33 +1243,6 @@ mod tests {
         assert_eq!(xml.matches("id=\"second.txt\"").count(), 1, "{xml}");
         assert!(xml.contains("id=\"fourth.txt\""), "{xml}");
         assert_eq!(xml.matches("Tredje fil.").count(), 2, "{xml}");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn measures_type3_glyphs_from_their_procedures_as_tikas_path_does() {
-        let content = format!(
-            "{TEXT} BT /F2 12 Tf 72 600 Td (abba abab baba) Tj 0 -14 Td (ab ba ab ba) Tj ET"
-        );
-        let mut objects = page_objects(&content);
-        objects[2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
-                      /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>"
-            .to_owned();
-        let procedure =
-            |text: &str| format!("<< /Length {} >>\nstream\n{text}\nendstream", text.len());
-        objects.extend([
-            "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 0 0] \
-             /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a 7 0 R /b 8 0 R /space 9 0 R >> \
-             /Encoding << /Type /Encoding /Differences [32 /space 97 /a /b] >> >>"
-                .to_owned(),
-            procedure("520 0 -10 -200 480 700 d1 0 0 450 700 re f"),
-            procedure("610 0 d0 0 0 500 650 re f"),
-            procedure("250 0 0 0 0 0 d1"),
-        ]);
-        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        let scratch = Scratch::new("pdf-type3");
-        let type3 = scratch.write("type3.pdf", &document(&objects, b"", &[]));
-        assert_same_as_tika_delegating(&[&type3], tika_name(), &DELEGATES);
     }
 
     /// A document of an XFA form whose data `data` holds, and of the AcroForm fields `fields`,
@@ -1677,20 +1278,6 @@ mod tests {
         document(&objects, b"", &[])
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_xfa_forms_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-xfa");
-        let xfa = scratch.write(
-            "xfa.pdf",
-            &xfa_form(
-                "<form1><navn>Kari</navn><by>Oslo</by><by>Bergen</by></form1>",
-                &[],
-            ),
-        );
-        assert_same_as_tika_delegating(&[&xfa], tika_name(), &DELEGATES);
-    }
-
     /// The fields of an AcroForm, which a document of an XFA form shows once the form fails.
     const ACRO_FIELDS: [&str; 2] = [
         "<< /FT /Tx /T (navn) /TU (Fulde navn) /V (Kari Nordmann) >>",
@@ -1699,20 +1286,6 @@ mod tests {
 
     /// The XFA data of a document whose form's XML fails at its mismatched end tag.
     const MALFORMED_XFA_DATA: &str = "<form1><navn>Kari</nav></form1>";
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_the_acroform_of_a_failing_xfa_form_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-xfa-malformed");
-        let malformed = scratch.write("malformed.pdf", &xfa_form(MALFORMED_XFA_DATA, &ACRO_FIELDS));
-        assert_same_as_tika_delegating_departing_with(
-            &[&malformed],
-            tika_name(),
-            &DELEGATES,
-            XFA_FAILURE,
-            &ParserConfigs::default(),
-        );
-    }
 
     /// Documents of an XFA form of one stream that declares its document type, with a text
     /// and a field whose text `text` and value `value` follow the declaration `doctype`.
@@ -1794,23 +1367,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_an_xfa_form_past_its_document_type_declaration_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-xfa-document-types");
-        let paths: Vec<PathBuf> = xfa_document_types()
-            .into_iter()
-            .map(|(name, input)| scratch.write(name, &input))
-            .collect();
-        assert_same_as_tika_delegating_departing_with(
-            &as_paths(&paths),
-            tika_name(),
-            &DELEGATES,
-            XFA_FAILURE,
-            &ParserConfigs::default(),
-        );
-    }
-
     #[test]
     fn records_why_an_xfa_form_fails_and_reads_its_acroform() {
         let (xml, metadata) = native_xml(&xfa_form(MALFORMED_XFA_DATA, &ACRO_FIELDS));
@@ -1880,20 +1436,6 @@ mod tests {
                 "{path}: {xml}"
             );
         }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn decrypts_the_object_streams_a_search_finds_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-encrypted-search");
-        let moved: Vec<PathBuf> = ENCRYPTED_OBJECT_STREAMS
-            .iter()
-            .map(|path| {
-                let name = Path::new(path).file_name().unwrap().to_str().unwrap();
-                scratch.write(name, &moved_objects(path))
-            })
-            .collect();
-        assert_same_as_tika_delegating(&as_paths(&moved), tika_name(), &DELEGATES);
     }
 
     /// The offset the last `startxref` of `document` gives.
@@ -2039,18 +1581,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn follows_the_references_of_the_cross_reference_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-indirect-xref");
-        let paths: Vec<PathBuf> = indirect_cross_references()
-            .iter()
-            .enumerate()
-            .map(|(index, (input, _))| scratch.write(&format!("indirect-{index}.pdf"), input))
-            .collect();
-        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
-    }
-
     /// A document of a page and a file specification, object 6, whose update gives the object
     /// a generation 1 of another file, the table listing both generations.
     fn two_generations() -> Vec<u8> {
@@ -2095,14 +1625,6 @@ mod tests {
         assert!(old < new, "{xml}");
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_the_files_of_both_generations_of_an_object_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-generations");
-        let path = scratch.write("generations.pdf", &two_generations());
-        assert_same_as_tika_delegating(&[&path], tika_name(), &DELEGATES);
-    }
-
     #[test]
     fn takes_a_needed_object_the_port_cannot_read_for_null_noting_the_difference() {
         let mut objects = page_objects(TEXT);
@@ -2123,33 +1645,6 @@ mod tests {
         assert!(!xhtml.contains("konge"), "{xhtml}");
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_objects_as_pdfbox_reads_them_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-objects");
-        let mut hex = page_objects(TEXT);
-        hex[3] = format!("<< /Length 5 /X <zz> >>\nstream\n{TEXT}\nendstream");
-        let mut unmeasured = page_objects(TEXT);
-        unmeasured[3] = format!("<< /Length 9 0 R >>\nstream\n{TEXT}\nendstream");
-        let mut missing = page_objects(TEXT);
-        missing[3] = format!("<< /Length 99 >>\nstream\n{TEXT}\r\nendstream");
-        let paths: Vec<PathBuf> = [
-            ("hex.pdf", hex),
-            ("unmeasured.pdf", unmeasured),
-            ("missing.pdf", missing),
-        ]
-        .into_iter()
-        .map(|(name, objects)| {
-            let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-            scratch.write(name, &document(&objects, b"", &[]))
-        })
-        .collect();
-        for path in &paths {
-            assert_eq!(deferral(path), None, "{}", path.display());
-        }
-        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
-    }
-
     #[test]
     fn takes_a_needed_object_the_table_does_not_list_but_pdfbox_finds_for_null() {
         let objects = page_objects(TEXT);
@@ -2164,39 +1659,6 @@ mod tests {
             "object 5, which the cross-reference table does not list and PDFBox finds by \
              searching the document, taken for null"
         );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_documents_pdfbox_repairs_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-repaired");
-        let mut objects = page_objects(TEXT);
-        objects.push("<< /Title (Eventyr) /Author (H. C. Andersen) >>".to_owned());
-        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        let plain = document(&objects, b"", &[]);
-        let start = find(&plain, b"xref\n");
-        let startxref = format!("startxref\n{start}\n");
-        let documents = [
-            ("shifted.pdf", document(&objects, b"", &[(4, 3), (6, 1)])),
-            (
-                "startxref.pdf",
-                replace(
-                    &plain,
-                    startxref.as_bytes(),
-                    format!("startxref\n{}\n", start + 2).as_bytes(),
-                ),
-            ),
-            ("no-table.pdf", plain[..start].to_vec()),
-            ("stream.pdf", stream_document(&objects, &[9])),
-        ];
-        let paths: Vec<PathBuf> = documents
-            .iter()
-            .map(|(name, bytes)| scratch.write(name, bytes))
-            .collect();
-        for path in &paths {
-            assert_eq!(deferral(path), None, "{}", path.display());
-        }
-        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
     }
 
     #[test]
@@ -2220,108 +1682,6 @@ mod tests {
         ParserConfigs {
             pdf,
             ..ParserConfigs::default()
-        }
-    }
-
-    #[cfg(feature = "tika")]
-    fn corpus_documents(names: &[&str]) -> Vec<PathBuf> {
-        names
-            .iter()
-            .map(|name| {
-                CORPORA
-                    .iter()
-                    .map(|corpus| Path::new(corpus).join(name))
-                    .find(|path| path.exists())
-                    .unwrap_or_else(|| panic!("no corpus holds {name}"))
-            })
-            .collect()
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_under_the_settings_the_port_reads_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-settings");
-        let objects = page_objects("BT /F1 12 Tf 72 720 Td (Kort.) Tj ET");
-        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        let short = scratch.write("short.pdf", &document(&objects, b"", &[]));
-        let tagged = corpus_documents(&["danish.pdf", "report.pdf", "table.pdf"]);
-        let settings: [(PdfParserConfig, Vec<PathBuf>); 8] = [
-            (
-                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::NO_OCR),
-                [corpus_documents(&["deu-ocr.pdf"]), vec![short.clone()]].concat(),
-            ),
-            (
-                PdfParserConfig::new().set_ocr_strategy(PdfOcrStrategy::AUTO),
-                corpus_documents(&["notes.pdf"]),
-            ),
-            (
-                PdfParserConfig::new().set_ocr_strategy_auto("faster, 4"),
-                [corpus_documents(&["notes.pdf"]), vec![short]].concat(),
-            ),
-            (
-                PdfParserConfig::new().set_extract_marked_content(false),
-                tagged.clone(),
-            ),
-            (
-                PdfParserConfig::new().set_extract_marked_content(true),
-                [tagged.clone(), corpus_documents(&["prose-columns.pdf"])].concat(),
-            ),
-            (
-                PdfParserConfig::new().set_extract_bookmarks_text(false),
-                tagged,
-            ),
-            (
-                PdfParserConfig::new().set_extract_annotation_text(false),
-                corpus_documents(&["notes.pdf", "2022_Q3_AAPL.pdf"]),
-            ),
-            (
-                PdfParserConfig::new()
-                    .set_extract_inline_images(false)
-                    .set_extract_unique_inline_images_only(false),
-                corpus_documents(&["danish.pdf"]),
-            ),
-        ];
-        for (pdf, documents) in settings {
-            let configs = with_pdf(pdf);
-            for document in &documents {
-                let input = std::fs::read(document).unwrap();
-                let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &configs);
-                assert_eq!(deferral, None, "{} under {configs:?}", document.display());
-            }
-            assert_same_as_tika_delegating_with(
-                &as_paths(&documents),
-                tika_name(),
-                &DELEGATES,
-                &configs,
-            );
-        }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_pages_by_ocr_under_the_ocr_strategies_as_tikas_path_does() {
-        assert!(ocr_runs(), "tesseract is not installed");
-        let scratch = Scratch::new("pdf-ocr-strategies");
-        let mut documents =
-            corpus_documents(&["eng-ocr.pdf", "danish.pdf", "notes.pdf", "table.pdf"]);
-        let embedding = scratch.write("embedding.pdf", &embedding("", ""));
-        documents.push(embedding);
-        for strategy in [
-            PdfOcrStrategy::OCR_ONLY,
-            PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION,
-        ] {
-            let configs = with_pdf(PdfParserConfig::new().set_ocr_strategy(strategy));
-            for document in &documents {
-                let input = std::fs::read(document).unwrap();
-                let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &configs);
-                assert_eq!(deferral, None, "{} under {strategy}", document.display());
-            }
-            assert_same_as_tika_delegating_with(
-                &as_paths(&documents),
-                tika_name(),
-                &DELEGATES,
-                &configs,
-            );
         }
     }
 
@@ -2418,35 +1778,6 @@ mod tests {
             Some(2),
             "{metadata:?}"
         );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_page_trees_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-page-trees");
-        let [missing, array, kid] = page_trees();
-        for (name, input) in [missing, array] {
-            let path = scratch.write(name, &input);
-            let (native, tika) = crate::formats::parity::errors(&path, &ParserConfigs::default());
-            let tika = tika.replacen("PDFParser@", "PDFParser", 1);
-            let hash: String = tika
-                .split("PDFParser")
-                .nth(1)
-                .unwrap_or_default()
-                .chars()
-                .take_while(char::is_ascii_hexdigit)
-                .collect();
-            assert_eq!(
-                native,
-                tika.replacen(&format!("PDFParser{hash}"), "PDFParser", 1)
-            );
-        }
-        let path = scratch.write(kid.0, &kid.1);
-        let configs = ParserConfigs {
-            ocr: TesseractOcrConfig::new().set_skip_ocr(true),
-            ..ParserConfigs::default()
-        };
-        assert_same_as_tika_delegating_with(&[&path], tika_name(), &DELEGATES, &configs);
     }
 
     /// A page of text whose catalog is `catalog`, with the objects `extra` numbered from 6 and
@@ -2553,18 +1884,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_metadata_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-metadata");
-        let paths: Vec<PathBuf> = read_metadata()
-            .into_iter()
-            .filter(|(name, _)| *name != "headless.pdf")
-            .map(|(name, input)| scratch.write(name, &input))
-            .collect();
-        assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
-    }
-
     #[test]
     fn reads_custom_information_numbers_as_java_prints_them_noting_the_difference() {
         let input = cataloged(
@@ -2654,15 +1973,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn fails_a_tree_of_embedded_files_deeper_than_tika_follows_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-embedded-depth");
-        let path = scratch.write("deep.pdf", &nested_embedded_files(MAX_RECURSION_DEPTH + 1));
-        let (native, tika) = crate::formats::parity::errors(&path, &ParserConfigs::default());
-        assert_eq!(native, tika);
-    }
-
     #[test]
     fn reads_past_an_annotation_that_is_no_dictionary_noting_the_difference() {
         let mut objects = page_objects(TEXT);
@@ -2690,14 +2000,6 @@ mod tests {
             xhtml.contains("<meta name=\"pdf:encrypted\" content=\"false\" />"),
             "{xhtml}"
         );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_a_document_whose_encryption_entry_is_no_dictionary_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-encrypt-entry");
-        let path = scratch.write("encrypt.pdf", &encryption_no_dictionary());
-        assert_same_as_tika_delegating(&[&path], tika_name(), &DELEGATES);
     }
 
     #[test]
@@ -2735,52 +2037,6 @@ mod tests {
             "Java exception: java.lang.IllegalArgumentException: Automatic OCR thresholds are \
              better, faster or unmapped[%][,characters]: faster , 4"
         );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn fails_under_thresholds_our_java_rejects_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-rejected-thresholds");
-        let (input, configs) = under_rejected_thresholds();
-        let path = scratch.write("page.pdf", &input);
-        let (native, tika) = crate::formats::parity::errors(&path, &configs);
-        assert_eq!(native, tika);
-    }
-
-    /// Asserts that each encrypted document, named with the password that opens it, fails as
-    /// Tika's path fails on it without a password and with a wrong one, and extracts with its
-    /// password as Tika's path does.
-    #[cfg(feature = "tika")]
-    fn assert_opens_as_tika(documents: &[(PathBuf, &str)]) {
-        for (document, password) in documents {
-            let configs = ParserConfigs::default().with_password(Some(&Password::new(*password)));
-            let input = std::fs::read(document).unwrap();
-            assert_eq!(
-                PdfParser.defers(&input, &TikaMetadata::new(), &configs),
-                None,
-                "{}",
-                document.display()
-            );
-            assert_same_as_tika_delegating_with(&[document], tika_name(), &DELEGATES, &configs);
-            let wrong = ParserConfigs::default().with_password(Some(&Password::new("wrong")));
-            for configs in [ParserConfigs::default(), wrong] {
-                assert_eq!(
-                    PdfParser.defers(&input, &TikaMetadata::new(), &configs),
-                    None,
-                    "{}",
-                    document.display()
-                );
-                let (native, tika) = crate::formats::parity::errors(document, &configs);
-                assert_eq!(native, tika, "{}", document.display());
-            }
-        }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn opens_documents_with_the_password_as_tikas_path_does() {
-        let document = PathBuf::from("../test_files/documents/encrypted/user-password.pdf");
-        assert_opens_as_tika(&[(document, "extractous")]);
     }
 
     /// A page encrypted, by its encryption dictionary, by a security handler PDFBox does not
@@ -2829,123 +2085,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn fails_documents_of_a_security_handler_pdfbox_does_not_have_as_tikas_path_does() {
-        let scratch = Scratch::new("pdf-security-handlers");
-        for (filter, input) in unknown_security_handlers() {
-            let path = scratch.write(&format!("{filter}.pdf"), &input);
-            let (native, tika) = crate::formats::parity::errors(&path, &ParserConfigs::default());
-            assert_eq!(native, tika, "{filter}");
-        }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn opens_the_conformance_documents_with_their_passwords_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&PdfParser, &[&conformance_corpus()]);
-        let owner_user: Vec<PathBuf> = parsed
-            .into_iter()
-            .chain(deferred)
-            .filter(|path| path.to_string_lossy().ends_with("_owner_user.pdf"))
-            .collect();
-        assert_eq!(owner_user.len(), 2, "{owner_user:?}");
-        let documents: Vec<(PathBuf, &str)> = owner_user
-            .iter()
-            .flat_map(|path| [(path.clone(), "user"), (path.clone(), "owner")])
-            .collect();
-        assert_opens_as_tika(&documents);
-    }
-
-    /// How many tests the documents of the corpora are compared in, each in time.
-    #[cfg(feature = "tika")]
-    const PARTS: usize = 4;
-
-    /// The documents of the corpora the native parser extracts, by size, dealt in turn to
-    /// [`PARTS`] parts of about the same size: those of `part`.
-    #[cfg(feature = "tika")]
-    fn part_of_the_corpora(part: usize) -> Vec<PathBuf> {
-        let (mut parsed, _) = documents(&PdfParser, &corpora());
-        parsed.sort_by_key(|path| (std::fs::metadata(path).unwrap().len(), path.clone()));
-        parsed
-            .into_iter()
-            .enumerate()
-            .filter(|(index, _)| index % PARTS == part)
-            .map(|(_, path)| path)
-            .collect()
-    }
-
-    /// Compares the documents of `part` of the corpora, and the locked one in the first part:
-    /// it fails without its password, as on Tika's path.
-    #[cfg(feature = "tika")]
-    fn extracts_part_of_what_tikas_path_extracts(part: usize) {
-        let paths = part_of_the_corpora(part);
-        let (locked, open): (Vec<&Path>, Vec<&Path>) = as_paths(&paths)
-            .into_iter()
-            .partition(|path| path.ends_with("encrypted/user-password.pdf"));
-        crate::formats::parity::assert_fails_as_tika(&locked);
-        assert_same_as_tika_delegating(&open, tika_name(), &DELEGATES);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn deals_every_document_of_the_corpora_to_one_part() {
-        let (mut parsed, _) = documents(&PdfParser, &corpora());
-        let mut dealt: Vec<PathBuf> = (0..PARTS).flat_map(part_of_the_corpora).collect();
-        parsed.sort();
-        dealt.sort();
-        assert_eq!(dealt, parsed);
-        let locked = parsed
-            .iter()
-            .filter(|path| path.ends_with("encrypted/user-password.pdf"))
-            .count();
-        assert_eq!(locked, 1);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts_part_0() {
-        extracts_part_of_what_tikas_path_extracts(0);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts_part_1() {
-        extracts_part_of_what_tikas_path_extracts(1);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts_part_2() {
-        extracts_part_of_what_tikas_path_extracts(2);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts_part_3() {
-        extracts_part_of_what_tikas_path_extracts(3);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_pages_by_ocr_as_tikas_path_does_as_the_command_line_sets_it() {
-        assert!(ocr_runs(), "tesseract is not installed");
-        assert_same_as_tika_delegating_with(
-            &as_paths(&read_by_ocr()),
-            tika_name(),
-            &DELEGATES,
-            &ParserConfigs {
-                pdf: PdfParserConfig::new()
-                    .set_ocr_strategy(PdfOcrStrategy::AUTO)
-                    .set_ocr_strategy_auto("50%,10")
-                    .set_extract_bookmarks_text(false),
-                ocr: TesseractOcrConfig::new().set_language(TesseractOcrConfig::AUTO_LANGUAGE),
-                ..ParserConfigs::default()
-            },
-        );
-    }
-
     #[test]
     fn defers_what_the_port_does_not_do() {
         let (_, deferred) = documents(&PdfParser, &corpora());
@@ -2978,79 +2117,5 @@ mod tests {
             };
             assert!(as_expected, "{name}: {reason}");
         }
-    }
-
-    /// Why the extraction of a PDF that embeds PDFs, while tesseract runs, is not compared with
-    /// Tika's path.
-    #[cfg(feature = "tika")]
-    const NESTED_PAGES: &str = "our TextLayerCheckingPdfParser takes the pages of a PDF a PDF \
-                                embeds outside its pages for pages of its own, assessing them \
-                                by the embedding document's last page and mangling them";
-
-    /// Asserts that the PDF at `path`, a chain of PDFs each embedding the next, each of one page
-    /// showing `a`, is read with every page whole, its text and OCR in it, where Tika's path
-    /// mangles the embedded pages ([`NESTED_PAGES`]).
-    #[cfg(feature = "tika")]
-    fn assert_reads_the_pages_of_embedded_pdfs(path: &Path) {
-        let (xml, _) = native_xml(&std::fs::read(path).unwrap());
-        let pages = xml.matches("<div class=\"page\">").count();
-        let embedded = xml.matches("class=\"embedded\"").count();
-        assert_eq!(pages, embedded + 1, "{NESTED_PAGES}: {xml}");
-        assert_eq!(
-            xml.matches("<p>a</p>").count(),
-            pages,
-            "{NESTED_PAGES}: {xml}"
-        );
-        assert_eq!(
-            xml.matches("class=\"ocr\"").count(),
-            pages,
-            "{NESTED_PAGES}: {xml}"
-        );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_the_conformance_documents_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&PdfParser, &[&conformance_corpus()]);
-        let reasons: Vec<String> = deferred.iter().map(|path| deferral_of(path)).collect();
-        assert!(deferred.is_empty(), "{deferred:?}: {reasons:?}");
-        // Tika extracts its Mac, DOS and Unix copies of one file as files of their own (#109).
-        let (copies, paths): (Vec<&Path>, Vec<&Path>) = as_paths(&parsed)
-            .into_iter()
-            .partition(|path| path.ends_with("testPDF_multiFormatEmbFiles.pdf"));
-        let (locked, paths): (Vec<&Path>, Vec<&Path>) = paths
-            .into_iter()
-            .partition(|path| path.to_string_lossy().ends_with("_owner_user.pdf"));
-        assert_eq!(locked.len(), 2, "{locked:?}");
-        crate::formats::parity::assert_fails_as_tika(&locked);
-        let (nested, paths): (Vec<&Path>, Vec<&Path>) = paths
-            .into_iter()
-            .partition(|path| path.ends_with("testPDF_deeplyEmbeddedAttachments.pdf"));
-        assert_eq!(nested.len(), usize::from(ocr_runs()), "{nested:?}");
-        for path in nested {
-            assert_reads_the_pages_of_embedded_pdfs(path);
-        }
-        let (malformed, paths): (Vec<&Path>, Vec<&Path>) = paths
-            .into_iter()
-            .partition(|path| path.ends_with(MALFORMED_XFA));
-        assert_eq!(malformed.len(), 1, "{malformed:?}");
-        assert_same_as_tika_delegating_departing_with(
-            &malformed,
-            tika_name(),
-            &DELEGATES,
-            XFA_FAILURE,
-            &ParserConfigs::default(),
-        );
-        assert_same_as_tika_delegating(&paths, tika_name(), &DELEGATES);
-        let [copies] = copies[..] else {
-            panic!("{copies:?}");
-        };
-        let (xml, _) = native_xml(&std::fs::read(copies).unwrap());
-        assert_eq!(xml.matches("class=\"embedded\"").count(), 1, "{xml}");
-        assert!(
-            xml.contains("id=\"Test.txt\"") && xml.contains("non os specific"),
-            "{xml}"
-        );
     }
 }

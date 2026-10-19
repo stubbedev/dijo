@@ -1,14 +1,10 @@
 use std::fs;
-#[cfg(feature = "tika")]
-use std::io::Cursor;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 mod common;
 
-#[cfg(feature = "tika")]
-use common::write_docx;
 use common::{document, text_pdf, Scratch, StoredZip, DOCUMENTS};
 
 fn extractous(args: &[&str]) -> Output {
@@ -134,18 +130,6 @@ fn detect_labels_several_inputs() {
             document("2022_Q3_AAPL.pdf")
         )
     );
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn reads_an_outlook_offline_folder_without_its_name() {
-    let bytes = fs::read(document("offline-folder.ost")).unwrap();
-    let detected = extractous_with_stdin(&["detect", "-"], Some(&bytes));
-    assert!(detected.status.success(), "{}", stderr(&detected));
-    assert_eq!(stdout(&detected), "application/vnd.ms-outlook-pst\n");
-    let extracted = extractous_with_stdin(&["-"], Some(&bytes));
-    assert!(extracted.status.success(), "{}", stderr(&extracted));
-    assert!(stdout(&extracted).contains("This is the original email (html)"));
 }
 
 #[test]
@@ -438,18 +422,6 @@ fn damaged_parts_make_a_partial_result() {
     assert_eq!(object["errors"][0]["location"], "embedded document");
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn text_extracted_before_a_parse_fails_is_kept() {
-    let objects = json_objects(&[&document("spanned.z01")]);
-    assert_eq!(objects[0]["status"], "partial", "{}", objects[0]);
-    assert!(objects[0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("This is a sample Open Office document"));
-    assert_eq!(objects[0]["errors"][0]["category"], "corrupt");
-}
-
 #[test]
 fn a_sqlite_database_is_read_for_its_tables() {
     let objects = json_objects(&[&document("notes.sqlite")]);
@@ -579,39 +551,6 @@ fn hwpx_documents_are_read_as_paragraphs_and_tables() {
     assert!(!text.contains("Style names"), "{text}");
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn archives_nested_past_the_limit_stop_there() {
-    let scratch = Scratch::new("nested");
-    let mut archive: Option<Vec<u8>> = None;
-    for level in 1..=10 {
-        let mut zip = StoredZip::new(Cursor::new(Vec::new()));
-        zip.entry(&format!("level{level}.txt"), |out| {
-            write!(out, "Text at nesting level {level}.")
-        })
-        .unwrap();
-        if let Some(inner) = &archive {
-            zip.entry("inner.zip", |out| out.write_all(inner)).unwrap();
-        }
-        archive = Some(zip.finish().unwrap().into_inner());
-    }
-    let path = scratch.0.join("nested.zip");
-    fs::write(&path, archive.unwrap()).unwrap();
-
-    let objects = json_objects(&[path.to_str().unwrap()]);
-    assert_eq!(objects[0]["status"], "partial", "{}", objects[0]);
-    assert!(objects[0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Text at nesting level 2."));
-    let errors = objects[0]["errors"].as_array().unwrap();
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0]["category"], "limit-exceeded");
-    let message = errors[0]["message"].as_str().unwrap();
-    assert!(message.contains("Suspected zip bomb"), "{message}");
-    assert!(message.len() < 1000, "{message}");
-}
-
 #[test]
 fn partial_results_succeed_unless_strict() {
     let lenient = extractous(&[&document("partially-damaged.zip")]);
@@ -725,26 +664,6 @@ fn encrypted_inputs_are_reported_as_encrypted() {
     assert_matches_schema(&objects[0]);
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn encrypted_mail_and_openpgp_are_reported_as_encrypted() {
-    for name in [
-        "smime-encrypted.eml",
-        "pgp-encrypted.gpg",
-        "pgp-encrypted.asc",
-    ] {
-        let objects = json_objects(&[&format!("{DOCUMENTS}/encrypted/{name}")]);
-        assert_matches_schema(&objects[0]);
-        assert_eq!(objects[0]["status"], "encrypted", "{name}");
-        assert_eq!(objects[0]["errors"][0]["category"], "encrypted", "{name}");
-        assert_eq!(
-            objects[0]["text"].as_str().unwrap_or_default().trim(),
-            "",
-            "{name}"
-        );
-    }
-}
-
 #[test]
 fn an_encrypted_archive_entry_leaves_the_rest_extracted() {
     let objects = json_objects(&[&format!("{DOCUMENTS}/encrypted/encrypted-entry.zip")]);
@@ -802,29 +721,6 @@ fn a_wrong_password_fails_with_status_one() {
     ]);
     assert_eq!(output.status.code(), Some(1));
     assert!(!stderr(&output).contains("not-it"));
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn a_timeout_keeps_the_text_extracted_before_it() {
-    let warm_up = extractous(&["detect", &document("simple.odt")]);
-    assert!(warm_up.status.success(), "{}", stderr(&warm_up));
-    let started = std::time::Instant::now();
-    let objects = json_objects(&[
-        "--timeout",
-        "3",
-        "--ocr",
-        "always",
-        &document("2022_Q3_AAPL.pdf"),
-    ]);
-    assert!(started.elapsed() < std::time::Duration::from_secs(15));
-    assert_matches_schema(&objects[0]);
-    assert_eq!(objects[0]["status"], "partial");
-    assert!(objects[0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("UNITED STATES"));
-    assert_eq!(objects[0]["errors"][0]["category"], "timeout");
 }
 
 fn embedded_paths(objects: &[serde_json::Value]) -> Vec<String> {
@@ -1479,97 +1375,6 @@ fn comments_follow_the_sentence_they_are_anchored_in() {
     }
 }
 
-#[cfg(feature = "tika")]
-#[cfg(unix)]
-#[test]
-fn djvu_pages_without_a_text_layer_are_rendered_for_ocr_without_helpers() {
-    let scratch = Scratch::new("djvu-ocr");
-    let path = scratch.path_with_only_tesseract();
-    let read = |file: &str| -> serde_json::Value {
-        let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
-            .args(["--format", "json", "--metadata", file])
-            .env("PATH", &path)
-            .output()
-            .unwrap();
-        serde_json::from_slice(&output.stdout).unwrap()
-    };
-    let cases = [
-        (
-            "../quality/corpus/prose-scan.djvu".to_string(),
-            vec!["Lighthouse Keeper"],
-        ),
-        (
-            document("shared-shapes.djvu"),
-            vec![
-                "Shared shapes on the first page",
-                "Shared shapes on the second page",
-            ],
-        ),
-        (
-            document("palette.djvu"),
-            vec!["Blue words on a tinted page", "red words below them"],
-        ),
-    ];
-    for (file, expected) in cases {
-        let read = read(&file);
-        assert_matches_schema(&read);
-        assert_eq!(read["status"], "complete", "{file}: {read}");
-        let text = read["text"].as_str().unwrap();
-        for line in expected {
-            assert!(text.contains(line), "{file}: {read}");
-        }
-        assert_eq!(read["metadata"]["ocr"][0]["page"], 1, "{file}: {read}");
-    }
-}
-
-#[cfg(feature = "tika")]
-#[cfg(unix)]
-#[test]
-fn heic_is_read_and_reported_when_nothing_can_decode_it() {
-    let photo = document("photo.heic");
-    let read = &json_objects(&[&photo])[0];
-    assert_matches_schema(read);
-    assert_eq!(read["status"], "complete", "{read}");
-    assert!(
-        read["text"].as_str().unwrap().contains("Lighthouse"),
-        "{read}"
-    );
-
-    let scratch = Scratch::new("no-heif-dec");
-    let path = scratch.path_with_only_tesseract();
-    let unread = |args: &[&str]| -> serde_json::Value {
-        let output = Command::new(env!("CARGO_BIN_EXE_extractous"))
-            .args(["--format", "json"])
-            .args(args)
-            .env("PATH", &path)
-            .output()
-            .unwrap();
-        serde_json::from_slice(&output.stdout).unwrap()
-    };
-    let without = unread(&[&photo]);
-    if cfg!(target_os = "macos") {
-        assert_eq!(
-            without["status"], "complete",
-            "macOS's sips decodes it: {without}"
-        );
-        assert!(
-            without["text"].as_str().unwrap().contains("Lighthouse"),
-            "{without}"
-        );
-    } else {
-        assert_eq!(without["status"], "failed", "{without}");
-        assert_eq!(without["errors"][0]["category"], "unsupported", "{without}");
-        assert!(
-            without["errors"][0]["message"]
-                .as_str()
-                .unwrap()
-                .contains("heif-dec"),
-            "{without}"
-        );
-    }
-    assert_eq!(unread(&["--ocr", "never", &photo])["status"], "complete");
-}
-
 #[test]
 fn images_tesseract_cannot_read_are_decoded_for_it() {
     let scans = ["psd", "pcx", "tga", "jb2"]
@@ -1733,63 +1538,6 @@ fn tiff_images_with_exif_directories_are_ocred() {
         "{}",
         stdout(&output)
     );
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn xml_parsers_resolve_no_external_entities() {
-    let scratch = Scratch::new("xxe");
-    let secret = scratch.0.join("secret.txt");
-    fs::write(&secret, "TOP-SECRET-VALUE-42").unwrap();
-    let url = format!(
-        "file:///{}",
-        secret
-            .to_str()
-            .unwrap()
-            .replace('\\', "/")
-            .trim_start_matches('/')
-    );
-    let entity = format!("<!ENTITY secret SYSTEM \"{url}\">");
-    let xml =
-        format!("<?xml version=\"1.0\"?><!DOCTYPE doc [{entity}]><doc>before &secret; after</doc>");
-    let svg = format!(
-        "<?xml version=\"1.0\"?><!DOCTYPE svg [{entity}]>\
-         <svg xmlns=\"http://www.w3.org/2000/svg\"><text>before &secret; after</text></svg>"
-    );
-    let dtd =
-        format!("<?xml version=\"1.0\"?><!DOCTYPE doc SYSTEM \"{url}\"><doc>before after</doc>");
-    let docx = write_docx(
-        Cursor::new(Vec::new()),
-        &format!("<!DOCTYPE w:document [{entity}]>"),
-        |out| {
-            write!(
-                out,
-                "<w:p><w:r><w:t>before &secret; after</w:t></w:r></w:p>"
-            )
-        },
-    )
-    .unwrap()
-    .into_inner();
-    for (name, content) in [
-        ("entity.xml", xml.into_bytes()),
-        ("entity.svg", svg.into_bytes()),
-        ("external.xml", dtd.into_bytes()),
-        ("entity.docx", docx),
-    ] {
-        let path = scratch.0.join(name);
-        fs::write(&path, content).unwrap();
-        let output = extractous(&["--format", "json", path.to_str().unwrap()]);
-        let text = stdout(&output);
-        assert!(
-            !text.contains("TOP-SECRET"),
-            "{name} leaked the file: {text}"
-        );
-        assert!(
-            text.contains("before"),
-            "{name}: {text} {}",
-            stderr(&output)
-        );
-    }
 }
 
 #[test]

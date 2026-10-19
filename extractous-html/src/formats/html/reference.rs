@@ -31,7 +31,7 @@ const WHATWG_TREES: usize = 237;
 
 #[test]
 fn parses_as_tika_does() {
-    extractous_core::parity::install_routes();
+    extractous_core::testing::install_routes();
     let cases = cases(REFERENCE);
     let mut mismatches = Vec::new();
     let mut deferred = Vec::new();

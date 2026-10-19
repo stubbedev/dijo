@@ -16,37 +16,16 @@ name = "extractor"
 harness = false
 required-features = []
 
-# Unpacking embedded documents whole is Tika's path's alone.
-[[test]]
-name = "extract_embedded_tests"
-required-features = ["tika"]
-
-# The cause chains of the exceptions Tika's path throws.
-[[test]]
-name = "error_tests"
-required-features = ["tika"]
-
 [features]
-# Apache Tika compiled to native code with GraalVM and run through JNI: off by default, and never in
-# a release. It is the reference the parity tests and conformance compare the native parsers with,
-# and it extracts what no native parser reads yet. Without it, those documents fail with
-# `Error::Unsupported`, and the build needs no GraalVM.
-tika = ["extractous-base/tika", "extractous-tika/tika", "extractous-mime/tika", "extractous-html/tika", "extractous-image/tika", "extractous-pdf/tika", "extractous-media/tika", "extractous-odf/tika", "extractous-small/tika", "extractous-science/tika", "extractous-mail/tika", "extractous-office/tika", "extractous-ooxml/tika"]
 # Link tesseract, Leptonica and libheif statically, as `EXTRACTOUS_STATIC_LIBS` lists them, instead
-# of loading them: for the statically linked Linux executable without Tika that ci/static-native.nix builds.
-static = ["extractous-native/static", "extractous-tika/static", "extractous-image/static"]
-# Build for the statically linked Linux executable with Tika, which is not released, where this
-# crate is linked into the GraalVM native image of Tika and uses the Java VM that image runs,
-# instead of loading the image as a shared library: ci/static-image.sh builds it.
-static-image = ["static", "tika", "extractous-tika/static-image", "extractous-mail/static-image"]
-# The parity harness, which compares the native parsers with Tika's path, for the tests of the crates
-# of the formats.
-parity = ["extractous-base/testing", "extractous-mime/testing", "extractous-html/testing", "extractous-image/testing", "extractous-pdf/testing", "extractous-media/testing", "extractous-odf/testing", "extractous-small/testing", "extractous-science/testing", "extractous-mail/testing", "extractous-office/testing", "extractous-ooxml/testing"]
+# of loading them: for the statically linked Linux executable that ci/static-native.nix builds.
+static = ["extractous-native/static", "extractous-image/static"]
+# What the tests of the crates of the formats share.
+testing = ["extractous-base/testing", "extractous-mime/testing", "extractous-html/testing", "extractous-image/testing", "extractous-pdf/testing", "extractous-media/testing", "extractous-odf/testing", "extractous-small/testing", "extractous-science/testing", "extractous-mail/testing", "extractous-office/testing", "extractous-ooxml/testing"]
 
 [dependencies]
 extractous-base = { path = "../extractous-base", default-features = false }
 extractous-native = { path = "../extractous-native" }
-extractous-tika = { path = "../extractous-tika", default-features = false }
 extractous-ooxml = { path = "../extractous-ooxml", default-features = false }
 extractous-office = { path = "../extractous-office", default-features = false }
 extractous-mail = { path = "../extractous-mail", default-features = false }

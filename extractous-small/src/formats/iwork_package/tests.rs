@@ -1,16 +1,6 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
 use crate::compress::zip::file::tests::zip;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus,
-    documents, Scratch, ANCHORED_BLOCKS, ANCHORED_BLOCK_DOCUMENTS,
-};
 
-#[cfg(feature = "tika")]
-const TIKA_NAME: &str = "org.apache.tika.parser.iwork.IWorkPackageParser";
 const HISTORY: (&str, &[u8]) = (
     "buildVersionHistory.plist",
     b"<plist version=\"1.0\"><array/></plist>",
@@ -87,17 +77,6 @@ fn reads_pages_documents_as_they_are_written() {
     assert_eq!(metadata["meta:page-count"], ["1"]);
 }
 
-/// A Numbers '09 document of one sheet with a table and a pop-up menu cell.
-#[cfg(feature = "tika")]
-const NUMBERS: &[u8] = br#"<?xml version="1.0"?>
-<ls:document xmlns:ls="http://developer.apple.com/namespaces/ls" xmlns:sf="http://developer.apple.com/namespaces/sf" xmlns:sfa="http://developer.apple.com/namespaces/sfa">
-<sf:metadata><sf:title><sf:string sfa:string="Sums"/></sf:title><sf:keywords><sf:string sfa:string="k"/></sf:keywords></sf:metadata>
-<ls:workspace ls:workspace-name="Sheet 1"><sf:tabular-model sf:name="Table 1"><sf:grid sf:numcols="2"/>
-<sf:menu-choices><sf:t sfa:ID="m1"><sf:ct sfa:s="Yes"/></sf:t></sf:menu-choices>
-<sf:ct sfa:s="a"/><sf:n sf:v="2"/><sf:rn sf:v="3"/><sf:proxied-cell-ref sfa:IDREF="m1"/></sf:tabular-model>
-<sf:text><sf:p>Box</sf:p></sf:text><sf:chart-name sfa:string="Chart"/></ls:workspace>
-</ls:document>"#;
-
 #[test]
 fn reads_the_kind_of_each_content_entry() {
     let package = read(
@@ -114,48 +93,6 @@ fn reads_the_kind_of_each_content_entry() {
         .unwrap()
         .entries
         .is_empty());
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_synthetic_packages_as_tikas_path_does() {
-    let scratch = Scratch::new("iwork-package");
-    let read = [
-        scratch.write("slides.key", &zip(&[HISTORY, ("index.apxl", KEYNOTE)])),
-        scratch.write("text.pages", &zip(&[HISTORY, ("index.xml", PAGES)])),
-        scratch.write("sums.numbers", &zip(&[HISTORY, ("index.xml", NUMBERS)])),
-        scratch.write("empty.key", &zip(&[HISTORY])),
-    ];
-    let failing = [scratch.write(
-        "broken.key",
-        &zip(&[HISTORY, ("index.apxl", &KEYNOTE[..KEYNOTE.len() - 40])]),
-    )];
-    let (parsed, deferred) = documents(&IworkPackageParser, &[scratch.directory()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), read.len() + failing.len());
-    assert_same_as_tika(
-        &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-        TIKA_NAME,
-    );
-    assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn extracts_tikas_test_packages_as_tikas_path_does() {
-    let (parsed, deferred) = documents(&IworkPackageParser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 18, "{parsed:?}");
-    let (anchored, paths): (Vec<&Path>, Vec<&Path>) =
-        parsed.iter().map(PathBuf::as_path).partition(|path| {
-            ANCHORED_BLOCK_DOCUMENTS
-                .iter()
-                .any(|name| path.ends_with(name))
-        });
-    assert_eq!(anchored.len(), 1, "{parsed:?}");
-    assert_same_as_tika(&paths, TIKA_NAME);
-    assert_same_as_tika_departing(&anchored, TIKA_NAME, ANCHORED_BLOCKS);
 }
 
 /// A Pages '09 package whose `index.xml` decodes past what a spool holds in memory, with noise

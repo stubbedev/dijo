@@ -36,12 +36,6 @@ use detectors::{bplist, gzip, matroska, ogg, ole, raw_tiff, zip, Thrown};
 pub use media_type::MediaType;
 use mime_types::{mime_types, MIN_LENGTH};
 
-/// Every type Tika's tables declare, by its printed form, in the order they declare them.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub fn declared_types() -> impl Iterator<Item = &'static str> {
-    mime_types().declared()
-}
-
 /// What Tika knows of a document before it detects it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Origin<'a> {

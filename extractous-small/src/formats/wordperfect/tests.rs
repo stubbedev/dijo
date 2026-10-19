@@ -1,14 +1,4 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_fails_as_tika, assert_read_where_tika_fails, assert_same_as_tika, conformance_corpus,
-    documents, Scratch,
-};
-#[cfg(feature = "tika")]
-use crate::ole2::tests::compound;
 
 /// A WordPerfect prefix area of `major` and `minor` version, its document area right after it.
 fn prefix(major: u8, minor: u8, encrypted: bool) -> Vec<u8> {
@@ -27,24 +17,6 @@ fn prefix(major: u8, minor: u8, encrypted: bool) -> Vec<u8> {
         bytes.extend([0; 4]);
         bytes.extend(4321i32.to_le_bytes());
     }
-    bytes
-}
-
-#[cfg(feature = "tika")]
-fn wp5() -> Vec<u8> {
-    let mut bytes = prefix(WP5_MAJOR_VERSION, 1, false);
-    bytes.extend(b"Hej fra K");
-    bytes.extend([192, 24, 1, 192]);
-    bytes.extend(b"benhavn.");
-    bytes.extend([10]);
-    bytes.extend(b"Linje");
-    bytes.extend([13, 160, 170]);
-    bytes.extend([195, 12, 195]);
-    bytes.extend([208, 4, 3, 0, 1, 2, 3]);
-    bytes.extend([192, 200, 1, 192, 192, 3, 99, 192]);
-    bytes.extend([12]);
-    bytes.extend(b"lang ".repeat(1000));
-    bytes.extend([140]);
     bytes
 }
 
@@ -78,51 +50,6 @@ fn record(kind: u16, body: &[u8]) -> Vec<u8> {
     bytes
 }
 
-/// A Quattro Pro 9 workbook's records: its beginning, its user, a sheet, a string table, labels
-/// and a comment.
-#[cfg(feature = "tika")]
-fn quattro_records() -> Vec<u8> {
-    fn label(text: &str) -> Vec<u8> {
-        let mut bytes = ((text.len() - 1) as u16).to_le_bytes().to_vec();
-        bytes.push(1);
-        bytes.extend(text.as_bytes());
-        bytes
-    }
-    let mut bof = b"QPW9".to_vec();
-    for value in [9u16, 1234, 0, 7, 3] {
-        bof.extend(value.to_le_bytes());
-    }
-    bof.extend([0; 6]);
-    let mut user = label("Ane");
-    user.extend(label("Bo"));
-    let mut sheet = vec![0; 6];
-    sheet.extend([0; 8]);
-    sheet.extend([0; 4]);
-    sheet.extend(label("Fangst"));
-    let mut strings = 2i32.to_le_bytes().to_vec();
-    strings.extend([0; 8]);
-    strings.extend(label("Torsk"));
-    strings.extend(label("Sild"));
-    let mut cell = vec![0; 2];
-    cell.extend([0; 4]);
-    cell.extend([0; 2]);
-    cell.extend(label("Kuller"));
-    let mut comment = vec![0; 2];
-    comment.extend([0; 8]);
-    comment.extend(label("Ane"));
-    comment.extend(label("Godt fiskeri"));
-    [
-        record(0x0001, &bof),
-        record(0x0005, &user),
-        record(0x0601, &sheet),
-        record(0x0407, &strings),
-        record(0x0c72, &cell),
-        record(0x0c80, &comment),
-        record(0x0002, &[1, 2, 3]),
-    ]
-    .concat()
-}
-
 /// A WordPerfect document too large to read whole is read a character at a time, its text
 /// written a chunk at a time.
 #[test]
@@ -151,96 +78,6 @@ fn reads_prefix_areas_as_tika_does() {
     assert_eq!(prefix.file_size, Some(4321));
     assert!(!prefix.encrypted);
     assert_eq!(PrefixArea::read(b"\xFFWPC\x10\x00"), Err(EndOfFile));
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_wordperfect_and_quattro_pro_as_tikas_path_does() {
-    let roots = [
-        Path::new("../test_files/documents"),
-        Path::new("../quality/corpus"),
-    ];
-    for parser in [&WordPerfectParser as &dyn Parser, &QuattroProParser] {
-        let (parsed, deferred) = documents(parser, &roots);
-        assert!(
-            parsed.is_empty() && deferred.is_empty(),
-            "{parsed:?} {deferred:?}"
-        );
-    }
-
-    let scratch = Scratch::new("wordperfect");
-    let five = scratch.write("five.wp", &wp5());
-    let six = scratch.write("six.wpd", &wp6());
-    let mut cut = wp6();
-    cut.extend([208, 1, 40, 0, 1]);
-    let cut = scratch.write("cut.wpd", &cut);
-    let mut encrypted = prefix(WP6_MAJOR_VERSION, 1, true);
-    encrypted.extend(b"hemmelig");
-    let encrypted = scratch.write("encrypted.wpd", &encrypted);
-    let mut beyond = prefix(WP5_MAJOR_VERSION, 0, false);
-    beyond[4] = 200;
-    let beyond = scratch.write("beyond.wp", &beyond);
-    let records = quattro_records();
-    let quattro = scratch.write("quattro.qpw", &compound(&["NativeContent_MAIN"], &records));
-    let cut_quattro = scratch.write(
-        "cut-quattro.qpw",
-        &compound(&["NativeContent_MAIN"], &records[..records.len() - 9]),
-    );
-    let (parsed, deferred) = documents(&WordPerfectParser, &[scratch.directory()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 5, "{parsed:?}");
-    let (parsed, deferred) = documents(&QuattroProParser, &[scratch.directory()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 2, "{parsed:?}");
-    assert_same_as_tika(
-        &[five.as_path(), six.as_path()],
-        WordPerfectParser.tika_name(),
-    );
-    assert_same_as_tika(&[quattro.as_path()], QuattroProParser.tika_name());
-    assert_fails_as_tika(&[
-        cut.as_path(),
-        encrypted.as_path(),
-        beyond.as_path(),
-        cut_quattro.as_path(),
-    ]);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn extracts_tikas_test_wordperfect_and_quattro_pro_as_tikas_path_does() {
-    let corpus = conformance_corpus();
-    let (parsed, deferred) = documents(&WordPerfectParser, &[&corpus]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 3, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&paths, WordPerfectParser.tika_name());
-
-    let (parsed, deferred) = documents(&QuattroProParser, &[&corpus]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 1, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&paths, QuattroProParser.tika_name());
-
-    let (read, deferred) = documents(&OldQuattroProParser, &[&corpus]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(read.len(), TIKAS_QUATTRO_CELLS.len(), "{read:?}");
-    for path in &read {
-        let name = path.file_name().unwrap().to_str().unwrap();
-        let (_, cells) = TIKAS_QUATTRO_CELLS
-            .iter()
-            .find(|(spreadsheet, _)| *spreadsheet == name)
-            .unwrap_or_else(|| panic!("{name} is no Quattro Pro test spreadsheet"));
-        let (xml, _) = crate::Extractor::new()
-            .set_xml_output(true)
-            .extract_file_to_string(path.to_str().unwrap())
-            .unwrap();
-        for cell in *cells {
-            assert!(xml.contains(cell), "{cell:?} in {name}: {xml}");
-        }
-    }
-    let paths: Vec<&Path> = read.iter().map(PathBuf::as_path).collect();
-    assert_read_where_tika_fails(&paths, "#158");
 }
 
 /// A spreadsheet of Quattro Pro for DOS (`.wq1`): a label, an integer, a number, a formula's
@@ -426,39 +263,4 @@ fn fails_quattro_pro_spreadsheets_that_do_not_read() {
     let mut short = quattro_dos();
     short[20] = 2;
     assert!(fails(&short).contains("is cut"), "{}", fails(&short));
-}
-
-/// The cells of Tika's Quattro Pro 1 to 6 test spreadsheets, which Tika's path fails on.
-#[cfg(feature = "tika")]
-const TIKAS_QUATTRO_CELLS: [(&str, &[&str]); 4] = [
-    ("testQuattro.wq1", &["<td>OBSERV</td>", "<td>4001</td>"]),
-    (
-        "testQuattro.wq2",
-        &[
-            "<td>SATURATED HYDRAULIC CONDUCTIVITY: INVERSE AUGERHOLE METHOD</td>",
-            "<td>DEPTH(D):</td>",
-            "<td>sal</td>",
-            "<td>1.012679207245471E-15</td>",
-        ],
-    ),
-    (
-        "testQuattro.wb1",
-        &["<td>X</td>", "<td>Y</td>", "<td>18</td>"],
-    ),
-    ("testQuattro.wb2", &["<td>Z</td>", "<td>10</td>"]),
-];
-
-#[cfg(feature = "tika")]
-#[test]
-fn reads_quattro_pro_where_tikas_path_fails() {
-    let scratch = Scratch::new("old-quattro");
-    let spreadsheets = [
-        scratch.write("sheet.wq1", &quattro_dos()),
-        scratch.write("sheet.wb1", &quattro_windows()),
-    ];
-    let (read, deferred) = documents(&OldQuattroProParser, &[scratch.directory()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(read.len(), spreadsheets.len(), "{read:?}");
-    let paths: Vec<&Path> = spreadsheets.iter().map(PathBuf::as_path).collect();
-    assert_read_where_tika_fails(&paths, "#158");
 }

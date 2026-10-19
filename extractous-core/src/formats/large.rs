@@ -286,7 +286,7 @@ impl LargeFile {
         name: &str,
         write: impl FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
     ) -> Self {
-        let dir = crate::isolate::temp_dir()
+        let dir = crate::process::temp_dir()
             .join(format!("extractous-large-{name}-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join(name);

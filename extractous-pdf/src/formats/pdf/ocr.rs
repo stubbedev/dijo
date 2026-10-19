@@ -110,9 +110,6 @@ impl RejectedThresholds {
     /// settings.
     pub(super) fn into_error(self) -> Error {
         let exception = format!("java.lang.IllegalArgumentException: {}", self.0);
-        #[cfg(feature = "tika")]
-        return Error::JavaException(exception);
-        #[cfg(not(feature = "tika"))]
         Error::Unknown(format!("Java exception: {exception}"))
     }
 }

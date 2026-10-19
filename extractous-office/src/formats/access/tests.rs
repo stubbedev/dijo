@@ -1,118 +1,23 @@
 use std::path::Path;
-#[cfg(feature = "tika")]
-use std::path::PathBuf;
 
 use super::buffer::Buffer;
 use super::format;
-#[cfg(feature = "tika")]
-use super::pages::rc4;
 use super::pages::PAGE_TYPE_DATA;
 use super::table::{row_end, row_start};
 use super::*;
 use crate::config::Password;
 use crate::formats::crypt::Hash;
-use crate::formats::parity::Scratch;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_same_as_tika, assert_same_as_tika_departing, assert_same_as_tika_normalising,
-    assert_same_as_tika_normalising_with, conformance_corpus, deferral, documents, errors,
-    spools_as_tika_rewriting, Departure, Departures,
-};
+use crate::formats::testing::Scratch;
 
 const FIXTURES: &str = "../test_files/documents/access";
-
-/// Where the native parser departs from Tika's path on purpose.
-#[cfg(feature = "tika")]
-const DEPARTURES: Departures = &[Departure::Unset("mdb:password", "#122")];
-
-#[cfg(feature = "tika")]
-fn names(paths: &[PathBuf]) -> Vec<String> {
-    let mut names: Vec<String> = paths
-        .iter()
-        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
-    names
-}
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(Path::new(FIXTURES).join(name)).unwrap()
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_access_databases_as_tikas_path_does() {
-    let roots = [
-        Path::new("../test_files/documents"),
-        Path::new("../quality/corpus"),
-    ];
-    let (parsed, deferred) = documents(&JackcessParser, &roots);
-    assert_eq!(names(&deferred), [""; 0]);
-    let (encrypted, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
-        .into_iter()
-        .partition(|path| path.ends_with("tika-password.accdb"));
-    assert_opens_with_its_password(&encrypted);
-    assert_eq!(
-        names(&parsed),
-        [
-            "ace-calculated.accdb",
-            "ace-complex.accdb",
-            "ace-extended-dates.accdb",
-            "ace-ole.accdb",
-            "ace-rich-text.accdb",
-            "jet3-ole.mdb",
-            "jet3-overflow.mdb",
-            "jet3-queries.mdb",
-            "jet4-turkish.mdb",
-            "jet4-unicode-compression.mdb",
-        ]
-    );
-    assert_same_as_tika_formatting_cells(&parsed);
-}
-
-/// Asserts that the native parser extracts each of `databases` as Tika's path does, but for the
-/// cells and text it writes otherwise on purpose, as [`as_tika_writes`] undoes them (#122).
-#[cfg(feature = "tika")]
-fn assert_same_as_tika_formatting_cells(databases: &[PathBuf]) {
-    let tika_name = JackcessParser.tika_name();
-    for database in databases {
-        let (rewrite, normalise) = as_tika_writes(database);
-        assert_same_as_tika_normalising(&[database], tika_name, rewrite, normalise);
-    }
-}
-
 /// A database under agile encryption, and its password.
 const ENCRYPTED: &str = "../test_files/documents/encrypted/tika-password.accdb";
 const PASSWORD: &str = "tika";
-
-/// The parser settings with `password`.
-#[cfg(feature = "tika")]
-fn given(password: &str) -> ParserConfigs {
-    ParserConfigs::default().with_password(Some(&Password::new(password)))
-}
-
-/// Asserts that each of `encrypted`, one database encrypted with [`PASSWORD`], fails as
-/// encrypted without a password and with a wrong one, with the error Tika's path fails with,
-/// and is read with its password as Tika's path reads it.
-#[cfg(feature = "tika")]
-fn assert_opens_with_its_password(encrypted: &[PathBuf]) {
-    assert_eq!(encrypted.len(), 1);
-    let path = &encrypted[0];
-    for configs in [ParserConfigs::default(), given("wrong")] {
-        let (native, tika) = errors(path, &configs);
-        assert_eq!(native, tika);
-        assert!(native.starts_with("Encrypted("), "{native}");
-    }
-    let (rewrite, normalise) = as_tika_writes(path);
-    assert_same_as_tika_normalising_with(
-        &[path],
-        JackcessParser.tika_name(),
-        &given(PASSWORD),
-        DEPARTURES,
-        rewrite,
-        normalise,
-    );
-}
 
 /// An encryption provider of Office's, as Access writes its description and encrypts pages.
 #[derive(Debug, Clone, Copy)]
@@ -271,7 +176,6 @@ fn encrypted(mut file: Vec<u8>, provider: Provider, password: &str) -> Vec<u8> {
     file
 }
 
-#[cfg(not(feature = "tika"))]
 #[test]
 fn reads_databases_under_each_office_encryption() {
     let scratch = Scratch::new("access-office-encryption");
@@ -303,54 +207,6 @@ fn reads_databases_under_each_office_encryption() {
     }
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn reads_databases_under_each_office_encryption_as_tikas_path_does() {
-    let scratch = Scratch::new("access-office-encryption-tika");
-    let original = fixture("ace-complex.accdb");
-    for provider in [
-        Provider::BinaryRc4,
-        Provider::CryptoApi,
-        Provider::Standard(JACKCESS_VERIFIER_BLOCK),
-    ] {
-        let path = scratch.write(
-            &format!("{provider:?}.accdb"),
-            &encrypted(original.clone(), provider, "hemmelig"),
-        );
-        for configs in [ParserConfigs::default(), given("forkert")] {
-            let (native, tika) = errors(&path, &configs);
-            assert_eq!(native, tika, "{provider:?}");
-        }
-        let (rewrite, normalise) = as_tika_writes(&path);
-        assert_same_as_tika_normalising_with(
-            &[&path],
-            JackcessParser.tika_name(),
-            &given("hemmelig"),
-            DEPARTURES,
-            rewrite,
-            normalise,
-        );
-    }
-    let office = scratch.write(
-        "office-standard.accdb",
-        &encrypted(original, Provider::Standard(0), "hemmelig"),
-    );
-    let configs = given("hemmelig");
-    let tika = tika_error(&office, Some("hemmelig"));
-    assert!(
-        tika.starts_with("Encrypted(") && tika.contains("Incorrect password provided"),
-        "{tika}"
-    );
-    let input = std::fs::read(&office).unwrap();
-    let deferral = JackcessParser.defers(&input, &TikaMetadata::new(), &configs);
-    assert!(
-        deferral
-            .as_deref()
-            .is_some_and(|reason| reason.contains("Jackcess checks with a key")),
-        "{deferral:?}"
-    );
-}
-
 #[test]
 fn reads_encrypted_databases_with_their_password() {
     for extractor in [
@@ -365,60 +221,6 @@ fn reads_encrypted_databases_with_their_password() {
         .extract_file_to_string(ENCRYPTED)
         .unwrap();
     assert!(!text.trim().is_empty(), "{text}");
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn spools_embedded_objects_as_tikas_path_does() {
-    for name in ["ace-ole.accdb", "jet3-ole.mdb"] {
-        let path = Path::new(FIXTURES).join(name);
-        let (rewrite, normalise) = as_tika_writes(&path);
-        for budget in [u64::MAX, 3000] {
-            let spooled =
-                spools_as_tika_rewriting(&path, budget, Some((rewrite, Some(normalise))), &[]);
-            assert!(matches!(spooled, Ok(1..)), "{name}: {spooled:?}");
-        }
-    }
-}
-
-/// A Jet database encoded as Access encodes it once it is given an encoding key: each page
-/// after the first RC4 under the key XORed with the page's number.
-#[cfg(feature = "tika")]
-fn encoded(mut file: Vec<u8>, key: [u8; 4]) -> Vec<u8> {
-    let Ok(format) = format::detect(&file) else {
-        panic!("a Jet database");
-    };
-    for (number, page) in file.chunks_mut(format.page_size).enumerate().skip(1) {
-        let mut page_key = (number as u32).to_le_bytes();
-        for (byte, key) in page_key.iter_mut().zip(key) {
-            *byte ^= key;
-        }
-        rc4(&page_key, page);
-    }
-    let start = format.offset_encoding_key;
-    let mask = &format.header_mask[start - format.offset_masked_header..];
-    for (i, byte) in key.into_iter().enumerate() {
-        file[start + i] = byte ^ mask[i];
-    }
-    file
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn reads_encoded_jet_databases_as_tikas_path_does() {
-    let scratch = Scratch::new("access-encoded");
-    let jet3 = scratch.write(
-        "encoded-jet3.mdb",
-        &encoded(fixture("jet3-queries.mdb"), [0x12, 0x34, 0x56, 0x78]),
-    );
-    let jet4 = scratch.write(
-        "encoded-jet4.mdb",
-        &encoded(fixture("jet4-turkish.mdb"), [0xFE, 0xDC, 0xBA, 0x98]),
-    );
-    for path in [&jet3, &jet4] {
-        assert_eq!(deferral(&JackcessParser, path), None);
-    }
-    assert_same_as_tika_formatting_cells(&[jet3, jet4]);
 }
 
 /// Jet 4's header: where the database password lies, how long it is, and where the creation
@@ -458,13 +260,6 @@ fn keeps_the_database_password_out_of_the_metadata() {
         .unwrap();
     assert!(!metadata.contains_key("mdb:password"), "{metadata:?}");
     assert!(!text.contains("hemmelig"), "{text}");
-    #[cfg(feature = "tika")]
-    {
-        let exact =
-            std::panic::catch_unwind(|| assert_same_as_tika(&[&path], JackcessParser.tika_name()));
-        assert!(exact.is_err(), "Tika's path exposes the password");
-        assert_same_as_tika_departing(&[&path], JackcessParser.tika_name(), DEPARTURES);
-    }
 }
 
 #[test]
@@ -492,7 +287,6 @@ fn fails_on_damaged_databases_as_jackcess_throws() {
                    database: invalid page number 6 <- caused by \
                    java.lang.IllegalStateException: invalid page number 6";
     assert_eq!(failure, format!("ParseError({corrupt:?})"));
-    #[cfg(not(feature = "tika"))]
     {
         let error = crate::Extractor::new()
             .extract_file_to_string(truncated.to_str().unwrap())
@@ -522,50 +316,6 @@ fn failing_reading(path: &Path) -> (Difference, String) {
         panic!("{}: the reading does not fail: {result:?}", path.display());
     };
     (difference, format!("{error:?}"))
-}
-
-/// The error the extraction of the database at `path`, given `password`, fails with in a build
-/// with Tika, which extracts on Tika's path a database the port reads differently.
-#[cfg(feature = "tika")]
-fn tika_error(path: &Path, password: Option<&str>) -> String {
-    let extractor = crate::Extractor::new().set_passwords(password.map(Password::new));
-    let failed = extractor.extract_file_to_string(path.to_str().unwrap());
-    format!("{:?}", failed.unwrap_err())
-}
-
-/// Tika's error `tika` as the native path reports it: the parser `CompositeParser` names, the
-/// decorator around `JackcessParser`, `MimeFilteringDecorator@<hash>`, which differs on each
-/// run, named as `JackcessParser`; and the message of a `NullPointerException` the JVM throws,
-/// which GraalVM's native image makes of its stack trace, left out.
-#[cfg(feature = "tika")]
-fn as_native_reports(tika: &str) -> String {
-    let decorator = regex::Regex::new(
-        r"org\.apache\.tika\.parser\.ParserDecorator\$MimeFilteringDecorator@[0-9a-f]+",
-    )
-    .unwrap();
-    decorator
-        .replace_all(tika, JackcessParser.tika_name())
-        .replace(
-            "java.lang.NullPointerException: Stack trace is imprecise, the top frames are \
-             missing and/or have wrong line numbers. To get precise stack traces, build the \
-             image with option -H:-ReduceImplicitExceptionStackTraceInformation",
-            "java.lang.NullPointerException",
-        )
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn fails_on_damaged_databases_as_tikas_path_does() {
-    let scratch = Scratch::new("access-damaged-tika");
-    let original = fixture("jet4-turkish.mdb");
-    for (name, cut) in [("empty.mdb", 20), ("short.mdb", 2000)] {
-        let path = scratch.write(name, &original[..cut]);
-        let (native, tika) = errors(&path, &ParserConfigs::default());
-        assert_eq!(native, as_native_reports(&tika), "{name}");
-    }
-    let truncated = scratch.write("truncated.mdb", &original[..3 * 4096]);
-    let (_, failure) = failing_reading(&truncated);
-    assert_eq!(failure, as_native_reports(&tika_error(&truncated, None)));
 }
 
 /// `bytes` with each `from` replaced by `to`, of the same length.
@@ -664,29 +414,6 @@ fn fails_on_jet3_text_of_a_code_page_without_a_charset() {
             .contains("code page 9, which has no charset"),
         "{error}"
     );
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn extracts_tikas_test_documents_as_tikas_path_does() {
-    let (parsed, deferred) = documents(&JackcessParser, &[&conformance_corpus()]);
-    assert_eq!(names(&deferred), [""; 0]);
-    let (encrypted, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
-        .into_iter()
-        .partition(|path| path.ends_with("testAccess2_encrypted.accdb"));
-    assert_opens_with_its_password(&encrypted);
-    assert_eq!(
-        names(&parsed),
-        [
-            "testACCESS.mdb",
-            "testAccess2.accdb",
-            "testAccess2_2000.mdb",
-            "testAccess2_2002-2003.mdb",
-            "testAccess_V1997.mdb",
-        ]
-    );
-    assert_same_as_tika_formatting_cells(&parsed);
 }
 
 /// The XML the extractor writes of `database`, written as `db.mdb` in a directory of its own.

@@ -391,28 +391,8 @@ impl Parser for MobiParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_fails_as_tika, documents, Scratch};
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "ai.yobix.MobiParser";
-
-    /// Asserts parity on `documents` with the texts compared without their heads, which now
-    /// show the book's metadata (#105), and the native metadata without what Tika's path does
-    /// not reach before the length limit, adding the book's metadata after the document ends.
-    #[cfg(feature = "tika")]
-    fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
-        crate::formats::parity::assert_same_as_tika_normalising(
-            documents,
-            tika_name,
-            crate::formats::dc_xml::without_unread_dublin_core,
-            crate::formats::dc_xml::without_head,
-        );
-    }
 
     #[test]
     fn shows_the_books_metadata_in_the_head() {
@@ -615,110 +595,5 @@ mod tests {
         assert_eq!(trailing_bytes(b"text\x81", 0b10).unwrap(), 1);
         assert!(trailing_bytes(b"\x83", 0b10).is_err());
         assert!(trailing_bytes(b"", 0b1).is_err());
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_books_as_tikas_path_does() {
-        let scratch = Scratch::new("mobi");
-        let mut first = COMPRESSED.to_vec();
-        first.extend(b"\x01\x01\x55\x82");
-        let mut second = b"<p>Two</p>".to_vec();
-        second.extend(b"\x00\x81");
-        let read = [
-            scratch.write(
-                "compressed.mobi",
-                &book(&Spec {
-                    compression: 2,
-                    extra_flags: 0b11,
-                    exth: vec![
-                        (100, b" Ada Lovelace "),
-                        (100, b"Charles Babbage"),
-                        (524, b"en"),
-                        (503, b"The Title"),
-                        (101, b"Publisher"),
-                    ],
-                    name: b"Full Name",
-                    records: vec![first, second],
-                    ..Spec::default()
-                }),
-            ),
-            scratch.write(
-                "windows-1252.mobi",
-                &book(&Spec {
-                    encoding: Some(1252),
-                    mobi_length: 0x18,
-                    name: b"Caf\xE9 \x81",
-                    records: vec![b"<html><head><title>Inner</title></head><body><p>Caf\xE9 cr\xE8me</p></body></html>".to_vec()],
-                    ..Spec::default()
-                }),
-            ),
-            scratch.write(
-                "palmdoc.mobi",
-                &book(&Spec {
-                    encoding: None,
-                    records: vec![b"<p>No MOBI header</p>".to_vec()],
-                    ..Spec::default()
-                }),
-            ),
-        ];
-        let failing = [
-            scratch.write(
-                "drm.mobi",
-                &book(&Spec {
-                    encryption: 2,
-                    records: vec![b"<p>Locked</p>".to_vec()],
-                    ..Spec::default()
-                }),
-            ),
-            scratch.write(
-                "huff.mobi",
-                &book(&Spec {
-                    compression: 17480,
-                    records: vec![b"<p>Huffman</p>".to_vec()],
-                    ..Spec::default()
-                }),
-            ),
-            scratch.write(
-                "short-mobi-header.mobi",
-                &book(&Spec {
-                    mobi_length: 0x18,
-                    header_bytes: Some(32),
-                    records: vec![b"<p>Text before the failure</p>".to_vec()],
-                    ..Spec::default()
-                }),
-            ),
-            scratch.write(
-                "no-extra-flags.mobi",
-                &book(&Spec {
-                    header_bytes: Some(32),
-                    records: vec![b"<p>No text</p>".to_vec()],
-                    ..Spec::default()
-                }),
-            ),
-            scratch.write("truncated.mobi", &book(&Spec::default())[..70]),
-        ];
-        let (parsed, deferred) = documents(&MobiParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len() + failing.len());
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-        let error = crate::Extractor::new()
-            .extract_file_to_string(failing[0].to_str().unwrap())
-            .unwrap_err();
-        assert!(matches!(error, Error::Encrypted(_)), "{error:?}");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_the_corpus_book_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&MobiParser, &[Path::new("../test_files/documents")]);
-        assert!(deferred.is_empty());
-        assert_eq!(parsed.len(), 1);
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
     }
 }

@@ -30,45 +30,31 @@ mod codec;
 mod date;
 mod field;
 mod handler;
-#[cfg(all(test, not(feature = "tika")))]
+#[cfg(test)]
 mod large;
 mod mbox;
 #[cfg(test)]
 mod reference;
 mod stream;
 mod structured;
-#[cfg(all(test, feature = "tika"))]
-mod synthetic;
 
 pub use codec::decode_encoded_words;
 pub use date::{parse_date, MailDate};
-#[cfg(feature = "tika")]
-use handler::Collected;
-#[cfg(not(feature = "tika"))]
 use handler::Sink;
 use handler::{read, Inline, Item};
 pub use mbox::MboxParser;
 use stream::MimeError;
 
 use crate::config::ParserConfigs;
-#[cfg(not(feature = "tika"))]
 use crate::formats::embedded::record_exception;
 use crate::formats::embedded::Wrapping;
 use crate::formats::handlers::parse_inline;
-#[cfg(feature = "tika")]
-use crate::formats::html;
-#[cfg(not(feature = "tika"))]
 use crate::formats::html::JSoupParser;
 use crate::formats::metadata::TikaMetadata;
-#[cfg(not(feature = "tika"))]
 use crate::formats::noted;
 use crate::formats::text;
-#[cfg(feature = "tika")]
-use crate::formats::unless_different;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
-#[cfg(feature = "tika")]
-use crate::input::Input;
 use crate::input::{Pages, Paging};
 use crate::java::parse_long;
 
@@ -176,11 +162,6 @@ impl Parser for EmlxParser {
     }
 }
 
-/// How the memory of a message's reading grows with it: a build with Tika reads it whole to
-/// decide first whether Tika's path should read it; one without writes each part as it is read.
-#[cfg(feature = "tika")]
-const FOOTPRINT: Footprint = Footprint::Proportional;
-#[cfg(not(feature = "tika"))]
 const FOOTPRINT: Footprint = Footprint::Bounded;
 
 /// The digits of an `.emlx` length line that `EmlxParser` reads at most, past which it gives up.
@@ -313,95 +294,10 @@ fn failed<'a>(failure: Failure) -> Prepared<'a> {
     Box::new(move |_| Err(failure))
 }
 
-/// A part of the message as writing it takes it.
-#[cfg(feature = "tika")]
-enum Part {
-    /// `<div class="email-entry"><p>`, which starts a part of a multipart.
-    StartEntry,
-    /// `</p></div>`.
-    EndEntry,
-    /// A text or HTML part its native parser prepared, to parse inline.
-    Inline(Prepared<'static>),
-    /// A part handed to the embedded document extractor, with the metadata it is given.
-    Embedded(Input<'static>, TikaMetadata),
-}
-
-/// The message read whole before anything of it is written, with the metadata it adds to
-/// `metadata`, and its text and HTML parts prepared by their parsers, so that a build with Tika
-/// decides first whether the port reads it as Tika does: a reading that differs from Tika's
-/// where the port does not read something of it as Tika does; or why Tika's path should read
-/// it, a part whose parser defers it.
-#[cfg(feature = "tika")]
-fn read_message<'a>(
-    _parser: &'static str,
-    message: &'a [u8],
-    pages: Pages<'a>,
-    mut metadata: TikaMetadata,
-    _configs: &'a ParserConfigs,
-) -> Result<Prepared<'a>, Decline<'a>> {
-    let mut collected = Collected {
-        metadata: &mut metadata,
-        items: Vec::new(),
-    };
-    let unported = match read(message, &Paging::new(pages), &mut collected) {
-        Ok(unported) => unported,
-        Err(error) => return Ok(failed(Failure::from(error))),
-    };
-    let items = collected.items;
-    let mut difference = unported.map(unported_difference);
-    let mut parts = Vec::with_capacity(items.len());
-    for item in items {
-        parts.push(match item {
-            Item::StartEntry => Part::StartEntry,
-            Item::EndEntry => Part::EndEntry,
-            Item::Inline(Inline::Text(content)) => Part::Inline(
-                text::prepare_plain(content)
-                    .map_err(|reason| Decline::Deferred(format!("a text part defers: {reason}")))?,
-            ),
-            Item::Inline(Inline::Html(content)) => {
-                match html::prepare(&content, &TikaMetadata::new()) {
-                    Ok(prepared) => Part::Inline(prepared),
-                    Err(Decline::Differs {
-                        reading,
-                        difference: html,
-                    }) => {
-                        difference.get_or_insert_with(|| {
-                            Difference::new(format!("an HTML part differs: {}", html.0))
-                        });
-                        Part::Inline(reading)
-                    }
-                    Err(declined) => {
-                        return Err(Decline::Deferred(format!(
-                            "an HTML part defers: {declined:?}"
-                        )))
-                    }
-                }
-            }
-            Item::Embedded(content, metadata) => Part::Embedded(content, metadata),
-        });
-    }
-    let reading: Prepared<'static> = Box::new(move |xhtml| {
-        *xhtml.metadata_mut() = metadata;
-        for part in parts {
-            match part {
-                Part::StartEntry => start_entry(xhtml)?,
-                Part::EndEntry => end_entry(xhtml)?,
-                Part::Inline(prepared) => parse_inline(prepared, xhtml)?,
-                Part::Embedded(content, metadata) => {
-                    xhtml.parse_embedded_input(&content, &metadata, Wrapping::Bare)?;
-                }
-            }
-        }
-        Ok(())
-    });
-    unless_different(reading, difference)
-}
-
 /// The message written as it is read, a part at a time, each part's body spooled and let go of
 /// once written, HTML built only as far as it may still change. A detail the port reads
 /// otherwise than Tika is met only once it is read, and recorded as the difference of a message
 /// a build without Tika reads natively.
-#[cfg(not(feature = "tika"))]
 fn read_message<'a>(
     parser: &'static str,
     message: &'a [u8],
@@ -426,14 +322,12 @@ fn read_message<'a>(
 
 /// Writes the items of a message's body as they are read, noting the first part whose parser
 /// reads it otherwise than Tika's.
-#[cfg(not(feature = "tika"))]
 struct Written<'w, 'x, 'c> {
     xhtml: &'w mut Xhtml<'x>,
     configs: &'c ParserConfigs,
     difference: Option<Difference>,
 }
 
-#[cfg(not(feature = "tika"))]
 impl Written<'_, '_, '_> {
     /// Parses inline the `kind` of part its parser `prepared`.
     fn inline(
@@ -454,7 +348,6 @@ impl Written<'_, '_, '_> {
     }
 }
 
-#[cfg(not(feature = "tika"))]
 impl Sink for Written<'_, '_, '_> {
     type Error = Failure;
 
@@ -498,89 +391,11 @@ fn end_entry(xhtml: &mut Xhtml) -> Result<(), Stop> {
     xhtml.end_element("div")
 }
 
-/// What the port does otherwise than Tika on purpose: Tika names a message after its
-/// subject, and makes each line feed of a quoted-printable part a CRLF.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-const DEPARTURES: crate::formats::parity::Departures = &[
-    crate::formats::parity::Departure::Values("tk:resource-name", "#79"),
-    crate::formats::parity::Departure::LineBreaks("#73"),
-];
-
-/// The documents whose sender's name Tika's regular expression takes otherwise than the
-/// port takes it from the parsed mailbox (#77), by file name.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-const OTHER_SENDER_NAMES: [&str; 1] = ["testGroupWiseEml.eml"];
-
-/// What the port does otherwise than Tika on purpose with the message or mailbox at `path`:
-/// the [`DEPARTURES`] of every message, and the sender's name of the [`OTHER_SENDER_NAMES`].
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub fn departures_of(path: &std::path::Path) -> Vec<crate::formats::parity::Departure<'static>> {
-    let mut departures = DEPARTURES.to_vec();
-    if path
-        .file_name()
-        .is_some_and(|file| OTHER_SENDER_NAMES.iter().any(|name| file == *name))
-    {
-        departures.push(crate::formats::parity::Departure::Values(
-            "message:from-name",
-            "#77",
-        ));
-    }
-    departures
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::assert_same_as_tika_departing;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::Departure;
-    use crate::formats::parity::{conformance_corpus, documents};
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.mail.RFC822Parser";
-    #[cfg(feature = "tika")]
-    const EMLX_NAME: &str = "ai.yobix.EmlxParser";
-
-    /// Asserts parity on the documents of `parser` under `roots`, which it must parse all of,
-    /// and that there are `count`, but for those named in `except`, which it returns.
-    #[cfg(feature = "tika")]
-    fn assert_parity(
-        parser: &dyn Parser,
-        tika_name: &str,
-        roots: &[&Path],
-        count: usize,
-        except: &[&str],
-    ) -> Vec<PathBuf> {
-        let (parsed, deferred) = documents(parser, roots);
-        assert!(deferred.is_empty(), "deferred: {deferred:?}");
-        assert_eq!(parsed.len(), count, "documents of {tika_name}");
-        let named = |names: &[&str], path: &Path| {
-            names
-                .iter()
-                .any(|name| path.file_name().is_some_and(|file| file == *name))
-        };
-        let (excepted, parsed): (Vec<PathBuf>, Vec<PathBuf>) =
-            parsed.into_iter().partition(|path| named(except, path));
-        let mut groups: Vec<(Vec<Departure>, Vec<&Path>)> = Vec::new();
-        for path in parsed.iter().map(PathBuf::as_path) {
-            let mut departures = departures_of(path);
-            if named(&crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS, path) {
-                departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
-            }
-            match groups.iter_mut().find(|(group, _)| *group == departures) {
-                Some((_, paths)) => paths.push(path),
-                None => groups.push((departures, vec![path])),
-            }
-        }
-        for (departures, paths) in &groups {
-            assert_same_as_tika_departing(paths, tika_name, departures);
-        }
-        excepted
-    }
+    use crate::formats::testing::{conformance_corpus, documents};
 
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
@@ -602,19 +417,6 @@ pub(crate) mod tests {
     const ZONED: &[u8] =
         b"From: a@example.org\r\nSubject: Zoned\r\nDate: 5 Mar 2024 14:30 EST\r\n\r\nBody.\r\n";
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn decides_first_that_a_date_naming_a_zone_differs() {
-        let configs = ParserConfigs::default();
-        let Err(Decline::Differs { difference, .. }) =
-            Rfc822Parser.prepare(ZONED, &TikaMetadata::new(), &configs)
-        else {
-            panic!("a date naming a zone is not read as differing");
-        };
-        assert!(difference.0.contains("time zone"), "{difference:?}");
-    }
-
-    #[cfg(not(feature = "tika"))]
     #[test]
     fn leaves_out_a_date_that_names_a_zone_recording_the_difference() {
         let (text, metadata) = crate::Extractor::new()
@@ -642,83 +444,6 @@ pub(crate) mod tests {
             Some(&vec!["A/subject: of sorts".to_owned()])
         );
         assert_eq!(metadata.get("tk:resource-name"), None);
-    }
-
-    #[cfg(feature = "tika")]
-    const ROOTS: [&str; 3] = [
-        "../test_files/documents",
-        "../quality/corpus",
-        "../quality/truth",
-    ];
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_messages_as_tikas_path_does() {
-        let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
-        assert_parity(&Rfc822Parser, TIKA_NAME, &roots, 3, &[]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_apple_mail_messages_as_tikas_path_does() {
-        let roots: Vec<&Path> = ROOTS.iter().map(Path::new).collect();
-        assert_parity(&EmlxParser, EMLX_NAME, &roots, 1, &[]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_messages_as_tikas_path_does() {
-        // Its attached ZIP archive has an encrypted entry, whose name Tika writes as text
-        // besides recording its failure (#99).
-        let encrypted = assert_parity(
-            &Rfc822Parser,
-            TIKA_NAME,
-            &[&conformance_corpus()],
-            28,
-            &["testRFC822_encrypted_zip"],
-        );
-        let [encrypted] = &encrypted[..] else {
-            panic!("{encrypted:?}");
-        };
-        let (text, _) = crate::Extractor::new()
-            .extract_file_to_string(encrypted.to_str().unwrap())
-            .unwrap();
-        assert!(!text.trim().is_empty());
-    }
-
-    /// MHTML documents, typed `multipart/related`, which Tika's composite parser hands the
-    /// parser of `message/rfc822`, its supertype, spool their parts as Tika's path does, once
-    /// the line breaks of their quoted-printable parts are taken alike (#73). Where a budget cuts
-    /// the spool, the departure moves the cut.
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn spools_the_parts_of_tikas_mhtml_documents_as_tikas_path_does() {
-        let mhtml: Vec<PathBuf> = documents(&Rfc822Parser, &[&conformance_corpus()])
-            .0
-            .into_iter()
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension == "mhtml")
-            })
-            .collect();
-        assert_eq!(mhtml.len(), 2, "{mhtml:?}");
-        let spooled: usize = mhtml
-            .iter()
-            .map(|path| {
-                crate::formats::parity::spools_as_tika_rewriting(path, u64::MAX, None, DEPARTURES)
-                    .unwrap_or_else(|difference| panic!("{difference}"))
-            })
-            .sum();
-        assert!(spooled > 0);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_apple_mail_messages_as_tikas_path_does() {
-        assert_parity(&EmlxParser, EMLX_NAME, &[&conformance_corpus()], 3, &[]);
     }
 
     #[test]

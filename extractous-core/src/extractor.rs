@@ -2,12 +2,6 @@ use crate::config::{ParserConfigs, Password};
 use crate::errors::{Error, ExtractResult, Unsupported};
 use crate::formats::{self, Document, NativeStream, Output};
 use crate::input::Source;
-#[cfg(feature = "tika")]
-use crate::isolate::isolate;
-#[cfg(feature = "tika")]
-use crate::tika::{self, JInputStream, StreamOptions};
-#[cfg(feature = "tika")]
-use crate::EmbeddedExtractResult;
 use crate::{
     CharSet, EmbeddedSpool, Metadata, OfficeParserConfig, PdfParserConfig, SpooledEmbedded,
     TesseractOcrConfig,
@@ -53,8 +47,6 @@ pub struct StreamReader {
 
 /// Where a stream's text comes from: Tika's parse in the isolate, or a native parser.
 pub(crate) enum Stream {
-    #[cfg(feature = "tika")]
-    Tika(JInputStream),
     Native(NativeStream),
 }
 
@@ -63,8 +55,6 @@ impl StreamReader {
     /// producing the text. Available once the stream has been read to the end.
     pub fn metadata(&self) -> ExtractResult<Metadata> {
         match &self.inner {
-            #[cfg(feature = "tika")]
-            Stream::Tika(stream) => stream.metadata(),
             Stream::Native(stream) => stream.metadata(),
         }
     }
@@ -74,8 +64,6 @@ impl StreamReader {
     /// the stream has been read to the end.
     pub fn embedded(&self) -> ExtractResult<Vec<SpooledEmbedded>> {
         match &self.inner {
-            #[cfg(feature = "tika")]
-            Stream::Tika(stream) => stream.embedded(),
             Stream::Native(stream) => stream.embedded(),
         }
     }
@@ -84,8 +72,6 @@ impl StreamReader {
 impl std::io::Read for StreamReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match &mut self.inner {
-            #[cfg(feature = "tika")]
-            Stream::Tika(stream) => std::io::Read::read(stream, buf),
             Stream::Native(stream) => stream.read(buf),
         }
     }
@@ -240,31 +226,6 @@ impl Extractor {
         self.extract_to_string(Source::Url(url))
     }
 
-    /// Extracts all embedded documents/resources (images, attachments, etc.) from a file.
-    /// This is similar to Apache Tika Server's /unpack/all endpoint.
-    #[cfg(feature = "tika")]
-    pub fn extract_embedded_from_file(
-        &self,
-        file_path: &str,
-    ) -> ExtractResult<EmbeddedExtractResult> {
-        self.extract_embedded(Source::File(file_path))
-    }
-
-    /// Extracts all embedded documents/resources from a byte buffer.
-    #[cfg(feature = "tika")]
-    pub fn extract_embedded_from_bytes(
-        &self,
-        buffer: &[u8],
-    ) -> ExtractResult<EmbeddedExtractResult> {
-        self.extract_embedded(Source::Bytes(buffer))
-    }
-
-    /// Extracts all embedded documents/resources from the document at a URL.
-    #[cfg(feature = "tika")]
-    pub fn extract_embedded_from_url(&self, url: &str) -> ExtractResult<EmbeddedExtractResult> {
-        self.extract_embedded(Source::Url(url))
-    }
-
     /// Detects the media type of a file, such as `application/pdf`, from its content, its
     /// container structure and its name.
     pub fn detect_file(&self, file_path: &str) -> ExtractResult<MediaType> {
@@ -360,31 +321,7 @@ impl Extractor {
         }))
     }
 
-    /// Streams a document no native parser reads with Tika's path.
-    #[cfg(feature = "tika")]
-    fn stream_without_native(
-        &self,
-        source: Source,
-        configs: &ParserConfigs,
-        deadline: Option<Instant>,
-        embedded: Option<&EmbeddedSpool>,
-        _: Unsupported,
-    ) -> ExtractResult<(StreamReader, Metadata)> {
-        let options = StreamOptions {
-            char_set: self.encoding,
-            as_xml: self.xml_output,
-            timeout: deadline.map(|deadline| deadline.saturating_duration_since(Instant::now())),
-            embedded,
-        };
-        let (stream, metadata) = tika::parse_to_stream(isolate()?, source, configs, &options)?;
-        let reader = StreamReader {
-            inner: Stream::Tika(stream),
-        };
-        Ok((reader, metadata))
-    }
-
     /// Fails a document no native parser reads, in a build without Tika, with why.
-    #[cfg(not(feature = "tika"))]
     fn stream_without_native(
         &self,
         _: Source,
@@ -435,25 +372,7 @@ impl Extractor {
         )
     }
 
-    /// Extracts a document no native parser reads to a string with Tika's path.
-    #[cfg(feature = "tika")]
-    fn extract_without_native(
-        &self,
-        source: Source,
-        configs: &ParserConfigs,
-        _: Unsupported,
-    ) -> ExtractResult<(String, Metadata)> {
-        tika::parse_to_string(
-            isolate()?,
-            source,
-            self.extract_string_max_length,
-            configs,
-            self.xml_output,
-        )
-    }
-
     /// Fails a document no native parser reads, in a build without Tika, with why.
-    #[cfg(not(feature = "tika"))]
     fn extract_without_native(
         &self,
         _: Source,
@@ -461,11 +380,6 @@ impl Extractor {
         unsupported: Unsupported,
     ) -> ExtractResult<(String, Metadata)> {
         Err(unsupported.into())
-    }
-
-    #[cfg(feature = "tika")]
-    fn extract_embedded(&self, source: Source) -> ExtractResult<EmbeddedExtractResult> {
-        self.with_passwords(|configs| tika::extract_embedded(isolate()?, source, configs))
     }
 }
 

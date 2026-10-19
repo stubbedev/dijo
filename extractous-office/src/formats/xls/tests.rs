@@ -1,111 +1,6 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::records::sid;
 use super::stream::tests::record;
 use super::*;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{self, assert_same_as_tika_with_passwords};
-
-#[cfg(feature = "tika")]
-const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.OfficeParser";
-
-/// The encrypted workbooks, by file name, with the password that opens them.
-#[cfg(feature = "tika")]
-const ENCRYPTED: [(&str, &str); 2] = [
-    ("testEXCEL_protected_passtika.xls", "tika"),
-    ("tika-password.xls", "tika"),
-];
-
-#[cfg(feature = "tika")]
-fn file_name(path: &Path) -> String {
-    path.file_name().unwrap().to_string_lossy().into_owned()
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
-fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-    let (mut ported, deferred) = parity::documents(&XlsParser, &[&parity::conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    ported.sort();
-    assert_eq!(ported.len(), 29);
-    let (departing, compared): (Vec<PathBuf>, Vec<PathBuf>) =
-        ported.into_iter().partition(|document| {
-            DEPARTING
-                .iter()
-                .any(|(name, _)| file_name(document) == *name)
-        });
-    assert_same_as_tika_with_passwords(&compared, TIKA_PARSER, &ENCRYPTED);
-    assert_eq!(departing.len(), DEPARTING.len());
-    for document in departing {
-        let name = file_name(&document);
-        let (xml, _) = crate::Extractor::new()
-            .set_xml_output(true)
-            .extract_file_to_string(document.to_str().unwrap())
-            .unwrap();
-        let (_, texts) = DEPARTING
-            .iter()
-            .find(|(departing, _)| *departing == name)
-            .unwrap();
-        for text in *texts {
-            assert!(xml.contains(text), "{name}: {text:?} in {xml}");
-        }
-    }
-}
-
-/// Tika's own test documents the native parser reads differently from Tika's path on purpose
-/// (#107), with XHTML it writes for each: a sheet kept together around its charts, whose cells
-/// are text outside the table; headers and footers without their codes; linked cells once, in
-/// the table.
-#[cfg(feature = "tika")]
-const DEPARTING: [(&str, &[&str]); 5] = [
-    (
-        "testEXCEL-charts.xls",
-        &["<div class=\"outside\">fizzlepuff</div>\n<div class=\"outside\">1</div>"],
-    ),
-    (
-        "testEXCEL_extra_metadata.xls",
-        &["<div class=\"outside\">Page</div>"],
-    ),
-    (
-        "testEXCEL_headers_footers.xls",
-        &["<div class=\"outside\">Header - Corporate Spreadsheet\tHeader - For Internal Use Only\t\
-           Header - Author: John Smith</div>"],
-    ),
-    (
-        "testEXCEL_hyperlinks.xls",
-        &["<td><a href=\"http://tika.apache.org/\">http_tika_link</a></td>"],
-    ),
-    (
-        "testEXCEL_labels-govdocs-515858.xls",
-        &["<h1>Cabbage and other brassicas</h1>"],
-    ),
-];
-
-#[cfg(feature = "tika")]
-#[test]
-fn opens_the_repositorys_encrypted_workbook_as_tikas_path_does() {
-    let encrypted = PathBuf::from("../test_files/documents/encrypted/tika-password.xls");
-    assert_same_as_tika_with_passwords(&[encrypted], TIKA_PARSER, &ENCRYPTED);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
-fn extracts_what_tikas_old_excel_parser_extracts_from_tikas_test_documents() {
-    let (mut documents, deferred) =
-        parity::documents(&OldExcelParser, &[&parity::conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    documents.sort();
-    assert_eq!(documents.len(), 1);
-    let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-    parity::assert_same_as_tika_with(
-        &documents,
-        "org.apache.tika.parser.microsoft.OldExcelParser",
-        &ParserConfigs::default(),
-    );
-}
 
 fn bof(kind: i16) -> Vec<u8> {
     let mut data = 0x0600i16.to_le_bytes().to_vec();
@@ -687,7 +582,6 @@ fn fails_on_a_link_formula_of_no_operand_as_poi_does() {
 
 /// A workbook POI throws on fails in the build without Tika as Tika's path fails on it, with
 /// the exception POI throws, which `OfficeParser` lets through.
-#[cfg(not(feature = "tika"))]
 #[test]
 fn fails_a_workbook_poi_throws_on_with_tikas_wording() {
     let mut stream = globals(&["One"], &[]);

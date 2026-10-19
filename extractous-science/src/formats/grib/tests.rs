@@ -1,11 +1,4 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_read_where_tika_reads_nothing, conformance_corpus, documents, WITHOUT_SCIENTIFIC_MODULE,
-};
 
 /// A GRIB 2 message of temperature on the isobaric surface of `pressure` pascals, forecast six
 /// hours ahead on a grid of 3 rows of 4 columns.
@@ -113,17 +106,6 @@ fn fails_on_a_message_cut_short() {
         Collection::read(Bytes::new(&whole[..whole.len() - 4])),
         Err(crate::formats::bytes::Unread::Malformed(_))
     ));
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn reads_tikas_test_files_which_tikas_path_leaves_empty() {
-    let (parsed, deferred) = documents(&GribParser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 3, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_read_where_tika_reads_nothing(&paths, &[WITHOUT_SCIENTIFIC_MODULE]);
 }
 
 #[test]

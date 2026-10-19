@@ -9,15 +9,9 @@ repository = "https://github.com/stubbedev/extractous"
 authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
 
 [features]
-# Extract what no native parser reads yet with Apache Tika, which needs GraalVM to build: off by
-# default and never in a release, the reference that conformance compares extraction with.
-tika = ["extractous-core/tika"]
 # The statically linked Linux executable without Tika, tesseract and libheif linked in;
 # ci/static-native.nix builds it (`nix build .#static`).
 static = ["extractous-core/static", "dep:mimalloc"]
-# Link into the statically linked Linux executable with Tika, which is not released, instead of
-# loading Tika as a shared library; ci/static-image.sh builds it.
-static-image = ["static", "tika", "extractous-core/static-image"]
 
 [[bin]]
 name = "extractous"

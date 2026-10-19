@@ -67,18 +67,7 @@ const NEVER_CLOSED: [&str; 31] = [
     "wbr",
 ];
 
-/// How many documents [`build`] and [`survey`] have built in this process, for the parity
-/// harness, which compares the documents whose native extraction built one by the HTML parser's
-/// [`DEPARTURES`] and runs one test per process.
-///
-/// [`DEPARTURES`]: super::DEPARTURES
-#[cfg(all(feature = "tika", any(test, feature = "testing")))]
-pub(super) static BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-fn count_built() {
-    #[cfg(all(feature = "tika", any(test, feature = "testing")))]
-    BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
+fn count_built() {}
 
 /// A document built whole, and whether an element of it holds a data URI the parser may read
 /// otherwise than Tika ([`super::handler::reads_otherwise`]).

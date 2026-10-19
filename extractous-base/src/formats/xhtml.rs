@@ -14,13 +14,10 @@ use crate::formats::secure::{Secure, ZipBomb, ZIP_BOMB_DETECTED};
 use crate::formats::{self, Bridged, EmbeddedRoute, Failure, Opened, Unrouted};
 use crate::input::{Input, Pages};
 use crate::memory;
-#[cfg(feature = "tika")]
-use crate::tika::{self, EmbeddedOutcome, Event};
 use crate::Metadata;
 
 /// What an embedded document no native parser reads is recorded as unread by, in a build
 /// without Tika.
-#[cfg(not(feature = "tika"))]
 const UNSUPPORTED: &str = "extractous";
 
 /// Whether the extraction holds no more memory than its budget, which it checks as it writes.
@@ -1033,18 +1030,13 @@ impl<'h> Xhtml<'h> {
                 self.embedding.absorb_failures(&parsed, None);
                 Ended::Clean
             }
-            #[cfg(feature = "tika")]
-            Err(bridged) => self.parse_with_tika(bridged, data, metadata, open, target),
-            #[cfg(not(feature = "tika"))]
             Err(Bridged::Fails(parser, error)) => {
                 self.record_unread(parser, metadata, &embedded::error_reason(&error))
             }
-            #[cfg(not(feature = "tika"))]
             Err(Bridged::Deferred(parser, reason)) => {
                 let unsupported = crate::Unsupported::Deferred { parser, reason };
                 self.record_unread(UNSUPPORTED, metadata, &unsupported.to_string())
             }
-            #[cfg(not(feature = "tika"))]
             Err(Bridged::Unrouted(Unrouted::Unsupported(unsupported))) => {
                 self.record_unread(UNSUPPORTED, metadata, &unsupported.to_string())
             }
@@ -1054,7 +1046,6 @@ impl<'h> Xhtml<'h> {
     /// Records that an embedded document stays unread, in a build without Tika, where its parse
     /// on Tika's path would be: what did not read it, which document and why. The document
     /// embedding it goes on, as it does past an embedded document whose parser fails.
-    #[cfg(not(feature = "tika"))]
     fn record_unread(&mut self, reader: &str, metadata: &TikaMetadata, reason: &str) -> Ended {
         let failure = embedded::describe_failure(reader, metadata, reason);
         self.embedding
@@ -1086,69 +1077,6 @@ impl<'h> Xhtml<'h> {
         failure.map_or(Ok(()), Err)
     }
 
-    /// Parses an embedded document, which no native parser prepares for the reason `bridged`
-    /// gives, with Tika's path and replays its events.
-    #[cfg(feature = "tika")]
-    fn parse_with_tika(
-        &mut self,
-        bridged: Bridged,
-        data: &[u8],
-        metadata: &TikaMetadata,
-        open: &mut Vec<ExpandedName>,
-        target: Target,
-    ) -> Ended {
-        let parsed = match self.parse_with_tika_quietly(bridged, data, metadata) {
-            Ok(parsed) => parsed,
-            Err(failure) => return Ended::Failed(failure),
-        };
-        if let EmbeddedOutcome::Parsed { metadata, .. } = &parsed.outcome {
-            self.embedding.absorb_parsers(metadata);
-        }
-        let events = match tika::decode_events(&parsed.events) {
-            Ok(events) => events,
-            Err(failure) => return Ended::Failed(failure),
-        };
-        if let Err(stop) = self.replay(events, open, target) {
-            return Ended::Stopped(stop);
-        }
-        match parsed.outcome {
-            EmbeddedOutcome::Parsed {
-                metadata,
-                recorded_exception,
-            } => {
-                let clean = recorded_exception.is_none();
-                self.embedding
-                    .absorb_failures(&metadata, recorded_exception);
-                if clean {
-                    Ended::Clean
-                } else {
-                    Ended::Recorded
-                }
-            }
-            EmbeddedOutcome::Failed(error) => Ended::Failed(Failure::Embedded(error)),
-        }
-    }
-
-    /// Tika's path's parse of an embedded document `bridged` to it, its events and how it ended,
-    /// which this document has not taken in yet. It is parsed with the extraction's password,
-    /// as Tika's path parses every embedded document under the password its parse context
-    /// provides.
-    #[cfg(feature = "tika")]
-    fn parse_with_tika_quietly(
-        &self,
-        bridged: Bridged,
-        data: &[u8],
-        metadata: &TikaMetadata,
-    ) -> Result<tika::EmbeddedEvents, Failure> {
-        formats::parse_with_tika(
-            bridged,
-            data,
-            &metadata.pairs(),
-            self.embedding.context().configs(),
-        )
-        .map_err(Failure::Embedded)
-    }
-
     /// Parses an embedded document of `bytes` bytes with the native `parser`, from the metadata
     /// `start` it starts from, its events passed on to this document as they come. Where the
     /// parser fails on the document, as Tika's would throw, the failure is recorded in this
@@ -1169,7 +1097,6 @@ impl<'h> Xhtml<'h> {
             parser,
             start,
             prepared,
-            #[cfg(not(feature = "tika"))]
             difference,
         } = route;
         let write = move |xhtml: &mut Xhtml| {
@@ -1178,7 +1105,6 @@ impl<'h> Xhtml<'h> {
         };
         let (parsed, result) =
             self.write_natively(bytes, start, parser.name(), write, open, target);
-        #[cfg(not(feature = "tika"))]
         if let Some(difference) = difference {
             let recorded = embedded::describe_difference(parser.name(), metadata, &difference);
             self.embedding
@@ -1235,36 +1161,6 @@ impl<'h> Xhtml<'h> {
         let parsed = parsed.to_map();
         self.embedding.absorb_parsers(&parsed);
         (parsed, result)
-    }
-
-    /// Writes the events of an embedded document, keeping the names of the elements left open
-    /// in `open`, until the output stops taking them.
-    #[cfg(feature = "tika")]
-    fn replay(
-        &mut self,
-        events: Vec<Event>,
-        open: &mut Vec<ExpandedName>,
-        target: Target,
-    ) -> Result<(), Stop> {
-        for event in events {
-            match event {
-                Event::Start { name, attributes } => {
-                    let borrowed: Vec<(&str, &str)> = attributes
-                        .iter()
-                        .map(|(name, value)| (name.as_str(), value.as_str()))
-                        .collect();
-                    self.start_in(target, XHTML_NAMESPACE, &name, &borrowed)?;
-                    open.push(ExpandedName::new(XHTML_NAMESPACE, &name));
-                }
-                Event::End(name) => {
-                    open.pop();
-                    self.end_in(target, XHTML_NAMESPACE, &name)?;
-                }
-                Event::Characters(text) => self.characters_in(target, &text)?,
-                Event::IgnorableWhitespace(text) => self.whitespace_in(target, &text)?,
-            }
-        }
-        Ok(())
     }
 
     /// `XHTMLBalancingHandler.drainOpenElements`: ends the elements an aborted embedded parse

@@ -1,12 +1,5 @@
-#[cfg(feature = "tika")]
-use std::path::Path;
-
 use super::*;
-use crate::formats::parity::Scratch;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_read_where_tika_reads_nothing, conformance_corpus, documents, WITHOUT_SCIENTIFIC_MODULE,
-};
+use crate::formats::testing::Scratch;
 
 const INVESTIGATION_FILE: &str = "ONTOLOGY SOURCE REFERENCE\n\
     Term Source Name\t\"OBI\"\t\"UO\"\t\n\
@@ -26,12 +19,6 @@ const STUDY_FILE: &str = "\"Source Name\"\t\"Characteristics[organism]\"\t\"Samp
     \"culture1\"\t\"Saccharomyces cerevisiae\"\t\"C-0.07-aliquot1\"\n";
 
 const ASSAY_FILE: &str = "\"Sample Name\"\t\"Assay Name\"\n\"C-0.07-aliquot1\"\t\"JC_A1\"\n";
-
-#[cfg(feature = "tika")]
-const STUDY_FIELDS_OF_THEIR_OWN: &str = "the native parser gives each study its own fields \
-                                         alone and reads a study field with no value as empty, \
-                                         where ISArchiveParser carries an earlier study's fields \
-                                         over and fails on an empty one (#183)";
 
 /// The metadata of the study file `study` of the investigation `investigation`, read from a
 /// directory of their own.
@@ -131,20 +118,6 @@ fn reads_a_study_field_with_no_value_as_empty() {
     assert_eq!(metadata["isatab:Study Description"], [""]);
     assert_eq!(metadata["isatab:Study Identifier"], ["BII-S-1"]);
     assert_eq!(metadata["isatab:Investigation Identifier"], ["BII-I-1"]);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn reads_tikas_test_files_which_tikas_path_leaves_empty() {
-    let (parsed, deferred) = documents(&IsaTabParser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 8, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(std::path::PathBuf::as_path).collect();
-    assert_read_where_tika_reads_nothing(
-        &paths,
-        &[WITHOUT_SCIENTIFIC_MODULE, STUDY_FIELDS_OF_THEIR_OWN],
-    );
 }
 
 /// An assay too large to read whole is read a piece at a time, every row written.

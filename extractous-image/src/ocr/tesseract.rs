@@ -730,7 +730,7 @@ mod tests {
 
     #[test]
     fn lists_models_as_tesseract_names_them() {
-        let scratch = crate::formats::parity::Scratch::new("tessdata");
+        let scratch = crate::formats::testing::Scratch::new("tessdata");
         scratch.write("eng.traineddata", b"");
         scratch.write("notes.txt", b"");
         std::fs::create_dir(scratch.directory().join("script")).unwrap();

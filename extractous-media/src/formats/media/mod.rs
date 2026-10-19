@@ -9,8 +9,6 @@ mod flv;
 mod midi;
 mod mp3;
 mod mp4;
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub use mp4::as_tika_reads_it as mp4_as_tika_reads_it;
 mod ogg;
 
 pub use audio::AudioParser;

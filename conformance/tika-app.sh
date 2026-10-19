@@ -11,7 +11,7 @@ dir=$1
 input=$2
 output=$3
 shift 3
-version=$("$here/../extractous-core/tika-native/tika-version.sh")
+version=$("$here/tika-version.sh")
 app=$("$here/fetch-tika.sh" "$dir" app)
 
 java -jar "$app/tika-app-$version.jar" --pluginsDir="$app/plugins" --handler t --content-only \

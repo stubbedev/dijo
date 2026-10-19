@@ -2,15 +2,11 @@
 //! of `extractous_base::formats`. [`parser_for`] routes a media type to its native parser, if it
 //! has one.
 
-#[cfg(all(test, feature = "tika"))]
-pub(crate) mod audit;
 mod composite;
-#[cfg(any(test, feature = "parity"))]
+#[cfg(any(test, feature = "testing"))]
 pub mod large;
-#[cfg(any(test, feature = "parity"))]
-pub mod parity;
-#[cfg(all(test, feature = "tika"))]
-mod url_tests;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 use std::borrow::Cow;
 use std::io::{self, Read};
@@ -28,7 +24,6 @@ pub(crate) use extractous_image::formats::metafile;
 pub(crate) use extractous_mail::formats::archive;
 pub(crate) use extractous_mail::formats::cms;
 pub(crate) use extractous_mail::formats::mail;
-#[cfg(not(feature = "static-image"))]
 pub(crate) use extractous_mail::formats::sqlite;
 pub(crate) use extractous_mail::formats::warc;
 pub(crate) use extractous_media::formats::media;
@@ -98,13 +93,9 @@ use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::{Error, ExtractResult, Unsupported};
 use crate::fetch::{self, Located};
 use crate::input::{self, Input, Source};
-use crate::isolate::heap_cap;
-#[cfg(feature = "tika")]
-use crate::isolate::isolate;
 use crate::memory;
 use crate::mime::{self, Intent, MediaType};
-#[cfg(feature = "tika")]
-use crate::tika;
+use crate::process::heap_cap;
 use crate::{CharSet, Metadata};
 use embedded::ParseContext;
 use handlers::Write;
@@ -203,7 +194,6 @@ static PARSERS: &[&dyn Parser] = &[
     &rtf::RtfParser,
     &sas::Sas7bdatParser,
     &source_code::SourceCodeParser,
-    #[cfg(not(feature = "static-image"))]
     &sqlite::Sqlite3Parser,
     &subtitle::SubtitleParser,
     &text::TextAndCsvParser,
@@ -225,17 +215,6 @@ static PARSERS: &[&dyn Parser] = &[
     &vsdx::VsdxParser,
     &xps::XpsParser,
     &empty::EmptyParser,
-];
-
-/// The parsers of the scientific formats, which Tika's path parses with `EmptyParser`, as its
-/// native image lacks their module (#172).
-#[cfg(all(test, feature = "tika"))]
-pub(crate) static SCIENTIFIC: &[&dyn Parser] = &[
-    &fits::FitsParser,
-    &grib::GribParser,
-    &hdf::HdfParser,
-    &isatab::IsaTabParser,
-    &netcdf::NetCdfParser,
 ];
 
 /// The native parser for a document of `media_type`, picked as `CompositeParser.getParser` picks
@@ -298,23 +277,6 @@ impl Routes for Registry {
         let parser = parser_for(parsed_as).map_err(Unrouted::Unsupported)?;
         let start = detected.metadata_for(parser);
         Ok((parser, start))
-    }
-
-    #[cfg(feature = "tika")]
-    fn parse_with_tika(
-        &self,
-        #[cfg_attr(
-            not(test),
-            expect(unused_variables, reason = "only the tests record why")
-        )]
-        bridged: Bridged,
-        data: &[u8],
-        pairs: &[(&str, &str)],
-        configs: &ParserConfigs,
-    ) -> ExtractResult<tika::EmbeddedEvents> {
-        #[cfg(test)]
-        audit::bridged(bridged);
-        isolate().and_then(|isolate| tika::parse_embedded(isolate, data, pairs, configs))
     }
 }
 
@@ -387,13 +349,6 @@ pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unsupport
     let detected = Detected::detect(&document.from, &document.input, Intent::Parse)
         .map_err(|error| Unsupported::Undetected(error.to_string()))?;
     let parser = parser_for(&detected.media_type)?;
-    #[cfg(feature = "tika")]
-    if document.input.is_mapped() && parser.footprint() == Footprint::Proportional {
-        return Err(Unsupported::TooLarge {
-            parser: parser.name(),
-            limit: input::MAX_READ_WHOLE,
-        });
-    }
     Ok(Routed {
         parser,
         detected,
@@ -402,7 +357,7 @@ pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unsupport
 }
 
 /// Routes the file at `path` as an extraction of it does.
-#[cfg(any(test, feature = "parity"))]
+#[cfg(any(test, feature = "testing"))]
 pub fn route_file(path: &str) -> Result<Routed<'_>, Unsupported> {
     route(&open(Source::File(path), None).expect("the file opens"))
 }
@@ -414,9 +369,6 @@ pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
     let document = open(source, None)?;
     match Detected::detect(&document.from, &document.input, Intent::Detect) {
         Ok(detected) => Ok(detected.media_type),
-        #[cfg(feature = "tika")]
-        Err(_) => tika::detect(isolate()?, source),
-        #[cfg(not(feature = "tika"))]
         Err(error) => Err(Unsupported::Undetected(error.to_string()).into()),
     }
 }
@@ -426,7 +378,6 @@ struct Taken<'a> {
     prepared: Prepared<'a>,
     /// Where the parser reads the document differently from Tika's parser, in a build without
     /// Tika, which takes the native reading and records the difference.
-    #[cfg(not(feature = "tika"))]
     difference: Option<Difference>,
 }
 
@@ -453,12 +404,8 @@ fn take<'a>(
     match prepared {
         Ok(prepared) => Ok(Ok(Taken {
             prepared,
-            #[cfg(not(feature = "tika"))]
             difference: None,
         })),
-        #[cfg(feature = "tika")]
-        Err(Decline::Differs { difference, .. }) => Err(leave_to_tika(difference.0)),
-        #[cfg(not(feature = "tika"))]
         Err(Decline::Differs {
             reading,
             difference,
@@ -487,7 +434,6 @@ fn run<'h>(
     let (mut metadata, record, result) =
         Xhtml::write(&mut secure, metadata, context, taken.prepared);
     record.finish(&mut metadata, parser.name());
-    #[cfg(not(feature = "tika"))]
     if let Some(difference) = taken.difference {
         embedded::record_exception(&mut metadata, &difference.warning(parser.name()));
     }
@@ -923,13 +869,9 @@ impl Read for NativeStream {
 #[cfg(test)]
 mod tests {
     use std::io::Read;
-    #[cfg(feature = "tika")]
-    use std::process::Command;
 
     use super::*;
     use crate::formats::embedded::Wrapping;
-    #[cfg(feature = "tika")]
-    use crate::Extractor;
 
     #[test]
     fn closes_an_embedded_document_the_output_stops_in() {
@@ -1026,438 +968,6 @@ mod tests {
             "{failure}"
         );
         assert!(out.0.contains("After."), "{}", out.0);
-    }
-
-    #[cfg(feature = "tika")]
-    const CHILD: &str = "EXTRACTOUS_NATIVE_ROUTING_CHILD";
-    #[cfg(feature = "tika")]
-    const TEST: &str = "formats::tests::native_documents_never_start_the_jvm";
-
-    /// Extracts and detects documents native parsers read, in every way the extractor offers,
-    /// in a process of its own: the test runs itself again, so no other test has created the
-    /// isolate first, and checks that none of it did.
-    #[cfg(feature = "tika")]
-    #[test]
-    fn native_documents_never_start_the_jvm() {
-        if std::env::var_os(CHILD).is_none() {
-            let exe = std::env::current_exe().expect("the test binary");
-            let child = Command::new(exe)
-                .args(["--exact", TEST, "--test-threads=1"])
-                .env(CHILD, "1")
-                .output()
-                .expect("the test binary runs");
-            let report = String::from_utf8_lossy(&child.stdout);
-            assert!(
-                child.status.success() && report.contains(&format!("test {TEST} ... ok")),
-                "the routing child failed: {report}{}",
-                String::from_utf8_lossy(&child.stderr)
-            );
-            return;
-        }
-        let documents = "../test_files/documents";
-        let extractor = Extractor::new();
-        let (text, metadata) = extractor
-            .extract_file_to_string(&format!("{documents}/book.fb2"))
-            .unwrap();
-        assert!(!text.is_empty());
-        assert_eq!(
-            metadata.get("tk:parsed-by").map(Vec::as_slice),
-            Some(["extractous::FictionBookParser".to_owned()].as_slice())
-        );
-        let odt = std::fs::read(format!("{documents}/simple.odt")).unwrap();
-        let (text, _) = extractor.extract_bytes_to_string(&odt).unwrap();
-        assert!(!text.is_empty());
-        let (mut stream, _) = extractor
-            .extract_file(&format!("{documents}/simple.odt"))
-            .unwrap();
-        let mut streamed = String::new();
-        stream.read_to_string(&mut streamed).unwrap();
-        assert!(!streamed.is_empty());
-        assert_eq!(
-            extractor
-                .detect_file(&format!("{documents}/2022_Q3_AAPL.pdf"))
-                .unwrap()
-                .as_str(),
-            "application/pdf"
-        );
-        assert_eq!(
-            extractor.detect_bytes(&odt).unwrap().as_str(),
-            "application/vnd.oasis.opendocument.text"
-        );
-        assert!(!crate::isolate::isolate_created());
-    }
-
-    /// Documents of native formats that embed documents spool them as Tika's path does, with a
-    /// budget that holds them all and one that runs out partway.
-    #[cfg(feature = "tika")]
-    #[test]
-    fn spools_embedded_documents_as_tikas_path_does() {
-        // science-exploration-1p.pptx is not compared: its slides are read otherwise than
-        // Tika's path reads them on purpose (#102).
-        for name in ["nested.zip", "vodafone.xlsx"] {
-            let path = std::path::PathBuf::from("../test_files/documents").join(name);
-            for budget in [u64::MAX, 3000] {
-                // The ZIP's integrity check now reaches its head (#99).
-                let departure = (name == "nested.zip")
-                    .then_some((crate::formats::archive::as_tika_checks_zips as _, None));
-                let spooled =
-                    crate::formats::parity::spools_as_tika_rewriting(&path, budget, departure, &[]);
-                assert!(matches!(spooled, Ok(1..)), "{spooled:?}");
-            }
-        }
-    }
-
-    /// Every document of Tika's tests a native parser reads spools its embedded documents as
-    /// Tika's path does.
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
-    fn spools_tikas_documents_as_tikas_path_does() {
-        let corpus = crate::formats::parity::conformance_corpus();
-        let exceptions = [
-            (
-                "testZSTD.zst",
-                crate::formats::parity::ZSTD_WITHOUT_ZSTD_JNI,
-            ),
-            (
-                "testPSD_xmp.psd",
-                crate::formats::parity::PSD_PROFILE_AWT_REJECTS,
-            ),
-            (
-                "testZipEncrypted.zip",
-                "Tika writes the name of an encrypted entry as text (#99)",
-            ),
-            (
-                "testControlCharacters.doc",
-                "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
-            ),
-            (
-                "testWORD_2006ml.doc",
-                "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
-            ),
-            (
-                "testWORD_features.doc",
-                "Word's tables, lists and fields are read otherwise than Tika's path reads them (#111)",
-            ),
-            (
-                "testWORD_numbered_list.doc",
-                "a text box is written where it is anchored, not after the main text (#111)",
-            ),
-            (
-                "testWORD_various.doc",
-                "a text box is written where it is anchored, not after the main text (#111)",
-            ),
-            (
-                "testJBIG2.jb2",
-                "Tika records the JBIG2 dimension node twice (#120)",
-            ),
-            (
-                "testQuattro.wq1",
-                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
-            ),
-            (
-                "testQuattro.wq2",
-                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
-            ),
-            (
-                "testQuattro.wb1",
-                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
-            ),
-            (
-                "testQuattro.wb2",
-                "Tika's path fails on Quattro Pro 1 to 6, which the native parser reads (#158)",
-            ),
-            (
-                "testFODS_embeddedChart.fods",
-                "a flat document's master pages and version are read, which Tika's path leaves out (#69, #91)",
-            ),
-            (
-                "testODSMacro.fods",
-                "a flat document's master pages and version are read, which Tika's path leaves out (#69, #91)",
-            ),
-            (
-                "testODTMacro.fodt",
-                "a flat document's master pages and version are read, which Tika's path leaves out (#69, #91)",
-            ),
-            (
-                "CVLKRA-KYC_Download_File_Structure_V3.1.xlsx",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "protectedSheets.xlsx",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL_charts.xlsx",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL_diagramData.xlsx",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL_hyperlinks.xlsx",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL-charts.xls",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL_extra_metadata.xls",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL_charts.xlsb",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL_diagramData.xlsb",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL_various.xlsb",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL_headers_footers.xls",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL_hyperlinks.xls",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "testEXCEL_labels-govdocs-515858.xls",
-                "the sheets' links, charts, protection and formats are read otherwise than Tika's path reads them (#92, #93, #95, #107)",
-            ),
-            (
-                "LibreOfficeImpress_odp_1.3.odp",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "test-columnar.ods",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testMasterFooter.odp",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testNPEOpenDocument.odt",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testODFwithOOo3.odt",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testODPMacro.fodp",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testODPMacro.odp",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testODP_NPE.odp",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testODT-TIKA-6000.odt",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testODTStyles3.odt",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testOpenOffice2.odf",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testStarOffice-6.0-writer-template.stw",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testStarOffice-6.0-writer.sxw",
-                "OpenDocument headings, notes, styles and namespaces are read otherwise than Tika's path reads them (#69, #90, #91)",
-            ),
-            (
-                "testPPT.potm",
-                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
-            ),
-            (
-                "testPPT_autodate.pptx",
-                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
-            ),
-            (
-                "testPPT_various.pptx",
-                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
-            ),
-            (
-                "testPPT_various2.pptx",
-                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
-            ),
-            (
-                "testWPSAttachment.pptx",
-                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
-            ),
-            (
-                "test_embedded_zip.pptx",
-                "slides' comments, placeholders and links are read otherwise than Tika's path reads them (#102)",
-            ),
-            (
-                "testPDF_multiFormatEmbFiles.pdf",
-                "its embedded files are written in object order, once each (#109)",
-            ),
-            (
-                "complex.mbox",
-                "its parts keep their whole content type (#75), and its messages their own headers (#103)",
-            ),
-            (
-                "testEmailWithPNGAtt.eml",
-                "its parts keep their whole content type (#75), and its messages their own headers (#103)",
-            ),
-            (
-                "testRFC822_oddfrom",
-                "its quoted-printable parts keep their own line ends (#73)",
-            ),
-            (
-                "testMHTMLFirefox.mhtml",
-                "its quoted-printable parts keep their own line ends (#73), which moves where a \
-                 budget cuts the spool; mail::tests compares its spool unbudgeted",
-            ),
-            archive::TIKAS_SPLIT_SEGMENT,
-        ];
-        let compared_otherwise = [
-            crate::formats::html::TWO_TITLES,
-            crate::formats::image::TIKAS_TEST_BMP,
-        ];
-        let mut differences = Vec::new();
-        let mut spooling = 0;
-        // The head of CMS content shows its Content-Length, which Tika's path does not give it
-        // (#113); CMS content is parsed in place, never spooled, and its comparison with Tika's
-        // is cms.rs's.
-        for parser in PARSERS.iter().filter(|parser| {
-            parser.name() != cms::CmsParser.name()
-                && !SCIENTIFIC
-                    .iter()
-                    .any(|scientific| scientific.name() == parser.name())
-        }) {
-            let (parsed, _) = crate::formats::parity::documents(*parser, &[&corpus]);
-            for path in parsed {
-                let name = path.file_name().unwrap().to_string_lossy();
-                if exceptions.iter().any(|(exception, _)| *exception == name)
-                    || compared_otherwise.contains(&name.as_ref())
-                {
-                    continue;
-                }
-                let walked = (parser.name() == onenote::OneNoteParser.name())
-                    .then(|| onenote::walked(&name))
-                    .flatten();
-                // The fixes of #89, #99, #105, #118, #129, #132 and #156 depart from Tika's path
-                // systematically.
-                let head: crate::formats::parity::Normalisation =
-                    crate::formats::dc_xml::without_head;
-                let departure: Option<(crate::formats::parity::NativeRewrite, _)> = match parser
-                    .name()
-                {
-                    _ if walked.is_some() => None,
-                    "extractous::ZipParser" | "extractous::CmsParser" => {
-                        Some((crate::formats::archive::as_tika_checks_zips, None))
-                    }
-                    "extractous::DcXMLParser" | "extractous::MobiParser" => Some((
-                        crate::formats::dc_xml::without_unread_dublin_core,
-                        Some(head),
-                    )),
-                    "extractous::JackcessParser" => {
-                        let (rewrite, normalise) = access::as_tika_writes(&path);
-                        Some((rewrite, Some(normalise)))
-                    }
-                    "extractous::EpubParser" => {
-                        Some((crate::formats::epub::as_tika_writes_it, None))
-                    }
-                    "extractous::MP4Parser" => {
-                        Some((crate::formats::media::mp4_as_tika_reads_it, None))
-                    }
-                    "extractous::DIFParser" => {
-                        Some((crate::formats::dif::as_tika_keeps_last_pieces, None))
-                    }
-                    "extractous::MatParser" => Some((crate::formats::mat::as_jmatio_names, None)),
-                    "extractous::MIFParser" => Some((crate::formats::mif::as_tika_writes_it, None)),
-                    "extractous::OneNoteParser" => Some((
-                        crate::formats::onenote::as_tika_names_packaged_objects,
-                        None,
-                    )),
-                    "extractous::ClassParser" => Some((
-                        crate::formats::class_file::as_written,
-                        Some(crate::formats::class_file::without_misread_access),
-                    )),
-                    "extractous::BPGParser" => {
-                        Some((crate::formats::image::as_tika_misreads_the_header, None))
-                    }
-                    "extractous::JXLParser" => Some((
-                        crate::formats::image::as_tika_writes_no_jpeg_xl_document,
-                        None,
-                    )),
-                    _ => None,
-                };
-                // The fixes of #73, #77, #79 and #112 leave values of mail metadata uncompared, that of
-                // #118 the source language XLIFF stores as `original`, and that of #124 the page
-                // counts Tika's IDMLParser adds up across the documents it parses, so that the
-                // second parse of a document, under a byte budget, counts twice.
-                let mut departures: Vec<crate::formats::parity::Departure> = match parser.name() {
-                    "extractous::RFC822Parser"
-                    | "extractous::EmlxParser"
-                    | "extractous::MboxParser" => crate::formats::mail::departures_of(&path),
-                    "extractous::OfficeParser" => crate::formats::msg::RECIPIENT_NAMES.to_vec(),
-                    "extractous::XLIFF12Parser" | "extractous::XLZParser" => {
-                        crate::formats::translation::SOURCE_LANGUAGE_AS_ORIGINAL.to_vec()
-                    }
-                    "extractous::IDMLParser" => {
-                        crate::formats::idml::ACCUMULATED_PAGE_COUNTS.to_vec()
-                    }
-                    "extractous::ChmParser" => crate::formats::chm::DEPARTURES.to_vec(),
-                    "extractous::TSDParser" => crate::formats::tsd::DEPARTURES.to_vec(),
-                    _ => walked.unwrap_or_default().to_vec(),
-                };
-                if parser.name() == pdf::PdfParser.name() && name == pdf::MALFORMED_XFA {
-                    departures.extend_from_slice(pdf::XFA_FAILURE);
-                }
-                if parser.media_types() == ppt::PptParser.media_types() {
-                    departures.extend_from_slice(ppt::DEPARTURES);
-                }
-                if parser.media_types() == doc::DocParser.media_types()
-                    && doc::has_paragraphs_past_runs(&path)
-                {
-                    departures.extend_from_slice(doc::PARAGRAPHS_PAST_RUNS);
-                }
-                if parser.media_types() == protected::ProtectedParser.media_types() {
-                    departures.extend_from_slice(protected::DEPARTURES);
-                }
-                if epub::IN_HASH_ORDER.contains(&name.as_ref()) {
-                    departures.extend_from_slice(epub::MANIFEST_ORDER);
-                }
-                if crate::formats::parity::ANCHORED_BLOCK_DOCUMENTS.contains(&name.as_ref()) {
-                    departures.extend_from_slice(crate::formats::parity::ANCHORED_BLOCKS);
-                }
-                for budget in [u64::MAX, 3000] {
-                    match crate::formats::parity::spools_as_tika_rewriting(
-                        &path,
-                        budget,
-                        departure,
-                        &departures,
-                    ) {
-                        Ok(0) => {}
-                        Ok(_) => spooling += 1,
-                        Err(difference) => differences.push(difference),
-                    }
-                }
-            }
-        }
-        assert!(differences.is_empty(), "{}", differences.join("\n"));
-        assert!(spooling > 0);
     }
 
     /// A document parsed with a password is marked as our Java's `LegacyOfficePasswordParser`
@@ -1567,16 +1077,6 @@ mod tests {
             options,
         )
         .unwrap();
-        #[cfg(feature = "tika")]
-        {
-            let left = Unsupported::Deferred {
-                parser: "extractous::DifferingParser",
-                reason: "a detail".to_owned(),
-            };
-            assert_eq!(parsed.unwrap_err(), left);
-            assert_eq!(streamed.err(), Some(left));
-        }
-        #[cfg(not(feature = "tika"))]
         {
             let warning = vec![
                 "extractous::DifferingParser read the document differently from Tika: a detail\n"
@@ -1694,7 +1194,7 @@ mod tests {
 
     impl LargeFiles {
         fn new(test: &str) -> Self {
-            let dir = crate::isolate::temp_dir()
+            let dir = crate::process::temp_dir()
                 .join(format!("extractous-large-{test}-{}", std::process::id()));
             std::fs::create_dir(&dir).unwrap();
             let large = 2u64 << 30;
@@ -1752,23 +1252,8 @@ mod tests {
         }
     }
 
-    /// The parsers of bounded memory extract a file too large to read whole as Tika's path does.
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_files_too_large_to_read_whole_as_tikas_path_does() {
-        let files = LargeFiles::new("parity");
-        for path in [&files.wave, &files.mp4] {
-            let routed = route_file(path).unwrap();
-            crate::formats::parity::assert_same_as_tika(
-                &[std::path::Path::new(path)],
-                routed.parser.tika_name(),
-            );
-        }
-    }
-
     /// A build without Tika fails a document no native parser reads with why, and records one
     /// embedded in a document a native parser reads as unread, the embedding document going on.
-    #[cfg(not(feature = "tika"))]
     #[test]
     fn fails_documents_no_native_parser_reads_with_why() {
         let hwp = crate::ole2::tests::compound(&["\u{5}HwpSummaryInformation"], b"");
@@ -1800,7 +1285,6 @@ mod tests {
 
     /// A build without Tika reads natively an embedded document its parser reads differently
     /// from Tika's parser, and records the difference in the embedding document (#144).
-    #[cfg(not(feature = "tika"))]
     #[test]
     fn reads_an_embedded_document_its_parser_reads_differently_from_tika() {
         let page =

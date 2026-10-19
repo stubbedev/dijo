@@ -179,37 +179,8 @@ impl SaxHandler for Dif<'_, '_> {
     }
 }
 
-/// A native result with each leaf's text cut to the last piece Tika's parser read of it,
-/// where Tika's value ends the native one: the reader splits text around an entity (#118).
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub fn as_tika_keeps_last_pieces(
-    _text: &mut String,
-    metadata: &mut crate::formats::parity::ComparedMetadata,
-    tika: &crate::formats::parity::ComparedMetadata,
-) {
-    for (name, values) in metadata.iter_mut() {
-        let Some((_, tika_values)) = tika.iter().find(|(tika_name, _)| tika_name == name) else {
-            continue;
-        };
-        for (value, tika_value) in values.iter_mut().zip(tika_values) {
-            if value.ends_with(tika_value.as_str()) {
-                value.clone_from(tika_value);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
-
-    #[cfg(feature = "tika")]
-    use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_same_as_tika, assert_same_as_tika_rewriting, conformance_corpus, documents, Scratch,
-    };
 
     const RECORD: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <DIF xmlns="http://gcmd.gsfc.nasa.gov/Aboutus/xml/dif/">
@@ -225,24 +196,6 @@ mod tests {
   <Keyword>is</Keyword><Keyword>hav</Keyword>
 </DIF>
 "#;
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_dif_records_as_tikas_path_does() {
-        let scratch = Scratch::new("dif");
-        // Without the entity, whose split text Tika reads as several pieces (#118).
-        let record = scratch.write("havis.dif", RECORD.replace("&amp; ", "").as_bytes());
-        let typed = scratch.write(
-            "typed.dif",
-            RECORD
-                .replace("<DIF ", "<!DOCTYPE DIF [<!ELEMENT DIF ANY>]><DIF ")
-                .as_bytes(),
-        );
-        let (parsed, deferred) = documents(&DifParser, &[scratch.directory()]);
-        assert_eq!(deferred, [typed]);
-        assert_eq!(parsed.len(), 1, "{parsed:?}");
-        assert_same_as_tika(&[record.as_path()], "org.apache.tika.parser.dif.DIFParser");
-    }
 
     /// The XHTML and metadata the native path extracts from the DIF record `record`.
     fn extract(record: &str) -> (String, crate::Metadata) {
@@ -278,16 +231,5 @@ mod tests {
         );
         assert!(!metadata.contains_key("dif:DIF-Entry_ID"));
         assert_eq!(metadata["dif:DIF-Entry_Title"], ["T"]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_dif_records_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&DifParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 3, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika_rewriting(&paths, DifParser.tika_name(), as_tika_keeps_last_pieces);
     }
 }

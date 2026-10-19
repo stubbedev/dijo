@@ -18,7 +18,7 @@ static ALLOCATOR: memory::CountingAllocator<extractous_core::large::Peak<std::al
 pub mod formats {
     pub(crate) use extractous_base::formats::*;
     #[cfg(test)]
-    pub(crate) use extractous_core::parity;
+    pub(crate) use extractous_core::testing;
 
     mod bytes;
     mod cdm;

@@ -7,8 +7,7 @@
 
 use std::convert::Infallible;
 
-use super::nesting::Scan;
-use super::{undecoded, within_limit, write_file, Cut, DEFERS};
+use super::{undecoded, within_limit, write_file, Cut};
 use crate::compress::{seven_z, Decoding, Limited, Undecoded};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
@@ -67,29 +66,20 @@ impl Parser for SevenZParser {
             reason => undecoded(WHAT, reason, self.tika_name()),
         };
         let paging = Paging::new(pages);
-        let read = if DEFERS {
-            let files = seven_z::files(input, password).map_err(declined)?;
-            let (files, _) = within_limit(WHAT.to_owned(), files)?;
-            if let Some(reason) = Scan::new().files(input.len(), &files) {
-                return Err(Decline::Deferred(reason));
-            }
+        let whole = seven_z::visit(
+            input,
+            password,
+            |compressed, _| Decoding::discarded(compressed),
+            |_, _| Ok::<(), Infallible>(()),
+        )
+        .map_err(declined)?
+        .unwrap_or_else(|never| match never {});
+        let read = if whole {
             Limited::Whole(())
         } else {
-            let whole = seven_z::visit(
-                input,
-                password,
-                |compressed, _| Decoding::discarded(compressed),
-                |_, _| Ok::<(), Infallible>(()),
-            )
-            .map_err(declined)?
-            .unwrap_or_else(|never| match never {});
-            if whole {
-                Limited::Whole(())
-            } else {
-                Limited::Cut(())
-            }
+            Limited::Cut(())
         };
-        let ((), cut) = within_limit(WHAT.to_owned(), read)?;
+        let ((), cut) = within_limit(WHAT.to_owned(), read);
         paging.release();
         Ok(Box::new(move |xhtml| {
             if password.is_some() {

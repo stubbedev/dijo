@@ -2,10 +2,6 @@
 //! document is before its native parser runs.
 
 use extractous_base::*;
-#[cfg(all(test, feature = "tika"))]
-use extractous_tika::isolate;
-#[cfg(all(test, feature = "tika"))]
-use extractous_tika::tika;
 
 pub mod mime;
 

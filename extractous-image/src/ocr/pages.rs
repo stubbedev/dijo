@@ -187,7 +187,7 @@ pub fn read_pages<S, T: Send, E: Send, R>(
     let budget = memory::share();
     let threads = match budget {
         Some(_) => 1,
-        None => crate::isolate::processors().min(count).max(1),
+        None => crate::process::processors().min(count).max(1),
     };
     std::thread::scope(|scope| {
         for _ in 0..threads {
@@ -310,7 +310,7 @@ mod tests {
     fn gives_up_the_pages_left_when_the_output_stops() {
         let first_page = FirstPage::new(None);
         let started = AtomicUsize::new(0);
-        let pages = 100 * crate::isolate::processors();
+        let pages = 100 * crate::process::processors();
         let first = read_pages(
             pages,
             &first_page,

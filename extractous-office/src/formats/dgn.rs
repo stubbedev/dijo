@@ -52,13 +52,7 @@ impl Parser for Dgn8Parser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
-    #[cfg(feature = "tika")]
-    use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
     use crate::ole2::tests::compound;
 
     const ENTRIES: [&str; 3] = ["DGN~H", "DGN~MF", "DGN~S"];
@@ -71,27 +65,5 @@ mod tests {
         assert_eq!(text.trim(), "");
         assert_eq!(metadata["Content-Type"], ["image/vnd.dgn; version=8"]);
         assert_eq!(metadata["tk:parsed-by"], ["extractous::DGN8Parser"]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_drawings_as_tikas_path_does() {
-        let scratch = Scratch::new("dgn");
-        let drawing = scratch.write("drawing.dgn", &compound(&ENTRIES, b"drawing"));
-        let (parsed, deferred) = documents(&Dgn8Parser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed, std::slice::from_ref(&drawing));
-        assert_same_as_tika(&[drawing.as_path()], Dgn8Parser.tika_name());
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_drawings_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&Dgn8Parser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 1, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, Dgn8Parser.tika_name());
     }
 }

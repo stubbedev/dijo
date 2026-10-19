@@ -13,7 +13,7 @@ case "$2" in
     app) column=3 ;;
     server-standard) column=4 ;;
 esac
-version=$("$here/../extractous-core/tika-native/tika-version.sh")
+version=$("$here/tika-version.sh")
 sha256=$(awk -v version="$version" -v column="$column" '$1 == version { print $column }' "$here/pins.tsv")
 if [ -z "$sha256" ]; then
     echo "conformance/pins.tsv pins no $artifact checksum for Tika $version" >&2

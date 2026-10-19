@@ -12,13 +12,12 @@
 
 use std::collections::HashSet;
 
-use super::nesting::Scan;
-use super::{record_unreadable, too_large, write_entry_div, Cut, DEFERS};
+use super::{record_unreadable, write_entry_div, Cut};
 use crate::compress::zip::extra::Instant;
 use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::salvage::{salvage, Unsalvaged};
 use crate::compress::zip::stream::ZipStream;
-use crate::compress::zip::{Content, Decoded};
+use crate::compress::zip::Decoded;
 use crate::compress::Undecoded;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
@@ -176,7 +175,7 @@ impl Parser for ZipParser {
     ) -> Result<Prepared<'a>, Decline<'a>> {
         if let Ok(zip) = ZipFile::open(input) {
             let paging = Paging::new(pages);
-            let difference = check_entries(&zip, input.len(), &paging)?;
+            let difference = check_entries(&zip, &paging);
             return reading(
                 Box::new(move |xhtml| write_archive(input, &zip, xhtml, pages, &paging)),
                 difference,
@@ -205,9 +204,8 @@ impl Parser for ZipParser {
         let in_memory = Paging::new(Pages::IN_MEMORY);
         let difference = check_entries(
             &ZipFile::open(&salvaged).expect("a salvaged archive opens"),
-            input.len(),
             &in_memory,
-        )?;
+        );
         reading(
             Box::new(move |xhtml| {
                 let zip = ZipFile::open(&salvaged).expect("a salvaged archive opens");
@@ -241,7 +239,7 @@ fn streamed<'a>(
     pages: Pages<'a>,
     difference: Option<Difference>,
 ) -> Result<Prepared<'a>, Decline<'a>> {
-    let streamed = Streamed::scan(input)?;
+    let streamed = Streamed::scan(input);
     let difference = difference.or_else(|| streamed.difference.clone());
     reading(
         Box::new(move |xhtml| streamed.write(input, pages, xhtml)),
@@ -249,33 +247,18 @@ fn streamed<'a>(
     )
 }
 
-/// Reads each entry of the archive `zip`, `length` bytes in all, to rule out what Tika's path
-/// reads otherwise, and finds the first detail in which the native reading differs from it.
-fn check_entries(
-    zip: &ZipFile,
-    length: usize,
-    paging: &Paging,
-) -> Result<Option<Difference>, Decline<'static>> {
-    let mut scan = Scan::new();
+/// Reads each entry of the archive `zip` and finds the first detail in which the native reading
+/// differs from Tika's.
+fn check_entries(zip: &ZipFile, paging: &Paging) -> Option<Difference> {
     let mut difference = None;
     for entry in zip.entries() {
         if entry.is_directory() || !entry.can_read() {
             continue;
         }
         difference = difference.or(entry_name(entry).1);
-        let verified = if DEFERS {
-            zip.read(entry)
-                .map(|content| scanned(&mut scan, content))
-                .transpose()?
-        } else {
-            zip.verify(entry)
-        };
-        match verified {
+        match zip.verify(entry) {
             Some(Decoded::Complete(_)) => {
                 paging.read(usize::try_from(entry.compressed_size).unwrap_or(usize::MAX));
-            }
-            Some(Decoded::Oversized(_)) if DEFERS => {
-                return Err(too_large(&the_entry(&entry.name)))
             }
             Some(Decoded::Oversized(_)) => break,
             Some(Decoded::Truncated(_)) | None => {
@@ -283,22 +266,8 @@ fn check_entries(
             }
         }
     }
-    if let Some(reason) = scan.document(length) {
-        return Err(Decline::Deferred(reason));
-    }
     paging.release();
-    Ok(difference)
-}
-
-/// How an entry's `content` reads, where it is complete once `scan` has found nothing in it to
-/// leave the archive to Tika's path for.
-fn scanned(scan: &mut Scan, content: Content) -> Result<Decoded<u64>, Decline<'static>> {
-    if let Content::Complete(content) = &content {
-        if let Some(reason) = scan.entry(content) {
-            return Err(Decline::Deferred(reason));
-        }
-    }
-    Ok(content.map(|bytes| bytes.len() as u64))
+    difference
 }
 
 /// How the native reading of an entry of `name` whose data is cut short or corrupt differs
@@ -361,10 +330,7 @@ fn write_entries<'a>(
         let (content, cut) = match zip.spool(entry, pages) {
             Some(Err(undecoded)) => return Err(unspooled(&name, &undecoded)),
             Some(Ok(Decoded::Complete(content))) => (content, None),
-            Some(Ok(Decoded::Oversized(content))) if !DEFERS => {
-                (content, Some(Cut(the_entry(&name))))
-            }
-            Some(Ok(Decoded::Oversized(_))) => return Err(undeferred(&name)),
+            Some(Ok(Decoded::Oversized(content))) => (content, Some(Cut(the_entry(&name)))),
             Some(Ok(Decoded::Truncated(content))) if !content.is_empty() => {
                 write_entry(xhtml, &metadata, &name, &content, None)?;
                 record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED);
@@ -404,14 +370,6 @@ fn write_entry(
 /// The entry of `name`, as a failure names it.
 fn the_entry(name: &str) -> String {
     format!("the entry {name}")
-}
-
-/// The failure of a document whose entry of `name` was read in full when it was prepared, but
-/// not when it is written.
-fn undeferred(name: &str) -> Failure {
-    Failure::Malformed(format!(
-        "the entry {name} was not deferred, but its data cannot be read"
-    ))
 }
 
 /// The central directory's entry names, each once, in order: the `LinkedHashSet` the
@@ -477,11 +435,9 @@ struct Streamed {
 }
 
 impl Streamed {
-    /// Reads each entry of the archive `input`, to rule out what the native path does not read
-    /// as Tika's does, and finds the duplicate names.
-    fn scan(input: &[u8]) -> Result<Self, Decline<'static>> {
+    /// Reads each entry of the archive `input` and finds the duplicate names.
+    fn scan(input: &[u8]) -> Self {
         let mut stream = local_headers(input);
-        let mut scan = Scan::new();
         let mut seen = HashSet::new();
         let mut duplicates = Vec::new();
         let mut difference = None;
@@ -501,19 +457,8 @@ impl Streamed {
                     )))
                 });
             }
-            let verified = if DEFERS {
-                match stream.content() {
-                    Ok(content) => Ok(scanned(&mut scan, content)?),
-                    Err(failure) => Err(failure),
-                }
-            } else {
-                stream.verify()
-            };
-            match verified {
+            match stream.verify() {
                 Ok(Decoded::Complete(_)) => {}
-                Ok(Decoded::Oversized(_)) if DEFERS => {
-                    return Err(too_large(&the_entry(&entry.name)))
-                }
                 Ok(Decoded::Oversized(_)) => break,
                 Ok(Decoded::Truncated(_)) => break,
                 Err(_) => continue,
@@ -522,13 +467,10 @@ impl Streamed {
                 duplicates.push(entry.name);
             }
         }
-        if let Some(reason) = scan.document(input.len()) {
-            return Err(Decline::Deferred(reason));
-        }
-        Ok(Streamed {
+        Streamed {
             duplicates,
             difference,
-        })
+        }
     }
 
     /// `parseWithStream`: the duplicate names as the integrity check's result, which cannot
@@ -583,7 +525,7 @@ impl Streamed {
                 Ok(Ok(Decoded::Complete(content))) => {
                     write_entry(xhtml, &metadata, &name, &content, None)?;
                 }
-                Ok(Ok(Decoded::Oversized(content))) if !DEFERS => {
+                Ok(Ok(Decoded::Oversized(content))) => {
                     write_entry(
                         xhtml,
                         &metadata,
@@ -603,7 +545,6 @@ impl Streamed {
                          ({name})"
                     ),
                 ),
-                Ok(Ok(Decoded::Oversized(_))) => return Err(undeferred(&name)),
             }
         }
     }
@@ -822,18 +763,6 @@ mod tests {
                 "method {method}"
             );
         }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn defers_archives_nested_ten_deep() {
-        let mut nested = zip(&[("level.txt", b"text")]);
-        for _ in 1..9 {
-            nested = zip(&[("level.txt", b"text"), ("inner.zip", &nested)]);
-        }
-        assert_eq!(defers(&nested), None);
-        let reason = defers(&zip(&[("inner.zip", &nested)])).unwrap();
-        assert!(reason.contains("nine deep"), "{reason}");
     }
 
     #[test]

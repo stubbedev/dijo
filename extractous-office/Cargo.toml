@@ -9,9 +9,6 @@ repository = "https://github.com/stubbedev/extractous"
 authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
 
 [features]
-# Tika's path, which the tests compare the native parsers with, and which takes the embedded
-# documents no native parser reads.
-tika = ["extractous-base/tika", "extractous-core/tika", "extractous-html/tika", "extractous-mail/tika", "extractous-mime/tika"]
 # What the tests of the crates built on this one share with its own.
 testing = ["extractous-base/testing"]
 
@@ -29,4 +26,4 @@ regex = "1.13.1"
 
 [dev-dependencies]
 extractous-base = { path = "../extractous-base", default-features = false, features = ["testing"] }
-extractous-core = { path = "../extractous-core", default-features = false, features = ["parity"] }
+extractous-core = { path = "../extractous-core", default-features = false, features = ["testing"] }

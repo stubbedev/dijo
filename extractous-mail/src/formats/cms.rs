@@ -665,16 +665,9 @@ impl Parser for CmsParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    use crate::formats::parity::Scratch;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_fails_as_tika, conformance_corpus, documents};
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "ai.yobix.CmsParser";
+    use crate::formats::testing::Scratch;
 
     #[test]
     fn records_encrypted_mail_parts_as_encrypted() {
@@ -711,29 +704,6 @@ mod tests {
         format!("{}{}", &native[..start], &native[end..])
     }
 
-    /// A native result as Tika's path writes it: ZIP content's integrity check out of its head
-    /// (#99), and the content's `Content-Length` too (#113).
-    #[cfg(feature = "tika")]
-    fn as_tika_writes_content(
-        text: &mut String,
-        metadata: &mut crate::formats::parity::ComparedMetadata,
-        tika: &crate::formats::parity::ComparedMetadata,
-    ) {
-        crate::formats::archive::as_tika_checks_zips(text, metadata, tika);
-        *text = without_content_length(text);
-    }
-
-    /// [`as_tika_writes_content`] for content that is generic XML (#105).
-    #[cfg(feature = "tika")]
-    fn as_tika_writes_xml(
-        text: &mut String,
-        metadata: &mut crate::formats::parity::ComparedMetadata,
-        tika: &crate::formats::parity::ComparedMetadata,
-    ) {
-        crate::formats::dc_xml::without_unread_dublin_core(text, metadata, tika);
-        *text = without_content_length(text);
-    }
-
     #[test]
     fn gives_the_content_its_length() {
         let scratch = Scratch::new("cms-length");
@@ -757,19 +727,6 @@ mod tests {
             0
         );
     }
-    /// The detached signatures and certificate lists of Tika's tests, which Tika's path writes
-    /// as empty documents.
-    #[cfg(feature = "tika")]
-    const DETACHED: [&str; 5] = [
-        "testDetached.p7s",
-        "testPKCS7_certs_only_def.p7c",
-        "testPKCS7_certs_only_ind.p7c",
-        "testPKCS7_signature_def.p7s",
-        "testPKCS7_signature_ind.p7s",
-    ];
-    /// Enveloped data, which both paths report as encrypted.
-    #[cfg(feature = "tika")]
-    const ENVELOPED: [&str; 2] = ["testPKCS7_enveloped_def.p7m", "testPKCS7_enveloped_ind.p7m"];
 
     #[test]
     fn reads_the_content_type_as_cms_parser_does() {
@@ -797,18 +754,8 @@ mod tests {
         element
     }
 
-    /// A BER element of `tag` holding `elements`, of indefinite length.
-    #[cfg(feature = "tika")]
-    fn ber(tag: u8, elements: &[Vec<u8>]) -> Vec<u8> {
-        [vec![tag, 0x80], elements.concat(), vec![0, 0]].concat()
-    }
-
     const DATA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x01];
     const SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
-    #[cfg(feature = "tika")]
-    const ZLIB: &[u8] = &[
-        0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x03, 0x08,
-    ];
 
     /// Signed data of `content`, as `encapsulated` encodes it, without signers.
     fn signed(encapsulated: Vec<u8>) -> Vec<u8> {
@@ -859,113 +806,6 @@ mod tests {
             ]
             .concat(),
         )
-    }
-
-    /// Compressed data of `content`.
-    #[cfg(feature = "tika")]
-    fn compressed(content: &[u8]) -> Vec<u8> {
-        let compressed_data = der(
-            SEQUENCE,
-            &[
-                der(INTEGER, &[0]),
-                der(SEQUENCE, &der(OBJECT_IDENTIFIER, ZLIB)),
-                encapsulated(&zlib::tests::zlib(content)),
-            ]
-            .concat(),
-        );
-        der(
-            SEQUENCE,
-            &[
-                der(OBJECT_IDENTIFIER, COMPRESSED_DATA),
-                der(EXPLICIT_0, &compressed_data),
-            ]
-            .concat(),
-        )
-    }
-
-    #[cfg(feature = "tika")]
-    const XML: &[u8] = br#"<?xml version="1.0"?><r xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Signed</dc:title>Some signed text.</r>"#;
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_content_as_tikas_path_does() {
-        let scratch = Scratch::new("cms");
-        let split = ber(
-            SEQUENCE,
-            &[
-                der(OBJECT_IDENTIFIER, DATA),
-                ber(
-                    EXPLICIT_0,
-                    &[ber(
-                        CONSTRUCTED_OCTET_STRING,
-                        &[der(OCTET_STRING, &XML[..20]), der(OCTET_STRING, &XML[20..])],
-                    )],
-                ),
-            ],
-        );
-        let read = [
-            scratch.write("signed.p7m", &signed(encapsulated(XML))),
-            scratch.write("split.p7m", &signed(split)),
-            scratch.write(
-                "signed-text.p7s",
-                &signed(encapsulated(b"Plain signed text.")),
-            ),
-            scratch.write(
-                "compressed.p7z",
-                &compressed(b"Compressed text, compressed text."),
-            ),
-            scratch.write(
-                "detached.p7s",
-                &signed(der(SEQUENCE, &der(OBJECT_IDENTIFIER, DATA))),
-            ),
-        ];
-        let (parsed, deferred) = documents(&CmsParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len());
-        assert_same_as_tika_reading(&read.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-    }
-
-    /// Asserts parity on `documents`, those whose content is generic XML with that parser's
-    /// departures from Tika's (#105) normalised.
-    #[cfg(feature = "tika")]
-    fn assert_same_as_tika_reading(documents: &[&Path]) {
-        let read_as_xml = |path: &&Path| {
-            let (_, metadata) = crate::Extractor::new()
-                .extract_file_to_string(path.to_str().unwrap())
-                .unwrap();
-            ["tk:parsed-by", "tk:parsed-by-full-set"]
-                .iter()
-                .filter_map(|name| metadata.get(*name))
-                .flatten()
-                .any(|parser| parser.contains("DcXMLParser"))
-        };
-        let (xml, rest): (Vec<&Path>, Vec<&Path>) = documents
-            .iter()
-            .copied()
-            .partition(|path| read_as_xml(path));
-        // Content that is a ZIP archive now has its integrity check in its head (#99).
-        crate::formats::parity::assert_same_as_tika_rewriting(
-            &rest,
-            TIKA_NAME,
-            as_tika_writes_content,
-        );
-        if !xml.is_empty() {
-            crate::formats::parity::assert_same_as_tika_normalising(
-                &xml,
-                TIKA_NAME,
-                as_tika_writes_xml,
-                crate::formats::dc_xml::without_head,
-            );
-        }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_the_signed_local_document_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&CmsParser, &[Path::new("../test_files/documents")]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika_reading(&paths);
     }
 
     #[test]
@@ -1114,46 +954,6 @@ mod tests {
         ));
     }
 
-    /// Tika's CMS test documents Bouncy Castle fails to read as signed data: digested data
-    /// typed as a signature, and signed data in PEM.
-    #[cfg(feature = "tika")]
-    const UNREADABLE: [&str; 2] = ["testPKCS7_digested.p7", "testPKCS7_signed_data_def.pem"];
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn reads_tikas_test_documents_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&CmsParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        let failing = |names: &[&str], path: &Path| names.iter().any(|name| path.ends_with(name));
-        let (enveloped, rest): (Vec<&Path>, Vec<&Path>) = parsed
-            .iter()
-            .map(PathBuf::as_path)
-            .partition(|path| failing(&ENVELOPED, path));
-        let (unreadable, rest): (Vec<&Path>, Vec<&Path>) = rest
-            .into_iter()
-            .partition(|path| failing(&UNREADABLE, path));
-        assert_eq!(enveloped.len(), ENVELOPED.len());
-        assert_eq!(unreadable.len(), UNREADABLE.len());
-        assert!(DETACHED
-            .iter()
-            .all(|name| rest.iter().any(|path| path.ends_with(name))));
-        assert_same_as_tika_reading(&rest);
-        assert_fails_as_tika(&enveloped);
-        assert_fails_as_tika(&unreadable);
-        for path in unreadable {
-            let error = crate::Extractor::new()
-                .extract_file_to_string(path.to_str().unwrap())
-                .unwrap_err();
-            assert!(matches!(error, Error::ParseError(_)), "{error:?}");
-        }
-        let error = crate::Extractor::new()
-            .extract_file_to_string(enveloped[0].to_str().unwrap())
-            .unwrap_err();
-        assert!(matches!(error, Error::Encrypted(_)), "{error:?}");
-    }
-
-    #[cfg(not(feature = "tika"))]
     #[test]
     fn reads_signed_content_too_large_to_read_whole_in_place() {
         use std::io::Read;

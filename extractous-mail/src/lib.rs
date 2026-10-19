@@ -17,15 +17,12 @@ static ALLOCATOR: memory::CountingAllocator<extractous_core::large::Peak<std::al
 pub mod formats {
     pub(crate) use extractous_base::formats::*;
     #[cfg(test)]
-    pub(crate) use extractous_core::parity;
+    pub(crate) use extractous_core::testing;
     pub(crate) use extractous_html::formats::{html, text};
-    #[cfg(all(test, feature = "tika"))]
-    pub(crate) use extractous_small::formats::{class_file, dc_xml};
 
     pub mod archive;
     pub mod cms;
     pub mod mail;
-    #[cfg(not(feature = "static-image"))]
     pub mod sqlite;
     pub mod warc;
 }

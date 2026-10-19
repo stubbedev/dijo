@@ -345,7 +345,7 @@ impl Write for Spool {
 /// it is closed: unlinked at once on Unix, deleted on close on Windows.
 fn temporary_file() -> io::Result<File> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let path: PathBuf = crate::isolate::temp_dir().join(format!(
+    let path: PathBuf = crate::process::temp_dir().join(format!(
         "extractous-spool-{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn reads_small_files_whole_and_maps_large_ones() {
-        let path = crate::isolate::temp_dir()
+        let path = crate::process::temp_dir()
             .join(format!("extractous-input-test-{}", std::process::id()));
         let file = File::create(&path).unwrap();
         file.set_len(MAX_READ_WHOLE).unwrap();

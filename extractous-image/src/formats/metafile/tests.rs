@@ -1,83 +1,5 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::testing::*;
 use super::*;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-};
-
-#[cfg(feature = "tika")]
-fn paths(files: &[PathBuf]) -> Vec<&Path> {
-    files.iter().map(PathBuf::as_path).collect()
-}
-
-#[cfg(feature = "tika")]
-/// A WMF picture of Cyrillic text in the font it makes and selects, and of Latin-1 text in a
-/// symbol font, the last font made selected as Tika takes it.
-fn russian() -> Vec<u8> {
-    wmf(&[
-        wmf_font(0xCC),
-        wmf_select(0),
-        wmf_text_out(b"\xcf\xf0\xe8\xe2\xe5\xf2"),
-        wmf_font(0x02),
-        wmf_select(1),
-        wmf_ext_text_out(b"Caf\xe9"),
-        wmf_text_out(b"odd"),
-    ])
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_metafiles_as_tikas_path_does() {
-    let scratch = Scratch::new("metafile");
-    let russian = russian();
-    let icon = emf(&[
-        emf_comment(&utf16("IconOnly\0")),
-        emf_comment(&utf16("Quarterly report.docx\0")),
-        emf_text("Quarterly", 10, 20, true),
-        emf_text("report", 75, 20, true),
-        emf_text("near", 128, 20, true),
-        emf_text("Next line", 10, 40, true),
-        emf_text("ANSI text", 10, 60, false),
-    ]);
-    let embedding = emf(&[
-        emf_text("Before", 0, 0, true),
-        emf_wmf_comment(&russian),
-        emf_formats_comment(&[b"plain text in a format", b""]),
-        emf_text("After", 0, 30, true),
-    ]);
-    let read = [
-        scratch.write("icon.emf", &icon),
-        scratch.write("embedding.emf", &embedding),
-        scratch.write("russian.wmf", &russian),
-        scratch.write("empty.emf", &emf(&[])),
-        scratch.write("empty.wmf", &wmf(&[])),
-    ];
-    let failing = [
-        scratch.write("cut.emf", &icon[..icon.len() - 30]),
-        scratch.write(
-            "negative.emf",
-            &emf(&[emf_text("ok", 0, 0, true), {
-                let mut text = emf_text("bad", 0, 9, true);
-                text[8 + 36..8 + 40].copy_from_slice(&int(-1));
-                text
-            }]),
-        ),
-        scratch.write("cut.wmf", &russian[..russian.len() - 10]),
-    ];
-    for (parser, count) in [(&EmfParser as &dyn Parser, 5), (&WmfParser, 3)] {
-        let (parsed, deferred) = documents(parser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), count, "{parsed:?}");
-    }
-    assert_same_as_tika(&paths(&read[..2]), EmfParser.tika_name());
-    assert_same_as_tika(&paths(&read[2..3]), WmfParser.tika_name());
-    assert_same_as_tika(&paths(&read[3..4]), EmfParser.tika_name());
-    assert_same_as_tika(&paths(&read[4..]), WmfParser.tika_name());
-    assert_fails_as_tika(&paths(&failing));
-}
 
 /// The body of the XHTML the native parser extracts of `picture`.
 fn body(picture: &[u8]) -> String {
@@ -144,16 +66,4 @@ fn reads_the_name_an_icon_only_comment_gives_up_to_its_end() {
     let marked = [&[0u8, 0][..], &name].concat();
     assert_eq!(unicode_string(&marked).as_deref(), Some(""));
     assert_eq!(unicode_string(&[0]), None);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn extracts_tikas_test_metafiles_as_tikas_path_does() {
-    for (parser, count) in [(&EmfParser as &dyn Parser, 3), (&WmfParser, 2)] {
-        let (parsed, deferred) = documents(parser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), count, "{parsed:?}");
-        assert_same_as_tika(&paths(&parsed), parser.tika_name());
-    }
 }

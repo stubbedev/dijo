@@ -529,16 +529,9 @@ fn write(read: &TagsAndAudio, xhtml: &mut Xhtml) -> Result<(), Failure> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
     use extractous_core::large::{bodies_past_limit, LargeFile};
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.mp3.Mp3Parser";
 
     #[test]
     fn reads_id3v1_tags_as_tika_does() {
@@ -583,56 +576,6 @@ mod tests {
         audio
     }
 
-    /// A file with an ID3v2.3 tag, three MPEG frames, the first a Xing frame, Lyrics3 v2 lyrics
-    /// and an ID3v1 tag.
-    #[cfg(feature = "tika")]
-    fn tagged_mp3() -> Vec<u8> {
-        let frames = [
-            frame("TIT2", b"\x00Sang om havet"),
-            frame("TPE1", b"\x01\xFF\xFEK\x00\xF8\x00r\x00\x00\x00"),
-            frame("TALB", b"\x03Kyst\xC3\xA6r"),
-            frame("TRCK", b"\x003/12"),
-            frame("TPOS", b"\x001"),
-            frame("TCON", b"\x00(17)"),
-            frame("COMM", b"\x00danbeskrivelse\x00en kommentar"),
-        ]
-        .concat();
-        let mut mp3 = id3v23(&frames);
-        for index in 0..3 {
-            mp3.extend_from_slice(&audio_frame(index == 0));
-        }
-        let fields = b"IND0000210LYR00022B\xF8lgerne sl\xE5r mod land";
-        let mut lyrics = b"LYRICSBEGIN".to_vec();
-        lyrics.extend_from_slice(fields);
-        let length = lyrics.len();
-        mp3.extend_from_slice(&lyrics);
-        mp3.extend_from_slice(format!("{length:06}LYRICS200").as_bytes());
-        let mut v1 = vec![0u8; 128];
-        v1[..3].copy_from_slice(b"TAG");
-        v1[3..7].copy_from_slice(b"Navn");
-        v1[127] = 17;
-        mp3.extend_from_slice(&v1);
-        mp3
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_mp3s_as_tikas_path_does() {
-        let scratch = Scratch::new("mp3");
-        let tagged = tagged_mp3();
-        let read = [
-            scratch.write("tagged.mp3", &tagged),
-            scratch.write("frames.mp3", &tagged[tagged.len() - 1500..]),
-        ];
-        let (parsed, deferred) = documents(&Mp3Parser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len(), "{parsed:?}");
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-    }
-
     /// A file too large to read whole is read a frame at a time, in place, its pages released
     /// as they are read, in memory that does not grow with the file.
     #[test]
@@ -651,16 +594,5 @@ mod tests {
             (seconds - expected).abs() < expected / 100.0,
             "{seconds} s of {frames} frames"
         );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_mp3s_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&Mp3Parser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 27, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
     }
 }

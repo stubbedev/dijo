@@ -331,52 +331,6 @@ fn worker_processes_serve_extractions() {
     );
 }
 
-#[cfg(feature = "tika")]
-#[cfg(unix)]
-#[test]
-fn a_crashed_worker_process_fails_its_request_and_not_the_next() {
-    let scratch = Scratch::new("crashing-worker");
-    let path = scratch.path_with_tesseract("[ $# -lt 2 ] || kill -KILL $PPID");
-    let server = Server::start_with_env(
-        &["--isolation", "process", "--workers", "1"],
-        &[("PATH", &path)],
-    );
-    let crashed = server.post_file("/extract", &[], "ara-ocr.png");
-    assert_eq!(crashed.status, 500);
-    let message = crashed.json()["error"].as_str().unwrap().to_string();
-    assert!(message.contains("The worker process died"), "{message}");
-
-    let next = server.post_file("/extract", &[], "simple.odt");
-    assert_eq!(next.status, 200);
-    assert!(next
-        .text()
-        .contains("These are a few of my favorite things"));
-    let metrics = server.request("GET", "/metrics", &[], b"").text();
-    assert!(metrics.contains("extractous_workers 1"), "{metrics}");
-}
-
-#[cfg(feature = "tika")]
-#[cfg(unix)]
-#[test]
-fn a_hung_worker_process_is_stopped_after_the_deadline() {
-    let scratch = Scratch::new("hung-worker");
-    let path = scratch.path_with_tesseract("[ $# -lt 2 ] || kill -STOP $PPID");
-    let server = Server::start_with_env(
-        &["--isolation", "process", "--workers", "1", "--timeout", "3"],
-        &[("PATH", &path)],
-    );
-    let started = Instant::now();
-    let hung = server.post_file("/extract", &[], "ara-ocr.png");
-    assert_eq!(hung.status, 504);
-    assert!(started.elapsed() < Duration::from_secs(20));
-
-    let next = server.post_file("/extract", &[], "simple.odt");
-    assert_eq!(next.status, 200);
-    assert!(next
-        .text()
-        .contains("These are a few of my favorite things"));
-}
-
 #[cfg(target_os = "linux")]
 #[test]
 fn a_worker_process_over_its_memory_limit_is_stopped() {

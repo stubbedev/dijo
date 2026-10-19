@@ -263,6 +263,3 @@ fn write_block(block: Block, xhtml: &mut Xhtml) -> Result<(), Failure> {
     }
     Ok(())
 }
-
-#[cfg(all(test, feature = "tika"))]
-mod tests;

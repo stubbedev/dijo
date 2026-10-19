@@ -4,7 +4,6 @@
 //! the compressed file. The content is decoded to a spool, which keeps no more of it in memory
 //! than a file read whole, so the parser's memory stays bounded whatever the file's size.
 
-use super::nesting::Scan;
 use super::{undecoded, within_limit, Cut};
 use crate::compress::compressor::Compressor;
 use crate::compress::gzip;
@@ -105,15 +104,8 @@ impl Parser for CompressorParser {
             .decode(input)
             .map_err(|reason| undecoded(&what, reason, self.tika_name()))?;
         paging.release();
-        let (decoded, cut) = within_limit(what, decoded)?;
-        let mut scan = Scan::new();
-        if let Some(reason) = scan.entry(&decoded.content) {
-            return Err(Decline::Deferred(reason));
-        }
+        let (decoded, cut) = within_limit(what, decoded);
         let entry = entry_metadata(decoded.file_name, metadata.get(RESOURCE_NAME));
-        if let Some(reason) = scan.document(input.len()) {
-            return Err(Decline::Deferred(reason));
-        }
         let content = decoded.content;
         // The document ends whatever the entry's parse does, short of the output stopping:
         // Tika leaves it open when the parse fails (#100).
@@ -239,11 +231,6 @@ mod tests {
     fn fails_data_that_does_not_decode_as_its_reader_fails_tikas_parser() {
         let data = gzip(b"text", None);
         let cut = &data[..data.len() - 3];
-        if cfg!(feature = "tika") {
-            let reason = defers(cut, "application/gzip", None).unwrap();
-            assert!(reason.contains("reading it fails"), "{reason}");
-            return;
-        }
         let mut metadata = TikaMetadata::new();
         metadata.set("Content-Type", "application/gzip");
         let configs = ParserConfigs::default();
@@ -295,17 +282,5 @@ mod tests {
             panic!("a stream beyond the memory limit is not failed as a limit");
         };
         assert!(reason.contains("KiB of memory"), "{reason}");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn defers_what_tika_may_take_for_a_zip_bomb() {
-        let bomb = gzip(&vec![b'a'; 600_000], None);
-        let reason = defers(&bomb, "application/gzip", None).unwrap();
-        assert!(reason.contains("zip bomb"), "{reason}");
-        assert_eq!(
-            defers(&gzip(&vec![b'a'; 400_000], None), "application/gzip", None),
-            None
-        );
     }
 }

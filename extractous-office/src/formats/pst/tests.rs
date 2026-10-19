@@ -1,56 +1,8 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
-use crate::formats::parity::Scratch;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents,
-};
+use crate::formats::testing::Scratch;
 use crate::text::charset::Charset;
 
 const OST: &str = "../test_files/documents/offline-folder.ost";
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_outlook_data_files_as_tikas_path_does() {
-    let roots = [
-        Path::new("../test_files/documents"),
-        Path::new("../quality/corpus"),
-    ];
-    let (parsed, deferred) = documents(&OutlookPstParser, &roots);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed, [PathBuf::from(OST)]);
-    let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&parsed, OutlookPstParser.tika_name());
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn fails_where_tikas_path_fails() {
-    let scratch = Scratch::new("pst-failing");
-    let original = std::fs::read(OST).unwrap();
-    let truncated = scratch.write("truncated.ost", &original[..4096]);
-    let mut garbage = original.clone();
-    garbage[600..].fill(0xA5);
-    let garbage = scratch.write("garbage.ost", &garbage);
-    assert_fails_as_tika(&[&truncated, &garbage]);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn extracts_tikas_test_documents_as_tikas_path_does() {
-    let (parsed, deferred) = documents(&OutlookPstParser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    let names: Vec<&str> = parsed
-        .iter()
-        .map(|path| path.file_name().unwrap().to_str().unwrap())
-        .collect();
-    assert_eq!(names, ["testPST.pst", "testPST_variousBodyTypes.pst"]);
-    let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&parsed, OutlookPstParser.tika_name());
-}
 
 #[test]
 fn reads_messages_without_tika() {

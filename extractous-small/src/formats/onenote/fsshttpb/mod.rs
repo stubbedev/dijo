@@ -429,43 +429,5 @@ fn read_guid(data: &[u8], index: usize) -> Result<Uuid, Failure> {
     Ok(Uuid::stored(copy_of_range::<16>(data, index)?))
 }
 
-/// `text` with the GUID of each embedded document's relationship ID, `_value_guid`, as the UUID
-/// `UUID.nameUUIDFromBytes` makes of its stored bytes, and each array index out of bounds with
-/// the message the native image of Tika's path gives it.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub(super) fn as_tika_names(text: &str) -> String {
-    use md5::{Digest, Md5};
-    use regex::{Captures, Regex};
-
-    const IMPRECISE: &str = "Stack trace is imprecise, the top frames are missing and/or have \
-                             wrong line numbers. To get precise stack traces, build the image \
-                             with option -H:-ReduceImplicitExceptionStackTraceInformation";
-    let relationship = Regex::new(
-        r"(_-?\d+_)([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})\b",
-    )
-    .expect("the relationship ID pattern is valid");
-    let named = relationship.replace_all(text, |groups: &Captures| {
-        let hex: String = (2..=6).map(|group| &groups[group]).collect();
-        let canonical: Vec<u8> = (0..16)
-            .map(|at| u8::from_str_radix(&hex[2 * at..2 * at + 2], 16).expect("hex digits"))
-            .collect();
-        let order = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
-        let stored = order.map(|at| canonical[at]);
-        let mut hash: [u8; 16] = Md5::digest(stored).into();
-        hash[6] = (hash[6] & 0x0f) | 0x30;
-        hash[8] = (hash[8] & 0x3f) | 0x80;
-        format!("{}{}", &groups[1], Uuid(hash))
-    });
-    let index =
-        Regex::new(r"ArrayIndexOutOfBoundsException: Index \d+ out of bounds for length \d+")
-            .expect("the index pattern is valid");
-    index
-        .replace_all(
-            &named,
-            format!("ArrayIndexOutOfBoundsException: {IMPRECISE}"),
-        )
-        .into_owned()
-}
-
 #[cfg(test)]
 mod tests;

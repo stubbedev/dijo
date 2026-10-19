@@ -5,9 +5,8 @@
 //! `RarParser` ([`rar`]).
 
 mod compressor;
-#[cfg(all(test, not(feature = "tika")))]
+#[cfg(test)]
 pub(crate) mod large;
-mod nesting;
 mod package;
 mod rar;
 mod seven_z;
@@ -27,50 +26,6 @@ use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure};
 use crate::java::time::format_instant;
 use crate::Error;
-
-/// For the parity tests: why the native path extracts the first segment of a split ZIP archive
-/// where Tika's path fails on it: Tika's stream fails the document at the entry the segment cuts
-/// short, the native parser records that entry as unreadable and keeps the entries before it.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-const SPLIT_SEGMENT: &str = "Tika fails the document at the entry the segment cuts short";
-
-/// For the parity tests: the first segment of a split ZIP archive among Tika's test documents,
-/// by file name, with why it is not compared ([`SPLIT_SEGMENT`]).
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub const TIKAS_SPLIT_SEGMENT: (&str, &str) = ("test-documents-spanned.z01", SPLIT_SEGMENT);
-
-/// The metadata of the ZIP integrity check.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-const INTEGRITY_CHECK: [&str; 4] = [
-    "zip:integrity-check-result",
-    "zip:duplicate-entry-names",
-    "zip:local-header-only-entries",
-    "zip:central-directory-only-entries",
-];
-
-/// A native ZIP result as Tika's path writes it, with the integrity check as late as Tika runs
-/// it (#99): after the document has ended, so not in its head, and not at all when the parse
-/// failed, as at the write limit.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub fn as_tika_checks_zips(
-    text: &mut String,
-    metadata: &mut crate::formats::parity::ComparedMetadata,
-    tika: &crate::formats::parity::ComparedMetadata,
-) {
-    for name in INTEGRITY_CHECK {
-        let meta = format!(r#"<meta name="{name}" content=""#);
-        while let Some(start) = text.find(&meta) {
-            let end = start
-                + text[start..]
-                    .find('\n')
-                    .map_or(text.len() - start, |end| end + 1);
-            text.replace_range(start..end, "");
-        }
-    }
-    if !tika.iter().any(|(name, _)| name == INTEGRITY_CHECK[0]) {
-        metadata.retain(|(name, _)| !INTEGRITY_CHECK.contains(&name.as_str()));
-    }
-}
 
 /// `ZipParser.writeEntryXhtml` and the div of `handleEntryMetadata`: an empty `div` of class
 /// `embedded` identified by the entry's name, if it has one.
@@ -112,27 +67,17 @@ fn record_unreadable(metadata: &mut TikaMetadata, name: &str, reason: &str) {
     );
 }
 
-/// Whether there is a Tika path to leave a document to.
-const DEFERS: bool = cfg!(feature = "tika");
-
 /// Why the native readers do not read `what`, for the reason `undecoded`, given to Tika's
-/// parser `tika_name`: a stream beyond the memory limit fails at once, as Tika's path fails it.
-/// Data that fails to decode fails as the reader's `IOException` fails Tika's parser, where
-/// there is no Tika's path to fail with the reader's own message; what the native readers do
-/// not read is left to Tika's path.
+/// parser `tika_name`: a stream beyond the memory limit fails at once, as Tika's path fails it,
+/// and data that fails to decode fails as the reader's `IOException` fails Tika's parser.
 fn undecoded(what: &str, undecoded: Undecoded, tika_name: &str) -> Decline<'static> {
     match undecoded {
-        Undecoded::TooLarge => too_large(what),
+        Undecoded::TooLarge => Decline::Fails(past_the_limit(what)),
         Undecoded::MemoryLimit(_) => {
             Decline::Fails(Error::LimitExceeded(format!("{what}: {undecoded}")))
         }
         Undecoded::Unspooled(_) => Decline::Fails(Error::IoError(format!("{what}: {undecoded}"))),
         Undecoded::Unported(_) => Decline::Deferred(format!("{what}: {undecoded}")),
-        Undecoded::Fails(_) | Undecoded::Encrypted | Undecoded::BadPassword if DEFERS => {
-            Decline::Deferred(format!(
-                "{what}: {undecoded}, which Tika's path fails with its reader's own exception"
-            ))
-        }
         Undecoded::Fails(_) | Undecoded::Encrypted | Undecoded::BadPassword => Decline::Fails(
             Thrown::Io(Exception::new(
                 "java.io.IOException",
@@ -140,21 +85,6 @@ fn undecoded(what: &str, undecoded: Undecoded, tika_name: &str) -> Decline<'stat
             ))
             .into_error(tika_name),
         ),
-    }
-}
-
-/// A document holding `what`, which decodes into more than
-/// [`MAX_DECODED`](crate::compress::MAX_DECODED) bytes, where the native parser writes nothing
-/// of it: Tika's path streams it, and takes the document where there is one. Without it, the
-/// document exceeds what the native path decodes.
-fn too_large(what: &str) -> Decline<'static> {
-    if DEFERS {
-        Decline::Deferred(format!(
-            "{what}: {}, which Tika's path streams",
-            Undecoded::TooLarge
-        ))
-    } else {
-        Decline::Fails(past_the_limit(what))
     }
 }
 
@@ -183,18 +113,13 @@ impl Cut {
     }
 }
 
-/// What the native parser writes of `what`, as `limited` holds it: all of it, or, in a build
-/// without Tika, what it decodes into up to [`MAX_DECODED`](crate::compress::MAX_DECODED)
-/// bytes, and where the document then stops. Tika's path streams it whole, and takes the
-/// document where there is one.
-fn within_limit<T>(
-    what: String,
-    limited: Limited<T>,
-) -> Result<(T, Option<Cut>), Decline<'static>> {
+/// What the native parser writes of `what`, as `limited` holds it: all of it, or what it
+/// decodes into up to [`MAX_DECODED`](crate::compress::MAX_DECODED) bytes, and where the
+/// document then stops.
+fn within_limit<T>(what: String, limited: Limited<T>) -> (T, Option<Cut>) {
     match limited {
-        Limited::Whole(decoded) => Ok((decoded, None)),
-        Limited::Cut(_) if DEFERS => Err(too_large(&what)),
-        Limited::Cut(decoded) => Ok((decoded, Some(Cut(what)))),
+        Limited::Whole(decoded) => (decoded, None),
+        Limited::Cut(decoded) => (decoded, Some(Cut(what))),
     }
 }
 

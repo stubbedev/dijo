@@ -386,15 +386,8 @@ impl Parser for MboxParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents, Scratch};
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.mbox.MboxParser";
 
     #[test]
     fn reads_header_lines_as_the_patterns_do() {
@@ -461,107 +454,5 @@ Third.\n";
         );
         assert_eq!(get(2, "dc:subject"), "Caf\u{e9}");
         assert!(messages.iter().all(|message| !message.cut));
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_mailboxes_as_tikas_path_does() {
-        let scratch = Scratch::new("mbox");
-        let mailbox = b"From ada@example.org Mon Jan  1 00:00:00 2024\r\n\
-From: Ada Lovelace <ada@example.org>\r\n\
-To: Bob <bob@example.org>\r\n\
-Cc: carol@example.org\r\n\
-Subject: First\r\n\
-  continued subject\r\n\
-Date: Mon, 1 Jan 2024 10:00:00 +0100\r\n\
-Message-Id: <1@example.org>\r\n\
-X-Custom: one\r\n\
-X-Custom: two\r\n\
-\r\n\
-Body of the first message, caf\xe9.\r\n\
-From bob@example.org Tue Jan  2 00:00:00 2024\n\
-From: Bob <bob@example.org>\n\
-Subject: Second\n\
-\n\
-Body of the second message.\n\
->From the quoted line.\n\
-From carol@example.org Wed Jan  3 00:00:00 2024\n";
-        let leading = b"From eve@example.org Wed Jan  3 00:00:00 2024\n\
-From dave@example.org Thu Jan  4 00:00:00 2024\n\
- continuation first\n\
-Subject: Leading\n\
-\n\
-Body.";
-        let read = [
-            scratch.write("mailbox.mbox", mailbox),
-            scratch.write("leading.mbox", leading),
-        ];
-        let (parsed, deferred) = documents(&MboxParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len());
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-    }
-
-    /// Mailboxes whose first message passes the write limit, in plain text and in HTML.
-    #[cfg(feature = "tika")]
-    fn past_the_limit(scratch: &Scratch) -> (PathBuf, Vec<PathBuf>) {
-        let text = "word ".repeat(40);
-        let html = format!("<html><body><p>{text}</p></body></html>");
-        let second = "From c@d Mon Jan  1 00:00:00 2024\nSubject: y\n\nsecond body\n";
-        let first = |headers: &str, body: &str| {
-            format!("From a@b Mon Jan  1 00:00:00 2024\nSubject: x\n{headers}\n{body}\n{second}")
-        };
-        let alternative = format!(
-            "--B\nContent-Type: text/plain\n\n{text}\n--B\nContent-Type: text/html\n\n{html}\n--B--"
-        );
-        (
-            scratch.write("plain.mbox", first("", &text).as_bytes()),
-            vec![
-                scratch.write(
-                    "html.mbox",
-                    first("Content-Type: text/html\n", &html).as_bytes(),
-                ),
-                scratch.write(
-                    "alternative.mbox",
-                    first(
-                        "Content-Type: multipart/alternative; boundary=\"B\"\n",
-                        &alternative,
-                    )
-                    .as_bytes(),
-                ),
-            ],
-        )
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn cuts_messages_at_the_limit_as_tikas_path_does() {
-        let scratch = Scratch::new("mbox-limit");
-        let (plain, html) = past_the_limit(&scratch);
-        assert_same_as_tika(&[&plain], TIKA_NAME);
-        assert_same_as_tika(
-            &html.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-        let (xhtml, _) = crate::Extractor::new()
-            .set_xml_output(true)
-            .set_extract_string_max_length(100)
-            .extract_file_to_string(html[0].to_str().unwrap())
-            .unwrap();
-        assert!(xhtml.ends_with("word </p></div>"), "{xhtml}");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_mailboxes_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&MboxParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 7);
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
     }
 }

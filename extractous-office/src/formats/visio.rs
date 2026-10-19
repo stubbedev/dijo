@@ -558,21 +558,6 @@ fn exact_int(value: i32) -> Read<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_the_conformance_documents_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&VisioParser, &[&conformance_corpus()]);
-        assert_eq!(deferred, Vec::<PathBuf>::new());
-        assert_eq!(parsed.len(), 1, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, VisioParser.tika_name());
-    }
 
     /// `data` compressed as HDGF reads it: every byte a literal.
     fn literally(data: &[u8]) -> Vec<u8> {
@@ -652,22 +637,6 @@ mod tests {
         .unwrap()
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_the_texts_of_compressed_and_nested_streams_as_tikas_path_does() {
-        let scratch = crate::formats::parity::Scratch::new("visio");
-        let path = scratch.write("havn.vsd", &drawing("Havnen i \u{c5}lborg", "Fjorden", 0));
-        assert_eq!(crate::formats::parity::deferral(&VisioParser, &path), None);
-        assert_same_as_tika(&[&path], VisioParser.tika_name());
-        let (text, _) = crate::Extractor::new()
-            .extract_file_to_string(path.to_str().unwrap())
-            .unwrap();
-        assert!(
-            text.contains("Havnen i \u{c5}lborg") && text.contains("Fjorden"),
-            "{text}"
-        );
-    }
-
     /// A drawing too large to read whole is read in place, its streams where they lie, in
     /// memory that does not grow with it.
     #[test]
@@ -705,7 +674,6 @@ mod tests {
             .extract_bytes_to_string(&damaged)
             .unwrap_err();
         assert!(matches!(error, crate::Error::ParseError(_)), "{error:?}");
-        #[cfg(not(feature = "tika"))]
         assert!(
             error
                 .to_string()

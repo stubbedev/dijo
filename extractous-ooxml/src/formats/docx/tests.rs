@@ -1,154 +1,19 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use super::*;
 use crate::formats::embedded::ParseContext;
-#[cfg(feature = "tika")]
-use crate::formats::metafile;
 use crate::formats::ooxml::extractor::OLE_OBJECT_TYPE;
 use crate::formats::ooxml::testing::relationship;
-use crate::formats::parity;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_same_as_tika_delegating_departing_with, assert_same_as_tika_with, ANCHORED_BLOCKS,
-    ANCHORED_BLOCK_DOCUMENTS,
-};
+use crate::formats::testing;
 use crate::formats::{Chain, Output, StringOut};
 
-#[cfg(feature = "tika")]
-const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
-
 const TRUNCATED: &str = "../test_files/documents/truncated.docx";
-
-/// Documents with tracked changes, notes, comments, lists, tables, headers, text boxes and
-/// phonetic guides, compared under each setting that changes how Tika reads them.
-#[cfg(feature = "tika")]
-const VARIED: [&str; 6] = [
-    "../quality/corpus/revisions.docx",
-    "../quality/corpus/notes.docx",
-    "../quality/corpus/report.docx",
-    "../quality/corpus/table.docx",
-    "../test_files/documents/bug_16.docx",
-    "../test_files/documents/category-level.docx",
-];
 
 fn office(config: OfficeParserConfig) -> ParserConfigs {
     ParserConfigs {
         office: config,
         ..ParserConfigs::default()
-    }
-}
-
-/// Each setting of `OfficeParserConfig` the Word extractor reads, away from its default.
-#[cfg(feature = "tika")]
-fn other_settings() -> [ParserConfigs; 6] {
-    [
-        office(OfficeParserConfig::new().set_include_deleted_content(true)),
-        office(OfficeParserConfig::new().set_include_move_from_content(true)),
-        office(OfficeParserConfig::new().set_include_shape_based_content(false)),
-        office(OfficeParserConfig::new().set_include_headers_and_footers(false)),
-        office(OfficeParserConfig::new().set_concatenate_phonetic_runs(false)),
-        office(OfficeParserConfig::new().set_extract_macros(true)),
-    ]
-}
-
-#[cfg(feature = "tika")]
-fn file_name(path: &Path) -> String {
-    path.file_name().unwrap().to_string_lossy().into_owned()
-}
-
-#[cfg(feature = "tika")]
-fn deferral(path: &Path, configs: &ParserConfigs) -> Option<String> {
-    let input = std::fs::read(path).unwrap();
-    DocxParser.defers(&input, &TikaMetadata::new(), configs)
-}
-
-/// Of `documents`, those this port reads under `configs`, after checking that it leaves exactly
-/// `deferred` to Tika, by file name and a part of the reason.
-#[cfg(feature = "tika")]
-fn ported(
-    documents: &[PathBuf],
-    deferred: &[(&str, &str)],
-    configs: &ParserConfigs,
-) -> Vec<PathBuf> {
-    let mut ported = Vec::new();
-    let mut unexpected = Vec::new();
-    for document in documents {
-        let name = file_name(document);
-        let expected = deferred.iter().find(|(deferred, _)| *deferred == name);
-        match (deferral(document, configs), expected) {
-            (None, None) => ported.push(document.clone()),
-            (Some(reason), Some((_, why))) if reason.contains(why) => {}
-            (reason, expected) => {
-                unexpected.push(format!("{name}: {reason:?}, expected {expected:?}"))
-            }
-        }
-    }
-    assert!(unexpected.is_empty(), "{}", unexpected.join("\n"));
-    ported
-}
-
-/// The Word documents below `roots`, by Tika's detection.
-#[cfg(feature = "tika")]
-fn word_documents(roots: &[&Path]) -> Vec<PathBuf> {
-    let (mut parsed, deferred) = parity::documents(&DocxParser, roots);
-    parsed.extend(deferred);
-    parsed.sort();
-    parsed
-}
-
-#[cfg(feature = "tika")]
-fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
-    let (anchored, alike): (Vec<&Path>, Vec<&Path>) = documents
-        .iter()
-        .map(PathBuf::as_path)
-        .partition(|path| ANCHORED_BLOCK_DOCUMENTS.contains(&file_name(path).as_str()));
-    assert_same_as_tika_delegating_departing_with(
-        &anchored,
-        TIKA_PARSER,
-        &[],
-        ANCHORED_BLOCKS,
-        configs,
-    );
-    assert_same_as_tika_with(&alike, TIKA_PARSER, configs);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_what_tikas_path_extracts() {
-    let documents = word_documents(&[
-        Path::new("../test_files/documents"),
-        Path::new("../quality/corpus"),
-    ]);
-    let defaults = ParserConfigs::default();
-    assert_same_as_tika(&ported(&documents, &[], &defaults), &defaults);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_what_tikas_path_extracts_with_other_settings() {
-    let documents: Vec<PathBuf> = VARIED.iter().map(PathBuf::from).collect();
-    for configs in other_settings() {
-        assert_same_as_tika(&ported(&documents, &[], &configs), &configs);
-    }
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
-fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-    let documents = word_documents(&[&parity::conformance_corpus()]);
-    let defaults = ParserConfigs::default();
-    assert_same_as_tika(&ported(&documents, &[], &defaults), &defaults);
-    for configs in other_settings() {
-        let mut deferred = Vec::new();
-        if configs.office.extracts_macros() {
-            deferred.push(("testWORD_macros.docm", "embeds /word/vbaProject.bin"));
-        }
-        assert_same_as_tika(&ported(&documents, &deferred, &configs), &configs);
     }
 }
 
@@ -184,7 +49,7 @@ fn defers(input: &[u8]) -> Option<String> {
 }
 
 fn text_of(input: &[u8], configs: &ParserConfigs) -> String {
-    parity::install_routes();
+    testing::install_routes();
     let mut out = StringOut::default();
     // Tika's string chain, which leaves the blocks the parser writes where it writes them (#63).
     let chain = Chain::TikaString {
@@ -211,117 +76,6 @@ fn reads_a_plain_document() {
     let input = document("<w:p><w:r><w:t>Hej verden</w:t></w:r></w:p>", "", &[]);
     assert_eq!(defers(&input), None);
     assert!(text_of(&input, &ParserConfigs::default()).contains("<p>Hej verden</p>"));
-}
-
-/// A document embedding a text file as an OLE object shown as an icon, whose EMF picture
-/// names the file `name`.
-#[cfg(feature = "tika")]
-fn icon_document(name: &str) -> Vec<u8> {
-    let icon = metafile::testing::emf(&[
-        metafile::testing::emf_comment(&metafile::testing::utf16("IconOnly\0")),
-        metafile::testing::emf_comment(&metafile::testing::utf16(&format!("{name}\0"))),
-        metafile::testing::emf_text(name, 0, 0, true),
-    ]);
-    let body = "<w:p><w:r><w:object xmlns:v=\"urn:schemas-microsoft-com:vml\" \
-                xmlns:o=\"urn:schemas-microsoft-com:office:office\"><v:shape>\
-                <v:imagedata r:id=\"rId8\" o:title=\"\"/></v:shape>\
-                <o:OLEObject Type=\"Embed\" ProgID=\"Package\" DrawAspect=\"Icon\" r:id=\"rId9\"/>\
-                </w:object></w:r></w:p>";
-    document(
-        body,
-        &format!(
-            "{}{}",
-            relationship("rId8", kind::IMAGE, "media/image1.emf"),
-            relationship("rId9", kind::PACKAGE, "embeddings/notes.txt")
-        ),
-        &[
-            ("word/media/image1.emf", "image/x-emf", &icon),
-            (
-                "word/embeddings/notes.txt",
-                "text/plain",
-                b"The notes the icon shows.",
-            ),
-        ],
-    )
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn names_embedded_objects_as_the_pictures_of_their_icons_do() {
-    let scratch = parity::Scratch::new("docx-icons");
-    let documents = [
-        scratch.write("icon.docx", &icon_document("Quarterly notes.txt")),
-        scratch.write("blank-icon.docx", &icon_document(" ")),
-    ];
-    for document in &documents {
-        assert_eq!(deferral(document, &ParserConfigs::default()), None);
-    }
-    let text = text_of(
-        &icon_document("Quarterly notes.txt"),
-        &ParserConfigs::default(),
-    );
-    assert!(text.contains("<h1>Quarterly notes.txt</h1>"), "{text}");
-    assert_same_as_tika(&documents, &ParserConfigs::default());
-}
-
-#[cfg(feature = "tika")]
-/// Each part names the objects it embeds by its own relationships, where Tika keys what a part
-/// says of an object by the relationship id alone, so the document's object named by `rId9`
-/// renamed the header's (#127).
-#[test]
-fn names_the_objects_of_each_part_by_its_own_relationships() {
-    let icon = |name: &str| {
-        metafile::testing::emf(&[
-            metafile::testing::emf_comment(&metafile::testing::utf16("IconOnly\0")),
-            metafile::testing::emf_comment(&metafile::testing::utf16(&format!("{name}\0"))),
-            metafile::testing::emf_text(name, 0, 0, true),
-        ])
-    };
-    let object = "<w:p><w:r><w:object xmlns:v=\"urn:schemas-microsoft-com:vml\" \
-                  xmlns:o=\"urn:schemas-microsoft-com:office:office\"><v:shape>\
-                  <v:imagedata r:id=\"rId8\" o:title=\"\"/></v:shape>\
-                  <o:OLEObject Type=\"Embed\" ProgID=\"Package\" DrawAspect=\"Icon\" \
-                  r:id=\"rId9\"/></w:object></w:r></w:p>";
-    let objects = |media: &str, embedding: &str| {
-        ooxml::testing::relationships(&format!(
-            "{}{}",
-            relationship("rId8", kind::IMAGE, &format!("media/{media}")),
-            relationship("rId9", kind::PACKAGE, &format!("embeddings/{embedding}"))
-        ))
-    };
-    let header = format!("<w:hdr {W}>{object}</w:hdr>");
-    let (header_icon, document_icon) = (icon("Header notes.txt"), icon("Body notes.txt"));
-    let header_relationships = objects("header.emf", "header.txt");
-    let input = document(
-        object,
-        &format!(
-            "{}{}{}",
-            relationship("rId8", kind::IMAGE, "media/body.emf"),
-            relationship("rId9", kind::PACKAGE, "embeddings/body.txt"),
-            relationship("rId10", kind::HEADER, "header1.xml"),
-        ),
-        &[
-            (
-                "word/header1.xml",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml",
-                header.as_bytes(),
-            ),
-            (
-                "word/_rels/header1.xml.rels",
-                "application/vnd.openxmlformats-package.relationships+xml",
-                header_relationships.as_bytes(),
-            ),
-            ("word/media/header.emf", "image/x-emf", &header_icon),
-            ("word/media/body.emf", "image/x-emf", &document_icon),
-            ("word/embeddings/header.txt", "text/plain", b"Header."),
-            ("word/embeddings/body.txt", "text/plain", b"Body."),
-        ],
-    );
-    assert_eq!(defers(&input), None);
-    let text = text_of(&input, &ParserConfigs::default());
-    for heading in ["<h1>Header notes.txt</h1>", "<h1>Body notes.txt</h1>"] {
-        assert!(text.contains(heading), "{heading} in {text}");
-    }
 }
 
 #[test]
@@ -414,32 +168,6 @@ fn defers_parts_declaring_a_document_type() {
     assert!(defers(&quietly_read).is_some_and(|reason| reason.contains("document type")));
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn records_parts_whose_xml_fails_as_tikas_path_does() {
-    let scratch = parity::Scratch::new("docx-failing-part");
-    let documents = [
-        scratch.write(
-            "main.docx",
-            &failing_main_part(b"<w:hdr><w:p><w:r><w:t>head</w:t></w:r></w:p></w:hdr>"),
-        ),
-        scratch.write(
-            "header.docx",
-            &failing_main_part(b"<w:hdr><w:p><w:r><w:t>head</w:t></w:p>"),
-        ),
-    ];
-    let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-    parity::assert_same_as_tika_departing(
-        &documents,
-        TIKA_PARSER,
-        &[parity::Departure::Values(
-            embedded::EXCEPTION_WARNING,
-            "the first line of Xerces' SAXParseException, which the native XML reader words \
-             otherwise (#96)",
-        )],
-    );
-}
-
 #[test]
 fn defers_packages_poi_refuses_or_reads_otherwise() {
     assert!(defers(b"PK\x03\x04 not really").is_some());
@@ -501,16 +229,6 @@ fn fails_packages_cut_short_in_an_entry_as_poi_does() {
         ),
         "{declined:?}"
     );
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn reads_and_fails_packages_without_a_central_directory_as_tikas_path_does() {
-    let scratch = parity::Scratch::new("docx-no-directory");
-    let input = document("<w:p><w:r><w:t>Hej verden</w:t></w:r></w:p>", "", &[]);
-    let cut = scratch.write("cut.docx", &without_central_directory(&input));
-    assert_same_as_tika(&[cut], &ParserConfigs::default());
-    parity::assert_fails_as_tika(&[Path::new(TRUNCATED)]);
 }
 
 #[test]

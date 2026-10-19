@@ -1,12 +1,5 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
 use crate::formats::bytes::Unread;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_read_where_tika_reads_nothing, conformance_corpus, documents, WITHOUT_SCIENTIFIC_MODULE,
-};
 
 fn push_name(bytes: &mut Vec<u8>, name: &str) {
     bytes.extend_from_slice(&(name.len() as u32).to_be_bytes());
@@ -104,7 +97,7 @@ fn fails_on_a_header_cut_short() {
 #[test]
 #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
 fn reads_tikas_test_file() {
-    let path = crate::formats::parity::conformance_corpus().join(
+    let path = crate::formats::testing::conformance_corpus().join(
         "tika-parsers-extended/tika-parser-scientific-module/src/test/resources/\
          test-documents/sresa1b_ncar_ccsm3_0_run1_200001.nc",
     );
@@ -117,17 +110,6 @@ fn reads_tikas_test_file() {
         "{text}"
     );
     assert_eq!(metadata["dc:title"], ["model output prepared for IPCC AR4"]);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn reads_tikas_test_files_which_tikas_path_leaves_empty() {
-    let (parsed, deferred) = documents(&NetCdfParser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 1, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_read_where_tika_reads_nothing(&paths, &[WITHOUT_SCIENTIFIC_MODULE]);
 }
 
 #[test]

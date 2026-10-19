@@ -10,7 +10,6 @@
 //! archive's size, but for a sparse TAR file, compressed ZIP data and a dump's data, which are
 //! decoded to a spool.
 
-use super::nesting::Scan;
 use super::{undecoded, within_limit, write_file, Cut};
 use crate::compress::archiver::Archiver;
 use crate::compress::arj::{self, ArjData};
@@ -69,13 +68,6 @@ impl<'a> Package<'a> {
             difference: None,
         }
     }
-
-    fn files(&self) -> impl Iterator<Item = &ArchiveFile<'a>> {
-        self.entries.iter().filter_map(|entry| match entry {
-            Packaged::Read(file) => Some(file),
-            Packaged::Unread(_) => None,
-        })
-    }
 }
 
 /// The error of an archive `ArchiveStreamFactory` opens no stream of, for the reason `cause`:
@@ -115,7 +107,7 @@ fn read<'a>(
     match archiver {
         Archiver::Tar => {
             let (files, cut) =
-                within_limit(what.clone(), tar::files(input, pages).map_err(failed)?)?;
+                within_limit(what.clone(), tar::files(input, pages).map_err(failed)?);
             Ok(Package::of(files, cut))
         }
         Archiver::Ar => Ok(Package::of(ar::files(input, pages).map_err(failed)?, None)),
@@ -156,7 +148,7 @@ fn read<'a>(
                     })
                     .collect()
             });
-            let (files, cut) = within_limit(what.clone(), files)?;
+            let (files, cut) = within_limit(what.clone(), files);
             Ok(Package::of(files, cut))
         }
     }
@@ -245,7 +237,7 @@ fn read_zip<'a>(
                 )))
             }
             Ok(Ok(Decoded::Oversized(content))) => {
-                let (content, cutting) = within_limit(what.to_owned(), Limited::Cut(content))?;
+                let (content, cutting) = within_limit(what.to_owned(), Limited::Cut(content));
                 entries.push(Packaged::Read(file(content)));
                 cut = cutting;
                 break;
@@ -303,9 +295,6 @@ impl Parser for PackageParser {
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let paging = Paging::new(pages);
         let package = read(input, pages, metadata.get("Content-Type"))?;
-        if let Some(reason) = Scan::new().files(input.len(), package.files()) {
-            return Err(Decline::Deferred(reason));
-        }
         paging.release();
         let Package {
             entries,
@@ -425,9 +414,6 @@ mod tests {
                 ("B.BIN".to_owned(), None),
             ]
         );
-        if cfg!(feature = "tika") {
-            return;
-        }
         let (text, metadata) = extractous_core::Extractor::new()
             .extract_bytes_to_string(&archive)
             .unwrap();
@@ -470,13 +456,6 @@ mod tests {
         );
         let data = tar(&[(b"a.txt", b'0', b"text")]);
         let old_cpio = b"070707000000000000000000000000000000000000000000";
-        if cfg!(feature = "tika") {
-            let cut = defers(&data[..515]).unwrap();
-            assert!(cut.contains("Tar archive"), "{cut}");
-            let old_cpio = defers(old_cpio).unwrap();
-            assert!(old_cpio.contains("reading it fails"), "{old_cpio}");
-            return;
-        }
         let io = "TIKA-198: Illegal IOException from org.apache.tika.parser.pkg.PackageParser <- \
                   caused by java.io.IOException: the";
         let cut = failure(&data[..515]);

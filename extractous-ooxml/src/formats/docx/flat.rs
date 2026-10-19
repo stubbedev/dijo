@@ -470,6 +470,3 @@ impl SaxHandler for Flat<'_, '_, '_> {
         Ok(())
     }
 }
-
-#[cfg(all(test, feature = "tika"))]
-mod tests;

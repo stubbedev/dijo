@@ -225,15 +225,8 @@ fn paragraph(stream: &mut Stream<'_>, length: usize, xhtml: &mut Xhtml) -> Resul
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
-        conformance_corpus, documents, Departure, Scratch,
-    };
 
     fn part(date: &[u8; 12], description: &[u8], body: &[u8]) -> Vec<u8> {
         let mut file = b"CADKEY\x00\x000M3C".to_vec();
@@ -257,16 +250,6 @@ mod tests {
         note
     }
 
-    #[cfg(feature = "tika")]
-    fn view(text: &[u8]) -> Vec<u8> {
-        let mut view = vec![0; 5];
-        view.extend_from_slice(&[0xf0, 0xbf]);
-        view.extend_from_slice(&u16::try_from(text.len() + 1).unwrap().to_le_bytes());
-        view.extend_from_slice(text);
-        view.push(0);
-        view
-    }
-
     /// A part file too large to read whole is read a byte at a time, each note written as it
     /// is found.
     #[test]
@@ -286,44 +269,6 @@ mod tests {
         assert_eq!(metadata["dc:description"], ["Bolt"]);
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_part_files_as_tikas_path_does() {
-        let scratch = Scratch::new("prt");
-        let body = [
-            note(b"Bolt M8 \xe8 galvaniseret"),
-            vec![1, 2, 3],
-            view(b"FRONT"),
-            vec![0; 5],
-            vec![0xe0, 0x3f, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0],
-            b"TOP\x00\x00".to_vec(),
-            view(b""),
-        ]
-        .concat();
-        let read = [
-            scratch.write("bolt.prt", &part(b"200803201052", b"Bolt \xe8", &body)),
-            scratch.write("undated.prt", &part(b"xx0803201052", b"", &body)),
-        ];
-        let failing = [
-            scratch.write("cut.prt", &part(b"200803201052", b"Bolt", &[])[..300]),
-            scratch.write("cut-note.prt", &part(b"200803201052", b"Bolt", &body[..40])),
-        ];
-        let full = scratch.write("full.prt", &part(b"200803201052", &[b'M'; 500], &body));
-        let (parsed, deferred) = documents(&PrtParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len() + failing.len() + 1, "{parsed:?}");
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            PrtParser.tika_name(),
-        );
-        assert_same_as_tika_departing(
-            &[full.as_path()],
-            PrtParser.tika_name(),
-            &[Departure::Values("dc:description", "#118")],
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-    }
-
     #[test]
     fn keeps_the_whole_of_a_description_that_fills_its_field() {
         let (_, metadata) = crate::Extractor::new()
@@ -339,16 +284,5 @@ mod tests {
             .extract_bytes_to_string(&part(b"200803201052", b"Bolt", &empty))
             .unwrap();
         assert_eq!(text.trim(), "Bolt");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_part_files_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&PrtParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 2, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, PrtParser.tika_name());
     }
 }

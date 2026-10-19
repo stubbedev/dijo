@@ -14,13 +14,11 @@ pub mod extracted;
 pub mod formats;
 pub mod hash;
 pub mod input;
-pub mod isolate;
 pub mod java;
 pub mod memory;
 pub mod ole2;
+pub mod process;
 pub mod text;
-#[cfg(feature = "tika")]
-pub mod tika;
 pub mod unicode;
 pub mod xml;
 

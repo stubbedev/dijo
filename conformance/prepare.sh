@@ -8,7 +8,7 @@ fi
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 dir=$1
-version=$("$here/../extractous-core/tika-native/tika-version.sh")
+version=$("$here/tika-version.sh")
 commit=$(awk -v version="$version" '$1 == version { print $2 }' "$here/pins.tsv")
 if [ -z "$commit" ]; then
     echo "conformance/pins.tsv pins no corpus commit for Tika $version" >&2

@@ -503,34 +503,9 @@ fn write(archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::config::OfficeParserConfig;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika_adjusting, conformance_corpus, Adjustments,
-        Scratch,
-    };
     use crate::formats::zip_package::tests::{replace_all, with_method};
     use std::io::Cursor;
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
     use zip::CompressionMethod;
-
-    #[cfg(feature = "tika")]
-    const DOCUMENTS: [&str; 4] = [
-        "../test_files/documents/simple.odt",
-        "../quality/corpus/notes.odt",
-        "../quality/corpus/prose.odt",
-        "../quality/corpus/revisions.odt",
-    ];
-
-    #[cfg(feature = "tika")]
-    fn paths<'a>(documents: &[&'a str]) -> Vec<&'a Path> {
-        documents
-            .iter()
-            .map(|document| Path::new(*document))
-            .collect()
-    }
 
     /// How many headings and notes Tika's XHTML `xhtml` has: the native parser ends each with a
     /// line break, where Tika ends them in the ODF namespace, which breaks no line (#90).
@@ -565,21 +540,6 @@ mod tests {
         ends
     }
 
-    /// How the native parser departs from Tika's path: it ends headings and notes as blocks.
-    #[cfg(feature = "tika")]
-    pub(crate) const DEPARTURES: Adjustments = Adjustments {
-        line_breaks: Some(heading_and_note_ends),
-        metadata: &[],
-        wrappers: &[],
-        repeated: &[],
-        final_in_head: &[],
-    };
-
-    #[cfg(feature = "tika")]
-    fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
-        assert_same_as_tika_adjusting(documents, tika_name, &ParserConfigs::default(), DEPARTURES);
-    }
-
     fn decoded(pieces: &[&str]) -> Vec<u8> {
         let mut data = BinaryData::new();
         for piece in pieces {
@@ -610,121 +570,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts() {
-        assert_same_as_tika(&paths(&DOCUMENTS), TIKA_NAME);
-    }
-
-    #[cfg(feature = "tika")]
-    const MISC_OFFICE: &str = "tika-parsers-standard/tika-parsers-standard-modules/\
-                               tika-parser-miscoffice-module/src/test/resources/test-documents";
-    #[cfg(feature = "tika")]
-    const INTEGRATION: &str = "tika-parsers-standard/tika-parsers-standard-integration-tests/\
-                               src/test/resources/test-documents";
-
-    /// Tika's own test documents of this format, as `(directory, name)` in the directory
-    /// `CONFORMANCE_CORPUS` names, which `just conformance` prepares.
-    #[cfg(feature = "tika")]
-    const CONFORMANCE: [(&str, &str); 21] = [
-        (INTEGRATION, "testPhoneNumberExtractor.odt"),
-        (MISC_OFFICE, "testFooter.ods"),
-        (MISC_OFFICE, "testFooter.odt"),
-        (MISC_OFFICE, "testMasterFooter.odp"),
-        (MISC_OFFICE, "testNPEOpenDocument.odt"),
-        (MISC_OFFICE, "testODPMacro.odp"),
-        (MISC_OFFICE, "testODTNoMeta.odt"),
-        (MISC_OFFICE, "testODSMacro.ods"),
-        (MISC_OFFICE, "testODTEmbeddedImageLink.odt"),
-        (MISC_OFFICE, "testODTEmbedded.odt"),
-        (MISC_OFFICE, "testODTMacro.odt"),
-        (MISC_OFFICE, "testODT-TIKA-6000.odt"),
-        (MISC_OFFICE, "testODTStyles2.odt"),
-        (MISC_OFFICE, "testODTStyles3.odt"),
-        (MISC_OFFICE, "testODT_svgTitleInStyledSpan.odt"),
-        (MISC_OFFICE, "testOpenOffice2.odt"),
-        (MISC_OFFICE, "testStyles.odt"),
-        (MISC_OFFICE, "versions/LibreOfficeCalc_ods_1.3.ods"),
-        (MISC_OFFICE, "versions/LibreOfficeDraw_odg_1.3.odg"),
-        (MISC_OFFICE, "versions/LibreOfficeImpress_odp_1.3.odp"),
-        (MISC_OFFICE, "versions/LibreOfficeWriter_odt_1.3.odt"),
-    ];
-
-    /// Tika's own test documents the native parser reads differently from Tika's path on
-    /// purpose (#90), as `(directory, name, XHTML it writes)`: spaces as `text:c` counts them,
-    /// keywords each a value of their own, and the attributes of OpenOffice.org 1 documents.
-    #[cfg(feature = "tika")]
-    const CONFORMANCE_DEPARTING: [(&str, &str, &[&str]); 6] = [
-        (
-            INTEGRATION,
-            "test-columnar.ods",
-            &["<p>This is row            0 of           10</p>"],
-        ),
-        (
-            INTEGRATION,
-            "testStarOffice-6.0-writer.sxw",
-            &[
-                "<meta name=\"odf:version\" content=\"1.0\" />",
-                "<h1 />\n<p>Example Text",
-            ],
-        ),
-        (
-            INTEGRATION,
-            "testStarOffice-6.0-writer-template.stw",
-            &["<meta name=\"meta:page-count\" content=\"1\" />"],
-        ),
-        (
-            MISC_OFFICE,
-            "testODFwithOOo3.odt",
-            &[
-                "<meta name=\"meta:keyword\" content=\"Lucene\" />",
-                "<meta name=\"dc:subject\" content=\"Tika\" />",
-            ],
-        ),
-        (MISC_OFFICE, "testODP_NPE.odp", &["  "]),
-        (
-            MISC_OFFICE,
-            "testOpenOffice2.odf",
-            &["<meta name=\"meta:keyword\" content=\"fox\" />"],
-        ),
-    ];
-
-    /// Tika's own test documents of this format that Tika's path fails on.
-    #[cfg(feature = "tika")]
-    const CONFORMANCE_FAILING: [(&str, &str); 1] = [(MISC_OFFICE, "testODTEncrypted.odt")];
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore]
-    fn fails_where_tikas_path_fails_on_tikas_documents() {
-        let corpus = conformance_corpus();
-        let documents: Vec<PathBuf> = CONFORMANCE_FAILING
-            .iter()
-            .map(|(directory, name)| corpus.join(directory).join(name))
-            .collect();
-        let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-        assert_fails_as_tika(&documents);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore]
-    fn extracts_what_tikas_path_extracts_from_tikas_documents() {
-        let corpus = conformance_corpus();
-        let documents: Vec<PathBuf> = CONFORMANCE
-            .iter()
-            .map(|(directory, name)| corpus.join(directory).join(name))
-            .collect();
-        let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&documents, TIKA_NAME);
-        for (directory, name, texts) in CONFORMANCE_DEPARTING {
-            let (xml, _) = extract(&std::fs::read(corpus.join(directory).join(name)).unwrap());
-            for text in texts {
-                assert!(xml.contains(text), "{name}: {text:?} in {xml}");
-            }
-        }
-    }
-
     pub(super) const NAMESPACES: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0""#;
     pub(super) const TEXT: &str = "application/vnd.oasis.opendocument.text";
     pub(super) const MANIFEST: (&str, &str) = (
@@ -750,121 +595,6 @@ mod tests {
             std::io::Write::write_all(&mut zip, text.as_bytes()).unwrap();
         }
         zip.finish().unwrap().into_inner()
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts_from_every_kind_of_element() {
-        let text = content(
-            &r#"<office:text><text:sequence-decls><text:sequence-decl text:name="Table"/></text:sequence-decls><text:tracked-changes><text:changed-region text:id="c1"><text:deletion><text:p>gone words</text:p></text:deletion></text:changed-region></text:tracked-changes>
-<text:h text:outline-level="2">Heading <text:span text:style-name="T1">bold</text:span> two</text:h><text:h>Plain heading</text:h><text:h text:outline-level="9">Deep</text:h><text:h text:outline-level="0">Zero</text:h>
-<text:p text:style-name="P1">Bold paragraph <text:span text:style-name="T2">italic under</text:span><text:span text:style-name="T3">semi</text:span> end<text:tab/>tab<text:s/>space<text:line-break/>next</text:p>
-<text:p>Before note<text:note text:id="n1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>Note text</text:p></text:note-body></text:note>@GAP@after note &amp; more &#x263A; 😀 a]b</text:p>
-<text:p>Link <text:a xlink:href="http://example.com/" xlink:title="Ex"><text:span text:style-name="T1">styled link</text:span></text:a> after</text:p>
-<text:list text:style-name="L1"><text:list-item><text:p>One</text:p><text:list><text:list-item><text:p>Nested</text:p></text:list-item></text:list></text:list-item><text:list-item><text:p>Two</text:p></text:list-item></text:list><text:list text:style-name="L2"><text:list-item><text:p>Bullet</text:p></text:list-item></text:list><text:list><text:list-item><text:p>Unstyled</text:p></text:list-item></text:list>
-<table:table table:name="T"><table:table-column table:number-columns-repeated="3"/><table:table-row><table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="2"><text:p>Span</text:p></table:table-cell><table:covered-table-cell><text:p>hidden</text:p></table:covered-table-cell><table:table-cell table:number-columns-repeated="2"><text:p>Rep <text:span text:style-name="T1">b</text:span></text:p><text:p>second</text:p></table:table-cell></table:table-row></table:table>
-<text:p>Page <text:page-number>3</text:page-number> of <text:page-count>9</text:page-count></text:p>
-<text:p><draw:frame><svg:title>Frame title</svg:title><svg:desc>Frame desc</svg:desc><draw:text-box><text:p>In box</text:p></draw:text-box></draw:frame><draw:frame><draw:image xlink:href="http://example.com/x.png"/></draw:frame><draw:a xlink:href="http://example.com/2"><draw:frame><draw:image xlink:href=""/></draw:frame></draw:a></text:p>
-<text:p>Annotated<office:annotation><dc:creator>Me</dc:creator><text:p>Remark</text:p></office:annotation> text</text:p>
-<text:p><text:span text:style-name="T1">bold <text:span text:style-name="T2">nested</text:span> back</text:span><text:span text:style-name="T1"><svg:title>t</svg:title></text:span><text:span text:style-name="T1">x<text:a xlink:href="y">in</text:a>out</text:span></text:p>
-<draw:object xlink:href="./Object 1"/><text:p>emoji 😀 and <![CDATA[cdata <b>]]></text:p><text:section><text:p>in section</text:p></text:section></office:text>"#
-                .replace("@GAP@", "  \n \n  "),
-        );
-        let styles = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles {NAMESPACES}><office:styles><style:style style:name="Standard" style:family="paragraph"/></office:styles><office:master-styles><style:master-page style:name="Standard"><style:header><text:p>Header text</text:p></style:header><style:footer><text:p>Footer <text:page-number>1</text:page-number></text:p></style:footer></style:master-page></office:master-styles></office:document-styles>"#
-        );
-        let chart = content(
-            r#"<office:chart><table:table><table:table-row><table:table-cell><text:p>Chart cell</text:p></table:table-cell></table:table-row></table:table></office:chart>"#,
-        );
-        let meta = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta {NAMESPACES} office:version="1.3"><office:meta><meta:generator>Test</meta:generator><dc:title>Elements</dc:title><meta:initial-creator>Anna</meta:initial-creator><dc:creator>Bo</dc:creator><meta:keyword>hav</meta:keyword><dc:subject>Lys</dc:subject><dc:language>da-DK</dc:language><dc:date>2026-01-02T03:04:05</dc:date><meta:creation-date>2026-01-01T00:00:00</meta:creation-date><meta:editing-duration>PT1M</meta:editing-duration><meta:editing-cycles>3</meta:editing-cycles><meta:user-defined meta:name="Info 1">Tekst</meta:user-defined><meta:user-defined meta:name="Info 1">Mere</meta:user-defined><meta:document-statistic meta:page-count="2" meta:paragraph-count="9" meta:word-count="40" meta:character-count="200" meta:table-count="1" meta:image-count="2" meta:object-count="1"/></office:meta></office:document-meta>"#
-        );
-        let scratch = Scratch::new("odf-elements");
-        let documents = [
-            scratch.write(
-                "elements.odt",
-                &document(
-                TEXT,
-                &[
-                    ("styles.xml", &styles),
-                    ("content.xml", &text),
-                    ("meta.xml", &meta),
-                    ("Object 1/content.xml", &chart),
-                    ("Object 1/meta.xml", &meta),
-                    ("Thumbnails/thumbnail.png", "not a picture"),
-                    MANIFEST,
-                ],
-            ),
-            ),
-            scratch.write(
-                "presentation.odp",
-                &document(
-                "application/vnd.oasis.opendocument.presentation",
-                &[
-                    MANIFEST,
-                    (
-                        "content.xml",
-                        &content(
-                            r#"<office:presentation><draw:page draw:name="p1"><draw:frame><draw:text-box><text:p>Slide</text:p></draw:text-box></draw:frame><presentation:notes><draw:frame><draw:text-box><text:p>Speaker</text:p></draw:text-box></draw:frame></presentation:notes></draw:page></office:presentation>"#,
-                        ),
-                    ),
-                ],
-            ),
-            ),
-            scratch.write(
-                "staroffice.sxw",
-                &document(
-                "application/vnd.sun.xml.writer",
-                &[
-                    (
-                        "content.xml",
-                        r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE office:document-content PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "office.dtd"><office:document-content xmlns:office="http://openoffice.org/2000/office" xmlns:style="http://openoffice.org/2000/style" xmlns:text="http://openoffice.org/2000/text" xmlns:fo="http://www.w3.org/1999/XSL/Format"><office:automatic-styles><style:style style:name="T1" style:family="text"><style:properties fo:font-weight="bold"/></style:style></office:automatic-styles><office:body><text:h text:level="1">Old heading</text:h><text:p>Old <text:span text:style-name="T1">text</text:span><text:tab-stop/>tab</text:p></office:body></office:document-content>"#,
-                    ),
-                    (
-                        "meta.xml",
-                        r#"<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="http://openoffice.org/2000/office" xmlns:meta="http://openoffice.org/2000/meta" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:meta><meta:generator>StarOffice</meta:generator><dc:title>Old</dc:title></office:meta></office:document-meta>"#,
-                    ),
-                    MANIFEST,
-                ],
-            ),
-            ),
-        ];
-        let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn fails_where_tikas_path_fails() {
-        let scratch = Scratch::new("odf-failures");
-        let documents = [
-            scratch.write(
-                "malformed.odt",
-                &document(
-                    TEXT,
-                    &[
-                        (
-                            "content.xml",
-                            &content("<office:text><text:p>open</office:text>"),
-                        ),
-                        MANIFEST,
-                    ],
-                ),
-            ),
-            scratch.write(
-                "meta.odt",
-                &document(
-                    TEXT,
-                    &[
-                        ("meta.xml", "<office:document-meta>"),
-                        ("content.xml", &content("<office:text/>")),
-                        MANIFEST,
-                    ],
-                ),
-            ),
-        ];
-        let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-        assert_fails_as_tika(&paths);
     }
 
     /// The XHTML and metadata the native parser extracts from `input`.
@@ -1152,17 +882,15 @@ mod tests {
             ),
             "{declined:?}"
         );
-        if !cfg!(feature = "tika") {
-            let error = crate::Extractor::new()
-                .extract_bytes_to_string(&corrupt())
-                .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("content.xml is cut short or corrupt"),
-                "{error}"
-            );
-        }
+        let error = crate::Extractor::new()
+            .extract_bytes_to_string(&corrupt())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("content.xml is cut short or corrupt"),
+            "{error}"
+        );
     }
 
     fn bodiless() -> Vec<u8> {
@@ -1201,49 +929,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts_from_damaged_packages() {
-        let scratch = Scratch::new("odf-damaged");
-        let documents = [
-            scratch.write("cut.odt", &cut()),
-            scratch.write("duplicated.odt", &duplicated()),
-            scratch.write("bodiless.odt", &bodiless()),
-        ];
-        let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
-        let pictured = scratch.write("pictured.odt", &pictured());
-        let (_, xhtml) = crate::formats::parity::differing_reading(&OpenDocumentParser, &pictured);
-        assert!(
-            xhtml.contains("<p>picture text</p>") && xhtml.trim_end().ends_with("</body></html>"),
-            "{xhtml}"
-        );
-    }
-
-    /// Tika's `CompositeParser` names the parser it wraps an exception for by the decorator
-    /// around `OpenDocumentParser`, `MimeFilteringDecorator@<hash>`, which differs on each run,
-    /// where the native path names `OpenDocumentParser`: what each wraps is compared.
-    #[cfg(feature = "tika")]
-    #[test]
-    fn fails_where_tikas_path_fails_on_damaged_packages() {
-        let scratch = Scratch::new("odf-damaged-failing");
-        let documents = [
-            scratch.write("cut-in-content.odt", &cut_in_content()),
-            scratch.write("unsupported.odt", &unsupported()),
-        ];
-        let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-        assert_fails_as_tika(&paths);
-        let cause = |error: &str| {
-            error
-                .split_once(" <- caused by ")
-                .map(|(_, cause)| cause.to_owned())
-        };
-        let (native, tika) =
-            crate::formats::parity::errors(&documents[1], &ParserConfigs::default());
-        assert!(cause(&native).is_some(), "{native}");
-        assert_eq!(cause(&native), cause(&tika));
-    }
-
     const UNDECRYPTABLE: &str = "../test_files/documents/encrypted/undecryptable.odt";
 
     #[test]
@@ -1260,27 +945,6 @@ mod tests {
                     if *reason == crypt::encrypted(None).to_string()
             ),
             "{declined:?}"
-        );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn fails_encrypted_documents_where_tikas_path_fails() {
-        assert_fails_as_tika(&[Path::new(UNDECRYPTABLE)]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_deleted_content_as_tikas_path_does_when_asked() {
-        let configs = ParserConfigs {
-            office: OfficeParserConfig::new().set_include_deleted_content(true),
-            ..ParserConfigs::default()
-        };
-        assert_same_as_tika_adjusting(
-            &paths(&["../quality/corpus/revisions.odt"]),
-            TIKA_NAME,
-            &configs,
-            DEPARTURES,
         );
     }
 }

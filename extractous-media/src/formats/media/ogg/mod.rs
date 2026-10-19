@@ -498,14 +498,8 @@ impl Parser for FlacParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_read_where_tika_fails, assert_same_as_tika, conformance_corpus, documents,
-    };
     use extractous_core::large::{bodies_past_limit, LargeFile};
 
     /// Vorbis comments with a vendor, after `header`.
@@ -519,20 +513,6 @@ mod tests {
             data.extend_from_slice(entry.as_bytes());
         }
         data
-    }
-
-    /// A FLAC picture block of text, which the extractor parses without OCR.
-    #[cfg(feature = "tika")]
-    fn picture(kind: i32, text: &str) -> Vec<u8> {
-        let mut block = kind.to_be_bytes().to_vec();
-        block.extend_from_slice(&10i32.to_be_bytes());
-        block.extend_from_slice(b"text/plain");
-        block.extend_from_slice(&4i32.to_be_bytes());
-        block.extend_from_slice(b"note");
-        block.extend_from_slice(&[0; 16]);
-        block.extend_from_slice(&i32::try_from(text.len()).unwrap().to_be_bytes());
-        block.extend_from_slice(text.as_bytes());
-        block
     }
 
     fn flac_block(kind: u8, data: &[u8]) -> Vec<u8> {
@@ -679,91 +659,6 @@ mod tests {
             assert_eq!(flac.info.sample_rate, 44100);
             let comments = flac.comments.expect("the comment block");
             assert_eq!(comments.all.get("title").unwrap(), &["Sidste blok"]);
-        }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_flac_comments_flagged_as_the_last_block_where_tikas_path_fails() {
-        let scratch = crate::formats::parity::Scratch::new("ogg-last-comments");
-        let [native, ogg] = flac_files_with_last_comments("Sidste blok");
-        let files = [
-            scratch.write("last-comments.flac", &native),
-            scratch.write("last-comments.oga", &ogg),
-        ];
-        let paths: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
-        assert_read_where_tika_fails(&paths, "#182");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_flac_and_opus_files_as_tikas_path_does() {
-        let scratch = crate::formats::parity::Scratch::new("ogg");
-        let info = stream_info(0x0004_EBA0);
-        let tags = comments(
-            b"",
-            &[
-                "TITLE=Bølger",
-                "Artist=Kunstner",
-                "TRACKNUMBER=2/9",
-                "comment=en kommentar",
-                "DISCNUMBER=1",
-                "Label=Mærke",
-                "noequals",
-            ],
-        );
-        let mut flac = b"fLaC".to_vec();
-        flac.extend(flac_block(0, &info));
-        flac.extend(flac_block(4, &tags));
-        flac.extend(flac_block(6, &picture(3, "front cover")));
-        flac.extend(flac_block(0x86, &picture(4, "back cover")));
-        let head = opus_head();
-        let opus_tags = comments(b"OpusTags", &["ALBUM=Album", "DATE=2024"]);
-        let mut opus = page(2, 0, 0, &[&head]);
-        opus.extend(page(0, 0, 1, &[&opus_tags]));
-        opus.extend(page(0, 48312, 2, &[b"\xFC\x00", b"\xFC\x00"]));
-        opus.extend(page(4, 96312, 3, &[b"\xFC\x00"]));
-        let read = [
-            scratch.write("tagged.flac", &flac),
-            scratch.write("tagged.opus", &opus),
-        ];
-        for (parser, tika_name, path) in [
-            (
-                &FlacParser as &dyn Parser,
-                "org.apache.tika.parser.ogg.FlacParser",
-                &read[0],
-            ),
-            (
-                &OpusParser,
-                "org.apache.tika.parser.ogg.OpusParser",
-                &read[1],
-            ),
-        ] {
-            let (parsed, deferred) = documents(parser, &[scratch.directory()]);
-            assert!(deferred.is_empty(), "{deferred:?}");
-            assert_eq!(parsed, std::slice::from_ref(path));
-            assert_same_as_tika(&[path.as_path()], tika_name);
-        }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_ogg_files_as_tikas_path_does() {
-        for (parser, tika_name, count) in [
-            (
-                &VorbisParser as &dyn Parser,
-                "org.apache.tika.parser.ogg.VorbisParser",
-                4,
-            ),
-            (&OpusParser, "org.apache.tika.parser.ogg.OpusParser", 1),
-            (&FlacParser, "org.apache.tika.parser.ogg.FlacParser", 5),
-        ] {
-            let (parsed, deferred) = documents(parser, &[&conformance_corpus()]);
-            assert!(deferred.is_empty(), "{deferred:?}");
-            assert_eq!(parsed.len(), count, "{parsed:?}");
-            let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-            assert_same_as_tika(&paths, tika_name);
         }
     }
 

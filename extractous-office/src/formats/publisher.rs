@@ -302,21 +302,6 @@ fn hyperlinks(data: &[u8], count: usize) -> Result<(), Plc> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika, conformance_corpus, documents};
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_the_conformance_documents_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&PublisherParser, &[&conformance_corpus()]);
-        assert_eq!(deferred, Vec::<PathBuf>::new());
-        assert_eq!(parsed.len(), 1, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, PublisherParser.tika_name());
-    }
 
     /// Quill contents of the bits given as their type and data.
     fn quill(bits: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
@@ -378,70 +363,6 @@ mod tests {
         let (text, metadata) = file.extract("extractous::OfficeParser");
         assert!(text.contains("Havnen i \u{c5}lborg\nog fjorden"), "{text}");
         assert_eq!(metadata["Content-Type"], ["application/x-mspublisher"]);
-    }
-
-    /// A Publisher document of Quill contents `quill`, without the delay stream where `delay` is
-    /// false.
-    #[cfg(feature = "tika")]
-    fn publication(quill: Vec<u8>, delay: bool) -> Vec<u8> {
-        use crate::ole2::{write, Node, Storage};
-        let units = |name: &str| name.encode_utf16().collect::<Vec<u16>>();
-        let storage = |entries| {
-            Node::Storage(Storage {
-                class_id: [0; 16],
-                entries,
-            })
-        };
-        let mut escher = vec![(units("EscherStm"), Node::Owned(Vec::new()))];
-        if delay {
-            escher.push((units("EscherDelayStm"), Node::Owned(Vec::new())));
-        }
-        let Node::Storage(root) = storage(vec![
-            (units("Contents"), Node::Owned(vec![0; 64])),
-            (
-                units("Quill"),
-                storage(vec![(
-                    units("QuillSub"),
-                    storage(vec![(units("CONTENTS"), Node::Owned(quill))]),
-                )]),
-            ),
-            (units("Escher"), storage(escher)),
-        ]) else {
-            unreachable!("a storage")
-        };
-        write(&root).unwrap()
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_text_bits_as_tikas_path_does() {
-        let mut links = vec![0u8; 0x34];
-        links[4] = 12;
-        let quill = quill(&[
-            (b"TEXT", utf16("Havnen i \u{c5}lborg\rog fjorden")),
-            (
-                b"PLC ",
-                vec![1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0],
-            ),
-            (b"PLC ", links),
-            (b"TEXT", utf16("Anden tekst")),
-        ]);
-        let scratch = crate::formats::parity::Scratch::new("publisher");
-        let path = scratch.write("havn.pub", &publication(quill.clone(), true));
-        assert_eq!(
-            crate::formats::parity::deferral(&PublisherParser, &path),
-            None
-        );
-        assert_same_as_tika(&[&path], PublisherParser.tika_name());
-        let missing = scratch.write("missing.pub", &publication(quill, false));
-        assert_eq!(
-            crate::formats::parity::deferral(&PublisherParser, &missing),
-            None
-        );
-        let (text, _) = crate::Extractor::new()
-            .extract_file_to_string(missing.to_str().unwrap())
-            .unwrap();
-        assert!(text.contains("Havnen i \u{c5}lborg\nog fjorden"), "{text}");
     }
 
     #[test]

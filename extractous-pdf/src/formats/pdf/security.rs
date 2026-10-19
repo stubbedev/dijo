@@ -740,23 +740,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn opens_encryption_whose_entries_pdfbox_resolves_or_converts_as_tikas_path_does() {
-        let scratch = crate::formats::parity::Scratch::new("pdf-readable-encryption");
-        for (name, input, password) in readable_encryptions() {
-            let path = scratch.write(name, &input);
-            let configs = ParserConfigs::default()
-                .with_password(Some(&crate::config::Password::new(password)));
-            crate::formats::parity::assert_same_as_tika_delegating_with(
-                &[&path],
-                super::super::tests::tika_name(),
-                &super::super::DELEGATES,
-                &configs,
-            );
-        }
-    }
-
     /// The failure of `PDFParser` as `CompositeParser` wraps what it throws.
     fn wrapped(wrapping: &str, cause: &str) -> String {
         format!(
@@ -943,35 +926,6 @@ mod tests {
                 Ok(_) => panic!("{name} opens"),
                 Err(declined) => panic!("{name}: {declined:?}"),
             }
-        }
-    }
-
-    /// Tika's native image fails some of these otherwise than the JVM: it names the parser by
-    /// its identity hash, which the comparison takes out, and it lacks the public-key security
-    /// handler's constructor and the JVM's detailed messages of the exceptions it throws
-    /// itself.
-    #[cfg(feature = "tika")]
-    #[test]
-    fn fails_encryption_pdfbox_throws_on_as_tikas_path_does() {
-        let scratch = crate::formats::parity::Scratch::new("pdf-unopenable-encryption");
-        let unhashed = |error: String| {
-            let mut out = String::with_capacity(error.len());
-            let mut rest = error.as_str();
-            while let Some(at) = rest.find("PDFParser@") {
-                out.push_str(&rest[..at + "PDFParser".len()]);
-                rest = rest[at + "PDFParser@".len()..]
-                    .trim_start_matches(|c: char| c.is_ascii_hexdigit());
-            }
-            out.push_str(rest);
-            out
-        };
-        for (name, input, _, same) in unopenable_encryptions() {
-            if !same {
-                continue;
-            }
-            let path = scratch.write(name, &input);
-            let (native, tika) = crate::formats::parity::errors(&path, &ParserConfigs::default());
-            assert_eq!(native, unhashed(tika), "{name}");
         }
     }
 

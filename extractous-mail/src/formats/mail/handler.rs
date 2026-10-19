@@ -54,13 +54,13 @@ pub(super) trait Sink {
 }
 
 /// The items of a message's body collected, with its metadata, before any is written.
-#[cfg(any(test, feature = "tika"))]
+#[cfg(test)]
 pub(super) struct Collected<'m> {
     pub(super) metadata: &'m mut TikaMetadata,
     pub(super) items: Vec<Item>,
 }
 
-#[cfg(any(test, feature = "tika"))]
+#[cfg(test)]
 impl Sink for Collected<'_> {
     type Error = MimeError;
 

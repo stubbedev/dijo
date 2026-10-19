@@ -119,6 +119,3 @@ fn prepare<'a, B: Body + 'a>(
         })
     }))
 }
-
-#[cfg(all(test, feature = "tika"))]
-mod tests;

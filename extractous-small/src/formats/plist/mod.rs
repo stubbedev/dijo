@@ -451,18 +451,11 @@ impl Parser for PListParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::Path;
     use std::path::PathBuf;
 
     use super::binary::tests::{bplist, Item};
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_fails_as_tika, assert_same_as_tika, conformance_corpus};
-    use crate::formats::parity::{documents, Scratch};
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.apple.PListParser";
+    use crate::formats::testing::{documents, Scratch};
 
     #[test]
     fn writes_base64_as_dd_plist_does() {
@@ -553,7 +546,6 @@ mod tests {
     }
 
     /// A build without Tika fails a document its native parser defers with the parser's reason.
-    #[cfg(not(feature = "tika"))]
     #[test]
     fn fails_sets_with_why() {
         let set = bplist(&[Item::Set(vec![1]), Item::Ascii("member")], 0);
@@ -570,14 +562,6 @@ mod tests {
             ),
             "{failed:?}"
         );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_property_lists_as_tikas_path_does() {
-        let scratch = Scratch::new("plist");
-        let (typical, _) = typical_and_set(&scratch);
-        assert_same_as_tika(&[typical.as_path()], TIKA_NAME);
     }
 
     /// The body the native path writes of the property list `input`, or how it fails.
@@ -793,88 +777,5 @@ mod tests {
             let failure = body(&list).unwrap_err();
             assert!(failure.contains("is not a string"), "{failure}");
         }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_xml_property_lists_as_tikas_path_does() {
-        let scratch = Scratch::new("xml-plist");
-        let header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \
-                      \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n";
-        let list = |body: &str| format!("{header}<plist version=\"1.0\">\n{body}\n</plist>\n");
-        let read = [
-            scratch.write(
-                "typical.plist",
-                list(
-                    "<dict>\n  <key>keyA</key>\n  <string>valueA</string>\n  <key>key&amp;B</key>\n  \
-                     <string>value&amp;B <![CDATA[<b>]]><!-- c --> f\u{f8}r</string>\n  <key>date</key>\n  \
-                     <date>2011-11-28T09:21:30Z</date>\n  <key>data</key>\n  <data>\n  SGVsbG8gZW1i\n  \
-                     ZWRkZWQgdGV4dA==\n  </data>\n  <key>array</key>\n  <array>\n    <true/>\n    <false/>\n    \
-                     <integer>87</integer>\n    <integer>0x1f</integer>\n    <integer>yes</integer>\n    \
-                     <real>3.14159</real>\n    <real>-infinity</real>\n    <real> 2</real>\n    <string/>\n  \
-                     </array>\n  <key>nested</key>\n  <dict/>\n</dict>",
-                )
-                .as_bytes(),
-            ),
-            scratch.write(
-                "webarchive.plist",
-                list("<dict><key>WebMainResource</key><dict/></dict>").as_bytes(),
-            ),
-            scratch.write(
-                "itunes.plist",
-                list(
-                    "<dict><key>Playlists</key><array/><key>Tracks</key><dict/>\
-                     <key>Music Folder</key><string>m</string></dict>",
-                )
-                .as_bytes(),
-            ),
-            scratch.write("array.plist", list("<array><string>a</string></array>").as_bytes()),
-            scratch.write(
-                "no-doctype.plist",
-                b"<?xml version=\"1.0\"?>\n<plist><dict><key>k</key><integer>1</integer></dict></plist>",
-            ),
-        ];
-        let failing = [
-            scratch.write("empty.plist", list("").as_bytes()),
-            scratch.write("odd.plist", list("<dict><key>k</key></dict>").as_bytes()),
-            scratch.write("number.plist", list("<integer>1x</integer>").as_bytes()),
-            scratch.write("data.plist", list("<data>QQ</data>").as_bytes()),
-        ];
-        let deferred_entity =
-            scratch.write("entity.plist", list("<string>&e;</string>").as_bytes());
-        let (parsed, deferred) = documents(&PListParser, &[scratch.directory()]);
-        assert_eq!(deferred, [deferred_entity]);
-        assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_property_lists_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&PListParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 3);
-        // Its embedded keyed archives hold UIDs, which Tika names by their object (#104).
-        let (with_uids, paths): (Vec<&Path>, Vec<&Path>) = parsed
-            .iter()
-            .map(PathBuf::as_path)
-            .partition(|path| path.ends_with("testWEBARCHIVE.webarchive"));
-        assert_same_as_tika(&paths, TIKA_NAME);
-        let [with_uids] = with_uids[..] else {
-            panic!("{with_uids:?}");
-        };
-        let (xml, _) = crate::Extractor::new()
-            .set_xml_output(true)
-            .extract_file_to_string(with_uids.to_str().unwrap())
-            .unwrap();
-        assert!(
-            xml.contains("<key>WebResourceResponse</key><uid>1</uid>"),
-            "{xml}"
-        );
     }
 }

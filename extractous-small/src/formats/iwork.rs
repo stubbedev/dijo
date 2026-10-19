@@ -648,21 +648,8 @@ impl Parser for IworkArchiveParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::compress::zip::file::tests::zip;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-    };
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "ai.yobix.IworkArchiveParser";
-    #[cfg(feature = "tika")]
-    const BUILD_HISTORY: &[u8] = b"<plist version=\"1.0\"><array/></plist>";
 
     fn varint(mut value: u64) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -705,24 +692,6 @@ mod tests {
         [varint(info.len() as u64), info, payload.to_vec()].concat()
     }
 
-    #[cfg(feature = "tika")]
-    fn storage(text: &str) -> Vec<u8> {
-        record(
-            2001,
-            &[varint_field(1, 1), bytes_field(3, text.as_bytes())].concat(),
-        )
-    }
-
-    #[cfg(feature = "tika")]
-    fn string_list(list_type: u64, strings: &[(u64, &str)]) -> Vec<u8> {
-        let mut payload = varint_field(1, list_type);
-        for (key, string) in strings {
-            let entry = [varint_field(1, *key), bytes_field(3, string.as_bytes())].concat();
-            payload.extend(bytes_field(3, &entry));
-        }
-        record(6005, &payload)
-    }
-
     /// The records in Snappy chunks of at most 40 bytes of protobuf each.
     fn archive(records: &[Vec<u8>]) -> Vec<u8> {
         let mut archive = Vec::new();
@@ -733,15 +702,6 @@ mod tests {
             archive.extend(block);
         }
         archive
-    }
-
-    #[cfg(feature = "tika")]
-    fn package(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
-        let borrowed: Vec<(&str, &[u8])> = entries
-            .iter()
-            .map(|(name, content)| (*name, content.as_slice()))
-            .collect();
-        zip(&borrowed)
     }
 
     #[test]
@@ -846,118 +806,5 @@ mod tests {
         for name in ["stored.bin", "deflated.bin"] {
             assert!(text.contains(name), "{text}");
         }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_packages_as_tikas_path_does() {
-        let scratch = Scratch::new("iwork");
-        let document = archive(&[
-            storage("Title\nFirst line\u{2028}Second \u{FFFC}line\u{2029}  \n\n Last "),
-            record(42, b"ignored"),
-        ]);
-        let pages = package(&[
-            ("Metadata/BuildVersionHistory.plist", BUILD_HISTORY.to_vec()),
-            ("Index/Document.iwa", document.clone()),
-            (
-                "Index/Tables/DataList-10.iwa",
-                archive(&[string_list(
-                    1,
-                    &[(5, "five"), (2, "two"), (5, " five again "), (3, "  ")],
-                )]),
-            ),
-            (
-                "Index/Tables/DataList-9.iwa",
-                archive(&[string_list(1, &[(1, "nine")])]),
-            ),
-            (
-                "Index/Tables/DataList.iwa",
-                archive(&[string_list(2, &[(1, "not a string list")])]),
-            ),
-            ("Data/note.txt", b"An embedded note.".to_vec()),
-            ("Data/", Vec::new()),
-        ]);
-        let keynote = package(&[
-            ("Metadata/BuildVersionHistory.plist", BUILD_HISTORY.to_vec()),
-            ("Index/Slide-10.iwa", archive(&[storage("Slide ten")])),
-            ("Index/Slide-2.iwa", archive(&[storage("Slide two")])),
-            ("Index/MasterSlide.iwa", archive(&[storage("Placeholder")])),
-            ("Index/Document.iwa", archive(&[storage("The deck")])),
-        ]);
-        let index = package(&[
-            (
-                "Index/Document.iwa",
-                archive(&[storage("Inside Index.zip")]),
-            ),
-            ("Index/Thing.bin", b"not an archive".to_vec()),
-            ("Index/Slide.iwa", archive(&[storage("A slide")])),
-        ]);
-        let keynote18 = package(&[
-            (
-                "Deck.key/Metadata/BuildVersionHistory.plist",
-                BUILD_HISTORY.to_vec(),
-            ),
-            ("Deck.key/Index.zip", index),
-        ]);
-        let bad_snappy = package(&[
-            ("Metadata/BuildVersionHistory.plist", BUILD_HISTORY.to_vec()),
-            ("Index/Document.iwa", vec![0, 3, 0, 0, 0xFF, 0xFF, 0xFF]),
-        ]);
-        let failing_archive = |archive: Vec<u8>| {
-            package(&[
-                ("Metadata/BuildVersionHistory.plist", BUILD_HISTORY.to_vec()),
-                ("Index/Document.iwa", document.clone()),
-                ("Index/Other.iwa", archive),
-            ])
-        };
-        let read = [
-            scratch.write("text.pages", &pages),
-            scratch.write("slides.key", &keynote),
-            scratch.write("index.key", &keynote18),
-        ];
-        let failing = [
-            scratch.write("corrupt-chunk.pages", &failing_archive(b"\x01abc".to_vec())),
-            scratch.write(
-                "wire-type.pages",
-                &failing_archive(archive(&[record(2001, &key(4, 3))])),
-            ),
-            scratch.write(
-                "truncated-message.pages",
-                &failing_archive(archive(&[
-                    record(2001, &bytes_field(3, b"text"))[..20].to_vec()
-                ])),
-            ),
-        ];
-        scratch.write("bad-snappy.pages", &bad_snappy);
-        let (parsed, deferred) = documents(&IworkArchiveParser, &[scratch.directory()]);
-        assert_eq!(deferred, [scratch.directory().join("bad-snappy.pages")]);
-        assert_eq!(parsed.len(), read.len() + failing.len());
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_the_corpus_packages_as_tikas_path_does() {
-        let (parsed, deferred) =
-            documents(&IworkArchiveParser, &[Path::new("../test_files/documents")]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 2);
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_packages_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&IworkArchiveParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 5);
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
     }
 }

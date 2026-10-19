@@ -68,59 +68,6 @@ const SIZES: Sizes = Sizes {
     piece: PIECE,
 };
 
-/// Where the text the parser writes departs from Tika's, for the parity tests of every parser
-/// that hands it HTML: the WHATWG algorithm makes each line break an LF, drops the white space
-/// before `head`, and puts the white space after `</body>` in the body (#84), and the WHATWG
-/// URL standard resolves its links (#162).
-#[cfg(all(feature = "tika", any(test, feature = "testing")))]
-pub const DEPARTURES: extractous_base::formats::parity::Departures = &[
-    extractous_base::formats::parity::Departure::BlankLines("#84"),
-    extractous_base::formats::parity::Departure::Links("#162"),
-];
-
-/// [`DEPARTURES`], for the parity tests of parsers that hand it pages whose tree differs from
-/// jsoup's, by the WHATWG algorithm: their XHTML compared on its text, its elements aside (#84).
-/// The HTML reference test compares such pages on their metadata alone. Its links are resolved
-/// by the WHATWG URL standard (#162).
-#[cfg(all(feature = "tika", any(test, feature = "testing")))]
-pub const TREE_DEPARTURES: extractous_base::formats::parity::Departures = &[
-    extractous_base::formats::parity::Departure::BlankLines("#84"),
-    extractous_base::formats::parity::Departure::Elements("#84"),
-    extractous_base::formats::parity::Departure::Links("#162"),
-];
-
-/// Whether an attribute of an XHTML element by this name holds a link the parser resolves, as
-/// the WHATWG URL standard resolves it, where Tika's path resolves it as `java.net.URL` does
-/// (#162).
-#[cfg(all(feature = "tika", any(test, feature = "testing")))]
-pub fn is_link_attribute(name: &str) -> bool {
-    handler::URI_ATTRIBUTES.contains(&name)
-        || name == handler::CODEBASE
-        || handler::OBJECT_LINKS.contains(&name)
-}
-
-/// Whether `native`, a link the parser writes against the URL `base`, is `tika`, the one Tika's
-/// path writes for it, as the WHATWG URL standard resolves it (#162).
-#[cfg(all(feature = "tika", any(test, feature = "testing")))]
-pub fn resolves_alike(base: Option<&str>, tika: &str, native: &str) -> bool {
-    url::resolves_alike(base, tika, native)
-}
-
-/// How many documents the HTML parser has built by the WHATWG algorithm in this process, every
-/// parser that hands it HTML included: a native extraction that adds to it departs from Tika's
-/// path by [`DEPARTURES`]. Counted across threads, as a stream extraction parses in its own, it
-/// is exact where one test runs per process, as nextest runs them.
-#[cfg(all(feature = "tika", any(test, feature = "testing")))]
-pub fn documents_built() -> usize {
-    tree_builder::BUILT.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// The document of Tika's tests with a `meta` title after its `title` element, which Tika
-/// records as `html:dc:title` and the parser as a further `dc:title` (#86): the parity tests
-/// check what the parser gives instead of comparing it with Tika's.
-#[cfg(all(feature = "tika", any(test, feature = "testing")))]
-pub const TWO_TITLES: &str = "testHTML_metadata_two_titles.html";
-
 /// Tika's `JSoupParser`.
 pub struct JSoupParser;
 
@@ -464,92 +411,11 @@ fn jsoup_charset(input: &[u8], decode_as: Charset) -> (Charset, &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::formats::embedded::ParseContext;
     use crate::formats::noted;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika_departing, conformance_corpus, documents};
     use crate::formats::xhtml::{ContentHandler, Stop};
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.html.JSoupParser";
-
-    #[cfg(feature = "tika")]
-    fn assert_same_as_whatwg_tika(documents: &[&Path]) {
-        assert_same_as_tika_departing(documents, TIKA_NAME, DEPARTURES);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts() {
-        let (parsed, deferred) = documents(
-            &JSoupParser,
-            &[
-                Path::new("../test_files/documents"),
-                Path::new("../quality/corpus"),
-                Path::new("../quality/truth"),
-            ],
-        );
-        assert!(deferred.is_empty(), "deferred: {deferred:?}");
-        assert!(parsed.len() >= 3, "{} documents", parsed.len());
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_whatwg_tika(&paths);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-        let (parsed, deferred) = documents(&JSoupParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "deferred: {deferred:?}");
-        assert!(parsed.len() >= 35, "{} documents", parsed.len());
-        let (departing, paths): (Vec<&Path>, Vec<&Path>) = parsed
-            .iter()
-            .map(PathBuf::as_path)
-            .partition(|path| path.ends_with(TWO_TITLES));
-        assert_eq!(departing.len(), 1);
-        assert_same_as_whatwg_tika(&paths);
-        let (_, metadata) = crate::Extractor::new()
-            .extract_file_to_string(departing[0].to_str().unwrap())
-            .unwrap();
-        assert_eq!(
-            metadata.get("dc:title"),
-            Some(&vec!["ActualTitle".to_owned(), "OldMetaTitle".to_owned()])
-        );
-    }
-
-    /// Links the WHATWG URL standard resolves otherwise than Tika's `java.net.URL` (#162): every
-    /// other part of the page is still Tika's, and where Tika fails on a query against a `jar`
-    /// base, the parser reads the page.
-    #[cfg(feature = "tika")]
-    #[test]
-    fn departs_from_tika_by_the_links_the_url_standard_resolves() {
-        use crate::formats::parity::{assert_read_where_tika_fails, Scratch};
-        let scratch = Scratch::new("html-links");
-        let page = |name: &str, base: &str, links: &[&str]| {
-            let anchors: String = links
-                .iter()
-                .map(|link| format!("<p><a href=\"{link}\">{link}</a></p>"))
-                .collect();
-            scratch.write(
-                name,
-                format!("<html><head><base href=\"{base}\"></head><body>{anchors}</body></html>")
-                    .as_bytes(),
-            )
-        };
-        let departing = [
-            page("user.html", "http://u:p@Host:80/a/b", &["?q", "c", "/d e"]),
-            page("root.html", "http://h/a/", &["../../z", "y"]),
-            page("pathless.html", "http://h", &["a/../../b", "#f"]),
-            page("ftp.html", "ftp://h/d/", &["x", "mailto:me@x.org"]),
-        ];
-        let paths: Vec<&Path> = departing.iter().map(PathBuf::as_path).collect();
-        assert_same_as_whatwg_tika(&paths);
-        assert_read_where_tika_fails(&[&page("jar.html", "url:jar:#x", &["?q"])], "#162");
-    }
 
     /// Every event a document's writing gives, adjacent characters joined.
     #[derive(Default)]
@@ -634,7 +500,7 @@ mod tests {
     /// is written as it is once built whole.
     #[test]
     fn writes_a_document_as_it_is_built_as_once_it_is_built_whole() {
-        extractous_core::parity::install_routes();
+        extractous_core::testing::install_routes();
         let mut inputs: Vec<(String, Vec<u8>, String)> =
             crate::formats::reference::cases(reference::REFERENCE)
                 .into_iter()
@@ -670,7 +536,7 @@ mod tests {
         use std::io::{BufRead, BufReader, BufWriter, Write};
 
         const BUDGET: u64 = 32 << 20;
-        let dir = crate::isolate::temp_dir()
+        let dir = crate::process::temp_dir()
             .join(format!("extractous-large-html-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
         let path = dir.join("large.html");
@@ -694,9 +560,9 @@ mod tests {
         }
         file.write_all(b"<p>Slut.</p></body></html>\n").unwrap();
         drop(file);
-        crate::isolate::configure(crate::isolate::IsolateSettings {
+        crate::process::configure(crate::process::ProcessSettings {
             max_heap_bytes: std::num::NonZeroU64::new(BUDGET),
-            ..crate::isolate::IsolateSettings::default()
+            ..crate::process::ProcessSettings::default()
         })
         .unwrap();
         let (stream, _) = crate::Extractor::new()

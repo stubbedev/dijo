@@ -833,51 +833,10 @@ impl Parser for ClassParser {
     }
 }
 
-/// For a parity comparison (#132): a text without the keywords Tika's path writes for access
-/// flags that no keyword stands for where they are set, `synchronized` for a class's
-/// `ACC_SUPER` and `transient` for a method's `ACC_VARARGS`, which the native parser leaves out.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub fn without_misread_access(text: &mut String) {
-    let without = |line: &str, word: &str| {
-        let span = format!("<span class=\"java-keyword\">{word}</span> ");
-        if line.contains(&span) {
-            line.replacen(&span, "", 1)
-        } else {
-            line.replacen(&format!("{word} "), "", 1)
-        }
-    };
-    let mut normalised = String::with_capacity(text.len());
-    for line in text.split_inclusive('\n') {
-        let member = line.starts_with("    ");
-        if !member && line.contains("synchronized") {
-            normalised.push_str(&without(line, "synchronized"));
-        } else if member && line.contains('(') {
-            normalised.push_str(&without(line, "transient"));
-        } else {
-            normalised.push_str(line);
-        }
-    }
-    *text = normalised;
-}
-
-/// For a parity comparison whose departure only a normalisation of both texts takes out: the
-/// native result as it is.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub fn as_written(
-    _: &mut String,
-    _: &mut crate::formats::parity::ComparedMetadata,
-    _: &crate::formats::parity::ComparedMetadata,
-) {
-}
-
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_same_as_tika_normalising, conformance_corpus, documents};
 
     /// A class file of the class `access` `name` in the unnamed package, extending `Object`,
     /// with the fields and methods given by their access, name and descriptor.
@@ -980,21 +939,5 @@ mod tests {
         assert_eq!(returned.class_name(), "void");
         assert!(method_types("(V)V").is_err());
         assert!(JavaType::of_descriptor("Ljava/lang/String").is_err());
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_classes_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&ClassParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 2, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika_normalising(
-            &paths,
-            ClassParser.tika_name(),
-            as_written,
-            without_misread_access,
-        );
     }
 }

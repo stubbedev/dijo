@@ -15,8 +15,6 @@ static ALLOCATOR: memory::CountingAllocator<std::alloc::System> =
 /// The parsers, at the paths they have in `extractous-core`.
 pub mod formats {
     pub(crate) use extractous_base::formats::*;
-    #[cfg(all(test, feature = "tika"))]
-    pub(crate) use extractous_core::parity;
 
     pub mod data_uri;
     pub mod html;

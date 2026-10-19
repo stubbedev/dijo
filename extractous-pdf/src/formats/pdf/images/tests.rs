@@ -1,24 +1,9 @@
 use std::io::Write as _;
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
 
-#[cfg(feature = "tika")]
-use super::super::tests::{as_paths, tika_name, CORPORA};
 use super::super::tests::{document, page_objects};
 use super::super::PdfParser;
-#[cfg(feature = "tika")]
-use super::super::DELEGATES;
-#[cfg(feature = "tika")]
-use super::super::{MALFORMED_XFA, XFA_FAILURE};
-#[cfg(feature = "tika")]
-use crate::config::TesseractOcrConfig;
 use crate::config::{ParserConfigs, PdfOcrStrategy, PdfParserConfig};
 use crate::formats::metadata::TikaMetadata;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_fails_as_tika_with, assert_same_as_tika_delegating_departing_with, conformance_corpus,
-    documents_with, spools_as_tika_departing_with, Departure, Departures, Scratch,
-};
 use crate::formats::Parser;
 
 /// The JDK's own sRGB profile, whose header names no device model.
@@ -35,48 +20,8 @@ fn without_page_ocr(unique_only: bool) -> ParserConfigs {
     }
 }
 
-/// Images extracted, the pages weighed by our `TextLayerCheckingPdfParser` and nothing read by
-/// OCR.
-#[cfg(feature = "tika")]
-fn skipping_ocr() -> ParserConfigs {
-    ParserConfigs {
-        pdf: PdfParserConfig::new().set_extract_inline_images(true),
-        ocr: TesseractOcrConfig::new().set_skip_ocr(true),
-        ..ParserConfigs::default()
-    }
-}
-
 fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<String> {
     PdfParser.defers(input, &TikaMetadata::new(), configs)
-}
-
-/// The images the native parser writes as PNG otherwise than the JDK's writer, which leaves
-/// every row unfiltered (#131): their spooled files are compared by the images they hold.
-#[cfg(feature = "tika")]
-const PNG_WRITER: Departures = &[Departure::PngImages("#131")];
-
-/// Compares the native parser with Tika's path on `paths`, and their spools of what the
-/// documents embed, but for [`PNG_WRITER`].
-#[cfg(feature = "tika")]
-fn assert_same(paths: &[PathBuf], configs: &ParserConfigs) {
-    assert_same_departing(paths, configs, &[]);
-}
-
-/// [`assert_same`], but for `departures` too.
-#[cfg(feature = "tika")]
-fn assert_same_departing(paths: &[PathBuf], configs: &ParserConfigs, departures: Departures) {
-    let departures: Vec<Departure> = PNG_WRITER.iter().chain(departures).copied().collect();
-    assert_same_as_tika_delegating_departing_with(
-        &as_paths(paths),
-        tika_name(),
-        &DELEGATES,
-        &departures,
-        configs,
-    );
-    for path in paths {
-        let spooled = spools_as_tika_departing_with(path, u64::MAX, &departures, configs);
-        assert!(spooled.is_ok(), "{}", spooled.unwrap_err());
-    }
 }
 
 fn hex(data: &[u8]) -> String {
@@ -170,125 +115,6 @@ fn icc(srgb: bool) -> String {
         profile[52..56].copy_from_slice(b"sRGB");
     }
     stream("/N 3", "", &profile)
-}
-
-/// Images in each colour space and sample depth the port reads, and with each kind of mask.
-#[cfg(feature = "tika")]
-fn sampled_images() -> Vec<u8> {
-    let lookup = hex(&[255, 0, 0, 0, 128, 255, 20, 200, 30, 250, 250, 250]);
-    let rgb = |seed, extra: &str| {
-        image(
-            &format!("/Width 3 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 8 {extra}"),
-            "",
-            &samples(18, seed),
-        )
-    };
-    let gray = |seed, extra: &str| {
-        image(
-            &format!("/Width 3 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 {extra}"),
-            "",
-            &samples(6, seed),
-        )
-    };
-    let images = vec![
-        image(
-            "/Width 4 /Height 3 /ColorSpace /DeviceGray /BitsPerComponent 8",
-            "/FlateDecode",
-            &zlib(&samples(12, 1)),
-        ),
-        rgb(2, ""),
-        image(
-            "/Width 9 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 1 /Decode [1 0]",
-            "",
-            &[0b1010_0110, 0b1000_0000, 0b0110_1111, 0b0000_0000],
-        ),
-        image(
-            &format!(
-                "/Width 5 /Height 2 /ColorSpace [/Indexed /DeviceRGB 3 <{lookup}>] \
-                 /BitsPerComponent 2"
-            ),
-            "",
-            &[0b0001_1011, 0b1100_0000, 0b1110_0100, 0b0100_0000],
-        ),
-        image(
-            "/Width 2 /Height 2 /ColorSpace /DeviceRGB /BitsPerComponent 16",
-            "/FlateDecode",
-            &zlib(&samples(24, 3)),
-        ),
-        rgb(4, "/SMask 22 0 R"),
-        rgb(5, "/Mask 23 0 R"),
-        rgb(6, "/Mask [0 120 0 255 0 255]"),
-        image(
-            "/Width 8 /Height 2 /ImageMask true",
-            "",
-            &[0b1100_1010, 0b0101_0011],
-        ),
-        gray(7, "/Decode [1 0]"),
-        image(
-            &format!(
-                "/Width 3 /Height 2 /ColorSpace [/Indexed /DeviceGray 1 <{}>] \
-                 /BitsPerComponent 8",
-                hex(&[30, 220])
-            ),
-            "",
-            &[0, 1, 1, 0, 5, 1],
-        ),
-        image(
-            "/Width 3 /Height 2 /ColorSpace [/ICCBased 24 0 R] /BitsPerComponent 8",
-            "",
-            &samples(18, 8),
-        ),
-        image(
-            "/Width 3 /Height 2 /ColorSpace 25 0 R /BitsPerComponent 8",
-            "",
-            &samples(18, 9),
-        ),
-        image(
-            "/Width 3 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 4",
-            "/FlateDecode",
-            &zlib(&[0x12, 0x30, 0x45, 0x60]),
-        ),
-        image(
-            "/Width 3 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8",
-            "",
-            &samples(3, 10),
-        ),
-        rgb(11, "/SMask 27 0 R"),
-        gray(12, ""),
-        image(
-            "/Width 3 /Height 2 /ImageMask true /Decode [1 0]",
-            "",
-            &[0b1010_0000, 0b0100_0000],
-        ),
-        icc(false),
-        "[/ICCBased 26 0 R]".to_owned(),
-        icc(true),
-        gray(13, "/Matte [0.25 0.5 0.75]"),
-    ];
-    let content = format!(
-        "{} q BI /W 2 /H 2 /CS /G /BPC 8 /F /AHx ID 00ff7f80> EI Q \
-         q BI /W 3 /H 1 /CS /RGB /BPC 8 ID abcdefabcdefabc\nEI Q \
-         q BI /W 2 /H 1 /CS [/I /RGB 1 <ff000000ff00>] /BPC 1 ID \u{80}\nEI Q \
-         q BI /W 8 /H 1 /IM true ID \u{55}\nEI Q",
-        draw_each(16)
-    );
-    drawing(&content, &xobjects(16), &images)
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_images_of_every_colour_space_and_mask_as_tikas_path_does() {
-    let scratch = Scratch::new("pdf-images");
-    let path = scratch.write("sampled.pdf", &sampled_images());
-    for configs in [
-        without_page_ocr(false),
-        without_page_ocr(true),
-        skipping_ocr(),
-    ] {
-        let input = std::fs::read(&path).unwrap();
-        assert_eq!(deferral(&input, &configs), None, "{configs:?}");
-        assert_same(std::slice::from_ref(&path), &configs);
-    }
 }
 
 /// PDFBox's CMYK profile, which an ICC colour space of the fixtures embeds too.
@@ -424,18 +250,6 @@ fn colour_space_images(content: &str) -> Vec<u8> {
     drawing(content, &xobjects(17), &objects)
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn converts_the_colour_spaces_as_tikas_path_does() {
-    let scratch = Scratch::new("pdf-colour-spaces");
-    let drawn = (0..17).filter(|index| !CIE_IMAGES.contains(index));
-    let path = scratch.write("colours.pdf", &colour_space_images_drawing(drawn));
-    let configs = without_page_ocr(false);
-    let input = std::fs::read(&path).unwrap();
-    assert_eq!(deferral(&input, &configs), None);
-    assert_same(std::slice::from_ref(&path), &configs);
-}
-
 /// Images of an ICC colour space whose profile's colour space is XYZ, the JDK's own CIE XYZ
 /// profile, whose 8-bit samples LittleCMS takes as the 16-bit encoding of XYZ: one Java converts
 /// with `ColorConvertOp` (`Im0`) and a row it converts pixel by pixel (`Im1`).
@@ -464,14 +278,6 @@ fn converts_images_of_an_xyz_profile() {
         ["image-0.png", "image-1.png", "image-0.png"],
         "{xml}"
     );
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn converts_images_of_an_xyz_profile_as_tikas_path_does() {
-    let scratch = Scratch::new("pdf-xyz-profile");
-    let path = scratch.write("xyz.pdf", &xyz_images());
-    assert_same(&[path], &without_page_ocr(false));
 }
 
 /// Tika's native image lacks the JDK's CIE XYZ profile, so that PDFBox's conversion of a CIE
@@ -559,24 +365,9 @@ fn jpegs_written_anew() -> Vec<u8> {
     ))
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn decodes_masked_jpegs_as_tikas_path_does() {
-    let scratch = Scratch::new("pdf-masked-jpegs");
-    let content = format!(
-        "q 46 0 0 56 0 600 cm /Im0 Do Q q 23 0 0 17 50 600 cm /Im1 Do Q \
-         q 23 0 0 17 80 600 cm /Im2 Do Q {}",
-        inline_jpeg("G", GRAY_JPEG)
-    );
-    let path = scratch.write("masked.pdf", &jpeg_images(&content));
-    let configs = without_page_ocr(false);
-    assert_eq!(deferral(&std::fs::read(&path).unwrap(), &configs), None);
-    assert_same(&[path], &configs);
-}
-
 /// The files the native parser spools of the images of `input`, by name.
 fn spooled_images(input: &[u8], configs: &ParserConfigs) -> Vec<(String, Vec<u8>)> {
-    let scratch = crate::formats::parity::Scratch::new("pdf-spooled-images");
+    let scratch = crate::formats::testing::Scratch::new("pdf-spooled-images");
     let path = scratch.write("input.pdf", input);
     let spool = crate::embedded::EmbeddedSpool {
         dir: scratch.directory().to_path_buf(),
@@ -657,17 +448,6 @@ fn ccitt_images(content: &str) -> Vec<u8> {
     drawing(content, &xobjects(5), &objects)
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn decodes_masked_ccitt_images_as_tikas_path_does() {
-    let scratch = Scratch::new("pdf-ccitt");
-    let content = "q 40 0 0 20 0 600 cm /Im0 Do Q q 40 0 0 20 50 600 cm /Im1 Do Q";
-    let path = scratch.write("masked.pdf", &ccitt_images(content));
-    let configs = without_page_ocr(false);
-    assert_eq!(deferral(&std::fs::read(&path).unwrap(), &configs), None);
-    assert_same(&[path], &configs);
-}
-
 /// Group 3 data with end-of-line codes, said to be aligned to bytes, decodes as the same data
 /// does without the flag. PDFBox's decoder searches for each end-of-line code from the byte
 /// after the row, restarting its search at each mismatch rather than sliding, so that it skips
@@ -693,20 +473,6 @@ fn decodes_byte_aligned_group_3_rows_as_unaligned_ones() {
 /// extraction is Tika's.
 fn ccitt_written_as_tiff() -> Vec<u8> {
     ccitt_images("q 40 0 0 20 0 600 cm /Im3 Do Q q 40 0 0 20 50 600 cm /Im4 Do Q")
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn writes_ccitt_images_as_tiff_where_tikas_path_does() {
-    let scratch = Scratch::new("pdf-ccitt-tiff");
-    let path = scratch.write("tiff.pdf", &ccitt_written_as_tiff());
-    assert_same_as_tika_delegating_departing_with(
-        &as_paths(&[path]),
-        tika_name(),
-        &DELEGATES,
-        PNG_WRITER,
-        &without_page_ocr(false),
-    );
 }
 
 #[test]
@@ -780,139 +546,6 @@ fn extracting(input: &[u8], configs: &ParserConfigs) -> (String, crate::Metadata
         .unwrap()
 }
 
-/// Images whose data is copied as it is, and those Java cannot read.
-#[cfg(feature = "tika")]
-fn copied_images() -> Vec<u8> {
-    let jpeg = jpeg();
-    let images = vec![
-        image(
-            "/Width 46 /Height 56 /ColorSpace /DeviceRGB /BitsPerComponent 8",
-            "/DCTDecode",
-            &jpeg,
-        ),
-        image(
-            "/Width 46 /Height 56 /ColorSpace /DeviceRGB /BitsPerComponent 8",
-            "/JPXDecode",
-            &jpeg,
-        ),
-        image(
-            "/Width 46 /Height 56 /ColorSpace [/ICCBased 11 0 R] /BitsPerComponent 8",
-            "/JPXDecode",
-            &jpeg,
-        ),
-        image(
-            "/Width 46 /Height 56 /ColorSpace /DeviceGray /BitsPerComponent 1",
-            "/JBIG2Decode",
-            &jpeg[..64],
-        ),
-        image(
-            "/Width 46 /Height 56 /BitsPerComponent 8",
-            "/DCTDecode",
-            &jpeg,
-        ),
-        icc(false),
-    ];
-    drawing(&draw_each(5), &xobjects(5), &images)
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn copies_jpeg_jpeg_2000_and_jbig2_data_as_tikas_path_does() {
-    let scratch = Scratch::new("pdf-image-copies");
-    let path = scratch.write("copies.pdf", &copied_images());
-    let configs = without_page_ocr(false);
-    assert_eq!(deferral(&copied_images(), &configs), None);
-    assert_same(&[path], &configs);
-}
-
-/// Images in forms, transparency groups, patterns and soft masks.
-#[cfg(feature = "tika")]
-fn painted_images() -> Vec<u8> {
-    let gray = |seed| {
-        image(
-            "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8",
-            "",
-            &samples(4, seed),
-        )
-    };
-    let form = |dict: &str, content: &str| {
-        stream(
-            &format!("/Type /XObject /Subtype /Form /BBox [0 0 10 10] {dict}"),
-            "",
-            content.as_bytes(),
-        )
-    };
-    let pattern = |paint: u8, content: &str| {
-        stream(
-            &format!(
-                "/PatternType 1 /PaintType {paint} /TilingType 1 /BBox [0 0 10 10] /XStep 10 \
-                 /YStep 10 /Resources << /XObject << /A 12 0 R /S 13 0 R >> >>"
-            ),
-            "",
-            content.as_bytes(),
-        )
-    };
-    let objects = vec![
-        form("/Resources << /XObject << /A 12 0 R >> >>", "/A Do"),
-        form(
-            "/Group << /S /Transparency >> /Resources << /XObject << /A 14 0 R /F 6 0 R >> >>",
-            "/A Do /F Do",
-        ),
-        pattern(1, "/A Do"),
-        pattern(2, "/A Do /S Do"),
-        form(
-            "/Group << /S /Transparency >> /Resources << /XObject << /A 15 0 R >> >>",
-            "/A Do",
-        ),
-        "<< /Type /ExtGState /SMask << /Type /Mask /S /Luminosity /G 10 0 R >> >>".to_owned(),
-        gray(1),
-        image("/Width 8 /Height 1 /ImageMask true", "", &[0b1011_0001]),
-        gray(2),
-        gray(3),
-    ];
-    let resources = "/XObject << /Fm0 6 0 R /Fm1 7 0 R >> \
-                     /Pattern << /P0 8 0 R /P1 9 0 R >> /ExtGState << /G0 11 0 R >> \
-                     /ColorSpace << /CS0 [/Pattern /DeviceGray] >>";
-    let content = "/Fm0 Do /Fm1 Do /Pattern cs /P0 scn 0 0 10 10 re f \
-                   /CS0 cs 0.5 /P1 scn 0 0 10 10 re f /P0 scn 0 0 5 5 re f* \
-                   /Pattern CS /P0 SCN 0 0 10 10 re S /Fm0 Do";
-    drawing(content, resources, &objects)
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn finds_images_in_forms_patterns_and_soft_masks_as_tikas_path_does() {
-    let scratch = Scratch::new("pdf-image-painted");
-    let path = scratch.write("painted.pdf", &painted_images());
-    for configs in [without_page_ocr(false), without_page_ocr(true)] {
-        assert_eq!(deferral(&painted_images(), &configs), None);
-        assert_same(std::slice::from_ref(&path), &configs);
-    }
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_images_under_the_ocr_strategies_as_tikas_path_does() {
-    if !crate::ocr::tesseract_runs() {
-        return;
-    }
-    let scratch = Scratch::new("pdf-image-strategies");
-    let path = scratch.write("painted.pdf", &painted_images());
-    for strategy in [
-        PdfOcrStrategy::OCR_ONLY,
-        PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION,
-    ] {
-        let configs = ParserConfigs {
-            pdf: PdfParserConfig::new()
-                .set_extract_inline_images(true)
-                .set_ocr_strategy(strategy),
-            ..ParserConfigs::default()
-        };
-        assert_eq!(deferral(&painted_images(), &configs), None, "{strategy}");
-        assert_same(std::slice::from_ref(&path), &configs);
-    }
-}
-
 /// The JBIG2 text image of the fixtures, a file of sequential organization.
 const JBIG2_TEXT: &[u8] = include_bytes!("../../../../tests/fixtures/pdf/jbig2-text.jb2");
 
@@ -981,51 +614,6 @@ fn decodes_jbig2_and_crypt_filtered_images() {
     );
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn decodes_jbig2_and_crypt_filtered_images_as_tikas_path_does() {
-    let scratch = Scratch::new("pdf-decoded-images");
-    let path = scratch.write("decoded.pdf", &decoded_images());
-    assert_same(&[path], &without_page_ocr(false));
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn records_failures_to_read_images_as_tikas_path_does() {
-    let images = vec![
-        image("/Width 2 /Height 2 /BitsPerComponent 8", "", &[1, 2, 3, 4]),
-        image(
-            "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 4",
-            "",
-            &[1],
-        ),
-        image(
-            "/Width 0 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8",
-            "",
-            &[1, 2],
-        ),
-        image(
-            "/Width 2 /Height 2 /ColorSpace /Missing /BitsPerComponent 8",
-            "",
-            &[1, 2, 3, 4],
-        ),
-        stream(
-            "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray \
-             /BitsPerComponent 8",
-            "",
-            &[],
-        ),
-    ];
-    let scratch = Scratch::new("pdf-image-failures");
-    let path = scratch.write(
-        "failures.pdf",
-        &drawing(&draw_each(5), &xobjects(5), &images),
-    );
-    let configs = without_page_ocr(false);
-    assert_eq!(deferral(&std::fs::read(&path).unwrap(), &configs), None);
-    assert_same(&[path], &configs);
-}
-
 /// A document of Helvetica text painted with a tiling pattern that draws an image.
 fn text_painted_with_images() -> Vec<u8> {
     let mask = image(
@@ -1046,18 +634,6 @@ fn text_painted_with_images() -> Vec<u8> {
             mask,
         ],
     )
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn draws_the_images_of_a_pattern_once_a_glyph_as_tikas_path_does() {
-    let scratch = Scratch::new("pdf-pattern-text");
-    let path = scratch.write("text.pdf", &text_painted_with_images());
-    for unique_only in [false, true] {
-        let configs = without_page_ocr(unique_only);
-        assert_eq!(deferral(&std::fs::read(&path).unwrap(), &configs), None);
-        assert_same(std::slice::from_ref(&path), &configs);
-    }
 }
 
 #[test]
@@ -1109,121 +685,4 @@ fn scales_the_smaller_of_an_image_and_its_mask() {
         [alpha(0, 0), alpha(3, 0), alpha(0, 3), alpha(3, 3)],
         [255, 0, 0, 255]
     );
-}
-
-/// Images extracted while our `TextLayerCheckingPdfParser` weighs each page's text, the text OCR
-/// reads in its images with it.
-#[cfg(feature = "tika")]
-fn weighing_pages() -> ParserConfigs {
-    ParserConfigs {
-        pdf: PdfParserConfig::new().set_extract_inline_images(true),
-        ..ParserConfigs::default()
-    }
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn weighs_the_ocr_text_of_images_with_their_page_as_tikas_path_does() {
-    assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
-    let configs = weighing_pages();
-    let scratch = Scratch::new("pdf-images-weighed");
-    let sampled = scratch.write("sampled.pdf", &sampled_images());
-    let scanned = PathBuf::from("../test_files/documents/deu-ocr.pdf");
-    for path in [&sampled, &scanned] {
-        let input = std::fs::read(path).unwrap();
-        assert_eq!(deferral(&input, &configs), None, "{}", path.display());
-    }
-    assert_same(&[sampled, scanned], &configs);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_the_images_of_the_corpora_as_tikas_path_does() {
-    let configs = without_page_ocr(false);
-    let roots = CORPORA.map(Path::new);
-    let (parsed, deferred) = documents_with(&PdfParser, &roots, &configs);
-    assert_eq!(deferred, Vec::<PathBuf>::new());
-    // A document only its password opens fails on both paths, as the PDF tests compare.
-    let parsed: Vec<PathBuf> = parsed
-        .into_iter()
-        .filter(|path| !path.ends_with("user-password.pdf"))
-        .collect();
-    assert_same(&parsed, &configs);
-    let weighed = PathBuf::from("../test_files/documents/2022_Q3_AAPL.pdf");
-    assert_same(&[weighed], &skipping_ocr());
-}
-
-/// The documents of Tika's tests Tika's path does not extract as Java would with images
-/// extracted, and why.
-#[cfg(feature = "tika")]
-const TIKA_PATH_FAILS: [(&str, &str); 1] = [(
-    "testPDF_acroform3.pdf",
-    "the JDK rejects an ICC profile of a content stream's colour space, and the class \
-     java.awt.color.CMMException that PDFBox catches for it is missing from the native image",
-)];
-
-/// The documents of Tika's tests whose image files the native parser writes otherwise than
-/// Java (#125), and why: their extraction is compared, their files are not.
-#[cfg(feature = "tika")]
-const WRITTEN_OTHERWISE: [(&str, &str); 3] = [
-    ("testPDFVarious.pdf", "a mask Java2D scales to its image"),
-    (
-        "testPDF_childAttachments.pdf",
-        "a CCITT image Java writes as a TIFF with its CCITT T.6 writer",
-    ),
-    (
-        "testPDF_incrementalUpdates.pdf",
-        "a JPEG in an ICC colour space, which Java's JPEG writer encodes anew",
-    ),
-];
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn extracts_the_images_of_the_conformance_documents_as_tikas_path_does() {
-    for configs in [without_page_ocr(false), without_page_ocr(true)] {
-        let (parsed, deferred) = documents_with(&PdfParser, &[&conformance_corpus()], &configs);
-        assert_eq!(deferred, Vec::<PathBuf>::new());
-        let (written_otherwise, parsed): (Vec<PathBuf>, Vec<PathBuf>) =
-            parsed.into_iter().partition(|path| {
-                let name = path.file_name().unwrap().to_string_lossy();
-                WRITTEN_OTHERWISE
-                    .iter()
-                    .any(|(written, _)| *written == name)
-            });
-        assert_eq!(written_otherwise.len(), WRITTEN_OTHERWISE.len());
-        assert_same_as_tika_delegating_departing_with(
-            &as_paths(&written_otherwise),
-            tika_name(),
-            &DELEGATES,
-            PNG_WRITER,
-            &configs,
-        );
-        let (failing, parsed): (Vec<PathBuf>, Vec<PathBuf>) =
-            parsed.into_iter().partition(|path| {
-                let name = path.file_name().unwrap().to_string_lossy();
-                TIKA_PATH_FAILS.iter().any(|(failing, _)| *failing == name)
-            });
-        assert_eq!(failing.len(), TIKA_PATH_FAILS.len());
-        for path in &failing {
-            let (xml, _) = extracting(&std::fs::read(path).unwrap(), &configs);
-            assert!(xml.contains("<div class=\"page\">"), "{xml}");
-        }
-        let (locked, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
-            .into_iter()
-            .partition(|path| path.to_string_lossy().ends_with("_owner_user.pdf"));
-        assert_eq!(locked.len(), 2, "{locked:?}");
-        assert_fails_as_tika_with(&as_paths(&locked), &configs);
-        let (malformed, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
-            .into_iter()
-            .partition(|path| path.ends_with(MALFORMED_XFA));
-        assert_eq!(malformed.len(), 1, "{malformed:?}");
-        assert_same_departing(&malformed, &configs, XFA_FAILURE);
-        // Tika extracts the Mac, DOS and Unix copies of one file as files of their own (#109).
-        let compared: Vec<PathBuf> = parsed
-            .into_iter()
-            .filter(|path| !path.ends_with("testPDF_multiFormatEmbFiles.pdf"))
-            .collect();
-        assert_same(&compared, &configs);
-    }
 }

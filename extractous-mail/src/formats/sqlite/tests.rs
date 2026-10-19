@@ -1,11 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::formats::parity::Scratch;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents,
-};
+use crate::formats::testing::Scratch;
 
 /// Writes a database at `path` from the SQL `script`.
 fn database(path: &Path, script: &str) {
@@ -74,26 +70,6 @@ fn written(scratch: &Scratch) -> Vec<PathBuf> {
     vec![types, utf16, wal]
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_sqlite_databases_as_tikas_path_does() {
-    let roots = [
-        Path::new("../test_files/documents"),
-        Path::new("../quality/corpus"),
-    ];
-    let (parsed, deferred) = documents(&Sqlite3Parser, &roots);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(
-        parsed,
-        [PathBuf::from("../test_files/documents/notes.sqlite")]
-    );
-    let scratch = Scratch::new("sqlite-written");
-    let mut paths = written(&scratch);
-    paths.extend(parsed);
-    let paths: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&paths, Sqlite3Parser.tika_name());
-}
-
 /// A database in write-ahead-log mode, spooled with its header changed, is read from the spool
 /// while it is written, which the reading holds as long as its connection.
 #[test]
@@ -104,37 +80,6 @@ fn reads_a_database_in_write_ahead_log_mode() {
         .extract_file_to_string(wal.to_str().unwrap())
         .unwrap();
     assert!(text.contains("checkpointed"), "{text}: {metadata:?}");
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn fails_where_tikas_path_fails() {
-    let scratch = Scratch::new("sqlite-failing");
-    let unquoted = scratch.directory().join("unquoted.sqlite");
-    database(
-        &unquoted,
-        "CREATE TABLE first(v); INSERT INTO first VALUES ('kept');
-         CREATE TABLE \"with space\"(v); INSERT INTO \"with space\" VALUES ('lost');",
-    );
-    let mut garbage = b"SQLite format 3\0".to_vec();
-    garbage.extend(std::iter::repeat_n(0xA5, 4080));
-    let garbage = scratch.write("garbage.sqlite", &garbage);
-    assert_fails_as_tika(&[&unquoted, &garbage]);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn extracts_tikas_test_documents_as_tikas_path_does() {
-    let (parsed, deferred) = documents(&Sqlite3Parser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    let names: Vec<&str> = parsed
-        .iter()
-        .map(|path| path.file_name().unwrap().to_str().unwrap())
-        .collect();
-    assert_eq!(names, ["testSQLITE3.db", "testSqlite3b.db"]);
-    let parsed: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&parsed, Sqlite3Parser.tika_name());
 }
 
 #[test]
@@ -266,7 +211,6 @@ fn types_values_as_sqlite_jdbc_does() {
     assert_eq!(declared_type(None, "x"), None);
 }
 
-#[cfg(not(feature = "tika"))]
 #[test]
 fn reads_a_database_too_large_to_read_whole_in_place() {
     use extractous_core::large::{LargeFile, BUDGET, END};

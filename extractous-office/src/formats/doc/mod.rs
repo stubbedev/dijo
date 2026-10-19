@@ -51,31 +51,6 @@ use crate::ole2::Ole2;
 
 const MEDIA_TYPE: &str = "application/msword";
 
-/// For the parity tests: a document with paragraphs past every paragraph run, which the native
-/// parser gives no properties as Word does, and POI the last run's again, so that their styles,
-/// lists and tables are other than Tika's (#185). Its body is compared as its text.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub const PARAGRAPHS_PAST_RUNS: crate::formats::parity::Departures =
-    &[crate::formats::parity::Departure::Elements("#185")];
-
-/// For the parity tests: whether the Word 97 document at `path`, opened without a password,
-/// has paragraphs past every paragraph run, which depart by [`PARAGRAPHS_PAST_RUNS`].
-#[cfg(any(test, feature = "testing"))]
-pub fn has_paragraphs_past_runs(path: &std::path::Path) -> bool {
-    let input =
-        std::fs::read(path).unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
-    let configs = ParserConfigs::default();
-    let Ok(file) = office::open(&input, MEDIA_TYPE, "Word document") else {
-        return false;
-    };
-    let Ok(Word::Modern(streams)) = Word::read(&file, file.root(), &configs) else {
-        return false;
-    };
-    streams
-        .document()
-        .is_ok_and(|document| document.paragraphs.past_runs.is_some())
-}
-
 pub struct DocParser;
 
 impl Parser for DocParser {

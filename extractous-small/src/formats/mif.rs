@@ -217,66 +217,10 @@ impl Mif<'_, '_> {
     }
 }
 
-/// A native result as Tika's path writes it (#118): typed `application/x-mif`, the first of
-/// the parser's types in `HashSet` order, and the text of each paragraph escaped once more.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub fn as_tika_writes_it(
-    text: &mut String,
-    metadata: &mut crate::formats::parity::ComparedMetadata,
-    _: &crate::formats::parity::ComparedMetadata,
-) {
-    for (name, values) in metadata.iter_mut() {
-        if name == "Content-Type" {
-            *values = vec!["application/x-mif".to_owned()];
-        }
-    }
-    let escape = |text: &str| {
-        text.replace('&', "&amp;")
-            .replace('"', "&amp;quot;")
-            .replace('\'', "&amp;apos;")
-    };
-    let xml = text.starts_with("<?xml") || text.starts_with("<html");
-    let Some(body) = text.find("<body").filter(|_| xml) else {
-        // Plain text: escaped once.
-        *text = text
-            .replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            .replace('\'', "&apos;");
-        return;
-    };
-    let content_type = r#"<meta name="Content-Type" content=""#;
-    if let Some(start) = text.find(content_type) {
-        let start = start + content_type.len();
-        let end = start + text[start..].find('"').expect("the attribute's end");
-        text.replace_range(start..end, "application/x-mif");
-    }
-    let mut rewritten = text[..body].to_owned();
-    let mut rest = &text[body..];
-    while let Some(start) = rest.find('<') {
-        rewritten.push_str(&escape(&rest[..start]));
-        let end = start
-            + rest[start..]
-                .find('>')
-                .map_or(rest.len() - start, |end| end + 1);
-        rewritten.push_str(&rest[start..end]);
-        rest = &rest[end..];
-    }
-    rewritten.push_str(&escape(rest));
-    *text = rewritten;
-}
-
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_same_as_tika_rewriting, conformance_corpus, documents, Scratch,
-    };
 
     #[test]
     fn matches_lines_as_mif_extractor_does() {
@@ -338,33 +282,5 @@ mod tests {
             .unwrap();
         assert!(text.contains("Fisk & \u{f8}l <i dag>"), "{text}");
         assert!(MEDIA_TYPES.contains(&metadata["Content-Type"][0].as_str()));
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_mif_files_as_tikas_path_does() {
-        let scratch = Scratch::new("mif");
-        let utf8 = scratch.write("frokost.mif", MIF.as_bytes());
-        let latin1: Vec<u8> = MIF.chars().map(|c| u8::try_from(c).unwrap()).collect();
-        let latin1 = scratch.write("frokost-latin1.mif", &latin1);
-        let (parsed, deferred) = documents(&MifParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 2, "{parsed:?}");
-        assert_same_as_tika_rewriting(
-            &[utf8.as_path(), latin1.as_path()],
-            "org.apache.tika.parser.mif.MIFParser",
-            as_tika_writes_it,
-        );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_mif_files_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&MifParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 2, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika_rewriting(&paths, MifParser.tika_name(), as_tika_writes_it);
     }
 }

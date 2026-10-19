@@ -1,13 +1,7 @@
-# What ci/static-image.sh links the static executable with, for the Linux of `system`: the musl
-# C compiler and binutils, the musl Rust toolchain, the static C libraries the JDK's AWT archives
-# need (FreeType and what it reads fonts with), tesseract with Leptonica and the image libraries
-# it reads with (whose licenses ci/ocr-static.nix collects), libheif (ci/image-decoders.nix),
-# with the compiler and linker flags for them in extractous/, the licenses of the libraries
-# linked beyond tesseract's in extractous/licenses (extractous/decoder-licenses for the
-# executable without Tika, which links no AWT), and what
-# sqlite-jdbc's Makefile builds SQLite with (ci/static-sqlite.sh). Its passthru holds what
-# ci/static-native.nix builds the executable without Tika with: the musl package set, tesseract,
-# the library flag files EXTRACTOUS_STATIC_LIBS lists and the decoder licenses.
+# What ci/static-native.nix builds the static executable with, for the Linux of `system`: the
+# musl package set, tesseract with Leptonica and the image libraries it reads with (whose licenses
+# ci/ocr-static.nix collects), libheif (ci/image-decoders.nix), the library flag files
+# EXTRACTOUS_STATIC_LIBS lists and the licenses of the libraries linked beyond tesseract's.
 { nixpkgs, system }:
 let
   pkgs = nixpkgs.legacyPackages.${system};
@@ -21,24 +15,12 @@ let
   static = import ./static-packages.nix pkgs;
   tesseract = import ./tesseract.nix static;
   decoders = import ./image-decoders.nix static;
-  awtLibraries = [
-    cross.pkgsStatic.zlib
-    cross.pkgsStatic.freetype
-    cross.pkgsStatic.libpng
-    cross.pkgsStatic.bzip2
-    cross.pkgsStatic.brotli
-  ];
   decoderLibraries = [
     decoders.libheif
     static.libde265
     static.dav1d
   ];
   pkgConfigPath = lib.makeSearchPathOutput "dev" "lib/pkgconfig";
-  licenses = pkgs.runCommand "extractous-static-licenses" { } (
-    lib.concatMapStrings (import ./licenses.nix "$out/extractous/licenses") (
-      awtLibraries ++ decoderLibraries
-    )
-  );
   decoderLicenses = pkgs.runCommand "extractous-decoder-licenses" { } (
     lib.concatMapStrings (import ./licenses.nix "$out/extractous/decoder-licenses") decoderLibraries
   );
@@ -47,8 +29,6 @@ let
       ''
         export PKG_CONFIG_PATH=${pkgConfigPath decoderLibraries}
         mkdir -p $out/extractous
-        pkg-config --static --cflags libheif | tr -s ' ' '\n' | sed '/^$/d' \
-          > $out/extractous/images-cflags
         pkg-config --static --libs libheif | tr -s ' ' '\n' | sed '/^$/d' \
           > $out/extractous/images-libs
       '';
@@ -57,36 +37,15 @@ let
       ''
         export PKG_CONFIG_PATH=${tesseract}/lib/pkgconfig:${static.leptonica}/lib/pkgconfig
         mkdir -p $out/extractous
-        { pkg-config --static --cflags tesseract lept; \
-          echo -I${tesseract}/include/tesseract-internal -DHAVE_CONFIG_H; } \
-          | tr -s ' ' '\n' | sed '/^$/d' > $out/extractous/tesseract-cflags
         { pkg-config --static --libs tesseract; echo -L${static.giflib}/lib -lm; } \
           | tr -s ' ' '\n' | sed '/^$/d' > $out/extractous/tesseract-libs
       '';
 in
-pkgs.symlinkJoin {
-  name = "extractous-static-toolchain";
-  paths = map lib.getLib awtLibraries ++ [
-    cross.stdenv.cc
-    cross.buildPackages.cargo
-    cross.buildPackages.rustc
-    tesseractFlags
-    decoderFlags
-    licenses
-    decoderLicenses
-    pkgs.gnumake
-    pkgs.gcc
-    pkgs.tcl
-    pkgs.perl
-    pkgs.unzip
-    pkgs.zip
+{
+  inherit cross tesseract;
+  staticLibs = [
+    "${tesseractFlags}/extractous/tesseract-libs"
+    "${decoderFlags}/extractous/images-libs"
   ];
-  passthru = {
-    inherit cross tesseract;
-    staticLibs = [
-      "${tesseractFlags}/extractous/tesseract-libs"
-      "${decoderFlags}/extractous/images-libs"
-    ];
-    decoderLicenses = "${decoderLicenses}/extractous/decoder-licenses";
-  };
+  decoderLicenses = "${decoderLicenses}/extractous/decoder-licenses";
 }

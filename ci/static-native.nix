@@ -1,4 +1,4 @@
-# The statically linked Linux executable without Tika, built with Crane: musl, tesseract,
+# The statically linked Linux executable, built with Crane: musl, tesseract,
 # Leptonica, libheif and the image libraries they read with linked in (ci/static-toolchain.nix),
 # the language data embedded (ci/ocr-static.nix). The third-party crates are built on their own
 # (dependencies), from the manifests and lock file alone, so a change to the workspace's code
@@ -30,12 +30,7 @@ let
           ]
           ++ map (member: root + "/${member}") members
         ))
-        (
-          lib.fileset.unions [
-            (root + "/extractous-core/tika-native")
-            (root + "/extractous-cli/fuzz")
-          ]
-        );
+        (root + "/extractous-cli/fuzz");
   };
   cargoExtraArgs = "--locked --package extractous --bin extractous --no-default-features --features static";
   common = {
@@ -58,7 +53,7 @@ let
   );
 in
 {
-  inherit dependencies toolchain;
+  inherit dependencies;
   executable = craneLib.buildPackage (
     common
     // {

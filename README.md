@@ -5,7 +5,7 @@ Extract text and metadata from documents on the command line, without Java.
 This is a fork of [yobix-ai/extractous](https://github.com/yobix-ai/extractous), which ran
 [Apache Tika](https://tika.apache.org/) compiled to native code with GraalVM. Documents are now read by native Rust
 parsers, ports of Tika's that aim at its output. Neither building nor running extractous needs Java, GraalVM or JNI.
-Tika remains only as the reference the parity tests and conformance compare the native parsers with (see
+Tika remains only as the reference conformance and the comparisons measure extractous against (see
 [Development](#development)).
 
 ## Install
@@ -367,8 +367,7 @@ Word and OpenDocument text is read as the document stands: tracked insertions ar
 the paragraph they are anchored in (OpenDocument) or the document (Word), never cutting the sentence around their
 anchor; in Word 97-2003 files, the anchors of comments, footnotes and pictures no longer break a line either.
 
-Compiled in is not the same as working: native-image needs reflection metadata for each parser it reaches.
-`just conformance` therefore extracts Apache Tika's own 1094 test documents both natively and with the same Tika
+`just conformance` extracts Apache Tika's own 1094 test documents both natively and with the same Tika
 version on the JVM, and compares the text. [`conformance/MATRIX.md`](conformance/MATRIX.md) lists every media type
 with how many of its files work, differ or fail: 1069 work or are empty on both sides. Nearly all of the rest differ
 only by the file name of a preview image Tika lists (the previews of camera raw photos, iWork and Office documents),
@@ -377,29 +376,19 @@ that worked stops working.
 
 ## Development
 
-Every development dependency (Rust toolchain, cargo-nextest, GraalVM CE, tesseract with exactly the language models
-the OCR bundle carries, and just) comes from [devenv](https://devenv.sh). Enter it with `devenv shell`, or run
+Every development dependency (Rust toolchain, cargo-nextest, tesseract with exactly the language models the OCR
+bundle carries, a Java runtime for running Apache Tika in the comparisons, and just) comes from [devenv](https://devenv.sh). Enter it with `devenv shell`, or run
 `direnv allow` once to load it on entry.
-
-Apache Tika is the `tika` cargo feature, off by default and never released: Tika compiled ahead of time with GraalVM
-native-image into a shared library that extractous calls through JNI, for what no native parser reads. It is the
-reference `just parity` compares the native parsers with, and the build `just conformance` scores, both passing
-`--features tika`. Building it needs the GraalVM release pinned in `ci/graalvm.env` (devenv provides it), pointed to
-by `GRAALVM_HOME`; the first build takes a few minutes, and later builds reuse the compiled library until the Tika
-sources or the GraalVM release change. The tests that compare with Tika's path, or that exercise it, and unpacking
-embedded documents whole (`extract_embedded_*`) are compiled only with the feature.
 
 All commands are recipes in the `justfile`; run `just` to list them.
 
 | Recipe | What it does |
 | --- | --- |
 | `just check` | Every gate in order: format check, lint, tests |
-| `just build` | Build the workspace, without Tika |
+| `just build` | Build the workspace |
 | `just ocr-bundle [dir]` | Assemble the tesseract library a build loads, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` (built with vcpkg, which on NixOS needs a container such as `ubuntu:22.04`) |
 | `just static-native` | Build the statically linked Linux executable as released, with tesseract and libheif linked in, into `target/static/extractous` (uses nix) |
-| `just static-tika` | Build the statically linked Linux executable linked into Tika's native image, which is never released, into `target/static-image/extractous` (uses nix and GraalVM) |
 | `just container` | Build the container image around `target/static/extractous` and load it into Docker as `extractous:local` |
-| `just parity [filter]` | Compare the native parsers with Tika's path on Tika's own test documents, built with `--features tika` |
 | `just conformance` | Compare extraction of Tika's own test documents with Tika on the JVM and write conformance/MATRIX.md |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |
@@ -408,11 +397,9 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | `just quality` | Score extraction against the quality corpus and write quality/SCOREBOARD.md |
 | `just quality-bless` | Accept the current quality scores as the new baseline |
 | `just quality-corpus` | Regenerate the quality corpus from its ground truth (uses LibreOffice via nix) |
-| `just lint` | Clippy over every target, without and with `--features tika`, warnings fail |
+| `just lint` | Clippy over every target, warnings fail |
 | `just fmt` | Format every Rust source |
 | `just bench` | Run the criterion benchmarks |
-| `just gradle-verification` | Record the SHA-256 of every Gradle dependency after changing build.gradle |
-| `just tika-agent [paths]` | Parse every file under the paths (default `test_files`) on the JVM under GraalVM's tracing agent and merge what it records into each OS's native-image metadata |
 | `just licenses` | Regenerate THIRD-PARTY-LICENSES.md from the Rust crates and models |
 | `just sbom` | Write the CycloneDX SBOM of the Rust crates to target/sbom |
 | `just deps` | cargo-deny's advisory, licence and ban checks, and a check that THIRD-PARTY-LICENSES.md is current |

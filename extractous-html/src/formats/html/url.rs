@@ -29,38 +29,6 @@ pub(super) fn is_base(text: &str) -> bool {
     Url::parse(text).is_ok_and(|url| !url.cannot_be_a_base())
 }
 
-/// Whether `native`, a link the parser writes, is `tika`, the one Tika's path writes for it, as
-/// the WHATWG URL standard resolves it (#162): `tika` resolved against the URL `base` the native
-/// parser resolves links against, which leaves an absolute URL as it is; or `tika` with the user
-/// information of `native` added, where `tika` is a query alone that `java.net.URL` resolves
-/// without the base's.
-#[cfg(all(feature = "tika", any(test, feature = "testing")))]
-pub(super) fn resolves_alike(base: Option<&str>, tika: &str, native: &str) -> bool {
-    let Ok(native) = Url::parse(native) else {
-        return false;
-    };
-    let resolved = match Url::parse(tika) {
-        Ok(tika) => tika,
-        Err(url::ParseError::RelativeUrlWithoutBase) => {
-            match base.and_then(|base| Url::parse(base).ok()?.join(tika).ok()) {
-                Some(resolved) => resolved,
-                None => return false,
-            }
-        }
-        Err(_) => return false,
-    };
-    if resolved == native {
-        return true;
-    }
-    let mut anonymous = native.clone();
-    !native.username().is_empty()
-        && resolved.username().is_empty()
-        && resolved.password().is_none()
-        && anonymous.set_username("").is_ok()
-        && anonymous.set_password(None).is_ok()
-        && anonymous == resolved
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,36 +195,6 @@ mod tests {
             .collect();
         assert!(wrong.is_empty(), "{}", wrong.join("\n"));
         assert_eq!(resolve(None, " x "), "x");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn tells_tikas_links_the_standard_resolves_alike() {
-        let alike = [
-            (None, "http://Host:80/a b", "http://host/a%20b"),
-            (None, "http://host/../z", "http://host/z"),
-            (None, "http://host/a/../../b", "http://host/b"),
-            (None, "http://h:81/a/b?q", "http://u:p@h:81/a/b?q"),
-            (
-                Some("ftp://host/dir/page.html"),
-                "sub/x.html",
-                "ftp://host/dir/sub/x.html",
-            ),
-        ];
-        for (base, tika, native) in alike {
-            assert!(resolves_alike(base, tika, native), "{tika} as {native}");
-        }
-        let unlike = [
-            (None, "http://host/y", "http://host/z"),
-            (None, "http://h:81/a/b?q", "http://u:p@h:81/a/b?r"),
-            (None, "http://v@h:81/a/b?q", "http://u:p@h:81/a/b?q"),
-            (None, "sub/x.html", "ftp://host/dir/sub/x.html"),
-            (Some("ftp://host/dir/"), "x.html", "ftp://host/x.html"),
-            (Some("http://host/"), "http://host/c.html", "c.html"),
-        ];
-        for (base, tika, native) in unlike {
-            assert!(!resolves_alike(base, tika, native), "{tika} as {native}");
-        }
     }
 
     #[test]

@@ -19,8 +19,7 @@ use crate::mime::registry::Registry;
 use crate::xml::{self, Attribute, Event, Flow};
 
 const TIKA_MIMETYPES: &str = include_str!("../../../models/tika-mimetypes.xml");
-const CUSTOM_MIMETYPES: &str =
-    include_str!("../../../../extractous-core/tika-native/src/main/resources/custom-mimetypes.xml");
+const CUSTOM_MIMETYPES: &str = include_str!("../../../models/custom-mimetypes.xml");
 const TABLES: &str = "src/mime/mime_types/tables.rs";
 
 /// A type as the reader builds it.

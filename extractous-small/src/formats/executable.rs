@@ -473,17 +473,10 @@ fn read_architectures<'a>(input: &'a [u8], found: &mut Vec<&'a [u8]>) -> Result<
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use extractous_core::large::LargeFile;
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing,
-        conformance_corpus, documents, Departure, Scratch,
-    };
 
     fn mach_o(cpu_type: i32, file_type: i32) -> Vec<u8> {
         let mut file = vec![0xCF, 0xFA, 0xED, 0xFE];
@@ -559,64 +552,6 @@ mod tests {
         file.extract_each(UniversalExecutableParser.name(), |_| {});
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_executables_as_tikas_path_does() {
-        let scratch = Scratch::new("executable");
-        let read = [
-            scratch.write("pe-amd64.exe", &pe(0x8664, 0x80)),
-            scratch.write("pe-sh4.exe", &pe(0x1a6, 0x40)),
-            scratch.write("pe-efi.exe", &pe(0xebc, 0x100)),
-            scratch.write("elf-arm.so", &elf(1, 1, 97, 3, 40)),
-            scratch.write("elf-sparc.o", &elf(2, 2, 0, 1, 43)),
-            scratch.write("elf-core", &elf(2, 1, 9, 4, 62)),
-            scratch.write("macho-arm64.dylib", &mach_o(0x0100_000C, 6)),
-            scratch.write("macho-x86.bundle", &mach_o(7, 8)),
-            scratch.write(
-                "fat.bin",
-                &universal(&[mach_o(0x0100_0007, 2), mach_o(0x0100_000C, 2)], true),
-            ),
-        ];
-        let overlapping = scratch.write("pe-overlapping.exe", &pe(0x14c, 0x3f));
-        let failing = [
-            scratch.write("pe-cut.exe", &pe(0x8664, 0x80)[..0x90]),
-            scratch.write("elf-cut", &elf(2, 1, 3, 2, 62)[..17]),
-            scratch.write("macho-cut", &mach_o(7, 2)[..10]),
-            scratch.write("fat-cut.bin", &universal(&[mach_o(7, 2)], false)[..40]),
-        ];
-        let (parsed, deferred) = documents(&ExecutableParser, &[scratch.directory()]);
-        let (universal_parsed, universal_deferred) =
-            documents(&UniversalExecutableParser, &[scratch.directory()]);
-        assert!(deferred.is_empty() && universal_deferred.is_empty());
-        assert_eq!(
-            parsed.len() + universal_parsed.len(),
-            read.len() + failing.len() + 1,
-            "{parsed:?} {universal_parsed:?}"
-        );
-        assert_same_as_tika_departing(
-            &[overlapping.as_path()],
-            "org.apache.tika.parser.executable.ExecutableParser",
-            &[
-                Departure::Unset("dcterms:created", "#118"),
-                Departure::Unset(MACHINE_TYPE, "#118"),
-                Departure::Unset(ENDIAN, "#118"),
-                Departure::Unset(ARCHITECTURE_BITS, "#118"),
-            ],
-        );
-        assert_same_as_tika(
-            &read[..read.len() - 1]
-                .iter()
-                .map(PathBuf::as_path)
-                .collect::<Vec<_>>(),
-            "org.apache.tika.parser.executable.ExecutableParser",
-        );
-        assert_same_as_tika(
-            &[read[read.len() - 1].as_path()],
-            "org.apache.tika.parser.executable.UniversalExecutableParser",
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-    }
-
     #[test]
     fn reads_no_coff_header_inside_the_ms_dos_header() {
         let (_, metadata) = crate::Extractor::new()
@@ -628,21 +563,5 @@ mod tests {
             .extract_bytes_to_string(&pe(0x14c, 0x40))
             .unwrap();
         assert_eq!(metadata[MACHINE_TYPE], ["x86-32"]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_executables_as_tikas_path_does() {
-        for (parser, count) in [
-            (&ExecutableParser as &dyn Parser, 14),
-            (&UniversalExecutableParser, 3),
-        ] {
-            let (parsed, deferred) = documents(parser, &[&conformance_corpus()]);
-            assert!(deferred.is_empty(), "{deferred:?}");
-            assert_eq!(parsed.len(), count, "{parsed:?}");
-            let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-            assert_same_as_tika(&paths, parser.tika_name());
-        }
     }
 }

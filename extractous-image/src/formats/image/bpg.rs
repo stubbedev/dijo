@@ -155,34 +155,6 @@ pub(super) fn extract_metadata(
     })
 }
 
-/// Tika's result of a BPG image, from the native one: without the metadata of the extensions,
-/// which Tika never reads, nor the title their XMP gives, and with the bit depth Tika reads from the wrong end of the header's
-/// first byte (#132).
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub fn as_tika_misreads_the_header(
-    text: &mut String,
-    metadata: &mut crate::formats::parity::ComparedMetadata,
-    tika: &crate::formats::parity::ComparedMetadata,
-) {
-    use crate::formats::parity::{with_tikas_values, without_metadata};
-    let extensions: Vec<String> = metadata
-        .iter()
-        .map(|(name, _)| name)
-        .filter(|name| !tika.iter().any(|(tika_name, _)| tika_name == *name))
-        .cloned()
-        .collect();
-    for name in &extensions {
-        without_metadata(text, metadata, name);
-    }
-    if extensions.iter().any(|name| name == "dc:title") {
-        if let Some(start) = text.find("<title>").map(|at| at + "<title>".len()) {
-            let end = start + text[start..].find("</title>").expect("a title ends");
-            text.replace_range(start..end, "");
-        }
-    }
-    with_tikas_values(text, metadata, tika, extractor::BITS_PER_SAMPLE.name);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

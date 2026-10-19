@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
-use extractous_core::{Extractor, IsolateSettings, Metadata, Password};
+use extractous_core::{Extractor, Metadata, Password, ProcessSettings};
 
 use cache::{Cache, OutputSettings};
 use cli::{Cli, Command, Embedded, ExtractArgs, Format, InputArgs, Isolation, ServeArgs};
@@ -56,24 +56,6 @@ pub fn main() -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
-}
-
-/// The entry point of the statically linked executable, which the Java `main` of the native
-/// image calls with its command line: 0 on success, 1 on failure, as `main` exits with.
-#[cfg(feature = "static-image")]
-#[unsafe(no_mangle)]
-pub extern "C" fn extractous_main(
-    argc: std::ffi::c_int,
-    argv: *const *const std::ffi::c_char,
-) -> std::ffi::c_int {
-    use std::os::unix::ffi::OsStrExt;
-    let arguments = (0..usize::try_from(argc).unwrap_or(0))
-        .map(|index| {
-            let argument = unsafe { std::ffi::CStr::from_ptr(*argv.add(index)) };
-            std::ffi::OsStr::from_bytes(argument.to_bytes()).to_os_string()
-        })
-        .collect();
-    std::ffi::c_int::from(!run_program(arguments))
 }
 
 /// musl's allocator, which the static executable would otherwise use, is slow under
@@ -111,18 +93,12 @@ fn run_program(arguments: Vec<OsString>) -> bool {
             .error(ErrorKind::ArgumentConflict, conflict)
             .exit();
     }
-    let succeeded = if cli.licenses {
+    if cli.licenses {
         print_licenses()
     } else {
         run_command(cli)
-    };
-    wait_for_stopping_extractions();
-    succeeded
+    }
 }
-
-/// How long to wait at exit for cancelled extractions to stop, so the tesseract processes they
-/// started do not outlive this one.
-const STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// Why the arguments cannot be combined, if they cannot.
 fn usage_conflict(cli: &Cli) -> Option<&'static str> {
@@ -174,20 +150,6 @@ fn output_settings(args: &ExtractArgs) -> OutputSettings<'_> {
     }
 }
 
-fn wait_for_stopping_extractions() {
-    match extractous_core::wait_for_extractions(STOP_GRACE) {
-        Ok(true) => {}
-        Ok(false) => report(
-            "extractous",
-            &format!(
-                "an extraction was still stopping after {}s",
-                STOP_GRACE.as_secs()
-            ),
-        ),
-        Err(error) => report("extractous", &error.to_string()),
-    }
-}
-
 fn print_licenses() -> bool {
     let sections = [
         (
@@ -220,12 +182,12 @@ fn run_command(cli: Cli) -> bool {
         None => Some(&cli.extract.runtime),
     };
     if let Some(runtime) = runtime {
-        let settings = IsolateSettings {
+        let settings = ProcessSettings {
             temp_dir: runtime.spool_dir.clone(),
             max_heap_bytes: runtime.max_heap_bytes,
             processors: runtime.processors,
         };
-        if let Err(error) = extractous_core::configure_isolate(settings) {
+        if let Err(error) = extractous_core::configure_process(settings) {
             report("extractous", &error.to_string());
             return false;
         }

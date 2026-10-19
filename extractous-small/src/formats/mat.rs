@@ -118,13 +118,9 @@ impl Parser for MatParser {
 /// [`decode_limit`](crate::compress::decode_limit) of its compressed bytes, as `reason` says,
 /// which jmatio inflates into memory whole: Tika's path takes it where there is one.
 fn too_large(reason: String) -> Decline<'static> {
-    if cfg!(feature = "tika") {
-        Decline::Deferred(format!("{reason}, which Tika's path inflates whole"))
-    } else {
-        Decline::Fails(Error::LimitExceeded(format!(
-            "{reason}, the most the native parser inflates"
-        )))
-    }
+    Decline::Fails(Error::LimitExceeded(format!(
+        "{reason}, the most the native parser inflates"
+    )))
 }
 
 /// The metadata `MatParser` takes from the header.
@@ -1161,39 +1157,11 @@ impl Tag {
     }
 }
 
-/// For the parity tests: a native result with each structure held in a field named "@", as
-/// jmatio names it, where the parser names it by its field (#156): each line that ends a name
-/// with " = ", the name after the tag or tab before it.
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub fn as_jmatio_names(
-    text: &mut String,
-    _metadata: &mut crate::formats::parity::ComparedMetadata,
-    _tika: &crate::formats::parity::ComparedMetadata,
-) {
-    *text = text
-        .split_inclusive('\n')
-        .map(|line| match line.strip_suffix(" = \n") {
-            Some(named) => {
-                let start = named.rfind(['>', '\t']).map_or(0, |at| at + 1);
-                format!("{}@ = \n", &named[..start])
-            }
-            None => line.to_owned(),
-        })
-        .collect();
-}
-
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::compress::zlib::tests::zlib;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_read_where_tika_fails, assert_same_as_tika_rewriting,
-        conformance_corpus, documents, Scratch,
-    };
 
     const DESCRIPTION: &str =
         "MATLAB 5.0 MAT-file, Platform: GLNXA64, Created on: Sat Oct 18 08:00:00 2026";
@@ -1523,43 +1491,5 @@ mod tests {
             inflated.copy(at, &mut read).unwrap();
             assert_eq!(read, data[at..at + 4], "at {at}");
         }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_synthetic_mat_files_as_tikas_path_does() {
-        let scratch = Scratch::new("mat");
-        let read = [scratch.write("variables.mat", &file(DESCRIPTION, &variables()))];
-        let paths: Vec<&Path> = read.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika_rewriting(&paths, MatParser.tika_name(), as_jmatio_names);
-        let unread = unread_by_jmatio()
-            .into_iter()
-            .enumerate()
-            .map(|(at, variable)| {
-                scratch.write(&format!("unread-{at}.mat"), &file(DESCRIPTION, &[variable]))
-            })
-            .collect::<Vec<_>>();
-        let paths: Vec<&Path> = unread.iter().map(PathBuf::as_path).collect();
-        assert_read_where_tika_fails(&paths, "#156");
-        let failing = [scratch.write(
-            "octave.mat",
-            &file(
-                "MATLAB 5.0 MAT-file, written by Octave",
-                &[doubles("x", &[1, 1])],
-            ),
-        )];
-        let paths: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
-        assert_fails_as_tika(&paths);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_mat_files_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&MatParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 2, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika_rewriting(&paths, MatParser.tika_name(), as_jmatio_names);
     }
 }

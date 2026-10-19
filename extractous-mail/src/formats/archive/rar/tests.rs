@@ -1,21 +1,5 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, deferral, documents,
-    spools_as_tika, Scratch,
-};
 
-#[cfg(feature = "tika")]
-const SOLID: u16 = 0x0008;
-#[cfg(feature = "tika")]
-const FILE_SOLID: u16 = 0x0010;
-#[cfg(feature = "tika")]
-const DIRECTORY: u16 = 0x00e0;
-#[cfg(feature = "tika")]
-const UNICODE: u16 = 0x0200;
 /// 2021-03-04 05:06:08 as a DOS date and time.
 const DOS_TIME: u32 = (41 << 25) | (3 << 21) | (4 << 16) | (5 << 11) | (6 << 5) | 4;
 
@@ -76,38 +60,6 @@ const UNREAD: [(&str, &str); 3] = [
     ("volume.part1.rar", "another volume"),
 ];
 
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_rar_archives_as_tikas_path_does() {
-    let roots = [
-        Path::new("../test_files/documents"),
-        Path::new("../quality/corpus"),
-    ];
-    let (parsed, deferred) = documents(&RarParser, &roots);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    let named = |path: &PathBuf, names: &[&str]| {
-        names.contains(&path.file_name().unwrap().to_string_lossy().as_ref())
-    };
-    let failing = ["encrypted-headers.rar", "no-main-header.rar", "rar5.rar"];
-    let unread: Vec<&str> = UNREAD.iter().map(|(name, _)| *name).collect();
-    let (failed, rest): (Vec<PathBuf>, Vec<PathBuf>) =
-        parsed.into_iter().partition(|path| named(path, &failing));
-    let (unread, same): (Vec<PathBuf>, Vec<PathBuf>) =
-        rest.into_iter().partition(|path| named(path, &unread));
-    assert_eq!(names(&failed), failing);
-    assert_eq!(unread.len(), UNREAD.len());
-    assert_eq!(same.len(), 24, "{:?}", names(&same));
-    let same: Vec<&Path> = same.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&same, RarParser.tika_name());
-    let failed: Vec<&Path> = failed.iter().map(PathBuf::as_path).collect();
-    assert_fails_as_tika(&failed);
-    let encrypted = std::fs::read("../test_files/documents/rar/encrypted-headers.rar").unwrap();
-    assert!(matches!(
-        RarParser.prepare(&encrypted, &TikaMetadata::new(), &ParserConfigs::default()),
-        Err(crate::formats::Decline::Fails(Error::Encrypted(_)))
-    ));
-}
-
 #[test]
 fn records_the_entries_it_cannot_give_whole() {
     for (name, reason) in UNREAD {
@@ -137,120 +89,20 @@ fn records_the_entries_it_cannot_give_whole() {
     }
 }
 
-#[cfg(feature = "tika")]
-fn names(paths: &[PathBuf]) -> Vec<String> {
-    paths
-        .iter()
-        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
-        .collect()
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn reads_names_times_and_directories_as_junrar_does() {
-    let scratch = Scratch::new("rar-headers");
-    let latin1 = scratch.write(
-        "latin1.rar",
-        &rar(
-            0,
-            &[
-                stored(b"mappe", DIRECTORY, b""),
-                stored(
-                    b"mappe\\r\xf8dgr\xf8d.txt",
-                    0,
-                    "Rødgrød med fløde.\n".as_bytes(),
-                ),
-                stored("Ærø.txt".as_bytes(), 0, "Ærøskøbing\n".as_bytes()),
-                stored(b"tom.txt", 0, b""),
-            ],
-        ),
-    );
-    let mut unicode_name = b"smorrebrod.txt\0\0".to_vec();
-    for chunk in "smørrebrød.txt"
-        .encode_utf16()
-        .collect::<Vec<u16>>()
-        .chunks(4)
-    {
-        unicode_name.push(0x00);
-        unicode_name.extend(chunk.iter().map(|&unit| unit as u8));
+/// The files of the RAR archive `data` but its directories, with their data, empty for an
+/// entry the port cannot give, if the port reads it.
+fn archive_files(data: &[u8]) -> Option<Vec<ArchiveFile<'static>>> {
+    let headers = headers::read(data).ok()?;
+    let (names, _) = names(&headers);
+    let mut files = Vec::new();
+    let extracted = extract::each(data, &headers, |index, extracted| {
+        files.push(file(&headers.files[index], &names[index], extracted).0);
+        Ok::<(), std::convert::Infallible>(())
+    });
+    match extracted {
+        Ok(()) => Some(files),
+        Err(never) => match never {},
     }
-    let unicode = scratch.write(
-        "unicode.rar",
-        &rar(
-            0,
-            &[stored(
-                &unicode_name,
-                UNICODE,
-                "Smørrebrød er dansk.\n".as_bytes(),
-            )],
-        ),
-    );
-    let mut broken = rar(0, &[stored(b"brudt.txt", 0, b"Et brudt hoved.\n")]);
-    broken[20] ^= 0x01;
-    let broken = scratch.write("broken.rar", &broken);
-    let read = |path: &PathBuf| -> Vec<(String, Vec<u8>)> {
-        archive_files(&std::fs::read(path).unwrap())
-            .unwrap()
-            .into_iter()
-            .map(|file| (file.name, file.content.to_vec()))
-            .collect()
-    };
-    assert_eq!(
-        read(&latin1),
-        [
-            (
-                "mappe/rødgrød.txt".to_owned(),
-                "Rødgrød med fløde.\n".as_bytes().to_vec()
-            ),
-            ("Ærø.txt".to_owned(), "Ærøskøbing\n".as_bytes().to_vec()),
-            ("tom.txt".to_owned(), Vec::new()),
-        ]
-    );
-    assert_eq!(
-        read(&unicode),
-        [(
-            "smørrebrød.txt".to_owned(),
-            "Smørrebrød er dansk.\n".as_bytes().to_vec()
-        )]
-    );
-    assert_eq!(read(&broken), [("brudt.txt".to_owned(), Vec::new())]);
-    let (parsed, deferred) = documents(&RarParser, &[scratch.directory()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 3);
-    assert_same_as_tika(
-        &[latin1.as_path(), unicode.as_path(), broken.as_path()],
-        RarParser.tika_name(),
-    );
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn decodes_solid_entries_after_one_larger_than_junrars_pipe() {
-    let scratch = Scratch::new("rar-pipe");
-    let large = "Dette er en lang tekst om vinter i Danmark.\n".repeat(1000);
-    let first = stored(b"lang.txt", 0, large.as_bytes());
-    let second = stored(b"kort.txt", FILE_SOLID, b"Kort.\n");
-    let solid = scratch.write("solid.rar", &rar(SOLID, &[first, second]));
-    let first = stored(b"lang.txt", 0, large.as_bytes());
-    let second = stored(b"kort.txt", 0, b"Kort.\n");
-    let separate = scratch.write("separate.rar", &rar(0, &[first, second]));
-    let small = scratch.write(
-        "small-solid.rar",
-        &rar(
-            SOLID,
-            &[
-                stored(b"a.txt", 0, b"Forste fil.\n"),
-                stored(b"b.txt", FILE_SOLID, b"Anden fil.\n"),
-            ],
-        ),
-    );
-    for path in [&solid, &separate, &small] {
-        assert_eq!(deferral(&RarParser, path), None);
-    }
-    assert_same_as_tika(
-        &[solid.as_path(), separate.as_path(), small.as_path()],
-        RarParser.tika_name(),
-    );
 }
 
 #[test]
@@ -304,27 +156,6 @@ fn leaves_a_solid_stream_alone_across_a_stored_entry() {
     );
 }
 
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn extracts_tikas_test_documents_as_tikas_path_does() {
-    let (parsed, deferred) = documents(&RarParser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    let (failing, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
-        .into_iter()
-        .partition(|path| path.to_string_lossy().ends_with("-enc.rar"));
-    assert_eq!(parsed.len(), 1, "{parsed:?}");
-    assert_eq!(failing.len(), 1, "{failing:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&paths, RarParser.tika_name());
-    for budget in [u64::MAX, 3000] {
-        assert!(matches!(spools_as_tika(&parsed[0], budget), Ok(1..)));
-    }
-    let failing: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
-    assert_fails_as_tika(&failing);
-}
-
-#[cfg(not(feature = "tika"))]
 #[test]
 fn spools_an_entry_too_large_to_read_whole_one_entry_at_a_time() {
     use std::io::Read;

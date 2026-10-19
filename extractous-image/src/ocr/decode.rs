@@ -583,7 +583,7 @@ mod tests {
     #[test]
     #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
     fn decodes_tikas_test_images_as_imageio_does() {
-        decodes_as_imageio_does(&[("tika", crate::formats::parity::conformance_corpus())]);
+        decodes_as_imageio_does(&[("tika", crate::formats::testing::conformance_corpus())]);
     }
 
     /// The corpus made its other scans of the PNG's, in grey: the Photoshop file as it is, the

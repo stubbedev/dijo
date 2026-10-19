@@ -610,45 +610,6 @@ fn property_text(pid: i64, data: &[u8]) -> Option<String> {
     }
 }
 
-/// The texts the objects of a section declare: those of every revision, and those of the
-/// current revisions of its object spaces.
-#[cfg(all(test, feature = "tika"))]
-pub(super) fn declared_texts(
-    document: &Document,
-    input: &[u8],
-) -> (HashSet<String>, HashSet<String>) {
-    fn texts(properties: &[PropertyValue], input: &[u8], out: &mut HashSet<String>) {
-        for value in properties {
-            if value.id.kind == DATA {
-                let start = value.raw_data.stp as usize;
-                let data = &input[start..start + value.raw_data.cb as usize];
-                out.extend(property_text(value.id.pid, data));
-            }
-            texts(&value.property_set, input, out);
-        }
-    }
-    fn declared(nodes: &FileNodeList, input: &[u8], out: &mut HashSet<String>) {
-        for node in &nodes.children {
-            if let Declares::Object { properties, .. } = &node.declares {
-                texts(properties, input, out);
-            }
-            declared(&node.child_list, input, out);
-        }
-    }
-    let store = Store::of(document);
-    let (mut all, mut current) = (HashSet::new(), HashSet::new());
-    for list in store.spaces.values() {
-        declared(list, input, &mut all);
-        let space = Space::current(list).unwrap().unwrap();
-        for object in space.objects.values() {
-            if let Object::Properties(properties) = object {
-                texts(properties, input, &mut current);
-            }
-        }
-    }
-    (all, current)
-}
-
 /// `ByteBuffer.allocate(length)`, which fails on a negative length.
 fn allocation(length: i32) -> Result<usize, Thrown> {
     usize::try_from(length).map_err(|_| {

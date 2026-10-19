@@ -15,7 +15,6 @@ pub mod list_numbering;
 pub mod metadata;
 pub mod ole10_native;
 #[cfg(any(test, feature = "testing"))]
-pub mod parity;
 pub mod secure;
 pub mod thrown;
 pub mod wmf_placeable;
@@ -27,12 +26,8 @@ pub mod zip_file;
 use std::sync::OnceLock;
 
 use crate::config::ParserConfigs;
-#[cfg(feature = "tika")]
-use crate::errors::ExtractResult;
 use crate::errors::{Error, Unsupported};
 use crate::input::Pages;
-#[cfg(feature = "tika")]
-use crate::tika::EmbeddedEvents;
 use handlers::{AnchoredBlocks, BlockBreaks, Body, ToText, ToXml, WellFormed, Write, WriteLimit};
 use metadata::TikaMetadata;
 use xhtml::{ContentHandler, Stop, Xhtml};
@@ -323,7 +318,6 @@ pub struct EmbeddedRoute<'a> {
     pub prepared: Prepared<'a>,
     /// Where the parser reads it differently from Tika's parser, in a build without Tika, which
     /// takes the native reading where a build with Tika parses the document on Tika's path.
-    #[cfg(not(feature = "tika"))]
     pub difference: Option<Difference>,
 }
 
@@ -337,9 +331,6 @@ pub enum Bridged {
     Unrouted(Unrouted),
     /// Its native parser, of this name, cannot read it, for this reason.
     Deferred(&'static str, Deferral),
-    /// Its native parser, of this name, reads it differently from Tika's parser in this way.
-    #[cfg(feature = "tika")]
-    Differs(&'static str, Difference),
     /// Tika's parser throws this on it before it starts, as its native parser, of this name,
     /// reproduces.
     Fails(&'static str, Error),
@@ -363,19 +354,6 @@ pub fn embedded_parser(
     routes().embedded_parser(data, metadata, opened)
 }
 
-/// Parses with Tika's path a document embedded in one a native parser reads, which no native
-/// parser prepares for the reason `bridged` gives: what Tika made of it, given its `data`, the
-/// metadata its embedding parser gives it, as `pairs`, and the parser settings `configs`.
-#[cfg(feature = "tika")]
-pub fn parse_with_tika(
-    bridged: Bridged,
-    data: &[u8],
-    pairs: &[(&str, &str)],
-    configs: &ParserConfigs,
-) -> ExtractResult<EmbeddedEvents> {
-    routes().parse_with_tika(bridged, data, pairs, configs)
-}
-
 /// What the native parsers reach of the crate that gathers them all, `extractous-core`, which
 /// installs it with [`install_routes`] before it routes a document: where a document embedded in
 /// one a native parser reads goes.
@@ -387,16 +365,6 @@ pub trait Routes: Sync {
         metadata: &TikaMetadata,
         opened: Opened,
     ) -> Result<(&'static dyn Parser, TikaMetadata), Unrouted>;
-
-    /// [`parse_with_tika`].
-    #[cfg(feature = "tika")]
-    fn parse_with_tika(
-        &self,
-        bridged: Bridged,
-        data: &[u8],
-        pairs: &[(&str, &str)],
-        configs: &ParserConfigs,
-    ) -> ExtractResult<EmbeddedEvents>;
 }
 
 static ROUTES: OnceLock<&'static dyn Routes> = OnceLock::new();
@@ -437,15 +405,10 @@ pub fn route_embedded<'a>(
         Err(Decline::Fails(error)) => return Err(Bridged::Fails(name, error)),
         Err(Decline::Unwritten(left)) => return Err(Bridged::Unwritten(name, left)),
     };
-    #[cfg(feature = "tika")]
-    if let Some(difference) = difference {
-        return Err(Bridged::Differs(name, difference));
-    }
     Ok(EmbeddedRoute {
         parser,
         start,
         prepared,
-        #[cfg(not(feature = "tika"))]
         difference,
     })
 }

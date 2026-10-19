@@ -494,14 +494,8 @@ impl Parser for MidiParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-    };
     use extractous_core::large::{bodies_past_limit, LargeFile};
 
     fn midi(timing: [u8; 2], tracks: &[&[u8]]) -> Vec<u8> {
@@ -556,50 +550,5 @@ mod tests {
         let (text, metadata) = file.extract(MidiParser.name());
         assert_eq!(metadata["midi:tracks"], ["1"]);
         assert_eq!(text.trim(), "vers".repeat(usize::try_from(count).unwrap()));
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_midi_files_as_tikas_path_does() {
-        let scratch = Scratch::new("midi");
-        let text = b"\x00\xFF\x03\x05Titel\x10\x90\x3C\x40\x05\x3E\x40\x00\xFF\x01\x04late\
-                     \x00\xFF\x05\x03ord\x00\xF0\x02\x01\xF7\x00\xFF\x2F\x00";
-        let read = [
-            scratch.write(
-                "song.mid",
-                &midi([0x01, 0xE0], &[text, b"\x00\xFF\x2F\x00"]),
-            ),
-            scratch.write(
-                "smpte.mid",
-                &midi([0xE7, 0x28], &[b"\x00\xFF\x01\x01x\x00\xFF\x2F\x00"]),
-            ),
-            scratch.write(
-                "meta.mid",
-                &midi([0x00, 0x60], &[b"\x00\xFF\x90\x00\x00\xFF\x2F\x00"]),
-            ),
-        ];
-        let failing = [scratch.write(
-            "cut.mid",
-            &midi([0x00, 0x60], &[b"\x00\xFF\x01\x01x\x00\x90"]),
-        )];
-        let (parsed, deferred) = documents(&MidiParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_midi_files_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&MidiParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 1, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
     }
 }

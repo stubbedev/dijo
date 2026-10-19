@@ -19,11 +19,8 @@ mod unpack;
 use extract::Extracted;
 use headers::{Name, Unopened};
 
-use std::convert::Infallible;
-
-use super::nesting::Scan;
-use super::{entry_metadata, record_unreadable, too_large, DEFERS};
-use crate::compress::{ArchiveFile, MAX_DECODED};
+use super::{entry_metadata, record_unreadable};
+use crate::compress::ArchiveFile;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
@@ -86,9 +83,6 @@ impl Parser for RarParser {
             Unopened { reason, .. } => Decline::Fails(Error::ParseError(reason)),
         })?;
         let (names, difference) = names(&headers);
-        if DEFERS {
-            scan(input, &headers, &names)?;
-        }
         let paging = Paging::new(pages);
         paging.release();
         let reading: Prepared<'a> = Box::new(move |xhtml| {
@@ -119,27 +113,6 @@ impl Parser for RarParser {
     }
 }
 
-/// Whether `data` starts with the marker Tika detects a RAR archive by.
-pub(super) fn is_rar(data: &[u8]) -> bool {
-    data.starts_with(b"Rar!")
-}
-
-/// The files of the RAR archive `data` but its directories, with their data, empty for an
-/// entry the port cannot give, if the port reads it.
-pub(super) fn archive_files(data: &[u8]) -> Option<Vec<ArchiveFile<'static>>> {
-    let headers = headers::read(data).ok()?;
-    let (names, _) = names(&headers);
-    let mut files = Vec::new();
-    let extracted = extract::each(data, &headers, |index, extracted| {
-        files.push(file(&headers.files[index], &names[index], extracted).0);
-        Ok::<(), Infallible>(())
-    });
-    match extracted {
-        Ok(()) => Some(files),
-        Err(never) => match never {},
-    }
-}
-
 /// The names of the files of the archive, and the first detail in which the port reads them
 /// otherwise than junrar, if any.
 fn names(headers: &headers::Headers) -> (Vec<String>, Option<Difference>) {
@@ -156,38 +129,6 @@ fn names(headers: &headers::Headers) -> (Vec<String>, Option<Difference>) {
         }
     }
     (names, difference)
-}
-
-/// Why Tika's path should read the archive `input`, which a build with Tika defers to it: its
-/// files decode into more than the native path holds in memory to scan them, or what they hold
-/// may reach Tika's limits otherwise than the native path's.
-fn scan(
-    input: &[u8],
-    headers: &headers::Headers,
-    names: &[String],
-) -> Result<(), Decline<'static>> {
-    let declared = headers
-        .files
-        .iter()
-        .filter(|header| !header.is_directory() && !header.is_split())
-        .fold(0i64, |declared, header| {
-            declared.saturating_add(header.full_unpack_size)
-        });
-    if declared > MAX_DECODED as i64 {
-        return Err(too_large("the entries of the RAR archive"));
-    }
-    let mut files = Vec::new();
-    let extracted = extract::each(input, headers, |index, extracted| {
-        files.push(file(&headers.files[index], &names[index], extracted).0);
-        Ok::<(), Infallible>(())
-    });
-    if let Err(never) = extracted {
-        match never {}
-    }
-    match Scan::new().files(input.len(), &files) {
-        Some(reason) => Err(Decline::Deferred(reason)),
-        None => Ok(()),
-    }
 }
 
 /// The file of `header`, named `name`, as extracting it gave it, `extracted`, and why its data

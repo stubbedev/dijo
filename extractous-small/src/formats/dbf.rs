@@ -492,15 +492,8 @@ fn write_record(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_rewriting,
-        conformance_corpus, documents, ComparedMetadata, Scratch,
-    };
 
     /// A table of the `columns`, each a name, type and length, and the `records`, each a deletion
     /// mark and its cells' bytes.
@@ -549,94 +542,10 @@ mod tests {
         (b' ', vec![name, amount, date, b"T"])
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_dbase_tables_as_tikas_path_does() {
-        let scratch = Scratch::new("dbf");
-        // Without a deleted record, which Tika writes as a row (#118).
-        let mut records = vec![
-            record(b"S\xf8ren S\xf8rensen", b"1250.50", b"20240309"),
-            (
-                b' ',
-                vec![b"Slettet \xc6bleh\xf8j", b"0", b"2024AB09", b"F"],
-            ),
-            record(b"\xc5se \xd8stergaard", b"-3.25", b"1999"),
-            record(b"M\xe6rsk", b"12", b"+0010101"),
-        ];
-        let customers = table(0x03, &COLUMNS, &records);
-        let mut ended = customers.clone();
-        ended.extend_from_slice(&[26, b' ', b'x']);
-        let short = table(0x30, &COLUMNS, &[record(b"Ib", b"1", b"20000101")]);
-        for index in 0..10 {
-            records.push(record(
-                b"R\xe6kke",
-                if index % 2 == 0 { b"1" } else { b"2" },
-                b"20240101",
-            ));
-        }
-        let many = table(0x8B, &COLUMNS, &records);
-        let mut early = table(0x03, &COLUMNS, &records[..2]);
-        early.extend_from_slice(b"X");
-        let read = [
-            scratch.write("kunder.dbf", &customers),
-            scratch.write("afsluttet.dbf", &ended),
-            scratch.write("kort.dbf", &short),
-            scratch.write("mange.dbf", &many),
-            scratch.write("afkortet.dbf", &customers[..customers.len() - 30]),
-        ];
-        let failing = [
-            scratch.write("hoved.dbf", &customers[..40]),
-            scratch.write("tidlig.dbf", &early),
-            scratch.write("type.dbf", &table(0x03, &[("X", b'Q', 4)], &[])),
-        ];
-        let timed = scratch.write(
-            "tid.dbf",
-            &table(
-                0x30,
-                &[("NAVN", b'C', 10), ("TID", b'T', 8)],
-                &[
-                    (
-                        b' ',
-                        vec![&b"Morgen"[..], &date_time_cell(2_460_380, 30_645_000)],
-                    ),
-                    (b' ', vec![&b"Midnat"[..], &date_time_cell(2_299_161, 0)]),
-                ],
-            ),
-        );
-        let (parsed, left) = documents(&DbfParser, &[scratch.directory()]);
-        assert!(left.is_empty(), "{left:?}");
-        assert_eq!(parsed.len(), read.len() + failing.len() + 1, "{parsed:?}");
-        assert_same_as_tika_rewriting(&[timed.as_path()], DbfParser.tika_name(), as_tika_times);
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            DbfParser.tika_name(),
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-    }
-
     /// A Visual FoxPro date and time cell of the Julian day number `day` and the milliseconds
     /// since midnight `millis`.
     fn date_time_cell(day: i32, millis: i32) -> Vec<u8> {
         [day.to_le_bytes(), millis.to_le_bytes()].concat()
-    }
-
-    /// The native text with each date and time of a cell, from 1582-10-15 on, as Tika's path
-    /// writes it: the day's midnight in UTC, without its time, written in the JVM's time zone and
-    /// marked as UTC (#118).
-    #[cfg(feature = "tika")]
-    fn as_tika_times(text: &mut String, _: &mut ComparedMetadata, _: &ComparedMetadata) {
-        let zone = crate::java::time::TimeZone::java_default().unwrap();
-        let time = regex::Regex::new(r"(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(Z?)").unwrap();
-        *text = time
-            .replace_all(text, |found: &regex::Captures| {
-                if &found[4] == "Z" {
-                    return found[0].to_owned();
-                }
-                let [year, month, day] = [1, 2, 3].map(|group| found[group].parse().unwrap());
-                let midnight = civil::days_from_civil(year, month, day) * SECONDS_PER_DAY * 1000;
-                format_instant(midnight + zone.offset_at_utc(midnight))
-            })
-            .into_owned();
     }
 
     #[test]
@@ -753,20 +662,5 @@ mod tests {
             modified([Some(124), Some(2), Some(29)]).map(format_instant),
             Some("2024-02-29T00:00:00Z".to_owned())
         );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_dbase_tables_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&DbfParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 3, "{parsed:?}");
-        let (failing, read): (Vec<&Path>, Vec<&Path>) = parsed
-            .iter()
-            .map(PathBuf::as_path)
-            .partition(|path| path.ends_with("testOCTET_header.dbase3"));
-        assert_same_as_tika(&read, DbfParser.tika_name());
-        assert_fails_as_tika(&failing);
     }
 }

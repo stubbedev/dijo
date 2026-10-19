@@ -466,15 +466,8 @@ impl Parser for NotebookParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_fails_as_tika, assert_same_as_tika, documents, Scratch};
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "ai.yobix.NotebookParser";
 
     /// The notebook's blocks, or the failure Tika's path reports before it starts the document.
     fn notebook_blocks(input: &[u8]) -> Result<Result<Vec<Block>, Error>, Unread> {
@@ -576,47 +569,5 @@ mod tests {
             blocks(br#"{"cells": {"a": {"cell_type": "code", "source": "x"}}}"#),
             []
         );
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_notebooks_as_tikas_path_does() {
-        let scratch = Scratch::new("notebooks");
-        let v4 = r##"{"cells": [
-            {"cell_type": "markdown", "source": ["# Title\n", "\n", "Some *text*.\n  \n  More."]},
-            {"cell_type": "code", "source": "print(1)", "outputs": [
-                {"output_type": "stream", "text": ["\u001b[31m1\u001b[0m\n"]},
-                {"output_type": "execute_result", "data": {"text/plain": ["2"], "text/html": "<b>2</b>"}},
-                {"output_type": "error", "ename": "ValueError", "evalue": "bad", "traceback": ["\u001b[1mTrace\u001b[0m", "line"]}
-            ]},
-            {"cell_type": "raw", "source": null},
-            {"cell_type": "code", "source": "   "}
-        ], "metadata": {}, "nbformat": 4}"##;
-        let v3 = r#"{"worksheets": [{"cells": [
-            {"cell_type": "heading", "source": "Heading", "level": 1},
-            {"cell_type": "code", "input": ["x = 1\n", "x"], "outputs": [{"output_type": "pyout", "text": "1"}]}
-        ]}], "nbformat": 3} trailing"#;
-        let written = [
-            scratch.write("v4.ipynb", v4.as_bytes()),
-            scratch.write("v3.ipynb", v3.as_bytes()),
-        ];
-        let not_object = scratch.write("array.ipynb", b"[1, 2]");
-        let (parsed, deferred) = documents(&NotebookParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 3);
-        let paths: Vec<&Path> = written.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
-        assert_fails_as_tika(&[&not_object]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_the_corpus_notebook_as_tikas_path_does() {
-        let (parsed, deferred) =
-            documents(&NotebookParser, &[Path::new("../test_files/documents")]);
-        assert!(deferred.is_empty());
-        assert_eq!(parsed.len(), 1);
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
     }
 }

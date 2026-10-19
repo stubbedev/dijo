@@ -155,7 +155,6 @@ impl ExtractionError {
             extractous_core::Error::LimitExceeded(_) => ErrorCategory::LimitExceeded,
             extractous_core::Error::Timeout => ErrorCategory::Timeout,
             extractous_core::Error::MemoryLimit(_) => ErrorCategory::LimitExceeded,
-            #[cfg(not(feature = "tika"))]
             extractous_core::Error::Unsupported(_) => ErrorCategory::Unsupported,
             _ => return Self::from_message(message),
         };

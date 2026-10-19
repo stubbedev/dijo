@@ -3,26 +3,19 @@ name = "extractous-native"
 publish = false
 version = "0.2.1"
 edition = "2021"
-description = "The native files extractous's build embeds and unpacks: Tika's native image and the OCR bundle"
+description = "The native files extractous's build embeds and unpacks: the OCR bundle"
 license = "Apache-2.0"
 repository = "https://github.com/stubbedev/extractous"
 authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
 
 [features]
-# Tika's GraalVM native image, built from extractous-core/tika-native, embedded as a shared library.
-tika = []
 # tesseract, Leptonica and libheif linked statically, as `EXTRACTOUS_STATIC_LIBS` lists them, instead
-# of loaded: for the statically linked Linux executable without Tika that ci/static-native.nix builds.
+# of loaded: for the statically linked Linux executable that ci/static-native.nix builds.
 static = []
-# Linked into the GraalVM native image of Tika, which ci/static-image.sh builds, instead of loading the
-# image as a shared library.
-static-image = ["static", "tika"]
 
 [dependencies]
 flate2 = "1.1.5"
 libloading = "0.9.0"
 
 [build-dependencies]
-walkdir = "2.5.0"
 flate2 = "1.1.5"
-object = { version = "0.40.0", default-features = false, features = ["read_core", "elf", "std"] }

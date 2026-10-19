@@ -1,7 +1,6 @@
 { pkgs, lib, ... }:
 
 let
-  graalvm = pkgs.graalvmPackages.graalvm-ce;
   tessdata = import ./ci/tessdata.nix { inherit pkgs; };
   hostTarget = pkgs.stdenv.hostPlatform.rust.cargoEnvVarTarget;
 in
@@ -19,17 +18,12 @@ in
     pkgs.libheif.bin
     pkgs.git
     pkgs.sccache
+    pkgs.jre_headless
   ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.mold-wrapped ];
 
   languages.rust.enable = true;
 
-  languages.java = {
-    enable = true;
-    jdk.package = graalvm;
-  };
-
   env = {
-    GRAALVM_HOME = graalvm;
     OMP_THREAD_LIMIT = "1";
     TESSDATA_PREFIX = tessdata;
     RUSTC_WRAPPER = "sccache";

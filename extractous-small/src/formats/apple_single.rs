@@ -167,16 +167,10 @@ fn read(input: &[u8]) -> Result<Content<'_>, String> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use extractous_core::large::LargeFile;
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-    };
 
     fn apple_single(entries: &[(u32, &[u8])], data_fork_length: Option<u32>) -> Vec<u8> {
         let mut file = vec![0x00, 0x05, 0x16, 0x00, 0x00, 0x02, 0x00, 0x00];
@@ -208,35 +202,6 @@ mod tests {
         file.extract_each(AppleSingleFileParser.name(), |_| {});
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_apple_single_files_as_tikas_path_does() {
-        let scratch = Scratch::new("apple-single");
-        let text = "Sm\u{f8}rrebr\u{f8}d og kaffe\n".as_bytes();
-        let read = [
-            scratch.write(
-                "named.txt",
-                &apple_single(&[(3, b"Frokost\xe6.txt"), (9, &[0; 32]), (1, text)], None),
-            ),
-            scratch.write("overlong.txt", &apple_single(&[(1, text)], Some(4000))),
-            scratch.write("forkless", &apple_single(&[(3, b"intet.txt")], None)),
-        ];
-        let mut cut = apple_single(&[(3, b"navn.txt"), (1, text)], None);
-        cut.truncate(40);
-        let failing = [
-            scratch.write("cut", &cut),
-            scratch.write("empty", &apple_single(&[], None)),
-        ];
-        let (parsed, deferred) = documents(&AppleSingleFileParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            AppleSingleFileParser.tika_name(),
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-    }
-
     #[test]
     fn reads_entries_that_overlap() {
         let data = b"named.txt and its text";
@@ -255,16 +220,5 @@ mod tests {
         assert_eq!(content.data_fork, Some(&data[..]));
         file.truncate(file.len() - data.len() + 4);
         assert!(read(&file).unwrap_err().contains("runs past the end"));
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_apple_single_file_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&AppleSingleFileParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 1, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, AppleSingleFileParser.tika_name());
     }
 }

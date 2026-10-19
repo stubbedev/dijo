@@ -15,7 +15,6 @@ use crate::config::ParserConfigs;
 use crate::embedded::{EmbeddedSpool, SpooledEmbedded};
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-#[cfg(not(feature = "tika"))]
 use crate::formats::{Difference, DIFFERS_FROM_TIKA};
 use crate::formats::{Failure, InputFile};
 use crate::input::Pages;
@@ -390,7 +389,6 @@ pub(crate) fn describe_failure(parser: &str, metadata: &TikaMetadata, reason: &s
 /// from Tika's parser, in the way `difference` says, is recorded in the document embedding it,
 /// as [`describe_failure`] records a failure, in a build without Tika, which keeps the native
 /// reading.
-#[cfg(not(feature = "tika"))]
 pub(crate) fn describe_difference(
     parser: &str,
     metadata: &TikaMetadata,

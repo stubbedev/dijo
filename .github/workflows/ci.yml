@@ -32,11 +32,9 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
             ~/.cargo/registry
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('devenv.lock', 'Cargo.lock', 'extractous-core/tika-native/**') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('devenv.lock', 'Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-
       - name: just check
         run: devenv shell -- just check
@@ -55,11 +53,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install GraalVM
-        run: |
-          home=$(ci/install-graalvm.sh windows-x64 "$(cygpath --unix "$RUNNER_TEMP")/graalvm")
-          echo "GRAALVM_HOME=$(cygpath --windows "$home")" >> "$GITHUB_ENV"
-          echo "JAVA_HOME=$(cygpath --windows "$home")" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: clippy, rustfmt
@@ -75,11 +68,9 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
             ~/.cargo/registry
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'extractous-core/tika-native/**', 'ci/graalvm.env') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-
       - name: just check
         shell: pwsh

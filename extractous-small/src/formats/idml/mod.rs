@@ -220,18 +220,6 @@ impl SaxHandler for ContentAndMetadata<'_, '_> {
     }
 }
 
-/// The page counts `IDMLParser` keeps adding to across the documents Tika's path parses, where
-/// the native parser counts each document's own (#124).
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub const ACCUMULATED_PAGE_COUNTS: crate::formats::parity::Departures = &[
-    crate::formats::parity::Departure::Values(SPREAD_PAGE_COUNT, "#124"),
-    crate::formats::parity::Departure::Values(MASTER_SPREAD_PAGE_COUNT, "#124"),
-    crate::formats::parity::Departure::Values(PAGE_COUNT, "#124"),
-];
-
-#[cfg(all(test, feature = "tika"))]
-mod tests;
-
 #[cfg(test)]
 mod large_tests {
     use extractous_core::large::{LargeFile, SPOOLING_BUDGET};

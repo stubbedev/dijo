@@ -2,9 +2,9 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-version=$(sed -n 's/^def tikaVersion = "\(.*\)"$/\1/p' "$here/build.gradle")
+version=$(<"$here/tika-version")
 if [ -z "$version" ]; then
-    echo "$here/build.gradle defines no tikaVersion" >&2
+    echo "$here/tika-version names no Tika version" >&2
     exit 1
 fi
 echo "$version"

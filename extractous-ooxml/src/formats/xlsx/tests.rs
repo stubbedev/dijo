@@ -1,151 +1,4 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{self, assert_same_as_tika_adjusting, Adjustments};
-
-#[cfg(feature = "tika")]
-const TIKA_PARSER: &str = "org.apache.tika.parser.microsoft.ooxml.OOXMLParser";
-
-/// The workbooks of the corpora in the repository that this port leaves to Tika, with why.
-#[cfg(feature = "tika")]
-const DEFERRED: [(&str, &str); 0] = [];
-
-/// The workbooks of Tika's own tests that Tika's path fails on: a Strict OOXML workbook, which
-/// POI's `XSSFReader` refuses.
-#[cfg(feature = "tika")]
-const FAILING_CONFORMANCE: [&str; 1] = ["testEXCEL.strict.xlsx"];
-
-#[cfg(feature = "tika")]
-fn file_name(path: &Path) -> String {
-    path.file_name().unwrap().to_string_lossy().into_owned()
-}
-
-#[cfg(feature = "tika")]
-fn deferral(path: &Path, configs: &ParserConfigs) -> Option<String> {
-    let input = std::fs::read(path).unwrap();
-    XlsxParser.defers(&input, &TikaMetadata::new(), configs)
-}
-
-/// Of `documents`, those this port reads under `configs`, after checking that it leaves exactly
-/// `deferred` to Tika, by file name and a part of the reason.
-#[cfg(feature = "tika")]
-fn ported(
-    documents: &[PathBuf],
-    deferred: &[(&str, &str)],
-    configs: &ParserConfigs,
-) -> Vec<PathBuf> {
-    let mut ported = Vec::new();
-    let mut unexpected = Vec::new();
-    for document in documents {
-        let name = file_name(document);
-        let expected = deferred.iter().find(|(deferred, _)| *deferred == name);
-        match (deferral(document, configs), expected) {
-            (None, None) => ported.push(document.clone()),
-            (Some(reason), Some((_, why))) if reason.contains(why) => {}
-            (reason, expected) => {
-                unexpected.push(format!("{name}: {reason:?}, expected {expected:?}"))
-            }
-        }
-    }
-    assert!(unexpected.is_empty(), "{}", unexpected.join("\n"));
-    ported
-}
-
-/// The workbooks below `roots`, by Tika's detection.
-#[cfg(feature = "tika")]
-fn workbooks(roots: &[&Path]) -> Vec<PathBuf> {
-    let (mut parsed, deferred) = parity::documents(&XlsxParser, roots);
-    parsed.extend(deferred);
-    parsed.sort();
-    parsed
-}
-
-/// How the native parser departs from Tika's path (#93): it writes each link of a sheet once,
-/// where Tika writes it again as an outside resource; and its XHTML head says whether a sheet is
-/// protected, where Tika's says `false` before it reads the sheets (#95). The div of each chart
-/// and diagram is the parity's [`parity::UNWRITTEN_DIVS`].
-#[cfg(feature = "tika")]
-const DEPARTURES: Adjustments = Adjustments {
-    line_breaks: None,
-    metadata: &[],
-    wrappers: &[],
-    repeated: &["<a class=\"external-ref-externalResource\" "],
-    final_in_head: &[super::excel::PROTECTED_WORKSHEET],
-};
-
-#[cfg(feature = "tika")]
-pub(super) fn assert_same_as_tika(documents: &[PathBuf], configs: &ParserConfigs) {
-    let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_adjusting(&documents, TIKA_PARSER, configs, DEPARTURES);
-}
-
-#[cfg(feature = "tika")]
-/// [`assert_same_as_tika`], with each native result rewritten by `rewrite` before it is
-/// compared.
-pub(super) fn assert_same_as_tika_rewriting(
-    documents: &[PathBuf],
-    configs: &ParserConfigs,
-    rewrite: parity::NativeRewrite,
-) {
-    let documents: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-    parity::assert_same_as_tika_adjusting_rewriting(
-        &documents,
-        TIKA_PARSER,
-        configs,
-        DEPARTURES,
-        rewrite,
-    );
-}
-
-/// The workbook of two million shared strings, which a debug build takes minutes over in the
-/// eight extractions each side of a comparison makes, compared on its own.
-#[cfg(feature = "tika")]
-const LARGE: &str = "many-shared-strings.xlsx";
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_what_tikas_path_extracts() {
-    let documents: Vec<PathBuf> = workbooks(&[
-        Path::new("../test_files/documents"),
-        Path::new("../quality/corpus"),
-    ])
-    .into_iter()
-    .filter(|document| file_name(document) != LARGE)
-    .collect();
-    let defaults = ParserConfigs::default();
-    assert_same_as_tika(&ported(&documents, &DEFERRED, &defaults), &defaults);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_what_tikas_path_extracts_from_many_shared_strings() {
-    let document = Path::new("../test_files/documents").join(LARGE);
-    assert_same_as_tika(&[document], &ParserConfigs::default());
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
-fn extracts_what_tikas_path_extracts_from_tikas_test_documents() {
-    let (failing, documents): (Vec<PathBuf>, Vec<PathBuf>) =
-        workbooks(&[&parity::conformance_corpus()])
-            .into_iter()
-            .partition(|document| FAILING_CONFORMANCE.contains(&file_name(document).as_str()));
-    assert_eq!(failing.len(), FAILING_CONFORMANCE.len(), "{failing:?}");
-    let defaults = ParserConfigs::default();
-    for document in &failing {
-        let input = std::fs::read(document).unwrap();
-        assert!(matches!(
-            XlsxParser.prepare(&input, &TikaMetadata::new(), &defaults),
-            Err(Decline::Fails(Error::ParseError(reason))) if reason == STRICT_UNSUPPORTED_BY_TIKA
-        ));
-    }
-    let failing: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
-    parity::assert_fails_as_tika(&failing);
-    assert_same_as_tika(&ported(&documents, &[], &defaults), &defaults);
-}
 
 const MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const RELATIONSHIPS_NS: &str =
@@ -342,21 +195,6 @@ fn zip(parts: &[Part]) -> Vec<u8> {
         writer.write_all(&part.content).unwrap();
     }
     writer.finish().unwrap().into_inner()
-}
-
-#[cfg(feature = "tika")]
-fn assert_snippets_same_as_tika(snippets: &[(&str, Vec<u8>)], configs: &ParserConfigs) {
-    let scratch = parity::Scratch::new("xlsx-snippets");
-    let mut paths = Vec::new();
-    for (name, bytes) in snippets {
-        assert_eq!(
-            XlsxParser.defers(bytes, &TikaMetadata::new(), configs),
-            None,
-            "{name}"
-        );
-        paths.push(scratch.write(&format!("{name}.xlsx"), bytes));
-    }
-    assert_same_as_tika(&paths, configs);
 }
 
 fn cells(rows: &[&str]) -> String {
@@ -673,18 +511,6 @@ fn drawing_snippets() -> Vec<(&'static str, Vec<u8>)> {
     )]
 }
 
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_what_tikas_path_extracts_from_snippets() {
-    assert_snippets_same_as_tika(&snippets(), &ParserConfigs::default());
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_what_tikas_path_extracts_from_drawings() {
-    assert_snippets_same_as_tika(&drawing_snippets(), &ParserConfigs::default());
-}
-
 #[test]
 fn defers_links_inside_the_package() {
     let input = workbook(
@@ -703,25 +529,6 @@ fn defers_links_inside_the_package() {
         .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
         .unwrap();
     assert!(reason.contains("links to #Sheet2!A1"), "{reason}");
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_what_tikas_path_extracts_from_snippets_with_other_settings() {
-    use crate::config::OfficeParserConfig;
-    let office = |config: OfficeParserConfig| ParserConfigs {
-        office: config,
-        ..ParserConfigs::default()
-    };
-    // Missing rows are not compared: Tika writes an empty row for every row before each row
-    // (#93), which `writes_each_missing_row_once` checks the port does not.
-    for configs in [
-        office(OfficeParserConfig::new().set_include_headers_and_footers(false)),
-        office(OfficeParserConfig::new().set_include_shape_based_content(false)),
-        office(OfficeParserConfig::new().set_concatenate_phonetic_runs(false)),
-    ] {
-        assert_snippets_same_as_tika(&snippets(), &configs);
-    }
 }
 
 #[test]
@@ -920,56 +727,3 @@ fn records_a_sheet_whose_xml_fails_and_goes_on() {
     assert_eq!(metadata["msoffice:excel:protected-worksheet"], ["false"]);
     assert!(!metadata.contains_key("msoffice:excel:has-hidden-rows"));
 }
-
-#[cfg(feature = "tika")]
-#[test]
-fn records_a_sheet_whose_xml_fails_as_tikas_path_does() {
-    let scratch = parity::Scratch::new("xlsx-failing-sheet");
-    let documents = [scratch.write("failing.xlsx", &failing_sheet())];
-    assert_same_as_tika_rewriting(
-        &documents,
-        &ParserConfigs::default(),
-        |text, metadata, tika| {
-            parity::with_tikas_values(
-                text,
-                metadata,
-                tika,
-                crate::formats::embedded::EXCEPTION_WARNING,
-            )
-        },
-    );
-}
-
-/// A Strict OOXML workbook, whose main document only a Strict relationship leads to, fails
-/// natively as Tika's path fails it (#149).
-#[cfg(feature = "tika")]
-#[test]
-fn fails_a_strict_workbook_as_tikas_path_does() {
-    let scratch = parity::Scratch::new("xlsx-strict");
-    let strict = crate::formats::ooxml::testing::package_with(
-        &crate::formats::ooxml::testing::relationship(
-            "rId1",
-            kind::STRICT_OFFICE_DOCUMENT,
-            "xl/workbook.xml",
-        ),
-        &[(
-            "xl/workbook.xml",
-            WORKBOOK_TYPES[0],
-            b"<workbook xmlns=\"http://purl.oclc.org/ooxml/spreadsheetml/main\"><sheets/></workbook>",
-        )],
-    );
-    let document = scratch.write("strict.xlsx", &strict);
-    assert!(matches!(
-        XlsxParser.prepare(&strict, &TikaMetadata::new(), &ParserConfigs::default()),
-        Err(Decline::Fails(Error::ParseError(reason))) if reason == STRICT_UNSUPPORTED_BY_TIKA
-    ));
-    parity::assert_fails_as_tika(&[&document]);
-}
-
-/// The message Tika's path fails a Strict OOXML workbook with.
-#[cfg(feature = "tika")]
-const STRICT_UNSUPPORTED_BY_TIKA: &str = "Parse error occurred : \
-    org.apache.tika.exception.TikaException: TIKA-198: Illegal IOException from \
-    org.apache.tika.parser.microsoft.ooxml.OOXMLParser <- caused by java.io.IOException: \
-    org.apache.poi.ooxml.POIXMLException: Strict OOXML isn't currently supported, please see \
-    bug #57699";

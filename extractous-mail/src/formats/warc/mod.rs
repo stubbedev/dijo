@@ -15,7 +15,7 @@
 mod gemini;
 mod headers;
 mod http;
-#[cfg(all(test, not(feature = "tika")))]
+#[cfg(test)]
 mod large;
 mod media_type;
 mod ragel;
@@ -468,18 +468,8 @@ fn record_id<'t>(text: &'t str, difference: &mut Option<Difference>) -> &'t str 
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_read_where_tika_fails, assert_same_as_tika,
-        conformance_corpus, documents, Scratch,
-    };
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.warc.WARCParser";
 
     fn record(headers: &[(&str, &str)], block: &[u8]) -> Vec<u8> {
         let mut record = b"WARC/1.0\r\n".to_vec();
@@ -505,81 +495,6 @@ mod tests {
         )
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_web_archives_as_tikas_path_does() {
-        let scratch = Scratch::new("warc");
-        let html = b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
-                     <html><body><p>Hej verden</p></body></html>";
-        let chunked =
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n\
-                        5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
-        let mut archive = record(
-            &[
-                ("WARC-Type", "warcinfo"),
-                ("WARC-Record-ID", "<urn:uuid:info>"),
-            ],
-            b"software: test\r\n",
-        );
-        archive.extend(response("<urn:uuid:one>", html));
-        archive.extend(response("<urn:uuid:two>", chunked));
-        archive.extend(record(
-            &[
-                ("WARC-Type", "request"),
-                ("WARC-Record-ID", "<urn:uuid:three>"),
-            ],
-            b"GET / HTTP/1.1\r\n\r\n",
-        ));
-        let mut gzipped = Vec::new();
-        for member in [&archive[..], &response("<urn:uuid:four>", html)] {
-            gzipped.extend(crate::compress::gzip::tests::gzip(member, None));
-        }
-        let arc_page = b"HTTP/1.0 200 OK\nContent-Type: text/html\n\n<p>arkiv</p>";
-        let mut arc =
-            b"filedesc://test.arc 0.0.0.0 20080430204825 text/plain 11\n1 0 test\nX\n\n".to_vec();
-        arc.extend_from_slice(
-            format!(
-                "http://example.com/ 1.2.3.4 20080430204826 text/html {}\n",
-                arc_page.len()
-            )
-            .as_bytes(),
-        );
-        arc.extend_from_slice(arc_page);
-        arc.push(b'\n');
-        let read = [
-            scratch.write("archive.warc", &archive),
-            scratch.write("archive.warc.gz", &gzipped),
-            scratch.write("archive.arc", &arc),
-        ];
-        let failing = [scratch.write(
-            "no-type.warc",
-            &[
-                archive.clone(),
-                record(&[("WARC-Record-ID", "<urn:uuid:x>")], b""),
-            ]
-            .concat(),
-        )];
-        let (parsed, deferred) = documents(&WarcParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_web_archives_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&WarcParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 6, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
-    }
-
     #[test]
     fn parses_what_there_is_of_a_payload_cut_short_as_differing() {
         let response =
@@ -591,9 +506,6 @@ mod tests {
             panic!("a payload cut short is not read as differing");
         };
         assert!(difference.0.contains("cut short"), "{difference:?}");
-        if cfg!(feature = "tika") {
-            return;
-        }
         let (mut reader, _) = crate::Extractor::new()
             .extract_bytes(response)
             .expect("the extraction starts");
@@ -728,32 +640,6 @@ mod tests {
             "{:?}",
             payloads[0].1.names().collect::<Vec<_>>()
         );
-    }
-
-    /// Web archives of Gemini responses with a payload, on which Tika's path fails, and the
-    /// native parser reads (#184).
-    #[cfg(feature = "tika")]
-    #[test]
-    fn reads_gemini_payloads_where_tikas_path_fails() {
-        let scratch = Scratch::new("warc-gemini");
-        let after = response("<urn:uuid:after>", b"HTTP/1.1 200 OK\r\n\r\nafter");
-        let written = [
-            scratch.write(
-                "gemini-payload.warc",
-                &[gemini(b"20 text/gemini\r\n# Hej verden\n"), after.clone()].concat(),
-            ),
-            scratch.write(
-                "gemini-empty-and-payload.warc",
-                &[
-                    gemini(b"51 not found\r\n"),
-                    gemini(b"20 text/plain\r\nHej verden\n"),
-                    after,
-                ]
-                .concat(),
-            ),
-        ];
-        let paths: Vec<&Path> = written.iter().map(PathBuf::as_path).collect();
-        assert_read_where_tika_fails(&paths, "#184");
     }
 
     #[test]

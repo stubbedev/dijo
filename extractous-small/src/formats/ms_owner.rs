@@ -88,14 +88,8 @@ fn names(input: &[u8]) -> (Vec<String>, Option<&'static str>) {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-    };
 
     fn owner(ascii: &[u8], unicode: &str, unicode_length: u8) -> Vec<u8> {
         let mut file = vec![0u8; ASCII_CHUNK_LENGTH];
@@ -126,32 +120,5 @@ mod tests {
         cut.truncate(60);
         assert_eq!(names(&cut).0, ["heidi"]);
         assert!(names(&cut).1.is_some());
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_owner_files_as_tikas_path_does() {
-        let scratch = Scratch::new("ms-owner");
-        let read = scratch.write(
-            "~$rapport.docx",
-            &owner(b"Hans-Henrik\xf8", "Hans-Henrikø", 12),
-        );
-        let failing = scratch.write("~$notat.docx", &owner(b"Mette", "Mette", 5)[..60]);
-        let (parsed, deferred) = documents(&MsOwnerFileParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 2, "{parsed:?}");
-        assert_same_as_tika(&[read.as_path()], MsOwnerFileParser.tika_name());
-        assert_fails_as_tika(&[failing.as_path()]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_owner_file_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&MsOwnerFileParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 1, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, MsOwnerFileParser.tika_name());
     }
 }

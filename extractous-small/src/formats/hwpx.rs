@@ -398,17 +398,9 @@ impl Parser for HwpxParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::PathBuf;
 
-    #[cfg(feature = "tika")]
-    use super::*;
     use crate::compress::zip::file::tests::zip;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{assert_fails_as_tika, assert_same_as_tika, documents, Scratch};
 
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "ai.yobix.HwpxParser";
     const CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ocf:container xmlns:ocf="urn:oasis:names:tc:opendocument:xmlns:container">
   <ocf:rootfiles>
@@ -446,11 +438,6 @@ mod tests {
 <hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
   <hp:p><hp:run><hp:t>Second section, 한국어 텍스트.</hp:t><hp:endNote><hp:subList><hp:p><hp:run><hp:t>An end note</hp:t></hp:run></hp:p></hp:subList></hp:endNote></hp:run></hp:p>
 </hs:sec>"#;
-
-    /// A section of less text than the write limit, so that a failure after it fails every
-    /// extraction.
-    #[cfg(feature = "tika")]
-    const SHORT_SECTION: &str = r#"<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section" xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"><hp:p><hp:run><hp:t>Short</hp:t></hp:run></hp:p></hs:sec>"#;
 
     fn hwpx(package: &str, sections: &[(&str, &str)]) -> Vec<u8> {
         package_in(CONTAINER_XML, package, sections)
@@ -493,62 +480,6 @@ mod tests {
             "{xml}"
         );
         assert_eq!(metadata["dc:title"], ["A bold title"]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_documents_as_tikas_path_does() {
-        let scratch = Scratch::new("hwpx");
-        let sections = [
-            ("Contents/section0.xml", SECTION0),
-            ("Contents/section1.xml", SECTION1),
-        ];
-        let read = [scratch.write("document.hwpx", &hwpx(PACKAGE_XML, &sections))];
-        let short = [
-            ("Contents/section0.xml", SHORT_SECTION),
-            ("Contents/section1.xml", SHORT_SECTION),
-        ];
-        let failing = [
-            scratch.write("missing-section.hwpx", &hwpx(PACKAGE_XML, &short[..1])),
-            scratch.write(
-                "missing-item.hwpx",
-                &hwpx(
-                    &PACKAGE_XML.replace(r#"idref="section1""#, r#"idref="nowhere""#),
-                    &short,
-                ),
-            ),
-            scratch.write(
-                "broken-section.hwpx",
-                &hwpx(
-                    PACKAGE_XML,
-                    &[short[0], ("Contents/section1.xml", "<hs:sec><p>")],
-                ),
-            ),
-            scratch.write(
-                "no-package.hwpx",
-                &package_in(
-                    &CONTAINER_XML.replace("content.hpf", "elsewhere.hpf"),
-                    PACKAGE_XML,
-                    &sections,
-                ),
-            ),
-            scratch.write(
-                "no-root-file.hwpx",
-                &package_in(
-                    &CONTAINER_XML.replace("full-path", "path"),
-                    PACKAGE_XML,
-                    &sections,
-                ),
-            ),
-        ];
-        let (parsed, deferred) = documents(&HwpxParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len() + failing.len());
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
     }
 
     /// A package whose first section decodes past what a spool holds in memory, with noise

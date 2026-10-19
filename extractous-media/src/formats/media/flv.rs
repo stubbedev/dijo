@@ -376,18 +376,9 @@ impl Parser for FlvParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_same_as_tika, conformance_corpus, differing_reading, documents, Scratch,
-    };
     use extractous_core::large::{bodies_past_limit, LargeFile};
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.video.FLVParser";
 
     /// The header of a file of audio and video.
     const HEADER: &[u8] = b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00";
@@ -408,15 +399,6 @@ mod tests {
         tag.extend(body);
         tag.extend((length + 11).to_be_bytes());
         tag
-    }
-
-    /// An AMF date of `millis` since 1970, with the offset of the zone it names in minutes.
-    #[cfg(feature = "tika")]
-    fn date(millis: f64, offset: i16) -> Vec<u8> {
-        let mut date = vec![11];
-        date.extend(millis.to_be_bytes());
-        date.extend(offset.to_be_bytes());
-        date
     }
 
     /// A video whose `onMetaData` map has the entries of an encoder's, then `extra`, each a key
@@ -460,67 +442,5 @@ mod tests {
         assert_eq!(metadata["flv:hasVideo"], ["true"]);
         assert_eq!(metadata["flv:duration"], ["12.5"]);
         assert_eq!(metadata["flv:encoder"], ["Lavf"]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_flash_videos_as_tikas_path_does() {
-        let scratch = Scratch::new("flv");
-        let read = [scratch.write("video.flv", &flv(&[]))];
-        let (parsed, deferred) = documents(&FlvParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len());
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-    }
-
-    /// Dates are written in UTC, as Tika's path writes them where Java's default time zone is
-    /// UTC, and the reading differs from Tika's in other zones.
-    #[cfg(feature = "tika")]
-    #[test]
-    fn writes_flash_video_dates_in_utc() {
-        let scratch = Scratch::new("flv-dates");
-        let mut dates = vec![10, 0, 0, 0, 5];
-        for millis in [
-            f64::NAN,
-            1e300,
-            -1e15,
-            -12_219_292_800_001.0,
-            951_782_400_123.0,
-        ] {
-            dates.extend(date(millis, 0));
-        }
-        let path = scratch.write(
-            "dated.flv",
-            &flv(&[
-                ("creationdate", date(1_791_836_869_000.0, -120)),
-                ("dates", dates),
-            ]),
-        );
-        let (parsed, deferred) = documents(&FlvParser, &[scratch.directory()]);
-        assert!(parsed.is_empty(), "{parsed:?}");
-        assert_eq!(deferred, std::slice::from_ref(&path));
-        let (Difference(difference), xhtml) = differing_reading(&FlvParser, &path);
-        assert!(difference.starts_with("an AMF date"), "{difference}");
-        for meta in [
-            r#"<meta name="flv:creationdate" content="Mon Oct 12 20:27:49 UTC 2026" />"#,
-            r#"<meta name="flv:dates" content="[Thu Jan 01 00:00:00 UTC 1970, Sun Aug 17 07:12:55 UTC 292278994, Tue Nov 16 22:13:20 UTC 29720, Thu Oct 04 23:59:59 UTC 1582, Tue Feb 29 00:00:00 UTC 2000]" />"#,
-            r#"<meta name="flv:duration" content="12.5" />"#,
-        ] {
-            assert!(xhtml.contains(meta), "{meta} in {xhtml}");
-        }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_flash_videos_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&FlvParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 1, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
     }
 }

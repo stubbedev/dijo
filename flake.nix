@@ -20,7 +20,6 @@
           default = static.executable;
           static = static.executable;
           static-dependencies = static.dependencies;
-          static-toolchain = static.toolchain;
           ocr-bundle-linked = import ./ci/ocr-static.nix { inherit nixpkgs system; };
           container = import ./ci/container.nix {
             inherit pkgs;

@@ -1,12 +1,4 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus,
-    documents, Scratch,
-};
 
 const CHUNK: usize = 0x1000;
 const STORAGE: &str = "::DataSpace/Storage/MSCompressed/";
@@ -113,57 +105,4 @@ fn reads_the_directory_listing_as_tika_does() {
         b"<p>a</p>"
     );
     assert_eq!(encint(300), [0x82, 0x2c]);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_chm_files_as_tikas_path_does() {
-    let roots = [
-        Path::new("../test_files/documents"),
-        Path::new("../quality/corpus"),
-    ];
-    let (parsed, deferred) = documents(&ChmParser, &roots);
-    assert!(
-        parsed.is_empty() && deferred.is_empty(),
-        "{parsed:?} {deferred:?}"
-    );
-
-    let scratch = Scratch::new("chm");
-    let pages: [(&str, &[u8]); 6] = [
-        (
-            "/index.html",
-            "<html><head><title>Hjælp</title></head><body><h1>Velkommen</h1><p>Første side.</p></body></html>".as_bytes(),
-        ),
-        ("/style.css", b"p { color: red }"),
-        ("/tom.htm", b""),
-        ("/$WWKeywordLinks/skjult.html", b"<p>skjult</p>"),
-        (
-            "/kapitel/to.htm",
-            b"<html><body><table><tr><td>a</td><td>b</td></tr></table></body></html>",
-        ),
-        ("/kapitel/tre.HTML", b"<p>ikke med</p>"),
-    ];
-    let help = scratch.write("help.chm", &chm(&pages, b"LZXC"));
-    let unsigned = scratch.write("unsigned.chm", &chm(&pages, b"LZXX"));
-    let (parsed, deferred) = documents(&ChmParser, &[scratch.directory()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed, [help.clone(), unsigned.clone()]);
-    assert_same_as_tika(&[help.as_path()], ChmParser.tika_name());
-    assert_fails_as_tika(&[unsigned.as_path()]);
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn extracts_tikas_test_documents_as_tikas_path_does() {
-    let (parsed, deferred) = documents(&ChmParser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    let (failing, parsed): (Vec<PathBuf>, Vec<PathBuf>) = parsed
-        .into_iter()
-        .partition(|path| path.ends_with("testChm_oom.chm"));
-    assert_eq!(parsed.len(), 12, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika_departing(&paths, ChmParser.tika_name(), DEPARTURES);
-    let failing: Vec<&Path> = failing.iter().map(PathBuf::as_path).collect();
-    assert_fails_as_tika(&failing);
 }

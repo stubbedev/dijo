@@ -312,27 +312,8 @@ fn write(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::odf::tests::heading_and_note_ends;
     use crate::formats::odf::tests::{document, MANIFEST};
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika_adjusting, conformance_corpus, documents,
-        Adjustments, Scratch,
-    };
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.odf.FlatOpenDocumentParser";
-    #[cfg(feature = "tika")]
-    const DOCUMENTS: [&str; 3] = [
-        "../test_files/documents/notes.fodt",
-        "../test_files/documents/revisions.fodt",
-        "../test_files/documents/lighthouse.fodg",
-    ];
     /// Documents whose master pages have text, headers and footers or placeholders, which
     /// Tika's path leaves out (#69), with text of each the native parser extracts.
     const WITH_MASTER_PAGES: [(&str, &[&str]); 2] = [
@@ -347,22 +328,6 @@ mod tests {
     ];
     const NAMESPACES: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0""#;
     const TEXT: &str = "application/vnd.oasis.opendocument.text";
-
-    /// How the native parser departs from Tika's path: it ends headings and notes as blocks
-    /// (#90), and sets the document's version, which Tika's path never does (#91).
-    #[cfg(feature = "tika")]
-    const DEPARTURES: Adjustments = Adjustments {
-        line_breaks: Some(heading_and_note_ends),
-        metadata: &["odf:version"],
-        wrappers: &[],
-        repeated: &[],
-        final_in_head: &[],
-    };
-
-    #[cfg(feature = "tika")]
-    fn assert_same_as_tika(documents: &[&Path], tika_name: &str) {
-        assert_same_as_tika_adjusting(documents, tika_name, &ParserConfigs::default(), DEPARTURES);
-    }
 
     /// A flat document whose `office:document` names `mimetype` and holds `sections`.
     fn flat(mimetype: &str, sections: &str) -> Vec<u8> {
@@ -380,13 +345,6 @@ mod tests {
             .unwrap()
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts() {
-        let documents: Vec<&Path> = DOCUMENTS.iter().map(Path::new).collect();
-        assert_same_as_tika(&documents, TIKA_NAME);
-    }
-
     #[test]
     fn extracts_master_pages() {
         for (document, texts) in WITH_MASTER_PAGES {
@@ -395,37 +353,6 @@ mod tests {
                 assert!(xml.contains(text), "{document}: {text} in {xml}");
             }
         }
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_the_outermost_meta_and_body_as_tikas_path_does() {
-        let scratch = Scratch::new("flat-sections");
-        let meta = r#"<office:meta><meta:generator>Test</meta:generator><dc:title>Flad</dc:title><meta:document-statistic meta:page-count="1"/></office:meta>"#;
-        let styles = r#"<office:master-styles><style:master-page style:name="Standard"/></office:master-styles>"#;
-        let body = r#"<office:body><office:text><text:h text:outline-level="2">Fyret</text:h><text:p>Lys <text:span text:style-name="T1">hver</text:span> aften<text:note><text:note-body><text:p>Note</text:p></text:note-body></text:note> efter.</text:p><text:p><draw:frame><draw:object><office:document office:mimetype="application/vnd.oasis.opendocument.chart"><office:meta><dc:title>Inner</dc:title></office:meta><office:body><office:chart><text:p>Inner body</text:p></office:chart></office:body></office:document></draw:object></draw:frame>after object</text:p></office:text></office:body>"#;
-        let documents = [
-            scratch.write(
-                "sections.fodt",
-                &flat(TEXT, &format!("{meta}{styles}{body}")),
-            ),
-            scratch.write(
-                "drawing.fodg",
-                &flat(
-                    "application/vnd.oasis.opendocument.graphics",
-                    &format!("{meta}{body}"),
-                ),
-            ),
-            scratch.write(
-                "styles-in-body.fodt",
-                &flat(
-                    TEXT,
-                    r#"<office:body><office:text><style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style><text:p>x <text:span text:style-name="T1">bold</text:span></text:p></office:text></office:body>"#,
-                ),
-            ),
-        ];
-        let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
     }
 
     /// A flat document reads as the same document archived does (#69): its styles, master
@@ -494,21 +421,6 @@ mod tests {
         assert!(!metadata.contains_key("dc:title"));
     }
 
-    #[cfg(feature = "tika")]
-    #[test]
-    fn fails_where_tikas_path_fails() {
-        let scratch = Scratch::new("flat-failures");
-        let documents = [scratch.write(
-            "unclosed.fodt",
-            &flat(
-                TEXT,
-                "<office:body><office:text><text:p>open <text:span>span</office:text></office:body>",
-            ),
-        )];
-        let paths: Vec<&Path> = documents.iter().map(PathBuf::as_path).collect();
-        assert_fails_as_tika(&paths);
-    }
-
     /// A malformed font weight or outline level, on which Tika's path fails without ending the
     /// open elements, is ignored (#69, #90).
     #[test]
@@ -518,34 +430,6 @@ mod tests {
             r#"<office:body><office:text><text:p>before</text:p><style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="6x"/></style:style><text:h text:outline-level="x">h <text:span text:style-name="T1">t</text:span></text:h></office:text></office:body>"#,
         ));
         assert!(xml.contains("<p>before</p>\n<h1>h t</h1>\n"), "{xml}");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_binary_data_in_the_body_as_tikas_path_does() {
-        let scratch = Scratch::new("flat-binary-data");
-        let image = |data: &str| {
-            format!(
-                "<office:body><office:text><text:p>before</text:p><text:p><draw:frame>\
-                 <draw:image><office:binary-data>{data}</office:binary-data></draw:image>\
-                 </draw:frame>after</text:p></office:text></office:body>"
-            )
-        };
-        let files = [
-            scratch.write("zeros.fodt", &flat(TEXT, &image("AAAA"))),
-            scratch.write(
-                "text.fodt",
-                &flat(TEXT, &image("SGVq\n  IHZl cmRl\nbiE=ignored")),
-            ),
-            scratch.write("unpadded.fodt", &flat(TEXT, &image("SGVqIHZlcmRlbiE"))),
-            scratch.write("url-safe.fodt", &flat(TEXT, &image("-_-_SGVq"))),
-            scratch.write("empty.fodt", &flat(TEXT, &image(""))),
-        ];
-        let (parsed, deferred) = documents(&FlatOpenDocumentParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), files.len());
-        let paths: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
     }
 
     /// Binary data in the styles, which Tika's path never reads, is parsed as in an archive,
@@ -571,38 +455,5 @@ mod tests {
             ),
         ));
         assert!(!settings.contains("Hej verden!"), "{settings}");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore]
-    fn extracts_what_tikas_path_extracts_from_tikas_documents() {
-        let corpus = conformance_corpus();
-        let (parsed, deferred) = documents(&FlatOpenDocumentParser, &[&corpus]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert!(!parsed.is_empty());
-        // Their master pages hold placeholders, which Tika's path leaves out (#69), with what
-        // the native parser writes of them.
-        let with_master_pages = [
-            ("testODPMacro.fodp", "<body><div><p />\n</div>"),
-            ("testFODS_embeddedChart.fods", "<p>Oldal </p>"),
-            ("testODSMacro.fods", "<p>Page </p>"),
-        ];
-        let (master_pages, parsed): (Vec<&Path>, Vec<&Path>) =
-            parsed.iter().map(PathBuf::as_path).partition(|path| {
-                with_master_pages
-                    .iter()
-                    .any(|(name, _)| path.ends_with(name))
-            });
-        assert_same_as_tika(&parsed, TIKA_NAME);
-        assert_eq!(master_pages.len(), with_master_pages.len());
-        for (name, written) in with_master_pages {
-            let path = master_pages
-                .iter()
-                .find(|path| path.ends_with(name))
-                .unwrap_or_else(|| panic!("no {name}"));
-            let (xml, _) = extract(&std::fs::read(path).unwrap());
-            assert!(xml.contains(written), "{name}: {written} in {xml}");
-        }
     }
 }

@@ -1,11 +1,4 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-};
 
 const ATTACH_LONG_FILENAME: u16 = 0x3707;
 const ATTACH_EXTENSION: u16 = 0x3703;
@@ -187,59 +180,6 @@ fn throws_where_poi_does() {
         let thrown = Message::read(&input).unwrap_err();
         assert!(thrown.to_string().contains(reason), "{thrown:?}");
     }
-}
-
-#[cfg(feature = "tika")]
-#[test]
-fn extracts_tnef_messages_as_tikas_path_does() {
-    let roots = [
-        Path::new("../test_files/documents"),
-        Path::new("../quality/corpus"),
-    ];
-    let (parsed, deferred) = documents(&TnefParser, &roots);
-    assert!(
-        parsed.is_empty() && deferred.is_empty(),
-        "{parsed:?} {deferred:?}"
-    );
-
-    let scratch = Scratch::new("tnef");
-    let rich = scratch.write("winmail.dat", &rich_message());
-    let bare = scratch.write(
-        "bare.dat",
-        &message(&[attachment(Some("a.txt"), &[], Some(b"Alene\n"))]),
-    );
-    let empty = scratch.write("empty.dat", &message(&[]));
-    let without_data = scratch.write(
-        "without-data.dat",
-        &message(&[
-            attachment(Some("a.txt"), &[], Some("Først\n".as_bytes())),
-            attachment(Some("b.txt"), &[], None),
-        ]),
-    );
-    let truncated = rich_message();
-    let truncated = scratch.write("truncated.dat", &truncated[..truncated.len() - 3]);
-    let level = scratch.write("level.dat", &message(&[vec![7]]));
-    let (parsed, deferred) = documents(&TnefParser, &[scratch.directory()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 6, "{parsed:?}");
-    assert_same_as_tika(
-        &[rich.as_path(), bare.as_path(), empty.as_path()],
-        TnefParser.tika_name(),
-    );
-    assert_fails_as_tika(&[without_data.as_path(), truncated.as_path(), level.as_path()]);
-}
-
-/// `testWINMAIL.dat` holds `quick.html`, whose white space after `</body>` the native HTML
-/// parser puts in the body (#84).
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn extracts_tikas_test_tnef_messages_as_tikas_path_does() {
-    let (parsed, deferred) = documents(&TnefParser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 1, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_same_as_tika(&paths, TnefParser.tika_name());
 }
 
 /// A message too large to read whole is read in place, each attachment handed on from where it

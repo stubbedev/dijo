@@ -1,17 +1,10 @@
-#[cfg(feature = "tika")]
-use std::path::{Path, PathBuf};
-
 use super::*;
-#[cfg(feature = "tika")]
-use crate::formats::parity::{
-    assert_read_where_tika_reads_nothing, conformance_corpus, documents, WITHOUT_SCIENTIFIC_MODULE,
-};
 
 const TIKAS_DOCUMENTS: &str =
     "tika-parsers-extended/tika-parser-scientific-module/src/test/resources/test-documents";
 
 fn extract(name: &str) -> (String, crate::Metadata) {
-    let path = crate::formats::parity::conformance_corpus()
+    let path = crate::formats::testing::conformance_corpus()
         .join(TIKAS_DOCUMENTS)
         .join(name);
     crate::Extractor::new()
@@ -65,15 +58,4 @@ fn fails_on_a_file_without_a_superblock() {
     let configs = ParserConfigs::default();
     let prepared = HdfParser.prepare(&bytes, &TikaMetadata::new(), &configs);
     assert!(matches!(prepared, Err(Decline::Fails(_))));
-}
-
-#[cfg(feature = "tika")]
-#[test]
-#[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-fn reads_tikas_test_files_which_tikas_path_leaves_empty() {
-    let (parsed, deferred) = documents(&HdfParser, &[&conformance_corpus()]);
-    assert!(deferred.is_empty(), "{deferred:?}");
-    assert_eq!(parsed.len(), 2, "{parsed:?}");
-    let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-    assert_read_where_tika_reads_nothing(&paths, &[WITHOUT_SCIENTIFIC_MODULE]);
 }

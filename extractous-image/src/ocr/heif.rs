@@ -235,7 +235,7 @@ mod imp {
     impl Scratch {
         fn new() -> Result<Self, Undecoded> {
             static NEXT: AtomicU64 = AtomicU64::new(0);
-            let path = crate::isolate::temp_dir().join(format!(
+            let path = crate::process::temp_dir().join(format!(
                 "extractous-heif-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)

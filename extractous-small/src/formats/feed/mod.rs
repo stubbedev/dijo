@@ -103,17 +103,8 @@ fn strip_tags(value: Option<&str>) -> String {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-    };
-
-    #[cfg(feature = "tika")]
-    const TIKA_NAME: &str = "org.apache.tika.parser.feed.FeedParser";
 
     /// A feed too large to read whole, its title after its items: each item is written as it is
     /// read the second time, under a budget far below the feed.
@@ -153,79 +144,5 @@ mod tests {
         assert_eq!(strip_tags(Some(" a<b>c</b> <x y='>'d ")), "ac 'd");
         assert_eq!(strip_tags(Some("a < b")), "a < b");
         assert_eq!(strip_tags(Some("<![CDATA[x]]>y<!--a>b-->")), "yb-->");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_feeds_as_tikas_path_does() {
-        let scratch = Scratch::new("feed");
-        let read = [
-            scratch.write(
-                "rss2.rss",
-                b"<?xml version='1.0'?><rss version='2.0' xmlns:sy='http://purl.org/rss/1.0/modules/syndication/'>\
-                  <channel><title> Nyheder &amp; <b>mere</b> </title><description>Om <![CDATA[<i>alt</i>]]>\
-                  </description><item><title>F\xc3\xb8rste</title><link>http://a/1</link><description>\
-                  Tekst <p>med <!-- c --> &lt;markup&gt;</p> og \xf0\x9f\x98\x80\n<br/>linje</description></item>\
-                  <item><title>Uden link</title><description>skjult</description></item>\
-                  <item><title>Guid</title><guid>http://a/g</guid></item></channel></rss>",
-            ),
-            scratch.write(
-                "rss091.rss",
-                b"<rss version='0.91'><channel><title>T</title><item><title>A</title><link>l</link>\
-                  <description>a<b>b</b>c</description></item></channel></rss>",
-            ),
-            scratch.write(
-                "rdf.rss",
-                b"<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' xmlns='http://purl.org/rss/1.0/'>\
-                  <channel><title>T</title><description>D</description></channel>\
-                  <item><title>A</title><link>l</link><description>d</description></item></rdf:RDF>",
-            ),
-            scratch.write(
-                "atom.atom",
-                b"<feed xmlns='http://www.w3.org/2005/Atom'><title type='xhtml'><div xmlns='http://www.w3.org/1999/xhtml'>\
-                  T &lt;x&gt;</div></title><subtitle type='html'>&lt;b&gt;S&lt;/b&gt;</subtitle>\
-                  <entry><title>A</title><link rel='self' href='s'/><link href='l'/><summary>S</summary></entry>\
-                  <entry><title>B</title><link rel='alternate'/></entry></feed>",
-            ),
-            scratch.write(
-                "atom03.atom",
-                b"<feed xmlns='http://purl.org/atom/ns#'><title mode='escaped'>T</title><tagline>tag<b>line</b></tagline>\
-                  <entry><link rel='alternate' href='l'/><title mode='base64'>QQ==</title>\
-                  <summary mode='escaped'>&lt;b&gt;x</summary></entry></feed>",
-            ),
-        ];
-        let failing = [
-            scratch.write("doctype.rss", b"<!DOCTYPE rss><rss version='2.0'><channel/></rss>"),
-            scratch.write("no-channel.rss", b"<rss version='2.0'/>"),
-            scratch.write("version.rss", b"<rss version='1.0'><channel/></rss>"),
-            scratch.write(
-                "hours.rss",
-                b"<rss><channel><skipHours><hour>x</hour></skipHours></channel></rss>",
-            ),
-            scratch.write("malformed.rss", b"<rss version='2.0'><channel></rss>"),
-            scratch.write(
-                "mode.atom",
-                b"<feed xmlns='http://purl.org/atom/ns#'><entry><summary mode='unknown'/></entry></feed>",
-            ),
-        ];
-        let (parsed, deferred) = documents(&FeedParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len() + failing.len());
-        assert_same_as_tika(
-            &read.iter().map(PathBuf::as_path).collect::<Vec<_>>(),
-            TIKA_NAME,
-        );
-        assert_fails_as_tika(&failing.iter().map(PathBuf::as_path).collect::<Vec<_>>());
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_feeds_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&FeedParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 3, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TIKA_NAME);
     }
 }

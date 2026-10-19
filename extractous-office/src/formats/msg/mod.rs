@@ -223,16 +223,5 @@ fn standalone<'a>(file: &Ole2<'a>, directory: EntryId) -> Result<Storage<'a>, Un
     Ok(storage)
 }
 
-/// The recipients' names, which POI swaps (#112).
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub const RECIPIENT_NAMES: crate::formats::parity::Departures = &[
-    crate::formats::parity::Departure::Values("message:to-name", "#112"),
-    crate::formats::parity::Departure::Values("message:to-display-name", "#112"),
-    crate::formats::parity::Departure::Values("message:cc-name", "#112"),
-    crate::formats::parity::Departure::Values("message:cc-display-name", "#112"),
-    crate::formats::parity::Departure::Values("message:bcc-name", "#112"),
-    crate::formats::parity::Departure::Values("message:bcc-display-name", "#112"),
-];
-
 #[cfg(test)]
 mod tests;

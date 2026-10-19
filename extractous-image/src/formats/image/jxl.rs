@@ -12,26 +12,6 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xmp;
 use crate::jxl::Container;
 
-/// For the parity tests: Tika's result of a JPEG XL image, from the native one. It has no
-/// document, nor the OCR enricher's reading of it, and only the metadata Tika's scan for an XMP
-/// packet finds, without what the header and the boxes add (#132).
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub fn as_tika_writes_no_jpeg_xl_document(
-    text: &mut String,
-    metadata: &mut crate::formats::parity::ComparedMetadata,
-    tika: &crate::formats::parity::ComparedMetadata,
-) {
-    let [(_, ocr)] = super::TIKA_DELEGATES;
-    text.clear();
-    metadata.retain(|(name, _)| tika.iter().any(|(tika_name, _)| tika_name == name));
-    for (_, values) in metadata
-        .iter_mut()
-        .filter(|(name, _)| name.starts_with("tk:parsed-by"))
-    {
-        values.retain(|value| value != ocr);
-    }
-}
-
 /// The metadata of the JPEG XL image `input` into `metadata`, which is then the image's: its
 /// XMP, then its Exif, then its header, which wins over what the Exif says of the image. An Exif
 /// or XML box that cannot be read is recorded as a warning.

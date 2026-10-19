@@ -24,9 +24,6 @@ const TAGGED_IO_EXCEPTION: &str = "org.apache.commons.io.TaggedIOException";
 const UNSUPPORTED_ZIP_FEATURE: &str =
     "org.apache.commons.compress.archivers.zip.UnsupportedZipFeatureException";
 
-/// Whether there is a Tika path to leave a document to.
-const DEFERS: bool = cfg!(feature = "tika");
-
 /// The bytes of the archive a parser reads, the document's own or those salvaged from it, and
 /// the entries read ahead that spooled to files of their own, for their writing to take.
 pub(crate) struct ZipPackage<'a> {
@@ -233,10 +230,6 @@ impl Undecoded {
                      exception its inflater throws"
                 )),
             },
-            Self::Oversized { limit } if DEFERS => Decline::Deferred(format!(
-                "{}, which Tika's path streams",
-                past_the_limit(name, limit)
-            )),
             Self::Oversized { limit } => {
                 Decline::Fails(Error::LimitExceeded(past_the_limit(name, limit)))
             }

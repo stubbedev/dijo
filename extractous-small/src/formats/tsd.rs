@@ -293,12 +293,6 @@ impl<'a> Content<'a> {
     }
 }
 
-/// For the parity tests: the content of a cut envelope, which the parser spools whole where
-/// Tika's copy loses its end (#132).
-#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
-pub const DEPARTURES: crate::formats::parity::Departures =
-    &[crate::formats::parity::Departure::WholeContent("#132")];
-
 /// Tika's `TSDParser`.
 pub struct TsdParser;
 
@@ -350,14 +344,8 @@ impl Parser for TsdParser {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_same_as_tika, assert_same_as_tika_departing, conformance_corpus, documents, Scratch,
-    };
 
     /// A time-stamped data envelope of `content`, every length indefinite, with no time stamps.
     fn envelope(content: &[u8]) -> Vec<u8> {
@@ -415,30 +403,5 @@ mod tests {
             .extract_bytes_to_string(&whole[..whole.len() - 12])
             .unwrap();
         assert_eq!(text.trim(), "Bølgerne går højt i Øres");
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_synthetic_envelopes_as_tikas_path_does() {
-        let scratch = Scratch::new("tsd");
-        let whole = envelope(b"Some text in an envelope.");
-        let documents_written = [
-            scratch.write("text.tsd", &whole),
-            scratch.write("empty.tsd", &envelope(b"")),
-            scratch.write("none.tsd", &whole[..20]),
-        ];
-        let paths: Vec<&Path> = documents_written.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika(&paths, TsdParser.tika_name());
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_envelopes_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&TsdParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 7, "{parsed:?}");
-        let paths: Vec<&Path> = parsed.iter().map(PathBuf::as_path).collect();
-        assert_same_as_tika_departing(&paths, TsdParser.tika_name(), DEPARTURES);
     }
 }

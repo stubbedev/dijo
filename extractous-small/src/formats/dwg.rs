@@ -355,21 +355,10 @@ fn custom_properties(stream: &mut Stream) -> Result<u16, Failure> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "tika")]
-    use std::path::{Path, PathBuf};
 
     use extractous_core::large::LargeFile;
 
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::{
-        assert_fails_as_tika, assert_same_as_tika, conformance_corpus, documents, Scratch,
-    };
-
-    #[cfg(feature = "tika")]
-    fn paths(files: &[PathBuf]) -> Vec<&Path> {
-        files.iter().map(PathBuf::as_path).collect()
-    }
 
     /// A drawing of `version` whose property section, at 0x100, holds `section`.
     fn drawing(version: &[u8; 6], section: &[u8]) -> Vec<u8> {
@@ -388,14 +377,6 @@ mod tests {
         bytes
     }
 
-    #[cfg(feature = "tika")]
-    fn narrow(text: &[u8]) -> Vec<u8> {
-        let mut bytes = (text.len() as u16 + 1).to_le_bytes().to_vec();
-        bytes.extend_from_slice(text);
-        bytes.push(0);
-        bytes
-    }
-
     fn custom(count: u16) -> Vec<u8> {
         let mut bytes = vec![0; 4 + CUSTOM_PROPERTIES_SKIP];
         bytes.extend_from_slice(&count.to_le_bytes());
@@ -408,61 +389,6 @@ mod tests {
         bytes.push(kind);
         bytes.extend_from_slice(value);
         bytes
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_drawings_as_tikas_path_does() {
-        let scratch = Scratch::new("dwg");
-        let summary = |text: &dyn Fn(&str) -> Vec<u8>| -> Vec<u8> {
-            let mut section = Vec::new();
-            for value in [
-                "Plan",
-                "Ground floor",
-                "Ana",
-                "Housing",
-                "Draft",
-                "Bo",
-                "x",
-                "http://e.dk",
-            ] {
-                section.extend(text(value));
-            }
-            section.extend(custom(2));
-            for value in ["Client", "Kommune", "Phase", "2"] {
-                section.extend(text(value));
-            }
-            section
-        };
-        let wide_summary = summary(&|value| wide(value));
-        let narrow_summary = summary(&|value| narrow(value.as_bytes()));
-        let mut cookie = b"junk DWGPROPS COOKIE".to_vec();
-        cookie.extend(property_2000(2, 0x1e, b"Plan \xe6"));
-        cookie.extend(property_2000(4, 0x1e, b"Ana"));
-        cookie.extend(property_2000(9, 0x1e, b"ignored"));
-        cookie.extend(property_2000(0x012c, 0x1e, b"Client=Kommune"));
-        cookie.extend(property_2000(3, 0x01, b"not text"));
-        cookie.extend(property_2000(90, 0, b""));
-        let cookie_drawing = drawing_2000(&cookie);
-        let read = [
-            scratch.write("2010.dwg", &drawing(b"AC1024", &wide_summary)),
-            scratch.write("2004.dwg", &drawing(b"AC1018", &narrow_summary)),
-            scratch.write("2000.dwg", &cookie_drawing),
-            scratch.write("no-section.dwg", &{
-                let mut file = drawing(b"AC1032", &wide_summary);
-                file[0x20..0x28].copy_from_slice(&0i64.to_le_bytes());
-                file
-            }),
-        ];
-        let failing = [
-            scratch.write("short.dwg", &drawing(b"AC1024", &wide_summary)[..100]),
-            scratch.write("version.dwg", &drawing(b"AC1009", &wide_summary)),
-        ];
-        let (parsed, deferred) = documents(&DwgParser, &[scratch.directory()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), read.len() + failing.len(), "{parsed:?}");
-        assert_same_as_tika(&paths(&read), DwgParser.tika_name());
-        assert_fails_as_tika(&paths(&failing));
     }
 
     /// A 2000 drawing whose header `rest` follows.
@@ -546,15 +472,5 @@ mod tests {
         let metadata = file.extract_each(DwgParser.name(), |written| text.push_str(written));
         assert_eq!(text.trim(), "Plan");
         assert_eq!(metadata["dc:title"], ["Plan"]);
-    }
-
-    #[cfg(feature = "tika")]
-    #[test]
-    #[ignore = "needs Tika's test documents in CONFORMANCE_CORPUS"]
-    fn extracts_tikas_test_drawings_as_tikas_path_does() {
-        let (parsed, deferred) = documents(&DwgParser, &[&conformance_corpus()]);
-        assert!(deferred.is_empty(), "{deferred:?}");
-        assert_eq!(parsed.len(), 19, "{parsed:?}");
-        assert_same_as_tika(&paths(&parsed), DwgParser.tika_name());
     }
 }

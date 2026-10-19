@@ -22,24 +22,7 @@ pub enum Error {
     #[error("{0}")]
     Utf8Error(#[from] Utf8Error),
 
-    #[cfg(feature = "tika")]
-    #[error("{0}")]
-    JniError(#[from] jni::errors::Error),
-
-    #[cfg(feature = "tika")]
-    #[error("{0}")]
-    JniEnvCall(&'static str),
-
-    #[cfg(feature = "tika")]
-    #[error("Java exception: {0}")]
-    JavaException(String),
-
-    #[cfg(feature = "tika")]
-    #[error("Native library error: {0}")]
-    NativeLibrary(String),
-
     /// The document needs Tika's path, which this build does not have.
-    #[cfg(not(feature = "tika"))]
     #[error("{0}")]
     Unsupported(#[from] Unsupported),
 

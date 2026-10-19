@@ -1,5 +1,4 @@
-//! The files the build embedded in the program: the OCR bundle (`EXTRACTOUS_OCR_BUNDLE`), and in a
-//! build with Tika that loads it as a shared library, Tika's native libraries. They are unpacked
+//! The files the build embedded in the program, the OCR bundle (`EXTRACTOUS_OCR_BUNDLE`), unpacked
 //! once into a cache directory named after them.
 
 use std::env;
@@ -25,11 +24,7 @@ pub fn unpacked() -> Result<&'static Path, String> {
 
 /// Every embedded file with its path below the unpacked directory.
 fn embedded_files() -> impl Iterator<Item = &'static (&'static str, &'static [u8])> {
-    #[cfg(all(feature = "tika", not(feature = "static-image")))]
-    let files = NATIVE_LIBRARIES.iter().chain(&OCR_FILES);
-    #[cfg(not(all(feature = "tika", not(feature = "static-image"))))]
-    let files = OCR_FILES.iter();
-    files
+    OCR_FILES.iter()
 }
 
 fn cache_dir() -> Result<PathBuf, String> {
@@ -215,7 +210,7 @@ pub fn bundled_ocr_licenses() -> Option<&'static str> {
 }
 
 /// The licenses of the native libraries linked into the static executable beyond tesseract's:
-/// those of libheif with its decoders, and in the static image of Tika also AWT's fonts, or None
+/// those of libheif with its decoders, or None
 /// in a build that links none.
 pub fn linked_native_licenses() -> Option<&'static str> {
     #[cfg(feature = "static")]

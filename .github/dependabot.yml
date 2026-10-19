@@ -7,13 +7,6 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
-  - package-ecosystem: gradle
-    directory: /extractous-core/tika-native
-    schedule:
-      interval: weekly
-    groups:
-      gradle:
-        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

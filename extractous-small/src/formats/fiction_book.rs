@@ -210,21 +210,6 @@ fn read_book(input: &[u8], pages: Pages<'_>, xhtml: &mut Xhtml) -> Result<(), Fa
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "tika")]
-    use crate::formats::parity::assert_same_as_tika;
-    #[cfg(feature = "tika")]
-    use std::path::Path;
-
-    #[cfg(feature = "tika")]
-    #[test]
-    fn extracts_what_tikas_path_extracts() {
-        let documents = [
-            "../test_files/documents/book.fb2",
-            "../test_files/documents/book-cp1251.fb2",
-        ];
-        let paths: Vec<&Path> = documents.iter().map(Path::new).collect();
-        assert_same_as_tika(&paths, "ai.yobix.FictionBookParser");
-    }
 
     /// A book too large to read whole, in windows-1251 with CRLF line ends as many are, is
     /// decoded a window at a time and written a block at a time, in either build, under a
