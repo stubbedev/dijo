@@ -1,13 +1,18 @@
 //! Tika's `TikaNameIdChunks` and `ExtendedMetadataExtractor`: the named properties of a message,
 //! their storage ids mapped to the names and property sets its name-id streams give them, and
 //! those Tika's table of MAPI properties knows written as `mapi:property:` metadata.
+//!
+//! A multi-valued property the table knows by its multi-valued type, such as the categories of
+//! `Keywords`, is written with each of its values, read from the chunks that hold them (#186).
+//! Tika writes none: it looks such a property up by the type of its values, which the table does
+//! not give it, and has no value of it but the pointer to its chunks.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::chunks::{Chunk, Message};
-use super::properties::Value;
-use super::types::Type;
+use super::properties::{Property, Value};
+use super::types::{Type, MULTIVALUED_FLAG};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::poi::{Read, Thrown};
 use crate::java::is_blank;
@@ -266,23 +271,16 @@ pub(super) fn extract(message: &Message, metadata: &mut TikaMetadata) -> Read<()
     };
     let table = table();
     for property in &properties.properties {
-        let mut pair = None;
-        for tag in tags.get(&i64::from(property.id)).into_iter().flatten() {
-            let candidates = table.long.get(&tag.id).or_else(|| table.short.get(&tag.id));
-            let Some(candidates) = candidates else {
+        if property.multi {
+            let multi_kind = Type(property.kind.0 | MULTIVALUED_FLAG);
+            if let Some(known) = known_named(&tags, table, property, multi_kind)? {
+                for text in multi_values(message, property) {
+                    metadata.add_prefixed(PROPERTY_PREFIX, &known.name, text);
+                }
                 continue;
-            };
-            let class_id = tag
-                .class_id
-                .ok_or_else(|| Thrown::new("a named property of no property set"))?;
-            pair = candidates.iter().find(|known| {
-                known.class_id == Some(class_id) && known.types.contains(&property.kind)
-            });
-            if pair.is_some() {
-                break;
             }
         }
-        let Some(known) = pair else {
+        let Some(known) = known_named(&tags, table, property, property.kind)? else {
             continue;
         };
         let kind = property.kind;
@@ -315,6 +313,63 @@ pub(super) fn extract(message: &Message, metadata: &mut TikaMetadata) -> Read<()
         metadata.add_prefixed(PROPERTY_PREFIX, &known.name, text);
     }
     Ok(())
+}
+
+/// The entry of Tika's table a named property of the tags `tags` and of type `kind` stands
+/// for, as `extract` looks it up: by the first of its tags the table knows in its property set
+/// with that type.
+fn known_named<'t>(
+    tags: &HashMap<i64, Vec<Tag>>,
+    table: &'t Table,
+    property: &Property,
+    kind: Type,
+) -> Read<Option<&'t Known>> {
+    for tag in tags.get(&i64::from(property.id)).into_iter().flatten() {
+        let candidates = table.long.get(&tag.id).or_else(|| table.short.get(&tag.id));
+        let Some(candidates) = candidates else {
+            continue;
+        };
+        let class_id = tag
+            .class_id
+            .ok_or_else(|| Thrown::new("a named property of no property set"))?;
+        let known = candidates
+            .iter()
+            .find(|known| known.class_id == Some(class_id) && known.types.contains(&kind));
+        if known.is_some() {
+            return Ok(known);
+        }
+    }
+    Ok(None)
+}
+
+/// The texts of the values of the multi-valued `property` of `message`, in their order: those
+/// of strings from their chunks, those of a fixed length from the stream that holds them, as a
+/// value of a single-valued property is written; those kept as bytes, such as binary ones and
+/// application times, and blank texts are left out.
+fn multi_values(message: &Message, property: &Property) -> Vec<String> {
+    let kind = property.kind;
+    if kind == Type::ASCII_STRING || kind == Type::UNICODE_STRING {
+        return message
+            .main
+            .all(property.id)
+            .filter_map(Chunk::text)
+            .map(|text| text.value.clone())
+            .filter(|text| !is_blank(text))
+            .collect();
+    }
+    let values = message.main.fixed_values.get(&property.id);
+    let mut texts = Vec::new();
+    for value in values.into_iter().flatten() {
+        let text = match value {
+            Value::Time(millis) => format_instant(*millis),
+            Value::Bytes(_) => continue,
+            value => value_string(value),
+        };
+        if !is_blank(&text) {
+            texts.push(text);
+        }
+    }
+    texts
 }
 
 /// `PropertyValue.toString`.

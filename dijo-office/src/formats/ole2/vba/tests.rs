@@ -1,5 +1,6 @@
+use super::testing::{dir, dir_of, document, entry, module, raw, DirModule};
 use super::*;
-use crate::ole2::{write, Node, Storage};
+use crate::ole2::Node;
 
 /// MS-OVBA's example of a chunk of literals only (3.2.1), and a chunk of a copy token.
 #[test]
@@ -41,81 +42,6 @@ fn ends_where_a_chunk_is_cut_as_poi_does() {
     assert_eq!(decompress(&cut).unwrap(), b"abc");
 }
 
-/// `bytes` as one raw chunk after another, as MS-OVBA stores what it does not compress.
-fn raw(bytes: &[u8]) -> Vec<u8> {
-    let mut compressed = vec![0x01];
-    for chunk in bytes.chunks(CHUNK) {
-        compressed.extend((0x3000 | (chunk.len() as u16 - 1)).to_le_bytes());
-        compressed.extend_from_slice(chunk);
-    }
-    compressed
-}
-
-/// A record of a `dir` stream of an id and the bytes after its size.
-fn record(id: u16, body: &[u8]) -> Vec<u8> {
-    let mut bytes = id.to_le_bytes().to_vec();
-    bytes.extend((body.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(body);
-    bytes
-}
-
-/// The decompressed `dir` stream of a project in `code_page` of the modules `streams`, each with
-/// where its source starts in its stream.
-fn dir(code_page: u16, streams: &[(&str, u32)]) -> Vec<u8> {
-    let mut bytes = record(0x0003, &code_page.to_le_bytes());
-    bytes.extend(record(0x000F, &(streams.len() as u16).to_le_bytes()));
-    for &(name, offset) in streams {
-        bytes.extend(record(0x0019, name.as_bytes()));
-        bytes.extend(record(0x001A, name.as_bytes()));
-        bytes.extend(0x0032u16.to_le_bytes());
-        let unicode: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        bytes.extend((unicode.len() as u32).to_le_bytes());
-        bytes.extend(unicode);
-        bytes.extend(record(0x0031, &offset.to_le_bytes()));
-        bytes.extend(0x002Bu16.to_le_bytes());
-        bytes.extend(0u32.to_le_bytes());
-    }
-    bytes.extend(0x0010u16.to_le_bytes());
-    bytes.extend(0u32.to_le_bytes());
-    bytes
-}
-
-/// A module's stream: a performance cache of `cache` bytes, then the source compressed.
-fn module(cache: usize, source: &str) -> Vec<u8> {
-    let mut bytes = vec![0xAB; cache];
-    bytes.extend(raw(&cp1252(source)));
-    bytes
-}
-
-fn entry(name: &str, node: Node<'static>) -> (Vec<u16>, Node<'static>) {
-    (name.encode_utf16().collect(), node)
-}
-
-/// A compound document whose project storage holds the `VBA` storage of `vba` and the PROJECT
-/// stream `project`.
-fn document(vba: Vec<(Vec<u16>, Node<'static>)>, project: &str) -> Vec<u8> {
-    write(&Storage {
-        class_id: [0; 16],
-        entries: vec![entry(
-            "_VBA_PROJECT_CUR",
-            Node::Storage(Storage {
-                class_id: [0; 16],
-                entries: vec![
-                    entry("PROJECT", Node::Owned(project.as_bytes().to_vec())),
-                    entry(
-                        "VBA",
-                        Node::Storage(Storage {
-                            class_id: [0; 16],
-                            entries: vba,
-                        }),
-                    ),
-                ],
-            }),
-        )],
-    })
-    .unwrap()
-}
-
 const PROJECT: &str = "ID=\"{00000000-0000-0000-0000-000000000000}\"\r\nDocument=ThisWorkbook/&H00000000\r\nModule=Logbog\r\n";
 const THIS_WORKBOOK: &str = "Attribute VB_Name = \"ThisWorkbook\"\r\n";
 const LOGBOG: &str =
@@ -132,8 +58,11 @@ fn project(code_page: u16, vba_extra: Vec<(Vec<u16>, Node<'static>)>, properties
             Node::Owned(raw(&dir(code_page, &[("ThisWorkbook", 3), ("Logbog", 7)]))),
         ),
         entry("_VBA_PROJECT", Node::Owned(vec![0xCC, 0x61, 0xFF, 0xFF])),
-        entry("ThisWorkbook", Node::Owned(module(3, THIS_WORKBOOK))),
-        entry("Logbog", Node::Owned(module(7, LOGBOG))),
+        entry(
+            "ThisWorkbook",
+            Node::Owned(module(3, &cp1252(THIS_WORKBOOK))),
+        ),
+        entry("Logbog", Node::Owned(module(7, &cp1252(LOGBOG)))),
     ];
     vba.extend(vba_extra);
     document(vba, properties)
@@ -228,7 +157,7 @@ fn fails_where_poi_throws_reading_the_macros() {
 #[test]
 fn finds_a_module_whose_offset_is_wrong_by_brute_force() {
     let mut vba = vec![entry("dir", Node::Owned(raw(&dir(1252, &[("Logbog", 2)]))))];
-    vba.push(entry("Logbog", Node::Owned(module(5, LOGBOG))));
+    vba.push(entry("Logbog", Node::Owned(module(5, &cp1252(LOGBOG)))));
     let data = document(vba, "Module=Logbog\r\n");
     let file = Ole2::open(&data).unwrap();
     assert_eq!(modules(&Macros::read(&file)), [("Logbog", LOGBOG)]);
@@ -241,4 +170,59 @@ fn splits_the_project_stream_as_poi_does() {
     assert!(check_project_properties("[Host]\r\nDocument=A/&H1\r\n\"x\"").is_ok());
     assert!(check_project_properties("Document=\"A/&H1\"").is_ok());
     assert!(check_project_properties("Document=\"A\"").is_err());
+}
+
+/// A module whose name the project's code page lacks, which the `dir` stream names `?` in it,
+/// is read from the stream its Unicode name names, where POI looks for a stream named with the
+/// `?` and throws (#186).
+#[test]
+fn finds_a_module_by_its_unicode_name() {
+    const SOURCE: &str = "Attribute VB_Name = \"?????\"\r\n";
+    let name = "\u{394}\u{3B5}\u{3BB}\u{3C4}\u{3B1}";
+    let modules_of_dir = [DirModule {
+        name: b"?????",
+        unicode: name,
+        offset: 2,
+    }];
+    let vba = vec![
+        entry("dir", Node::Owned(raw(&dir_of(1252, &modules_of_dir)))),
+        entry(name, Node::Owned(module(2, SOURCE.as_bytes()))),
+    ];
+    let data = document(vba, &format!("Module={name}\r\n"));
+    let file = Ole2::open(&data).unwrap();
+    let macros = Macros::read(&file);
+    assert_eq!(modules(&macros), [(name, SOURCE)]);
+    let Some(Difference(reason)) = macros.difference() else {
+        panic!("a difference");
+    };
+    assert!(reason.contains("POI looks up as ?????"), "{reason}");
+}
+
+/// A module whose names in the code page and in Unicode agree is read with no difference noted
+/// of its name (#186).
+#[test]
+fn notes_no_difference_where_the_names_of_a_module_agree() {
+    let data = project(1252, Vec::new(), PROJECT);
+    let file = Ole2::open(&data).unwrap();
+    if let Some(Difference(reason)) = Macros::read(&file).difference() {
+        assert!(!reason.contains("looks up"), "{reason}");
+    }
+}
+
+/// The `vbaProject.bin` of a package is read as a compound document of its own; one that is
+/// none is recorded as failing, where Tika fails the package (#186).
+#[test]
+fn reads_the_vba_project_of_a_package() {
+    let data = testing::project(&[("Modul1", "Attribute VB_Name = \"Modul1\"\r\n")]);
+    let macros = Macros::of_project(&data);
+    assert_eq!(
+        modules(&macros),
+        [("Modul1", "Attribute VB_Name = \"Modul1\"\r\n")]
+    );
+    let broken = Macros::of_project(b"no compound document");
+    assert!(broken.read.is_err());
+    let Some(Difference(reason)) = broken.difference() else {
+        panic!("a difference");
+    };
+    assert!(reason.contains("Tika fails the package"), "{reason}");
 }

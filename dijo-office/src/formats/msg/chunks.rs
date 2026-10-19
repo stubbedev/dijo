@@ -2,11 +2,20 @@
 //! chunks by the property id and type their names give, grouped into the message's own, its
 //! named properties', its recipients' and its attachments'; and the 7-bit strings decoded with
 //! the code page they are set to.
+//!
+//! Where POI is wrong, the reading departs from it (#186): the index of a value of a
+//! multi-valued property, the suffix of its stream's name, is read as the hexadecimal number
+//! MS-OXMSG makes it, where POI reads it as a decimal one, so that it leaves out the values from
+//! the tenth on whose index holds a letter and orders the rest wrongly; the values of a
+//! multi-valued property of a fixed length, which MS-OXMSG keeps one after another in one stream,
+//! are read, where POI takes the stream for the lengths of values kept elsewhere; and a stream
+//! whose chain ends before its size is read as far as its chain goes, where POI logs a failure
+//! and leaves it out.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use super::properties::{read_properties, PropertySet, PROPERTIES};
+use super::properties::{self, read_properties, PropertySet, PROPERTIES};
 use super::types::{property, Type, MULTIVALUED_FLAG};
 use crate::formats::poi::{Read, Reading, Thrown, ILLEGAL_ARGUMENT};
 use crate::formats::Unported;
@@ -158,9 +167,14 @@ impl<'a> Chunk<'a> {
 pub(super) struct Group<'a> {
     /// The chunks in the order they were recorded.
     pub(super) chunks: Vec<Chunk<'a>>,
-    /// What of the storage the port leaves out where POI reads it otherwise, each with why: a
-    /// stream that cannot be read, which POI may read, or log and leave out.
-    pub(super) left_out: Vec<String>,
+    /// The values of each multi-valued property of a fixed length, by its id, which POI does
+    /// not read.
+    pub(super) fixed_values: BTreeMap<i32, Vec<properties::Value>>,
+    /// What of the storage the port reads otherwise than POI, each with how: a stream that
+    /// cannot be read, left out, which POI may read, or log and leave out; one whose chain ends
+    /// before its size, read as far as it goes, which POI leaves out; and a directory named as
+    /// a value of a multi-valued property, which is none, left out.
+    pub(super) read_otherwise: Vec<String>,
 }
 
 impl<'a> Group<'a> {
@@ -183,7 +197,8 @@ impl<'a> Group<'a> {
     fn into_owned(self) -> Group<'static> {
         Group {
             chunks: self.chunks.into_iter().map(Chunk::into_owned).collect(),
-            left_out: self.left_out,
+            fixed_values: self.fixed_values,
+            read_otherwise: self.read_otherwise,
         }
     }
 
@@ -208,14 +223,23 @@ impl<'a> Group<'a> {
         Ok(())
     }
 
-    /// The stream `entry` of the group's storage, in place, or none where it cannot be read,
-    /// which is left out, as POI leaves out a stream it logs a failure to read.
+    /// The stream `entry` of the group's storage, in place, as far as its chain goes where it
+    /// ends before the stream's size, or none where it cannot be read, which is left out, as POI
+    /// leaves out a stream it logs a failure to read.
     fn read(&mut self, file: &Ole2<'a>, entry: EntryId) -> Option<Content<'a>> {
-        match file.content(entry) {
-            Ok(content) => Some(content),
+        match file.content_salvaged(entry) {
+            Ok((content, false)) => Some(content),
+            Ok((content, true)) => {
+                self.read_otherwise.push(format!(
+                    "the stream {}, whose chain ends before its size, read as far as it goes, \
+                     which POI leaves out",
+                    file.name(entry)
+                ));
+                Some(content)
+            }
             Err(Unreadable(reason)) => {
-                self.left_out.push(format!(
-                    "the stream {}, which cannot be read: {reason}",
+                self.read_otherwise.push(format!(
+                    "the stream {}, which cannot be read: {reason}, left out",
                     file.name(entry)
                 ));
                 None
@@ -397,18 +421,18 @@ impl<'a> Message<'a> {
         }
     }
 
-    /// What of the message's storages the port leaves out where POI reads them otherwise, if
-    /// anything: see [`Group::left_out`].
-    pub(super) fn left_out(&self) -> Option<String> {
+    /// What of the message's storages the port reads otherwise than POI, if anything: see
+    /// [`Group::read_otherwise`].
+    pub(super) fn read_otherwise(&self) -> Option<String> {
         let groups = std::iter::once(&self.main)
             .chain(&self.name_ids)
             .chain(self.recipients.iter().map(|recipient| &recipient.group))
             .chain(self.attachments.iter().map(|attachment| &attachment.group));
-        let left_out: Vec<&str> = groups
-            .flat_map(|group| &group.left_out)
+        let read_otherwise: Vec<&str> = groups
+            .flat_map(|group| &group.read_otherwise)
             .map(String::as_str)
             .collect();
-        (!left_out.is_empty()).then(|| left_out.join("; "))
+        (!read_otherwise.is_empty()).then(|| read_otherwise.join("; "))
     }
 
     /// `has7BitEncodingStrings`.
@@ -479,7 +503,8 @@ enum GroupKind {
 }
 
 /// `processChunks`: the chunks of a storage's streams and of its directories named as
-/// directory properties, each multi-valued property's values after the others.
+/// directory properties, each multi-valued property's values after the others, and the values
+/// of the multi-valued properties of a fixed length.
 fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Reading<Group<'a>> {
     let mut group = Group::default();
     let mut multi: BTreeMap<i32, BTreeMap<i32, Chunk>> = BTreeMap::new();
@@ -542,15 +567,31 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Readi
         }
         let is_text = kind == Type::ASCII_STRING || kind == Type::UNICODE_STRING;
         match multi_index {
-            Some(MultiIndex::Length) => {}
+            Some(MultiIndex::Length) => {
+                let length = kind.fixed_length();
+                if is_document && length > 0 {
+                    let Some(data) = group.read(file, entry) else {
+                        continue;
+                    };
+                    let values = data
+                        .bytes()
+                        .chunks_exact(length)
+                        .map(|value| properties::value(kind, value))
+                        .collect();
+                    group.fixed_values.insert(id, values);
+                }
+            }
             Some(MultiIndex::At(index)) => {
                 if kind != Type::BINARY && !is_text {
                     continue;
                 }
-                assert!(
-                    is_document,
-                    "a directory, named to end in 000D, has no decimal value index"
-                );
+                if !is_document {
+                    group.read_otherwise.push(format!(
+                        "the directory {name}, named as a value of a multi-valued property, \
+                         which is none, left out"
+                    ));
+                    continue;
+                }
                 let Some(data) = group.read(file, entry) else {
                     continue;
                 };
@@ -592,7 +633,8 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Readi
 /// Where a multi-valued chunk goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MultiIndex {
-    /// The stream of the values' lengths, which is read and not recorded.
+    /// The stream of the values' lengths, which is read and not recorded, or, of a property of
+    /// a fixed length, of its values.
     Length,
     At(i32),
 }
@@ -603,7 +645,8 @@ struct Primitive {
     multi_index: Option<MultiIndex>,
 }
 
-/// `readPrimitiveChunk`'s reading of an entry's name: `None` where it names no chunk.
+/// `readPrimitiveChunk`'s reading of an entry's name: `None` where it names no chunk. The index
+/// of a value is hexadecimal, as MS-OXMSG writes it, where POI reads it as decimal.
 fn read_primitive(name: &str) -> Read<Option<Primitive>> {
     let units: Vec<u16> = name.encode_utf16().collect();
     let Some(split) = units.iter().rposition(|&unit| unit == u16::from(b'_')) else {
@@ -641,7 +684,7 @@ fn read_primitive(name: &str) -> Read<Option<Primitive>> {
             return MultiIndex::Length;
         }
         let index = &ids[ids.rfind('-').expect("a dash") + 1..];
-        match index.parse::<i64>() {
+        match i64::from_str_radix(index, 16) {
             Ok(value) => MultiIndex::At((value & 0xFFFF_FFFF) as u32 as i32),
             Err(_) => MultiIndex::Length,
         }

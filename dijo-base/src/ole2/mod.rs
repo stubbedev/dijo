@@ -559,12 +559,25 @@ impl<'a> Ole2<'a> {
     /// The content of a document entry as `DocumentInputStream` reads it, in place: its chain
     /// walked and checked as POI walks it, and its bytes left where they lie.
     pub fn content(&self, id: EntryId) -> Result<Content<'a>> {
+        self.walk(id, false).map(|(content, _)| content)
+    }
+
+    /// [`Ole2::content`], but of a document whose chain ends before its size: its content as far
+    /// as the chain goes, and whether it ends so, where POI fails to read it. A chain that is
+    /// otherwise damaged fails as it does there.
+    pub fn content_salvaged(&self, id: EntryId) -> Result<(Content<'a>, bool)> {
+        self.walk(id, true)
+    }
+
+    /// The chain of a document entry walked, as far as it goes where `salvage`, and whether it
+    /// ends before the document's size.
+    fn walk(&self, id: EntryId, salvage: bool) -> Result<(Content<'a>, bool)> {
         let entry = self.entry(id);
         let size =
             usize::try_from(entry.size).map_err(|_| Unreadable("a document's size is negative"))?;
         let mut runs = Runs::new(size);
         if size == 0 {
-            return Ok(runs.into_content(self.data));
+            return Ok((runs.into_content(self.data), false));
         }
         let past = Unreadable("a document's chain ends before its size");
         if entry.size < BIG_BLOCK_MINIMUM_DOCUMENT_SIZE {
@@ -574,6 +587,9 @@ impl<'a> Ole2<'a> {
             let mut next = entry.start;
             while !runs.is_full() {
                 if next == END_OF_CHAIN {
+                    if salvage {
+                        return Ok((runs.into_content(self.data), true));
+                    }
                     return Err(past);
                 }
                 detector.claim(next)?;
@@ -596,6 +612,9 @@ impl<'a> Ole2<'a> {
             let mut next = entry.start;
             while !runs.is_full() {
                 if next == END_OF_CHAIN {
+                    if salvage {
+                        return Ok((runs.into_content(self.data), true));
+                    }
                     return Err(past);
                 }
                 detector.claim(next)?;
@@ -609,7 +628,7 @@ impl<'a> Ole2<'a> {
                 next = self.next_block(next)?;
             }
         }
-        Ok(runs.into_content(self.data))
+        Ok((runs.into_content(self.data), false))
     }
 }
 

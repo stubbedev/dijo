@@ -23,3 +23,4 @@ zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2
 dijo-base = { path = "../dijo-base", default-features = false, features = ["testing"] }
 dijo-core = { path = "../dijo-core", default-features = false, features = ["testing"] }
 dijo-image = { path = "../dijo-image", default-features = false, features = ["testing"] }
+dijo-office = { path = "../dijo-office", default-features = false, features = ["testing"] }

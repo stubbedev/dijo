@@ -92,22 +92,50 @@ fn falls_short_on_ole_objects_tika_opens_only() {
     assert!(shortfall(&ole(1536)).is_some());
 }
 
-#[test]
-fn falls_short_on_macros_only_when_they_are_extracted() {
-    let input = document(
-        "<w:p/>",
+/// A document embedding the VBA project `project`.
+fn with_macros(project: &[u8]) -> Vec<u8> {
+    document(
+        "<w:p><w:r><w:t>Tekst</w:t></w:r></w:p>",
         &relationship("rId9", kind::VBA_PROJECT, "vbaProject.bin"),
         &[(
             "word/vbaProject.bin",
             "application/vnd.ms-office.vbaProject",
-            b"x",
+            project,
         )],
+    )
+}
+
+/// The modules of a document's VBA project are extracted when asked for, each an embedded
+/// document of its source, as `handleMacros` extracts them (#186).
+#[test]
+fn extracts_macros_when_asked_to() {
+    const SOURCE: &str = "Attribute VB_Name = \"Modul1\"\r\nSub Hej()\r\nEnd Sub\r\n";
+    let input = with_macros(&dijo_office::formats::ole2::vba::testing::project(&[(
+        "Modul1", SOURCE,
+    )]));
+    let macros = office(OfficeParserConfig::new().set_extract_macros(true));
+    assert_eq!(shortfall(&input), None);
+    assert_eq!(
+        DocxParser.shortfall(&input, &TikaMetadata::new(), &macros),
+        None
     );
+    let xml = text_of(&input, &macros);
+    assert!(xml.contains("<p>Tekst</p>"), "{xml}");
+    assert!(xml.contains("Sub Hej()"), "{xml}");
+    assert!(!text_of(&input, &ParserConfigs::default()).contains("Sub Hej()"));
+}
+
+/// A VBA project that is no compound document, on which Tika fails the package, is read past
+/// with its failure recorded, which differs from Tika (#186).
+#[test]
+fn records_a_vba_project_that_does_not_open() {
+    let input = with_macros(b"x");
     assert_eq!(shortfall(&input), None);
     let macros = office(OfficeParserConfig::new().set_extract_macros(true));
-    assert!(DocxParser
+    let reason = DocxParser
         .shortfall(&input, &TikaMetadata::new(), &macros)
-        .is_some());
+        .unwrap();
+    assert!(reason.contains("Tika fails the package"), "{reason}");
 }
 
 /// A document whose main part's XML fails after a paragraph, with a header of `header`.

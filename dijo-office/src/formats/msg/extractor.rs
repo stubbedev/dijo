@@ -159,8 +159,8 @@ pub(super) fn extract<'a>(
     let (body, content_ids, read_otherwise) = body(&message)?;
     let attachments = attachments(file, &message, &content_ids, configs)?;
     let read_otherwise = message
-        .left_out()
-        .map(|left_out| Difference(format!("the port leaves out {left_out}")))
+        .read_otherwise()
+        .map(|read| Difference(format!("the port reads otherwise than POI {read}")))
         .or(read_otherwise)
         .or_else(|| attachments.iter().find_map(Handed::difference));
     Ok((
@@ -187,18 +187,18 @@ impl Extracted<'_> {
         }
     }
 
-    /// Writes the message as `OutlookExtractor.parse` does, with a warning of what the port
-    /// leaves out of it, if anything.
+    /// Writes the message as `OutlookExtractor.parse` does, with a warning of what of it the port
+    /// reads otherwise than POI, if anything.
     pub(super) fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         write_metadata(&self.message, xhtml.metadata_mut()).map_err(|unread| {
             Failure::Malformed(format!(
                 "the message reads otherwise the second time it is read: {unread:?}"
             ))
         })?;
-        if let Some(left_out) = self.message.left_out() {
+        if let Some(read) = self.message.read_otherwise() {
             xhtml.metadata_mut().add(
                 EXCEPTION_WARNING,
-                format!("left out of the message: {left_out}"),
+                format!("read otherwise than POI in the message: {read}"),
             );
         }
         match self.body {

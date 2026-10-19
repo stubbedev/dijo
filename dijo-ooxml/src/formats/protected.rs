@@ -6,9 +6,10 @@
 //! an XHTML handler of its own into `OfficeParser`'s, so that the line breaks after block
 //! elements and the tabs before indented ones come out twice; here they come once (#119).
 //!
-//! A package whose encryption this port does not open, one whose own parser does not read it,
-//! and macros extracted when asked to, are not read; where no password opens the package,
-//! the parse fails as Tika fails it.
+//! A package whose encryption this port does not open, and one whose own parser does not read
+//! it, are not read; where no password opens the package, the parse fails as Tika fails it.
+//! Macros are extracted when asked to: those of the package by its parser, then those of the
+//! compound document, as `OfficeParser` extracts them once the package is parsed.
 //!
 //! The package is decrypted a chunk at a time into a spool, in memory as far as a file is read
 //! whole and to a mapped temporary file beyond, which the parser of its format reads with its
@@ -23,6 +24,7 @@ use crate::formats::crypt::{
 use crate::formats::docx::DocxParser;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
+use crate::formats::ole2::vba::Macros;
 use crate::formats::ole2::Summaries;
 use crate::formats::pptx::PptxParser;
 use crate::formats::xlsx::XlsxParser;
@@ -67,8 +69,7 @@ impl Parser for ProtectedParser {
     }
 
     /// Fails packages no password opens, and leaves unread those whose encryption this port does
-    /// not open, those the parser of their format does not read, and macros extracted when asked
-    /// to.
+    /// not open and those the parser of their format does not read.
     ///
     /// The package is decrypted here and prepared by its parser to learn whether that parser
     /// extracts it; the parser prepares it again as the document is written, as what it
@@ -85,6 +86,7 @@ impl Parser for ProtectedParser {
             package,
             media_type,
             parser,
+            macros,
         } = Package::read(input, pages, configs)?;
         let mut prepared_metadata = metadata.clone();
         let asks_password = configs.password.is_some();
@@ -110,7 +112,7 @@ impl Parser for ProtectedParser {
             })?;
             prepared(xhtml)
         });
-        unless_different(reading, difference)
+        Macros::followed_by(unless_different(reading, difference), macros)
     }
 }
 
@@ -140,6 +142,8 @@ struct Package {
     /// The type of the package, as `OOXMLExtractorFactory` sets it before it extracts it.
     media_type: String,
     parser: &'static dyn Parser,
+    /// The macros of the compound document, when asked for.
+    macros: Option<Macros>,
 }
 
 impl Package {
@@ -150,15 +154,9 @@ impl Package {
         pages: Pages<'_>,
         configs: &ParserConfigs,
     ) -> Result<Package, Decline<'static>> {
-        if configs.office.extracts_macros() {
-            return Err(Unported(
-                "macros are extracted from a protected package, which this port does not do"
-                    .to_owned(),
-            )
-            .into());
-        }
         let file = office::open(input, MEDIA_TYPE, "protected package")?;
         let summaries = Summaries::read(&file, file.root())?;
+        let macros = Macros::of(&file, configs);
         let info = file.root_document(ENCRYPTION_INFO).map_err(Unported)?;
         let encryption = PackageEncryption::read(&info).map_err(|unopened| match unopened {
             Unopened::Disallowed(_) => Decline::Fails(crypt::encrypted(None)),
@@ -196,6 +194,7 @@ impl Package {
             package,
             media_type,
             parser,
+            macros,
         })
     }
 }

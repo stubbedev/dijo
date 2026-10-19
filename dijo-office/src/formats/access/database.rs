@@ -5,7 +5,10 @@
 //!
 //! Jackcess looks rows of the catalog up through its index on the parent and the name where the
 //! index is one it can read, and by scanning the catalog otherwise; the port always scans,
-//! which finds the same rows in a catalog whose index matches its rows.
+//! which finds the same rows in a catalog whose index matches its rows. A catalog without the
+//! index on its ids Jackcess looks objects up in, or whose index on the parent and the name
+//! holds more columns, on which Jackcess throws or may find otherwise, is scanned as any other,
+//! a reading that may differ from Tika's (#186).
 
 use std::cell::OnceCell;
 use std::collections::HashMap;
@@ -18,6 +21,7 @@ use super::format;
 use super::pages::Pages;
 use super::properties::PropertyMaps;
 use super::table::{Context, IndexMatch, Row, Table};
+use crate::formats::Difference;
 
 const PAGE_SYSTEM_CATALOG: i32 = 2;
 const DB_PARENT_ID: i32 = 0xF00_0000;
@@ -78,6 +82,8 @@ pub(super) struct Database<'a> {
     db_parent: i32,
     /// `MSysComplexColumns`, read once its first complex column needs it.
     complex_columns: OnceCell<Result<Vec<ComplexRow>, Thrown>>,
+    /// Where the port reads the database otherwise than Jackcess, if it does.
+    read_otherwise: Option<Difference>,
 }
 
 /// A row of `MSysComplexColumns`, by its primary key.
@@ -150,12 +156,14 @@ impl<'a> Database<'a> {
             &Bootstrap,
         )?;
         let catalog = read_catalog(&catalog_table, &pages)?;
+        let mut read_otherwise = None;
         let finder = match catalog_table.find_index(&[CAT_COL_PARENT_ID, CAT_COL_NAME]) {
             IndexMatch::Exact { valid: true } => {
                 if catalog_table.find_index(&[CAT_COL_ID]) == IndexMatch::None {
-                    return Err(Thrown::unported(
+                    read_otherwise = Some(Difference(
                         "a system catalog without the index on its ids Jackcess looks objects \
-                         up in",
+                         up in, which it throws on, scanned"
+                            .to_owned(),
                     ));
                 }
                 Finder::Indexed
@@ -164,9 +172,12 @@ impl<'a> Database<'a> {
                 catalog_parent: None,
             },
             IndexMatch::Partial => {
-                return Err(Thrown::unported(
-                    "a system catalog indexed on its parents and names only with more columns",
-                ))
+                read_otherwise = Some(Difference(
+                    "a system catalog indexed on its parents and names only with more columns, \
+                     which Jackcess may look objects up in otherwise, scanned"
+                        .to_owned(),
+                ));
+                Finder::Indexed
             }
         };
         let mut database = Self {
@@ -176,6 +187,7 @@ impl<'a> Database<'a> {
             table_parent: 0,
             db_parent: 0,
             complex_columns: OnceCell::new(),
+            read_otherwise,
         };
         database.read_parents()?;
         Ok(database)
@@ -227,6 +239,11 @@ impl<'a> Database<'a> {
             .find(self.db_parent, name)
             .and_then(|row| row.properties.as_deref());
         PropertyMaps::read(bytes, &self.pages)
+    }
+
+    /// Where the port reads the database otherwise than Jackcess, if it does.
+    pub(super) fn read_otherwise(&self) -> Option<Difference> {
+        self.read_otherwise.clone()
     }
 
     /// `getDatabaseProperties`.

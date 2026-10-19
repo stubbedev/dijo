@@ -283,13 +283,12 @@ impl BigDecimal {
         rounded
     }
 
-    /// `divide(BigDecimal.TEN.pow(power), mode)`: the quotient at this value's own scale.
-    pub(crate) fn divide_by_power_of_ten(&self, power: usize, mode: Rounding) -> Self {
-        let shifted = Self {
+    /// `movePointLeft(power)`: the exact quotient by ten to the `power`.
+    pub(crate) fn move_point_left(&self, power: usize) -> Self {
+        Self {
             scale: self.scale + power as i64,
             ..self.clone()
-        };
-        shifted.drop_digits(power, mode)
+        }
     }
 
     /// `multiply(BigDecimal.valueOf(factor))` for a factor of 10, 100 or 1000.
@@ -413,10 +412,7 @@ mod tests {
             "1000000000000000055511151231257827021181583404541015625e-55"
         );
         let value = BigDecimal::parse("1234.5").unwrap();
-        assert_eq!(
-            text(&value.divide_by_power_of_ten(3, Rounding::HalfUp)),
-            "12e-1"
-        );
+        assert_eq!(text(&value.move_point_left(3)), "12345e-4");
         assert_eq!(
             text(
                 &BigDecimal::parse("999.96")

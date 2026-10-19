@@ -21,13 +21,13 @@ use crate::formats::docx::body::{Body, Context};
 use crate::formats::docx::notes::InlineParts;
 use crate::formats::docx::text::{TextHandler, TextOptions};
 use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
-use crate::formats::ooxml::extractor::{self, Ignore};
+use crate::formats::ooxml::extractor::{self, Checked, Ignore};
 use crate::formats::ooxml::{
     self, Package, Properties, Relationship, Unported, HYPERLINK_RELATIONSHIP,
 };
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
 use crate::java::is_blank;
 
@@ -130,8 +130,8 @@ impl Parser for PptxParser {
         ]
     }
 
-    /// Leaves unread presentations whose parts or OLE objects Tika records failing on, which hold
-    /// macros Tika extracts when asked to, and packages POI does not open as this port does.
+    /// Leaves unread presentations whose parts or OLE objects Tika records failing on, and
+    /// packages POI does not open as this port does. Macros are extracted when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -152,7 +152,8 @@ impl Parser for PptxParser {
         let read = Presentation::open(package, &configs.office)
             .and_then(Presentation::prepare)
             .map_err(|Unported(reason)| reason)?;
-        Ok(Box::new(move |xhtml| read.write(xhtml)))
+        let difference = read.checked.difference();
+        unless_different(Box::new(move |xhtml| read.write(xhtml)), difference)
     }
 }
 
@@ -240,8 +241,8 @@ impl<'a> Presentation<'a> {
     }
 
     /// Finds what this port does not read in a package it could open (parts whose XML Tika
-    /// records failing on, pictures it cannot place, links and OLE objects it fails to read, and
-    /// macros to extract), and reads what Tika reads whole: the properties and the comment
+    /// records failing on, pictures it cannot place, links and OLE objects it fails to read),
+    /// and reads what Tika reads whole: the macros to extract, the properties and the comment
     /// authors. The parts written as they are read are only checked here.
     fn prepare(self) -> Result<Read<'a>, Unported> {
         let slides = self.related(self.main, kind::SLIDE);
@@ -282,12 +283,19 @@ impl<'a> Presentation<'a> {
                 }
             }
         }
+        let mut checked = Checked::default();
         for source in self.embedding_parts() {
             for relationship in self.relationships(source) {
                 if is_anchor(relationship) {
                     continue;
                 }
-                extractor::check_embedded(&self.package, self.config, source, relationship)?;
+                extractor::check_embedded(
+                    &self.package,
+                    self.config,
+                    source,
+                    relationship,
+                    &mut checked,
+                )?;
             }
         }
         let properties = Properties::read(&self.package)?;
@@ -295,6 +303,7 @@ impl<'a> Presentation<'a> {
             presentation: self,
             properties,
             authors,
+            checked,
         })
     }
 
@@ -341,6 +350,7 @@ impl<'a> Presentation<'a> {
         &self,
         properties: &Properties,
         authors: &CommentAuthors,
+        checked: &Checked,
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
         extractor::write_package_metadata(&self.package, xhtml.metadata_mut());
@@ -381,6 +391,7 @@ impl<'a> Presentation<'a> {
         extractor::write_embedded_parts(
             &self.package,
             &self.embedding_parts(),
+            checked,
             &extractor::DescribedParts::new(),
             xhtml,
             &|part, metadata| {
@@ -500,12 +511,14 @@ struct Read<'a> {
     properties: Properties,
     /// `loadCommentAuthors`.
     authors: CommentAuthors,
+    /// The macros to extract.
+    checked: Checked,
 }
 
 impl Read<'_> {
     fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         self.presentation
-            .write(&self.properties, &self.authors, xhtml)
+            .write(&self.properties, &self.authors, &self.checked, xhtml)
     }
 }
 

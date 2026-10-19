@@ -36,14 +36,14 @@ use crate::formats::data_format::{header_footer, DataFormatter};
 use crate::formats::docx;
 use crate::formats::embedded;
 use crate::formats::metadata::{write_sheet_numbers, TikaMetadata};
-use crate::formats::ooxml::extractor::{self, external_reference, kind, name, Ignore};
+use crate::formats::ooxml::extractor::{self, external_reference, kind, name, Checked, Ignore};
 use crate::formats::ooxml::{
     self, Package, Properties, Relationship, Unported, HYPERLINK_RELATIONSHIP,
 };
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, SaxHandler};
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
 use crate::Error;
 
@@ -134,8 +134,8 @@ impl Parser for XlsxParser {
         ]
     }
 
-    /// Leaves unread workbooks with OLE objects Tika opens, macros it extracts when asked to, parts
-    /// whose XML Tika records failing on, and packages POI does not open as this port does.
+    /// Leaves unread workbooks with OLE objects Tika opens, parts whose XML Tika records failing
+    /// on, and packages POI does not open as this port does. Macros are extracted when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -157,7 +157,8 @@ impl Parser for XlsxParser {
         let read = Workbook::open(package, &configs.office)
             .and_then(Workbook::prepare)
             .map_err(|Unported(reason)| reason)?;
-        Ok(Box::new(move |xhtml| read.write(xhtml)))
+        let difference = read.checked.difference();
+        unless_different(Box::new(move |xhtml| read.write(xhtml)), difference)
     }
 }
 
@@ -364,13 +365,20 @@ impl<'a> Workbook<'a> {
     }
 
     /// Finds what this port does not read in a package it could open (embedded documents and
-    /// charts, macros to extract, parts whose XML Tika fails on, and properties it does not
-    /// read), and reads what Tika reads whole before it writes from it: the properties, styles,
+    /// charts, parts whose XML Tika fails on, and properties it does not read), and reads what
+    /// Tika reads whole before it writes from it: the macros to extract, the properties, styles,
     /// shared strings, each sheet's comments, the workbook's metadata and its people.
     fn prepare(self) -> Result<Read<'a>, Unported> {
+        let mut checked = Checked::default();
         for source in self.main_parts() {
             for relationship in self.relationships(source) {
-                extractor::check_embedded(&self.package, self.config, source, relationship)?;
+                extractor::check_embedded(
+                    &self.package,
+                    self.config,
+                    source,
+                    relationship,
+                    &mut checked,
+                )?;
             }
         }
         for sheet in &self.sheets {
@@ -453,6 +461,7 @@ impl<'a> Workbook<'a> {
             comments,
             metadata,
             persons,
+            checked,
         })
     }
 
@@ -481,6 +490,7 @@ impl<'a> Workbook<'a> {
             &self.package,
             &self.main_parts(),
             &written,
+            &read.checked,
             &extractor::DescribedParts::new(),
             xhtml,
             &|part, metadata| {
@@ -747,6 +757,8 @@ struct Read<'a> {
     comments: Vec<Option<Comments>>,
     metadata: WorkbookMetadata,
     persons: Vec<Persons>,
+    /// The macros to extract.
+    checked: Checked,
 }
 
 impl Read<'_> {

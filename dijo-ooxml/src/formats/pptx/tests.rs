@@ -305,7 +305,7 @@ fn reads_what_tika_slips_on() {
 }
 
 #[test]
-fn falls_short_on_macros_only_when_they_are_extracted() {
+fn differs_on_macros_that_do_not_open_only_when_they_are_extracted() {
     let mut built = Built::new(&[("rId1", kind::VBA_PROJECT, "vbaProject.bin")]);
     built.binary(
         "ppt/vbaProject.bin",
@@ -317,5 +317,31 @@ fn falls_short_on_macros_only_when_they_are_extracted() {
     let macros = office(OfficeParserConfig::new().set_extract_macros(true));
     assert!(PptxParser
         .shortfall(&input, &TikaMetadata::new(), &macros)
-        .is_some_and(|reason| reason.contains("vbaProject.bin")));
+        .is_some_and(|reason| reason.contains("Tika fails the package")));
+}
+
+/// The modules of a presentation's VBA project are extracted when asked for, after its slides
+/// (#186).
+#[test]
+fn extracts_macros_when_asked_to() {
+    const SOURCE: &str = "Attribute VB_Name = \"Modul1\"\r\nSub Lysbillede()\r\nEnd Sub\r\n";
+    let mut built = Built::new(&[("rId1", kind::VBA_PROJECT, "vbaProject.bin")]);
+    built.binary(
+        "ppt/vbaProject.bin",
+        "application/vnd.ms-office.vbaProject",
+        &dijo_office::formats::ole2::vba::testing::project(&[("Modul1", SOURCE)]),
+    );
+    let input = built.bytes();
+    let macros = office(OfficeParserConfig::new().set_extract_macros(true));
+    assert_eq!(
+        PptxParser.shortfall(&input, &TikaMetadata::new(), &macros),
+        None
+    );
+    let (xml, _) = crate::Extractor::new()
+        .set_xml_output(true)
+        .set_office_config(OfficeParserConfig::new().set_extract_macros(true))
+        .extract_bytes_to_string(&input)
+        .unwrap();
+    assert!(xml.contains("Sub Lysbillede()"), "{xml}");
+    assert!(!self::xml(&input).contains("Sub Lysbillede()"));
 }

@@ -2,7 +2,8 @@
 //! a compound document, each a `VBA` storage anywhere in it, their `dir` streams decompressed
 //! as MS-OVBA compresses them (POI's `RLEDecompressingInputStream`) and read for the modules'
 //! streams and where their source starts, and each module's source decompressed from there; the
-//! modules handed on, each an embedded document of its source.
+//! modules handed on, each an embedded document of its source. The macros of an Office Open XML
+//! package are read alike from its `vbaProject.bin`, a compound document of its own.
 //!
 //! What POI reads is read as it reads it, up to the exceptions it throws, which fail the reading
 //! of the macros. Where Tika writes the macros otherwise than the native reading, the
@@ -12,6 +13,13 @@
 //! page 1256, which POI reads in code page 1255; text whose malformed bytes the native decoders
 //! may replace otherwise than Java's; and macros POI fails to read, which Tika records in an
 //! entry of no content (#186).
+//!
+//! Where POI is wrong, the reading departs from it (#186): a module's stream is looked up by the
+//! Unicode name the `dir` stream gives it (`MODULESTREAMNAMEUNICODE`), which is the name of the
+//! stream, where POI looks it up by the name in the project's code page, which holds `?` for
+//! each character the code page lacks, so that POI throws on such a module; and a
+//! `vbaProject.bin` that is no compound document has its failure recorded as a warning, where
+//! Tika fails the whole package.
 
 use std::collections::HashMap;
 
@@ -368,7 +376,7 @@ fn decompress(compressed: &[u8]) -> Read<Vec<u8>> {
 /// What `extractMacros` hands on of a compound document's macros: each module's name and
 /// source, in the order the projects name them, or why POI fails to read them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Macros {
+pub struct Macros {
     read: Result<Vec<Module>, String>,
     /// Where Tika hands them on otherwise, if it does.
     difference: Option<Difference>,
@@ -384,13 +392,33 @@ struct Module {
 impl Macros {
     /// The macros of `file`, where `configs` asks for them, as `OfficeParser.extractMacros`
     /// reads them from the whole compound document.
-    pub(crate) fn of(file: &Ole2<'_>, configs: &ParserConfigs) -> Option<Macros> {
+    pub fn of(file: &Ole2<'_>, configs: &ParserConfigs) -> Option<Macros> {
         configs.office.extracts_macros().then(|| Self::read(file))
+    }
+
+    /// The macros of `data`, the bytes of a package's `vbaProject.bin`, as `handleMacros` reads
+    /// them: a compound document opened whole and read as [`Macros::read`] reads one. One that
+    /// does not open has its failure recorded, where Tika fails the whole package with a
+    /// `TikaException`, "Broken OOXML file".
+    pub fn of_project(data: &[u8]) -> Macros {
+        match Ole2::open_stream(data) {
+            Ok(file) => Self::read(&file),
+            Err(Unreadable(reason)) => {
+                let reason = format!("the VBA project is no compound document: {reason}");
+                Macros {
+                    difference: Some(Difference(format!(
+                        "Tika fails the package on macros it cannot open, whose failure the \
+                         port records: {reason}"
+                    ))),
+                    read: Err(reason),
+                }
+            }
+        }
     }
 
     /// The macros of `file`, as `OfficeParser.extractMacros` reads them from the whole compound
     /// document.
-    pub(crate) fn read(file: &Ole2<'_>) -> Macros {
+    pub fn read(file: &Ole2<'_>) -> Macros {
         match read_macros(file) {
             Ok((modules, differences)) => Macros {
                 read: Ok(modules),
@@ -415,7 +443,7 @@ impl Macros {
     }
 
     /// Where Tika hands the macros on otherwise, if it does.
-    pub(crate) fn difference(&self) -> Option<Difference> {
+    pub fn difference(&self) -> Option<Difference> {
         self.difference.clone()
     }
 
@@ -424,7 +452,7 @@ impl Macros {
     /// from Tika's where either is. A storage of a compound document, which Tika hands its
     /// parser as an open container, has its macros handed on by the document it is stored in,
     /// and none of its own (TIKA-4116).
-    pub(crate) fn followed_by<'a>(
+    pub fn followed_by<'a>(
         prepared: Result<Prepared<'a>, Decline<'a>>,
         macros: Option<Macros>,
     ) -> Result<Prepared<'a>, Decline<'a>> {
@@ -448,15 +476,15 @@ impl Macros {
     /// Hands on each module as `extractMacros` does: an embedded document of its source in
     /// UTF-8, a `MACRO` of `text/x-vbasic` named by its stream. Macros POI fails to read are
     /// recorded as a warning.
-    pub(crate) fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
-        match self.read {
+    pub fn write(&self, xhtml: &mut Xhtml) -> Result<(), Failure> {
+        match &self.read {
             Ok(modules) => {
                 for Module { name, source } in modules {
                     let mut metadata = TikaMetadata::new();
                     ResourceType::Macro.set(&mut metadata);
                     metadata.set(CONTENT_TYPE, VBASIC);
-                    if !is_blank(&name) {
-                        metadata.set(RESOURCE_NAME, name);
+                    if !is_blank(name) {
+                        metadata.set(RESOURCE_NAME, name.as_str());
                     }
                     xhtml.parse_embedded(source.as_bytes(), &metadata, Wrapping::PackageEntry)?;
                 }
@@ -490,6 +518,8 @@ struct ModuleMap {
     code_page: Option<i32>,
     /// What of the projects' text the native decoders may decode otherwise than Java's.
     inexact: bool,
+    /// The modules whose streams POI looks up by another name than the port, each told.
+    renamed: Vec<String>,
 }
 
 impl ModuleMap {
@@ -527,6 +557,7 @@ fn read_macros(file: &Ole2<'_>) -> Read<(Vec<Module>, Vec<String>)> {
         charset: Charset::named("windows-1252"),
         code_page: None,
         inexact: false,
+        renamed: Vec::new(),
     };
     find_macros(file, file.root(), &mut modules)?;
     find_named(file, file.root(), "projectwm", &mut |_| Ok(()))?;
@@ -540,7 +571,7 @@ fn read_macros(file: &Ole2<'_>) -> Read<(Vec<Module>, Vec<String>)> {
         })?;
         check_project_properties(&properties)
     })?;
-    let mut differences = Vec::new();
+    let mut differences = std::mem::take(&mut modules.renamed);
     let mut read = Vec::with_capacity(modules.modules.len());
     let mut names = JavaHashMap::default();
     let named: Vec<(String, ModuleImpl)> = std::mem::take(&mut modules.modules);
@@ -729,10 +760,11 @@ fn starts_with_ignoring_case(text: &str, prefix: &str) -> bool {
     equals_ignore_case(&start, prefix)
 }
 
-/// A string `readStringPair` reads, and, where the reserved id after it is not the one
-/// expected, that id.
+/// A string `readStringPair` reads, the Unicode string after it, and, where the reserved id
+/// after the string is not the one expected, that id.
 struct StringPair {
     ascii: String,
+    unicode: Option<String>,
     pushback: Option<i32>,
 }
 
@@ -759,7 +791,8 @@ fn read_dir_stream(compressed: &[u8], modules: &mut ModuleMap) -> Read<()> {
                     modules.code_page = Some(code_page);
                 }
                 0x1A => {
-                    stream_name = Some(read_string_pair(&mut input, modules, 0x32, true)?.ascii);
+                    let pair = read_string_pair(&mut input, modules, 0x32, true)?;
+                    stream_name = Some(module_stream_name(pair, modules));
                 }
                 0x05 => {
                     read_string_pair(&mut input, modules, 0x40, true)?;
@@ -860,15 +893,35 @@ fn read_string_pair(
         }
         return Ok(StringPair {
             ascii,
+            unicode: None,
             pushback: Some(found),
         });
     }
     let length = input.read_int()?;
-    read_unicode_string(input, length)?;
+    let unicode = read_unicode_string(input, length)?;
     Ok(StringPair {
         ascii,
+        unicode: Some(unicode),
         pushback: None,
     })
+}
+
+/// The name of a module's stream, of the `MODULESTREAMNAME` record `pair`: its Unicode form,
+/// which names the stream whatever the project's code page holds, where POI takes the form in
+/// the code page, noted where the two differ.
+fn module_stream_name(pair: StringPair, modules: &mut ModuleMap) -> String {
+    match pair.unicode {
+        Some(unicode) if !unicode.is_empty() => {
+            if unicode != pair.ascii {
+                modules.renamed.push(format!(
+                    "the module {unicode}, whose stream POI looks up as {}",
+                    pair.ascii
+                ));
+            }
+            unicode
+        }
+        _ => pair.ascii,
+    }
 }
 
 /// `IOUtils.safelyAllocate(length, MAX_STRING_LENGTH)`: room for a string of `length` bytes.
@@ -894,13 +947,19 @@ fn read_string(input: &mut impl JavaInput, length: i32, modules: &mut ModuleMap)
     modules.decode(&buffer)
 }
 
-/// `readUnicodeString`: `length` bytes of UTF-16LE, which the reader leaves unused.
-fn read_unicode_string(input: &mut impl JavaInput, length: i32) -> Read<()> {
+/// `readUnicodeString`: `length` bytes of UTF-16LE, an odd last byte left out.
+fn read_unicode_string(input: &mut impl JavaInput, length: i32) -> Read<String> {
     let mut buffer = string_buffer(length)?;
     if input.read_fully(&mut buffer)? != length {
         return Err(Thrown::Io("java.io.EOFException".into()));
     }
-    Ok(())
+    let units: Vec<u16> = buffer
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&pair| u16::from_le_bytes(pair))
+        .collect();
+    Ok(String::from_utf16_lossy(&units))
 }
 
 /// `readModuleMetadataFromDirStream`: where the source of the module of the stream `name`
@@ -1024,3 +1083,6 @@ fn decompress_by_brute_force(compressed: &[u8]) -> Read<Option<Vec<u8>>> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;

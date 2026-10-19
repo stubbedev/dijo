@@ -84,6 +84,12 @@ impl Type {
             .map_or(-1, |&(_, length)| length)
     }
 
+    /// The length of each value of a multi-valued property of the type, which MS-OXMSG keeps
+    /// one after another in one stream; 0 for a type of variable length.
+    pub(in crate::formats) fn fixed_length(self) -> usize {
+        usize::try_from(self.length()).unwrap_or(0)
+    }
+
     /// `isPointer`.
     pub(in crate::formats) fn is_pointer(self) -> bool {
         let length = self.length();

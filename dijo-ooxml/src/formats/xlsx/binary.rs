@@ -16,10 +16,10 @@ use crate::formats::data_format::{builtin_format, error_text, DataFormatter, For
 use crate::formats::metadata::office::ORIGINAL_RESOURCE_NAME;
 use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ooxml::extractor::{self, kind, name};
+use crate::formats::ooxml::extractor::{self, kind, name, Checked};
 use crate::formats::ooxml::{Package, Properties, Relationship, Unported, HYPERLINK_RELATIONSHIP};
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages, Paging};
 use crate::java::is_blank;
 use crate::text::charset::Charset;
@@ -109,8 +109,8 @@ impl Parser for XlsbParser {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
-    /// Leaves unread workbooks with OLE objects Tika opens, macros it extracts when asked to, a
-    /// strict or other main document, and packages POI does not open as this port does.
+    /// Leaves unread workbooks with OLE objects Tika opens, a strict or other main document, and
+    /// packages POI does not open as this port does. Macros are extracted when asked to.
     fn prepare_paged<'a>(
         &self,
         input: &'a [u8],
@@ -121,7 +121,8 @@ impl Parser for XlsbParser {
         let package = Package::open(input, pages)?;
         refuse_strict(&package, &[BINARY_WORKBOOK_TYPE])?;
         let workbook = open(package, &configs.office).map_err(|Unported(reason)| reason)?;
-        Ok(Box::new(move |xhtml| workbook.write(xhtml)))
+        let difference = workbook.checked.difference();
+        unless_different(Box::new(move |xhtml| workbook.write(xhtml)), difference)
     }
 }
 
@@ -131,6 +132,8 @@ struct Binary<'a> {
     workbook: Workbook<'a>,
     properties: Properties,
     sheets: Result<(), Failure>,
+    /// The macros to extract.
+    checked: Checked,
 }
 
 fn open<'a>(package: Package<'a>, config: &'a OfficeParserConfig) -> Result<Binary<'a>, Unported> {
@@ -164,6 +167,7 @@ fn open<'a>(package: Package<'a>, config: &'a OfficeParserConfig) -> Result<Bina
         },
         properties,
         sheets: Ok(()),
+        checked: Checked::default(),
     };
     match sheet_refs(&binary.workbook) {
         Ok(sheets) => binary.workbook.sheets = sheets,
@@ -172,7 +176,13 @@ fn open<'a>(package: Package<'a>, config: &'a OfficeParserConfig) -> Result<Bina
     let workbook = &binary.workbook;
     for source in workbook.main_parts() {
         for relationship in workbook.relationships(source) {
-            extractor::check_embedded(&workbook.package, config, source, relationship)?;
+            extractor::check_embedded(
+                &workbook.package,
+                config,
+                source,
+                relationship,
+                &mut binary.checked,
+            )?;
         }
     }
     for sheet in &workbook.sheets {
@@ -517,6 +527,7 @@ impl Binary<'_> {
             workbook,
             properties,
             sheets,
+            checked,
         } = self;
         extractor::write_package_metadata(&workbook.package, xhtml.metadata_mut());
         properties.write(xhtml.metadata_mut());
@@ -533,6 +544,7 @@ impl Binary<'_> {
             &workbook.package,
             &workbook.main_parts(),
             &written,
+            &checked,
             &extractor::DescribedParts::new(),
             xhtml,
             &|part, metadata| {

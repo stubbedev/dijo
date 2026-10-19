@@ -9,6 +9,9 @@
 //! hold them in the workbook's date system; see [`crate::formats::data_format`]. Tika writes
 //! dates and the general format with its `TikaExcelDataFormatter` and other formats with POI's
 //! own `DataFormatter`, dates in Java's default time zone and the 1900 date system (#92, #107).
+//! Where `DataFormatter` writes a number otherwise than Excel displays it, such as the literal
+//! texts of a date format, `?` digits or the zero section of an accounting format, the
+//! formatter writes it as Excel does (#186).
 //!
 //! The documents embedded in `MBD` storages follow, handed on as `handleEmbeddedOfficeDoc` hands
 //! them. A workbook before BIFF8, whose stream is named "Book", is read as POI's

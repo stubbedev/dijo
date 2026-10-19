@@ -547,8 +547,7 @@ fn writes_rich_text_whole() {
     let (text, difference) = rich_text(
         &format!("<div><b>{long}</b></div>"),
         &ParserConfigs::default(),
-    )
-    .unwrap();
+    );
     assert!(text.contains(&long), "{}", text.len());
     assert_eq!(difference, None);
 }
@@ -569,6 +568,70 @@ fn reads_ole_objects_with_empty_names() {
     assert!(matches!(
         ole::read(&value, &ParserConfigs::default()),
         Ok(Ole::Nothing)
+    ));
+}
+
+/// The OLE object of the ACE fixture, as its value lies in the file: where its header names
+/// where its pretty name starts.
+const ACE_OLE_PRETTY_NAME_OFFSET: usize = 344_088 + 10;
+
+/// An OLE object Jackcess throws on, here one whose header names its pretty name past its end,
+/// is left out of its cell and the rest of the database read, a reading that differs from
+/// Tika's, which fails the whole database (#186).
+#[test]
+fn leaves_out_ole_objects_jackcess_throws_on() {
+    let mut damaged = fixture("ace-ole.accdb");
+    assert_eq!(
+        &damaged[ACE_OLE_PRETTY_NAME_OFFSET - 10..ACE_OLE_PRETTY_NAME_OFFSET - 8],
+        &0x1C15_u16.to_le_bytes()
+    );
+    damaged[ACE_OLE_PRETTY_NAME_OFFSET..ACE_OLE_PRETTY_NAME_OFFSET + 2]
+        .copy_from_slice(&0x7FFF_i16.to_le_bytes());
+    let configs = ParserConfigs::default();
+    let Err(Decline::Differs { difference, .. }) =
+        JackcessParser.prepare(&damaged, &TikaMetadata::new(), &configs)
+    else {
+        panic!("a reading that differs");
+    };
+    assert!(
+        difference.0.contains("OLE object") && difference.0.contains("left out"),
+        "{}",
+        difference.0
+    );
+    let xml = xml_of(&damaged);
+    assert!(xml.contains("<table name="), "{xml}");
+    assert!(!xml.contains("Word.Document.8"), "{xml}");
+}
+
+/// An OLE object Jackcess reads is read with no difference noted of it.
+#[test]
+fn notes_nothing_of_ole_objects_jackcess_reads() {
+    let configs = ParserConfigs::default();
+    let intact = fixture("ace-ole.accdb");
+    let difference = match JackcessParser.prepare(&intact, &TikaMetadata::new(), &configs) {
+        Err(Decline::Differs { difference, .. }) => Some(difference.0),
+        _ => None,
+    };
+    assert!(
+        !difference
+            .as_deref()
+            .unwrap_or_default()
+            .contains("left out"),
+        "{difference:?}"
+    );
+}
+
+/// An OLE object's stream that ends before it starts is empty, as Java's
+/// `ByteArrayInputStream` reads it, and one that starts before the value throws as it does.
+#[test]
+fn reads_ole_streams_as_java_reads_them() {
+    let value = [1, 2, 3, 4];
+    assert_eq!(ole::stream(&value, 1, 2).unwrap(), [2, 3]);
+    assert_eq!(ole::stream(&value, 3, 9).unwrap(), [4]);
+    assert!(ole::stream(&value, 3, -2).unwrap().is_empty());
+    assert!(matches!(
+        ole::stream(&value, -1, 2),
+        Err(Thrown::Exception(_))
     ));
 }
 
