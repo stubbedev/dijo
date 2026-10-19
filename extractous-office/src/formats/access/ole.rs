@@ -7,6 +7,7 @@ use crate::config::ParserConfigs;
 use crate::formats::embedded::RESOURCE_NAME;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{office_document, Embedded, Handed};
+use crate::formats::poi::Thrown as PoiThrown;
 use crate::java::{ascii, equals_ignore_case, utf16le};
 use crate::ole2::Ole2;
 
@@ -199,18 +200,39 @@ fn simple_package(
 }
 
 /// `handleCompoundContent`: the compound document's root storage, as
-/// `handleEmbeddedOfficeDoc` hands it on.
+/// `handleEmbeddedOfficeDoc` hands it on; one POI cannot open recorded as an embedded stream
+/// exception, as Tika records it, told as the port tells it, which differs from Tika's reading.
 fn compound(data: &[u8], configs: &ParserConfigs) -> Result<Ole, Thrown> {
-    let file = Ole2::open_stream(data).map_err(|unreadable| {
-        Thrown::unported(format!(
-            "an OLE object's compound document POI cannot open ({}), whose exception Tika \
-             records",
-            unreadable.0
-        ))
-    })?;
+    let file = match Ole2::open_stream(data) {
+        Ok(file) => file,
+        Err(unreadable) => {
+            return Ok(Ole::Storage(Handed::Recorded(PoiThrown::new(format!(
+                "POIFSFileSystem cannot open an OLE object's compound document: {}",
+                unreadable.0
+            )))))
+        }
+    };
     match office_document(&file, file.root(), TikaMetadata::new(), None, configs) {
         Ok(Some(handed)) => Ok(Ole::Storage(handed.into_owned())),
         Ok(None) => Ok(Ole::Nothing),
         Err(unported) => Err(Thrown::unported(unported.0)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An OLE object's compound document POI cannot open is recorded as an embedded stream
+    /// exception, as Tika records it, in the port's words, which differ from Tika's (#186).
+    #[test]
+    fn records_a_compound_document_poi_cannot_open() {
+        let mut damaged = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+        damaged.resize(600, 0xFF);
+        let Ok(Ole::Storage(handed)) = compound(&damaged, &ParserConfigs::default()) else {
+            panic!("a recorded failure");
+        };
+        assert!(matches!(handed, Handed::Recorded(_)));
+        assert!(handed.difference().is_some());
     }
 }
