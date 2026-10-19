@@ -338,7 +338,9 @@ struct Cell {
 
 /// Ends every block element with a line break in plain text unless the text already ends with
 /// one, and within a table cell puts line breaks only between the cell's paragraphs, as our Java
-/// `BlockBreakHandler`.
+/// `BlockBreakHandler`. Unlike it, the text of a table nested in a cell is text of that cell too,
+/// so the white space between the nested cells and the line breaks between its rows are kept,
+/// where the Java handler drops them and runs the words of neighbouring cells together.
 pub struct BlockBreaks<H> {
     next: H,
     cells: Vec<Cell>,
@@ -368,9 +370,12 @@ impl<H: ContentHandler> BlockBreaks<H> {
         if blank && (!cell.has_text || cell.line_ended) {
             return Ok(false);
         }
-        let line_ended = cell.line_ended;
-        cell.line_ended = false;
-        cell.has_text = true;
+        let mut line_ended = false;
+        for cell in &mut self.cells {
+            line_ended |= cell.line_ended;
+            cell.line_ended = false;
+            cell.has_text = true;
+        }
         if line_ended {
             self.next.characters("\n")?;
             self.at_line_start = true;
@@ -1394,5 +1399,36 @@ mod tests {
             assert_eq!(limit.start_element("p", &[]), Ok(()));
         }
         assert_eq!(out.0, "abc");
+    }
+
+    /// The cells of a table nested in a cell keep the white space between them and the line
+    /// breaks between their rows, as the text of the outer cell they are.
+    #[test]
+    fn keeps_nested_cells_apart() {
+        use super::{BlockBreaks, ContentHandler, ToText};
+        let mut out = StringOut::default();
+        {
+            let mut handler = BlockBreaks::new(ToText::new(&mut out));
+            handler.start_element("table", &[]).unwrap();
+            handler.start_element("tr", &[]).unwrap();
+            handler.start_element("td", &[]).unwrap();
+            handler.start_element("table", &[]).unwrap();
+            for row in [["boilerplate", "text"], ["next", "row"]] {
+                handler.start_element("tr", &[]).unwrap();
+                for cell in row {
+                    handler.characters("\n").unwrap();
+                    handler.ignorable_whitespace("\t").unwrap();
+                    handler.start_element("td", &[]).unwrap();
+                    handler.characters(cell).unwrap();
+                    handler.end_element("td").unwrap();
+                }
+                handler.end_element("tr").unwrap();
+            }
+            handler.end_element("table").unwrap();
+            handler.end_element("td").unwrap();
+            handler.end_element("tr").unwrap();
+            handler.end_element("table").unwrap();
+        }
+        assert_eq!(out.0, "boilerplate\n\ttext\nnext\n\trow\n");
     }
 }
