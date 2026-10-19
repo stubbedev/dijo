@@ -418,6 +418,19 @@ pub struct Xhtml<'h> {
     embedding: Embedding<'h>,
     /// The bytes of text written since the pages of the document's bytes were last released.
     written: usize,
+    /// How the document embedding this one handed it on.
+    handed: Handed,
+}
+
+/// How a document embedding another hands it to its parser: as a stream of its bytes, or, for
+/// a storage of a compound document, as the open container Tika's
+/// `TikaInputStream.getFromContainer` hands on, of which Tika's `OfficeParser` extracts no
+/// macros, those of the whole file being extracted with the document it is stored in
+/// (TIKA-4116).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Handed {
+    Stream,
+    Storage,
 }
 
 /// How many bytes of text a document writes between releases of the pages of the document's
@@ -446,6 +459,7 @@ impl<'h> Xhtml<'h> {
             ended: false,
             embedding: Embedding::new(context),
             written: 0,
+            handed: Handed::Stream,
         };
         let result = xhtml
             .start_document()
@@ -847,7 +861,40 @@ impl<'h> Xhtml<'h> {
         wrapping: Wrapping,
         opened: Opened,
     ) -> Result<(), Failure> {
-        self.parse_embedded_paged(input, input.pages(), metadata, wrapping, opened)
+        self.parse_embedded_paged(
+            input,
+            input.pages(),
+            metadata,
+            wrapping,
+            opened,
+            Handed::Stream,
+        )
+    }
+
+    /// [`Xhtml::parse_embedded_input`] of a storage of a compound document, written as a
+    /// compound document of its own as `input`, which Tika hands its parser as an open
+    /// container: see [`Xhtml::is_storage`].
+    pub fn parse_embedded_storage(
+        &mut self,
+        input: &Input<'_>,
+        metadata: &TikaMetadata,
+        wrapping: Wrapping,
+    ) -> Result<(), Failure> {
+        self.parse_embedded_paged(
+            input,
+            input.pages(),
+            metadata,
+            wrapping,
+            Opened::WithMetadata,
+            Handed::Storage,
+        )
+    }
+
+    /// Whether this document is a storage of the compound document embedding it, which Tika
+    /// hands its parser as an open container, and whose macros Tika extracts with the document
+    /// it is stored in.
+    pub fn is_storage(&self) -> bool {
+        self.handed == Handed::Storage
     }
 
     /// Parses a storage of a compound document embedded in this one with a native parser, as
@@ -870,6 +917,10 @@ impl<'h> Xhtml<'h> {
         }
         let mut open = Vec::new();
         let target = Target::of(wrapping);
+        let write = |xhtml: &mut Xhtml| {
+            xhtml.handed = Handed::Storage;
+            write(xhtml)
+        };
         let (parsed, result) = self.write_natively(
             spooled.len(),
             metadata.clone(),
@@ -904,7 +955,14 @@ impl<'h> Xhtml<'h> {
         wrapping: Wrapping,
         opened: Opened,
     ) -> Result<(), Failure> {
-        self.parse_embedded_paged(data, Pages::IN_MEMORY, metadata, wrapping, opened)
+        self.parse_embedded_paged(
+            data,
+            Pages::IN_MEMORY,
+            metadata,
+            wrapping,
+            opened,
+            Handed::Stream,
+        )
     }
 
     /// [`Xhtml::parse_embedded_opened`] of a document whose bytes `data` have the pages `pages`.
@@ -915,13 +973,14 @@ impl<'h> Xhtml<'h> {
         metadata: &TikaMetadata,
         wrapping: Wrapping,
         opened: Opened,
+        handed: Handed,
     ) -> Result<(), Failure> {
         if !self.enter_embedded(data, metadata, wrapping)? {
             return Ok(());
         }
         let mut open = Vec::new();
         let target = Target::of(wrapping);
-        let ended = self.parse_routed(data, pages, metadata, opened, &mut open, target);
+        let ended = self.parse_routed(data, pages, metadata, (opened, handed), &mut open, target);
         self.leave_embedded(ended, open, wrapping)
     }
 
@@ -957,13 +1016,13 @@ impl<'h> Xhtml<'h> {
         data: &[u8],
         pages: Pages<'_>,
         metadata: &TikaMetadata,
-        opened: Opened,
+        (opened, handed): (Opened, Handed),
         open: &mut Vec<ExpandedName>,
         target: Target,
     ) -> Ended {
         let configs = self.embedding.context().configs();
         match formats::route_embedded(data, pages, metadata, opened, configs) {
-            Ok(route) => self.parse_natively(data.len(), route, metadata, open, target),
+            Ok(route) => self.parse_natively(data.len(), route, metadata, handed, open, target),
             Err(Bridged::Unrouted(Unrouted::Empty)) => {
                 self.embedding.record_zero_bytes();
                 Ended::Recorded
@@ -1102,6 +1161,7 @@ impl<'h> Xhtml<'h> {
         bytes: usize,
         route: EmbeddedRoute<'_>,
         metadata: &TikaMetadata,
+        handed: Handed,
         open: &mut Vec<ExpandedName>,
         target: Target,
     ) -> Ended {
@@ -1112,8 +1172,12 @@ impl<'h> Xhtml<'h> {
             #[cfg(not(feature = "tika"))]
             difference,
         } = route;
+        let write = move |xhtml: &mut Xhtml| {
+            xhtml.handed = handed;
+            prepared(xhtml)
+        };
         let (parsed, result) =
-            self.write_natively(bytes, start, parser.name(), prepared, open, target);
+            self.write_natively(bytes, start, parser.name(), write, open, target);
         #[cfg(not(feature = "tika"))]
         if let Some(difference) = difference {
             let recorded = embedded::describe_difference(parser.name(), metadata, &difference);

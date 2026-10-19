@@ -1,8 +1,6 @@
 //! What Tika's `OfficeParser` does before it reads a compound document of a known type: POI
-//! opens the file, its container detection names the type, and macros, when asked for, are
-//! extracted, which no port does.
+//! opens the file, and its container detection names the type.
 
-use crate::config::ParserConfigs;
 use crate::formats::poi::{Thrown, Unread};
 use crate::formats::Unported;
 use crate::mime::{ole_directory_type, MediaType};
@@ -19,14 +17,8 @@ const MIN_DECLARED_BAT_BLOCKS: i64 = 4;
 const MAX_DECLARED_AMPLIFICATION: i64 = 16;
 
 /// The compound document `input`, opened as Tika's path opens it, or why it is not read as Tika's
-/// path reads it: macros extracted when asked to, which Tika's path reads, and a file POI cannot
-/// open, which fails Tika's parse.
-pub fn open_file<'a>(input: &'a [u8], configs: &ParserConfigs) -> Result<Ole2<'a>, Unread> {
-    if configs.office.extracts_macros() {
-        return Err(
-            Unported("macros are extracted, which this port does not do".to_owned()).into(),
-        );
-    }
+/// path reads it: a file POI cannot open, which fails Tika's parse.
+pub fn open_file(input: &[u8]) -> Result<Ole2<'_>, Unread> {
     opened_as_detected(input).map_err(|Unreadable(reason)| {
         Thrown::new(format!(
             "POIFSFileSystem cannot open the compound document: {reason}"
@@ -62,24 +54,18 @@ fn honest_declared_size(input: &[u8]) -> Option<i64> {
 
 /// [`open_file`] of a compound document `media_type`, the type of a `kind` of document; one its
 /// container detection names otherwise is left to Tika's path.
-pub fn open<'a>(
-    input: &'a [u8],
-    configs: &ParserConfigs,
-    media_type: &str,
-    kind: &str,
-) -> Result<Ole2<'a>, Unread> {
-    open_as(input, configs, &[media_type], kind).map(|(file, _)| file)
+pub fn open<'a>(input: &'a [u8], media_type: &str, kind: &str) -> Result<Ole2<'a>, Unread> {
+    open_as(input, &[media_type], kind).map(|(file, _)| file)
 }
 
 /// [`open`] of a compound document of any of `media_types`, the types of a `kind` of document:
 /// the document, and which of them its container detection names it.
 pub fn open_as<'a, 't>(
     input: &'a [u8],
-    configs: &ParserConfigs,
     media_types: &[&'t str],
     kind: &str,
 ) -> Result<(Ole2<'a>, &'t str), Unread> {
-    let file = open_file(input, configs)?;
+    let file = open_file(input)?;
     let detected = ole_directory_type(&file, file.root());
     let media_type = media_types
         .iter()

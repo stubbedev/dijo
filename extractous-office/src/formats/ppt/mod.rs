@@ -6,8 +6,8 @@
 //!
 //! An encrypted presentation is decrypted with the password, or failed as Tika's path fails it
 //! where the password does not open it. A presentation POI or Tika throws on is left to Tika, as
-//! is one before PowerPoint 97, one whose pictures or objects Tika fails on and records, and
-//! macros extracted when asked to: see [`PptParser::prepare`].
+//! is one before PowerPoint 97 and one whose pictures or objects Tika fails on and records: see
+//! [`PptParser::prepare`].
 //!
 //! The presentation is read twice: once as far as deciding whether it is extracted, every slide
 //! read and its events let go, then as it is written, a slide, a picture or an object at a time.
@@ -27,6 +27,7 @@ use std::convert::Infallible;
 use extractor::{extract, Flush, Out};
 
 use crate::config::ParserConfigs;
+use crate::formats::ole2::vba::Macros;
 use crate::formats::poi::{planned, written, Halt};
 
 use crate::formats::compound::detected_otherwise;
@@ -78,8 +79,10 @@ impl Parser for PptParser {
     }
 
     /// Fails encrypted presentations the password does not open and those POI throws on, those
-    /// before PowerPoint 97 among them, and defers macros extracted when asked to. Pictures or
-    /// objects Tika records failing on, which the native reading leaves out, differ from Tika's.
+    /// before PowerPoint 97 among them. Pictures or objects Tika records failing on, which the
+    /// native reading leaves out, differ from Tika's. When asked to, the macros of the VBA
+    /// project the presentation refers to follow its objects, and those of the compound
+    /// document the presentation.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -90,13 +93,17 @@ impl Parser for PptParser {
             return parser.prepare(input, metadata, configs);
         }
         let (file, summaries, difference) = plan(input, configs)?;
-        unless_different(
-            Box::new(move |xhtml| {
-                summaries.write(xhtml.metadata_mut());
-                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-                written(read(&file, configs, &mut |out| write(out, xhtml))).map(|_| ())
-            }),
-            difference,
+        let macros = Macros::of(&file, configs);
+        Macros::followed_by(
+            unless_different(
+                Box::new(move |xhtml| {
+                    summaries.write(xhtml.metadata_mut());
+                    xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+                    written(read(&file, configs, &mut |out| write(out, xhtml))).map(|_| ())
+                }),
+                difference,
+            ),
+            macros,
         )
     }
 }
@@ -108,7 +115,7 @@ fn plan<'a>(
     input: &'a [u8],
     configs: &ParserConfigs,
 ) -> Result<(Ole2<'a>, Summaries, Option<Difference>), Decline<'static>> {
-    let file = office::open(input, configs, MEDIA_TYPE, "presentation")?;
+    let file = office::open(input, MEDIA_TYPE, "presentation")?;
     let summaries = Summaries::read(&file, file.root())?;
     let difference = planned(read(&file, configs, &mut |_| Ok::<(), Infallible>(())))?;
     Ok((file, summaries, difference))
@@ -168,6 +175,7 @@ fn write(out: Vec<Out<'_>>, xhtml: &mut Xhtml) -> Result<(), Failure> {
             Out::StreamException(exception) => {
                 record_stream_exception(xhtml.metadata_mut(), &exception)
             }
+            Out::Macros(macros) => macros.write(xhtml)?,
         }
     }
     Ok(())

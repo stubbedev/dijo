@@ -12,6 +12,7 @@ use crate::formats::metadata::office::{
     RESOURCE_NAME_EXTENSION_INFERRED,
 };
 use crate::formats::metadata::{apply_page_numbers, TikaMetadata};
+use crate::formats::ole2::vba::Macros;
 use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::formats::poi::{Halt, Thrown, Unread};
 use crate::formats::{Difference, Unported};
@@ -58,6 +59,8 @@ pub(super) enum Out<'a> {
     Warning(String),
     /// An exception Tika records as an embedded stream exception before it goes on.
     StreamException(String),
+    /// The macros of the presentation's VBA project, handed on.
+    Macros(Macros),
 }
 
 /// How Tika records what POI or Tika throws on a picture or object before it goes on past it.
@@ -151,6 +154,9 @@ pub(super) fn extract<'s, 'a, E>(
     }
     extractor.pictures(flush)?;
     extractor.show_objects(flush)?;
+    if configs.office.extracts_macros() {
+        extractor.macros(flush)?;
+    }
     extractor.out.push(Out::End("div"));
     extractor.flush(flush)?;
     Ok(extractor.difference)
@@ -747,6 +753,47 @@ impl<'s, 'a> Extractor<'s, 'a> {
 
     /// `handleShowEmbeddedResources`: the objects no shape showed, read and handed on one at a
     /// time.
+    /// `HSLFExtractor.extractMacros`: the macros of each embedded object of the persist id the
+    /// document's `VBAInfoAtom` refers to, read from it as a compound document as
+    /// `OfficeParser.extractMacros` reads one; an object that is no compound document recorded
+    /// as an embedded stream exception.
+    fn macros<E>(&mut self, flush: &mut Flush<'_, E>) -> Result<(), Halt<E>> {
+        let Some(atom) = self
+            .show
+            .document
+            .first(kind::LIST)
+            .and_then(|list| list.first(kind::VBA_INFO))
+            .and_then(|info| info.first(kind::VBA_INFO_ATOM))
+        else {
+            return Ok(());
+        };
+        let reference = i64::from(atom.int(0).map_err(Unread::from)? as u32);
+        for at in 0..self.objects.len() {
+            if i64::from(self.objects[at].persist_id) != reference {
+                continue;
+            }
+            let Some(data) = self.readable(self.objects[at].data(self.show)?, Recording::Stream)?
+            else {
+                self.note(Some(Difference(
+                    "the object of the VBA project cannot be read, which Tika records with \
+                     Java's exception"
+                        .to_owned(),
+                )));
+                continue;
+            };
+            match Ole2::open_stream(&data) {
+                Ok(file) => {
+                    let macros = Macros::read(&file);
+                    self.note(macros.difference());
+                    self.out.push(Out::Macros(macros));
+                }
+                Err(unreadable) => self.record(cannot_open(unreadable), Recording::Stream),
+            }
+            self.flush(flush)?;
+        }
+        Ok(())
+    }
+
     fn show_objects<E>(&mut self, flush: &mut Flush<'_, E>) -> Result<(), Halt<E>> {
         let mut index = 0;
         for at in 0..self.objects.len() {

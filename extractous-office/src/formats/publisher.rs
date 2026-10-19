@@ -1,8 +1,8 @@
 //! Publisher documents (PUB) as Tika's `OfficeParser` reads them with POI's HPBF: the summary
 //! information as metadata, then the text of the Quill contents' text bits, every carriage
-//! return a line break, in one paragraph, as `PublisherTextExtractor` gives it. A document POI
-//! throws on, in its Quill contents or its main contents, is left to Tika, as are macros
-//! extracted when asked to.
+//! return a line break, in one paragraph, as `PublisherTextExtractor` gives it, and the macros
+//! after it when asked for. A document POI throws on, in its Quill contents or its main
+//! contents, is left to Tika.
 //!
 //! HPBF also reads the Escher streams, which hold no text, and reads each of their records at
 //! the start of the stream rather than where it lies, so that a document whose streams are
@@ -15,6 +15,7 @@ use crate::config::ParserConfigs;
 use crate::formats::compound::detected_otherwise;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
+use crate::formats::ole2::vba::Macros;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::{i32_at, safely_borrow, thrown, u16_at, u8_at, Read, Thrown, Unread};
 use crate::formats::{Decline, Footprint, Parser, Prepared};
@@ -56,7 +57,7 @@ impl Parser for PublisherParser {
         Footprint::Bounded
     }
 
-    /// Defers macros extracted when asked to, and fails documents POI throws on.
+    /// Fails documents POI throws on; writes the macros after the text when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -66,27 +67,34 @@ impl Parser for PublisherParser {
         if let Some(parser) = detected_otherwise(input, &[MEDIA_TYPE]) {
             return parser.prepare(input, metadata, configs);
         }
-        let (summaries, text) = read(input, configs).map_err(Unread::declined)?;
-        Ok(Box::new(move |xhtml| {
-            summaries.write(xhtml.metadata_mut());
-            xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-            if !text.is_empty() {
-                xhtml.start_element("p")?;
-                xhtml.characters_utf16(&text)?;
-                xhtml.end_element("p")?;
-            }
-            Ok(())
-        }))
+        let (summaries, text, macros) = read(input, configs).map_err(Unread::declined)?;
+        Macros::followed_by(
+            Ok(Box::new(move |xhtml| {
+                summaries.write(xhtml.metadata_mut());
+                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+                if !text.is_empty() {
+                    xhtml.start_element("p")?;
+                    xhtml.characters_utf16(&text)?;
+                    xhtml.end_element("p")?;
+                }
+                Ok(())
+            })),
+            macros,
+        )
     }
 }
 
-/// The summary information and the text `PublisherTextExtractor` gives of the document.
-fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<u16>), Unread> {
-    let file = office::open(input, configs, MEDIA_TYPE, "Publisher document")?;
+/// The summary information and the text `PublisherTextExtractor` gives of the document, and
+/// its macros where they are asked for.
+fn read(
+    input: &[u8],
+    configs: &ParserConfigs,
+) -> Result<(Summaries, Vec<u16>, Option<Macros>), Unread> {
+    let file = office::open(input, MEDIA_TYPE, "Publisher document")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
     let text = text(&file, root)?;
-    Ok((summaries, text))
+    Ok((summaries, text, Macros::of(&file, configs)))
 }
 
 /// `new HPBFDocument(root)` and `PublisherTextExtractor.getText`: the text of the Quill

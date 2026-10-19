@@ -95,7 +95,7 @@ fn without_departures(documents: &[PathBuf]) -> Vec<PathBuf> {
 fn anchored_textboxes(path: &Path) -> Vec<String> {
     let input = std::fs::read(path).unwrap();
     let configs = ParserConfigs::default();
-    let file = office::open(&input, &configs, MEDIA_TYPE, "Word document").unwrap();
+    let file = office::open(&input, MEDIA_TYPE, "Word document").unwrap();
     let Ok(Word::Modern(streams)) = Word::read(&file, file.root(), &configs) else {
         return Vec::new();
     };
@@ -441,7 +441,7 @@ fn gives_paragraphs_past_every_run_no_properties() {
     let first = text.iter().position(|&byte| byte == b'\r').unwrap() + 1;
     let input = word97_with_paragraph_run(text, first, 1);
     let configs = ParserConfigs::default();
-    let file = office::open(&input, &configs, MEDIA_TYPE, "Word document").unwrap();
+    let file = office::open(&input, MEDIA_TYPE, "Word document").unwrap();
     let Ok(Word::Modern(streams)) = Word::read(&file, file.root(), &configs) else {
         panic!("a Word 97 document");
     };

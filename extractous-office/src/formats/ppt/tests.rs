@@ -58,17 +58,6 @@ fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
 }
 
 #[test]
-fn defers_macros_when_they_are_extracted() {
-    let configs = ParserConfigs {
-        office: crate::config::OfficeParserConfig::new().set_extract_macros(true),
-        ..ParserConfigs::default()
-    };
-    assert!(
-        matches!(plan(b"", &configs), Err(Decline::Deferred(reason)) if reason.contains("macros"))
-    );
-}
-
-#[test]
 fn defers_what_is_no_presentation() {
     let compound = crate::ole2::tests::compound(&["WordDocument"], b"");
     assert!(matches!(

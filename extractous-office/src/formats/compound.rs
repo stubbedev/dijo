@@ -10,6 +10,7 @@ use crate::formats::doc::DocParser;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::msg::MsgParser;
 use crate::formats::ole2::office;
+use crate::formats::ole2::vba::Macros;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::Unread;
 use crate::formats::ppt::PptParser;
@@ -96,23 +97,26 @@ impl Parser for CompoundDocumentParser {
         Footprint::Bounded
     }
 
-    /// Defers macros extracted when asked to, and fails a document POI does not open, a DRM
-    /// encrypted document and an encrypted package as `OfficeParser` does.
+    /// Fails a document POI does not open, a DRM encrypted document and an encrypted package as
+    /// `OfficeParser` does; writes the macros when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
         _metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
-        let (summaries, document_type) = read(input, configs)?;
-        Ok(Box::new(move |xhtml| {
-            let metadata = xhtml.metadata_mut();
-            summaries.write(metadata);
-            if let Some(document_type) = document_type {
-                metadata.set("Content-Type", document_type);
-            }
-            Ok(())
-        }))
+        let (summaries, document_type, macros) = read(input, configs)?;
+        Macros::followed_by(
+            Ok(Box::new(move |xhtml| {
+                let metadata = xhtml.metadata_mut();
+                summaries.write(metadata);
+                if let Some(document_type) = document_type {
+                    metadata.set("Content-Type", document_type);
+                }
+                Ok(())
+            })),
+            macros,
+        )
     }
 }
 
@@ -159,12 +163,13 @@ pub(crate) fn detected_otherwise(input: &[u8], own: &[&str]) -> Option<&'static 
 }
 
 /// The summary information of a compound document, the content type `OfficeParser` sets for
-/// it, if any, or why it does not read it as Tika's parser does.
+/// it, if any, and its macros where they are asked for; or why it does not read it as Tika's
+/// parser does.
 fn read(
     input: &[u8],
     configs: &ParserConfigs,
-) -> Result<(Summaries, Option<&'static str>), Decline<'static>> {
-    let file = office::open_file(input, configs).map_err(Unread::declined)?;
+) -> Result<(Summaries, Option<&'static str>, Option<Macros>), Decline<'static>> {
+    let file = office::open_file(input).map_err(Unread::declined)?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
     let detected = ole_directory_type(&file, root);
@@ -183,7 +188,7 @@ fn read(
             UNRECOGNIZED_PACKAGE,
         )));
     }
-    Ok((summaries, document_type))
+    Ok((summaries, document_type, Macros::of(&file, configs)))
 }
 
 #[cfg(test)]

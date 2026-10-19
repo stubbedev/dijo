@@ -13,7 +13,7 @@
 //! is written with its summary information and its failure recorded, as Tika's embedded
 //! document extractor records it. What the port does not read is left to Tika: strings and
 //! headers in charsets the native decoders do not decode, a body the native parsers leave to
-//! Tika, and macros extracted when asked to. A stream that cannot be read, and a directory named
+//! Tika. The macros follow when asked for. A stream that cannot be read, and a directory named
 //! as a value of a multi-valued property, are left out with a warning; POI reads them otherwise,
 //! so a build with Tika hands such a message to Tika's path.
 
@@ -31,6 +31,7 @@ use crate::config::ParserConfigs;
 use crate::formats::compound::detected_otherwise;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
+use crate::formats::ole2::vba::Macros;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::{Thrown, Unread};
 use crate::formats::xhtml::Xhtml;
@@ -77,30 +78,39 @@ impl Parser for MsgParser {
         if let Some(parser) = detected_otherwise(input, &[MEDIA_TYPE]) {
             return parser.prepare(input, metadata, configs);
         }
-        let (summaries, extracted, difference) = read(input, configs)?;
-        unless_different(
-            Box::new(move |xhtml| {
-                summaries.write(xhtml.metadata_mut());
-                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-                extracted.write(xhtml)
-            }),
-            difference,
+        let (summaries, extracted, difference, macros) = read(input, configs)?;
+        Macros::followed_by(
+            unless_different(
+                Box::new(move |xhtml| {
+                    summaries.write(xhtml.metadata_mut());
+                    xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+                    extracted.write(xhtml)
+                }),
+                difference,
+            ),
+            macros,
         )
     }
 }
 
 /// The summary information and what Tika's extractor makes of the message in a compound
-/// document, and where the native parsers read it differently from Tika's, if they do.
+/// document, where the native parsers read it differently from Tika's, if they do, and the
+/// macros where they are asked for.
 fn read<'a>(
     input: &'a [u8],
     configs: &ParserConfigs,
-) -> Result<(Summaries, Extracted<'a>, Option<Difference>), Unread> {
-    let file = office::open(input, configs, MEDIA_TYPE, "message")?;
+) -> Result<(Summaries, Extracted<'a>, Option<Difference>, Option<Macros>), Unread> {
+    let file = office::open(input, MEDIA_TYPE, "message")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
     let message = Message::read(&file, root, false)?;
     let (extracted, read_otherwise) = extract(&file, message, configs)?;
-    Ok((summaries, extracted, read_otherwise))
+    Ok((
+        summaries,
+        extracted,
+        read_otherwise,
+        Macros::of(&file, configs),
+    ))
 }
 
 /// The most messages this port reads stored one in another, where Java's stack would end first.

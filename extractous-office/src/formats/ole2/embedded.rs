@@ -59,10 +59,15 @@ impl<'a> Embedded<'a> {
 
     /// `parseEmbedded` of the document, wrapped as `wrapping` says, its bytes in place where
     /// they lie in one run, and copied together, to a file of their own past what is read
-    /// whole, where they do not.
+    /// whole, where they do not; a storage handed on as Tika hands on an open container.
     pub(crate) fn write(self, xhtml: &mut Xhtml, wrapping: Wrapping) -> Result<(), Failure> {
+        let storage = matches!(self.data, Node::Storage(_));
         let data = handed_on(self.data)?;
-        xhtml.parse_embedded_input(&data, &self.metadata, wrapping)
+        if storage {
+            xhtml.parse_embedded_storage(&data, &self.metadata, wrapping)
+        } else {
+            xhtml.parse_embedded_input(&data, &self.metadata, wrapping)
+        }
     }
 
     pub(crate) fn into_owned(self) -> Embedded<'static> {
@@ -663,7 +668,8 @@ mod tests {
 
     /// An embedded document left to Tika is opened with the extraction's password, as Tika's
     /// path opens every document embedded in one it was given the password for (#119). The
-    /// workbook goes to Tika because macros are extracted, which no port does.
+    /// protected package goes to Tika because macros are extracted, which its port leaves to
+    /// Tika.
     #[cfg(feature = "tika")]
     #[test]
     fn hands_the_password_on_with_a_document_left_to_tika() {
@@ -673,10 +679,10 @@ mod tests {
         use crate::formats::StringOut;
 
         crate::formats::parity::install_routes();
-        let workbook = std::fs::read("../test_files/documents/encrypted/tika-password.xls")
-            .expect("the encrypted workbook");
+        let package = std::fs::read("../test_files/documents/encrypted/password.docx")
+            .expect("the protected package");
         let mut entry = TikaMetadata::new();
-        entry.set(RESOURCE_NAME, "tika-password.xls");
+        entry.set(RESOURCE_NAME, "password.docx");
         let text = |password: Option<&Password>| {
             let configs = ParserConfigs {
                 office: OfficeParserConfig::new().set_extract_macros(true),
@@ -688,20 +694,14 @@ mod tests {
             let mut handler = Body::new(ToText::new(&mut out));
             let (_, _, result) =
                 Xhtml::write(&mut handler, TikaMetadata::new(), &context, |xhtml| {
-                    xhtml.parse_embedded(&workbook, &entry, Wrapping::PackageEntry)
+                    xhtml.parse_embedded(&package, &entry, Wrapping::PackageEntry)
                 });
             result.expect("the embedding document");
             out.0
         };
         let locked = text(None);
-        let opened = text(Some(&Password::new("tika")));
-        assert!(
-            !locked.contains("This is an Encrypted Excel spreadsheet."),
-            "{locked}"
-        );
-        assert!(
-            opened.contains("This is an Encrypted Excel spreadsheet."),
-            "{opened}"
-        );
+        let opened = text(Some(&Password::new("extractous")));
+        let words = |text: &str| text.split_whitespace().count();
+        assert!(words(&opened) > words(&locked), "{locked}\n{opened}");
     }
 }

@@ -8,6 +8,7 @@ pub mod office;
 mod property_set;
 mod reader;
 mod summary;
+pub(crate) mod vba;
 
 pub(crate) use codepage::{decode_text as decode_codepage, encoding as codepage_encoding};
 pub(crate) use embedded::{document_type, handed_on, office_document, Embedded, Handed};
