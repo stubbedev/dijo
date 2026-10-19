@@ -94,6 +94,18 @@ fn extracts_sqlite_databases_as_tikas_path_does() {
     assert_same_as_tika(&paths, Sqlite3Parser.tika_name());
 }
 
+/// A database in write-ahead-log mode, spooled with its header changed, is read from the spool
+/// while it is written, which the reading holds as long as its connection.
+#[test]
+fn reads_a_database_in_write_ahead_log_mode() {
+    let scratch = Scratch::new("sqlite-wal");
+    let wal = &written(&scratch)[2];
+    let (text, metadata) = crate::Extractor::new()
+        .extract_file_to_string(wal.to_str().unwrap())
+        .unwrap();
+    assert!(text.contains("checkpointed"), "{text}: {metadata:?}");
+}
+
 #[cfg(feature = "tika")]
 #[test]
 fn fails_where_tikas_path_fails() {

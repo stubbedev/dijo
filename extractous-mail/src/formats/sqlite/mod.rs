@@ -91,7 +91,7 @@ impl Parser for Sqlite3Parser {
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let file = file(input, pages).map_err(|error| fails("spooling the database", error))?;
         let opened = open(file).map_err(|error| fails("opening the database", error))?;
-        let connection = &opened.connection;
+        let connection = opened.connection();
         let tables = table_names(connection)
             .map_err(|error| fails("reading the database's table names", error))?;
         let properties: Vec<(&str, String)> = PRAGMAS
@@ -99,7 +99,7 @@ impl Parser for Sqlite3Parser {
             .filter_map(|&(name, query)| Some((name, java_hex(pragma(connection, query)?))))
             .collect();
         Ok(Box::new(move |xhtml| {
-            let connection = &opened.connection;
+            let connection = opened.connection();
             for table in &tables {
                 xhtml.metadata_mut().add(TABLE_NAME, table.clone());
             }
@@ -143,6 +143,14 @@ struct Opened<'a> {
     connection: Connection,
     /// The bytes SQLite reads, dropped after the connection, which is declared before them.
     _file: Input<'a>,
+}
+
+impl Opened<'_> {
+    /// The connection, borrowed from the whole, so that a closure that uses it holds the bytes
+    /// it reads too, where one naming the field alone would capture the field alone.
+    fn connection(&self) -> &Connection {
+        &self.connection
+    }
 }
 
 /// The database whose file is `file`, opened read-only over its bytes in place. SQLite reads
