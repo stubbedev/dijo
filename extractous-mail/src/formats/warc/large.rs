@@ -62,11 +62,7 @@ fn inflates_a_gzipped_archive_past_the_memory_limit_to_a_spool() {
         archive_of_large_payload(&mut gzip, LARGE)?;
         gzip.finish()?.flush()
     });
-    let (text, _) = file.extract_with(
-        &Extractor::new(),
-        file.read_whole_budget(),
-        "extractous::WARCParser",
-    );
+    let (text, _) = file.extract_with(&Extractor::new(), file.budget(), "extractous::WARCParser");
     assert!(text.contains(END), "{text}");
 }
 
@@ -91,11 +87,8 @@ fn spools_a_collection_archive_past_the_memory_limit() {
             ],
         )
     });
-    let (text, metadata) = file.extract_with(
-        &Extractor::new(),
-        file.read_whole_budget(),
-        "extractous::WACZParser",
-    );
+    let (text, metadata) =
+        file.extract_with(&Extractor::new(), file.budget(), "extractous::WACZParser");
     assert!(text.contains(END), "{text}");
     assert!(metadata["tk:parsed-by-full-set"]
         .iter()

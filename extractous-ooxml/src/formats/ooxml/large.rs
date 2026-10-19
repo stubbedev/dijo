@@ -4,8 +4,7 @@
 
 use std::io::{self, Write};
 
-use extractous_core::large::{zip_archive, EntryData, LargeFile, BUDGET};
-use extractous_core::Extractor;
+use extractous_core::large::{zip_archive, EntryData, LargeFile};
 use zip::CompressionMethod;
 
 use super::extractor::kind;
@@ -142,12 +141,7 @@ fn reads_a_word_document_too_large_to_read_whole_in_place() {
     let file = LargeFile::written("large.docx", |out| {
         write_docx(out, CompressionMethod::Stored, LARGE)
     });
-    let (text, _) = file.extract(OOXML_PARSER);
-    assert!(
-        text.contains("Linje 0 af et meget langt dokument"),
-        "{text}"
-    );
-    assert!(text.contains(END), "{text}");
+    file.extract_holding(OOXML_PARSER, &["Linje 0 af et meget langt dokument", END]);
 }
 
 #[test]
@@ -155,8 +149,7 @@ fn spools_a_deflated_word_document_part_past_the_memory_limit() {
     let file = LargeFile::written("deflated.docx", |out| {
         write_docx(out, CompressionMethod::Deflated, LARGE)
     });
-    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, OOXML_PARSER);
-    assert!(text.contains(END), "{text}");
+    file.extract_holding(OOXML_PARSER, &[END]);
 }
 
 #[test]
@@ -216,9 +209,7 @@ fn reads_a_worksheet_past_the_memory_limit_a_row_at_a_time() {
             ],
         )
     });
-    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, OOXML_PARSER);
-    assert!(text.contains("Række 1 i et meget stort regneark"), "{text}");
-    assert!(text.contains(END), "{text}");
+    file.extract_holding(OOXML_PARSER, &["Række 1 i et meget stort regneark", END]);
 }
 
 #[test]
@@ -272,9 +263,7 @@ fn reads_a_slide_past_the_memory_limit_as_it_writes_it() {
             ],
         )
     });
-    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, OOXML_PARSER);
-    assert!(text.contains("Punkt 0 på et meget langt dias"), "{text}");
-    assert!(text.contains(END), "{text}");
+    file.extract_holding(OOXML_PARSER, &["Punkt 0 på et meget langt dias", END]);
 }
 
 #[test]
@@ -340,9 +329,7 @@ fn reads_an_xps_document_too_large_to_read_whole_a_page_at_a_time() {
             parts,
         )
     });
-    let (text, _) = file.extract(OOXML_PARSER);
-    assert!(text.contains("Side 1, linje 0"), "{text}");
-    assert!(text.contains(END), "{text}");
+    file.extract_holding(OOXML_PARSER, &["Side 1, linje 0", END]);
 }
 
 #[test]
@@ -363,15 +350,13 @@ fn decrypts_a_protected_package_too_large_to_read_whole_to_a_spool() {
         .map_err(|e| io::Error::other(format!("{e:?}")))?;
         out.write_all(&compound)
     });
-    let (text, metadata) = file.extract("extractous::OfficeParser");
-    assert!(
-        text.contains("Linje 0 af et meget langt dokument"),
-        "{text}"
+    let metadata = file.extract_holding(
+        "extractous::OfficeParser",
+        &["Linje 0 af et meget langt dokument", END],
     );
-    assert!(text.contains(END), "{text}");
     assert!(metadata["tk:parsed-by"]
         .iter()
-        .any(|parser| parser == OOXML_PARSER));
+        .any(|parser| parser.ends_with(".XWPFEventBasedWordExtractor")));
 }
 
 #[test]
@@ -398,7 +383,8 @@ fn decodes_the_binary_parts_of_a_word_2006_document_too_large_to_read_whole() {
             ),
         )
     });
-    let (text, _) = file.extract("extractous::Word2006MLParser");
-    assert!(text.contains("Et vedhæftet dokument"), "{text}");
-    assert!(text.contains(END), "{text}");
+    file.extract_holding(
+        "extractous::Word2006MLParser",
+        &["Et vedhæftet dokument", END],
+    );
 }

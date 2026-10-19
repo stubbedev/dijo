@@ -45,11 +45,8 @@ fn decodes_a_gzipped_entry_past_the_memory_limit_to_a_spool() {
         gzip.finish()?.flush()
     });
     let extractor = extractous_core::Extractor::new();
-    let (text, metadata) = file.extract_with(
-        &extractor,
-        file.read_whole_budget(),
-        "extractous::CompressorParser",
-    );
+    let (text, metadata) =
+        file.extract_with(&extractor, file.budget(), "extractous::CompressorParser");
     assert!(text.contains(END), "{text}");
     assert!(metadata["tk:parsed-by-full-set"]
         .iter()
@@ -95,11 +92,7 @@ fn spools_a_deflated_zip_entry_past_the_memory_limit() {
         zip_of_large_entry(out, LARGE, zip::CompressionMethod::Deflated)
     });
     let extractor = extractous_core::Extractor::new();
-    let (text, _) = file.extract_with(
-        &extractor,
-        file.read_whole_budget(),
-        "extractous::ZipParser",
-    );
+    let (text, _) = file.extract_with(&extractor, file.budget(), "extractous::ZipParser");
     assert!(text.contains(END), "{text}");
 }
 
@@ -115,10 +108,6 @@ fn spools_a_7z_entry_past_the_memory_limit_one_entry_at_a_time() {
         out.write_all(&archive)
     });
     let extractor = extractous_core::Extractor::new();
-    let (text, _) = file.extract_with(
-        &extractor,
-        file.read_whole_budget(),
-        "extractous::SevenZParser",
-    );
+    let (text, _) = file.extract_with(&extractor, file.budget(), "extractous::SevenZParser");
     assert!(text.contains(END), "{text}");
 }

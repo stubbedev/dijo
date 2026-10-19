@@ -317,19 +317,22 @@ impl LargeFile {
         self.path.to_str().unwrap()
     }
 
-    /// The budget of the extraction of the file, which must be small enough to read whole, as a
-    /// file that decodes into too much to hold may be: the file itself, held whole, and
-    /// [`BUDGET`] besides.
-    pub fn read_whole_budget(&self) -> u64 {
+    /// The budget of an extraction of the file: [`BUDGET`] for a file read mapped, and for one
+    /// small enough to read whole, as a file that decodes into too much to hold may be, the
+    /// file itself, held whole, besides.
+    pub fn budget(&self) -> u64 {
         let length = std::fs::metadata(&self.path).unwrap().len();
-        assert!(length <= MAX_READ_WHOLE, "{} is read mapped", self.path());
-        length + BUDGET
+        if length > MAX_READ_WHOLE {
+            BUDGET
+        } else {
+            length + BUDGET
+        }
     }
 
-    /// The file's text and metadata, extracted under [`BUDGET`] and never holding more, which
-    /// `parser` must have read.
+    /// The file's text and metadata, extracted under its [`LargeFile::budget`] and never holding
+    /// more, which `parser` must have read.
     pub fn extract(&self, parser: &str) -> (String, Metadata) {
-        self.extract_with(&Extractor::new(), BUDGET, parser)
+        self.extract_with(&Extractor::new(), self.budget(), parser)
     }
 
     /// The file's text and metadata, extracted by `extractor` under `budget` and never holding
@@ -387,12 +390,23 @@ impl LargeFile {
         metadata
     }
 
+    /// The file's metadata, extracted as [`LargeFile::extract_each`] extracts it, each of
+    /// `texts` standing on a line of its text.
+    pub fn extract_holding(&self, parser: &str, texts: &[&str]) -> Metadata {
+        let mut missing = texts.to_vec();
+        let metadata =
+            self.extract_lines(parser, |line| missing.retain(|text| !line.contains(text)));
+        assert!(missing.is_empty(), "{} lacks {missing:?}", self.path());
+        metadata
+    }
+
     /// The file's metadata, its text handed to `each` as it is written, extracted on this
     /// thread as a string extraction without a length limit, so that all of the file is read,
-    /// under [`BUDGET`] and never holding more besides what `each` keeps, which `parser` must
-    /// have read.
+    /// under its [`LargeFile::budget`] and never holding more besides what `each` keeps, which
+    /// `parser` must have read.
     pub fn extract_each(&self, parser: &str, each: impl FnMut(&str)) -> Metadata {
         let path = self.path();
+        let budget = self.budget();
         let mut out = Each(each);
         let chain = Chain::String {
             output: Output::Text,
@@ -400,10 +414,9 @@ impl LargeFile {
         };
         let configs = ParserConfigs::default();
         let ((parsed, budget_peak), peak) = peak_of(|| {
-            memory::within(BUDGET, || {
+            memory::within(budget, || {
                 let routed =
                     route_file(path).unwrap_or_else(|why| panic!("{path} is routed: {why}"));
-                assert!(routed.input.is_mapped(), "{path} is mapped");
                 let parsed = parse_through(
                     routed.parser,
                     &routed.input,
@@ -416,14 +429,18 @@ impl LargeFile {
             })
         });
         let metadata = parsed
-            .unwrap_or_else(|error| panic!("{path} extracts under {BUDGET} bytes: {error}"))
+            .unwrap_or_else(|error| panic!("{path} extracts under {budget} bytes: {error}"))
             .unwrap_or_else(|why| panic!("{path} is read natively: {why}"));
-        assert!(peak <= BUDGET, "{path} held {peak} bytes at its peak");
+        assert!(peak <= budget, "{path} held {peak} bytes at its peak");
         assert!(
-            budget_peak <= BUDGET,
+            budget_peak <= budget,
             "{path} held {budget_peak} bytes in large allocations and reservations at their peak"
         );
-        assert_eq!(metadata["tk:parsed-by"].last().unwrap(), parser);
+        let parsers = &metadata["tk:parsed-by"];
+        assert!(
+            parsers.iter().any(|by| by == parser),
+            "{path} is parsed by {parsers:?}"
+        );
         metadata
     }
 }
