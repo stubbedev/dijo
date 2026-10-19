@@ -1,6 +1,6 @@
 # Conformance with Apache Tika
 
-Every test document of Apache Tika's parser modules, extracted natively and with the same Tika version on the JVM, OCR off on both sides. A file works when the native text and title match Tika's text with an F1 score of at least 0.95 over their tokens, or when one of our own parsers reads its format on purpose differently (subtitles, notebooks, FictionBook, Apple Mail, iWork 2013+). 1052 of 1094 files work or are empty on both sides.
+Every test document of Apache Tika's parser modules, extracted natively and with the same Tika version on the JVM, OCR off on both sides. A file works when the native text and title match Tika's text with an F1 score of at least 0.95 over their tokens, or when one of our own parsers reads its format on purpose differently (subtitles, notebooks, FictionBook, Apple Mail, iWork 2013+). 1048 of 1094 files work or are empty on both sides.
 
 | Media type | Files | Work | Differ | Fail | Files that differ or fail (F1) |
 |---|---|---|---|---|---|
@@ -12,7 +12,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/dita+xml | 3 | 3 | 0 | 0 |  |
 | application/epub+zip | 3 | 3 | 0 | 0 |  |
 | application/fits | 3 | 3 | 0 | 0 |  |
-| application/gzip | 9 | 9 | 0 | 0 |  |
+| application/gzip | 7 | 7 | 0 | 0 |  |
 | application/illustrator | 1 | 1 | 0 | 0 |  |
 | application/illustrator+ps | 1 | 1 | 0 | 0 |  |
 | application/java-archive | 3 | 3 | 0 | 0 |  |
@@ -141,7 +141,6 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/x-hdf | 2 | 2 | 0 | 0 |  |
 | application/x-httpresponse | 1 | 1 | 0 | 0 |  |
 | application/x-hwp | 1 | 1 | 0 | 0 |  |
-| application/x-hwp-v5 | 3 | 3 | 0 | 0 |  |
 | application/x-ibooks+zip | 1 | 1 | 0 | 0 |  |
 | application/x-internet-archive | 1 | 1 | 0 | 0 |  |
 | application/x-isatab | 2 | 2 | 0 | 0 |  |
@@ -150,7 +149,6 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/x-itunes-ipa | 1 | 0 | 1 | 0 | testIPA.ipa (0.94) |
 | application/x-java-jnilib | 1 | 1 | 0 | 0 |  |
 | application/x-java-keystore | 1 | 1 | 0 | 0 |  |
-| application/x-java-pack200 | 1 | 1 | 0 | 0 |  |
 | application/x-lz4 | 1 | 1 | 0 | 0 |  |
 | application/x-mach-o-executable | 4 | 4 | 0 | 0 |  |
 | application/x-mach-o-universal | 2 | 2 | 0 | 0 |  |
@@ -193,7 +191,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/x-xliff+xml | 2 | 2 | 0 | 0 |  |
 | application/xhtml+xml | 4 | 4 | 0 | 0 |  |
 | application/xml | 19 | 19 | 0 | 0 |  |
-| application/zip | 15 | 13 | 2 | 0 | test-documents-spanned.z01 (0.87), testZipEncrypted.zip (0.80) |
+| application/zip | 14 | 12 | 2 | 0 | test-documents-spanned.z01 (0.87), testZipEncrypted.zip (0.80) |
 | application/zlib | 4 | 4 | 0 | 0 |  |
 | application/zstd | 1 | 1 | 0 | 0 |  |
 | audio/ac3 | 1 | 1 | 0 | 0 |  |
@@ -270,7 +268,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | text/x-matlab | 3 | 3 | 0 | 0 |  |
 | text/x-robots | 2 | 2 | 0 | 0 |  |
 | text/x-vcalendar | 1 | 1 | 0 | 0 |  |
-| undetected | 30 | 30 | 0 | 0 |  |
+| undetected | 37 | 33 | 0 | 4 | testHWP-v5-dist.hwp (0.00), testHWP-v5b.hwp (0.00), testHWP_5.0.hwp (0.00), testPACK200.pack (0.00) |
 | video/mp4 | 7 | 7 | 0 | 0 |  |
 | video/quicktime | 2 | 2 | 0 | 0 |  |
 | video/webm | 2 | 2 | 0 | 0 |  |

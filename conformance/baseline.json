@@ -227,7 +227,7 @@
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/big-preamble.html": {
     "mime_type": "text/html",
     "outcome": "works",
-    "similarity": 0.96045197740113
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/carbon_isotopic_values_of_alkanes_extracted_from_paleosols.dif": {
     "mime_type": "application/dif+xml",
@@ -2077,7 +2077,7 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/test/resources/test-documents/big-preamble.html": {
     "mime_type": "text/html",
     "outcome": "works",
-    "similarity": 0.96045197740113
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/test/resources/test-documents/boilerplate-whitespace.html": {
     "mime_type": "application/xhtml+xml",
@@ -2087,7 +2087,7 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/test/resources/test-documents/boilerplate.html": {
     "mime_type": "application/xhtml+xml",
     "outcome": "works",
-    "similarity": 0.9734513274336283
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-html-module/src/test/resources/test-documents/testBoilerplateMissingSpace.html": {
     "mime_type": "text/html",
@@ -2727,7 +2727,7 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/test-outlook.msg": {
     "mime_type": "application/vnd.ms-outlook",
     "outcome": "works",
-    "similarity": 0.9686847599164927
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/test-outlook2003.msg": {
     "mime_type": "application/vnd.ms-outlook",
@@ -2807,7 +2807,7 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testChm2.chm": {
     "mime_type": "application/vnd.ms-htmlhelp",
     "outcome": "works",
-    "similarity": 0.9999883587659022
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testChm3.chm": {
     "mime_type": "application/vnd.ms-htmlhelp",
@@ -3602,7 +3602,7 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPPT_various2.pptx": {
     "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     "outcome": "works",
-    "similarity": 0.9916855631141346
+    "similarity": 0.9939577039274925
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPROJECT2003.mpp": {
     "mime_type": "application/vnd.ms-project",
@@ -3617,7 +3617,7 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPST.pst": {
     "mime_type": "application/vnd.ms-outlook-pst",
     "outcome": "works",
-    "similarity": 0.9969199178644764
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testPST_variousBodyTypes.pst": {
     "mime_type": "application/vnd.ms-outlook-pst",
@@ -3662,7 +3662,7 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testRTFEmbeddedFiles.rtf": {
     "mime_type": "application/rtf",
     "outcome": "works",
-    "similarity": 0.9985458070770722
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testRTFEmbeddedLink.rtf": {
     "mime_type": "application/rtf",
@@ -3897,7 +3897,7 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD.docx": {
     "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "outcome": "works",
-    "similarity": 0.9878542510121457
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD2003.xml": {
     "mime_type": "application/vnd.ms-wordml",
@@ -4445,14 +4445,14 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testHWP-v5-dist.hwp": {
-    "mime_type": "application/x-hwp-v5",
-    "outcome": "works",
-    "similarity": 1.0
+    "mime_type": "undetected",
+    "outcome": "fails",
+    "similarity": 0.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testHWP-v5b.hwp": {
-    "mime_type": "application/x-hwp-v5",
-    "outcome": "works",
-    "similarity": 1.0
+    "mime_type": "undetected",
+    "outcome": "fails",
+    "similarity": 0.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testHWP_3.0.hwp": {
     "mime_type": "application/x-hwp",
@@ -4460,9 +4460,9 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testHWP_5.0.hwp": {
-    "mime_type": "application/x-hwp-v5",
-    "outcome": "works",
-    "similarity": 1.0
+    "mime_type": "undetected",
+    "outcome": "fails",
+    "similarity": 0.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testIndesign.idml": {
     "mime_type": "application/vnd.adobe.indesign-idml-package",
@@ -5040,9 +5040,9 @@
     "similarity": 0.9876543209876543
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/TIKA-216.tgz": {
-    "mime_type": "application/gzip",
+    "mime_type": "undetected",
     "outcome": "works",
-    "similarity": 0.9999849927214699
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/bob.gz": {
     "mime_type": "application/gzip",
@@ -5050,7 +5050,7 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/droste.zip": {
-    "mime_type": "application/zip",
+    "mime_type": "undetected",
     "outcome": "works",
     "similarity": 1.0
   },
@@ -5075,7 +5075,7 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/quine.gz": {
-    "mime_type": "application/gzip",
+    "mime_type": "undetected",
     "outcome": "works",
     "similarity": 1.0
   },
@@ -5210,9 +5210,9 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/testPACK200.pack": {
-    "mime_type": "application/x-java-pack200",
-    "outcome": "works",
-    "similarity": 1.0
+    "mime_type": "undetected",
+    "outcome": "fails",
+    "similarity": 0.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/testSVG.svg": {
     "mime_type": "image/svg+xml",
