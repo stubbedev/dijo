@@ -2,7 +2,7 @@
 //! Tika configures it (no external DTD, no external entities), raises a fatal error, and reads
 //! the bytes as Xerces reads them: the byte order mark and first bytes pick the encoding, the
 //! bytes it reads before the declaration ends are decoded before the declaration can switch it,
-//! and a malformed UTF-8 or UTF-16 sequence fails the parse when the scanner reaches it, as
+//! and a malformed UTF-8, UTF-16 or UCS-4 sequence fails the parse when the scanner reaches it, as
 //! Xerces' own readers do. It
 //! reports start and end tags and the text inside elements; `formats::xml` gives SAX's view of
 //! them to the native parsers.
@@ -599,11 +599,13 @@ fn decode(
     decoder.malformed
 }
 
-/// A reader decoding the bytes from where it starts as Xerces' reader does, a character or a
-/// chunk at a time. UTF-8 stops at the first malformed sequence. UTF-16 makes an unpaired
-/// surrogate U+FFFE, and an odd final byte fails the read in which it falls, dropping the
-/// characters of that read. UCS-4 makes a code point outside Unicode U+FFFE and drops a final
-/// partial unit. A Java decoder decodes as `new String(bytes, charset)` does, and gives each
+/// A reader decoding the bytes from where it starts, a character or a chunk at a time. UTF-8,
+/// UTF-16 and UCS-4 deliver every character before the first malformed sequence and stop there:
+/// an unpaired surrogate, an odd final byte of UTF-16, a code point outside Unicode or a partial
+/// final unit of UCS-4. Xerces instead makes unpaired surrogates and code points outside Unicode
+/// U+FFFE, drops a partial final unit of UCS-4, and fails the whole read an odd final byte of
+/// UTF-16 falls in, dropping the characters of that read with it (#186). Any other charset
+/// decodes with [`Charset::decode`], each malformed sequence one U+FFFD, and gives each
 /// character the end of the bytes as its end.
 struct Decoder<'a> {
     bytes: &'a [u8],
@@ -629,15 +631,15 @@ enum Reading<'a> {
         index: usize,
         units: usize,
         odd: bool,
-        /// Where the read that meets an odd final byte starts, from `start`.
-        last_chunk: usize,
     },
-    /// At the `index`th of the `units` whole units from `start`.
+    /// At the `index`th of the `units` whole units from `start`, a partial unit after them if
+    /// `partial`.
     Ucs4 {
         big_endian: bool,
         start: usize,
         index: usize,
         units: usize,
+        partial: bool,
     },
     /// At `at` in the `piece` of text the decoder of `pieces` gave last.
     Java {
@@ -663,13 +665,13 @@ impl<'a> Decoder<'a> {
                 index: 0,
                 units: length / 2,
                 odd: length % 2 == 1,
-                last_chunk: utf16_last_chunk_start(length),
             },
             Reader::Ucs4 { big_endian } => Reading::Ucs4 {
                 big_endian,
                 start,
                 index: 0,
                 units: length / 4,
+                partial: !length.is_multiple_of(4),
             },
             Reader::Java(charset) => Reading::Java {
                 pieces: charset
@@ -757,7 +759,6 @@ impl<'a> Decoder<'a> {
                 index,
                 units,
                 odd,
-                last_chunk,
             } => {
                 let (odd, units) = (*odd, *units);
                 if *index >= units {
@@ -773,37 +774,38 @@ impl<'a> Decoder<'a> {
                     }
                 };
                 let first = unit(*index);
-                let (c, used) = match first {
+                let decoded = match first {
                     0xD800..=0xDBFF if *index + 1 < units => {
                         let second = unit(*index + 1);
-                        if (0xDC00..=0xDFFF).contains(&second) {
+                        (0xDC00..=0xDFFF).contains(&second).then(|| {
                             let code = 0x10000
                                 + ((u32::from(first) - 0xD800) << 10)
                                 + (u32::from(second) - 0xDC00);
-                            (char::from_u32(code).unwrap_or('\u{FFFE}'), 2)
-                        } else {
-                            ('\u{FFFE}', 1)
-                        }
+                            (
+                                char::from_u32(code).expect("a surrogate pair is a character"),
+                                2,
+                            )
+                        })
                     }
-                    0xD800..=0xDFFF => ('\u{FFFE}', 1),
-                    _ => (char::from_u32(u32::from(first)).unwrap_or('\u{FFFE}'), 1),
+                    _ => char::from_u32(u32::from(first)).map(|c| (c, 1)),
                 };
-                *index += used;
-                let end = *start + 2 * *index;
-                if odd && 2 * *index > *last_chunk {
+                let Some((c, used)) = decoded else {
                     self.finish(true);
                     return None;
-                }
-                Some((c, end))
+                };
+                *index += used;
+                Some((c, *start + 2 * *index))
             }
             Reading::Ucs4 {
                 big_endian,
                 start,
                 index,
                 units,
+                partial,
             } => {
                 if *index >= *units {
-                    self.finish(false);
+                    let partial = *partial;
+                    self.finish(partial);
                     return None;
                 }
                 let at = *start + 4 * *index;
@@ -813,8 +815,12 @@ impl<'a> Decoder<'a> {
                 } else {
                     u32::from_le_bytes(quad)
                 };
+                let Some(c) = char::from_u32(code) else {
+                    self.finish(true);
+                    return None;
+                };
                 *index += 1;
-                Some((char::from_u32(code).unwrap_or('\u{FFFE}'), at + 4))
+                Some((c, at + 4))
             }
             Reading::Java { pieces, piece, at } => loop {
                 if let Some(c) = piece[*at..].chars().next() {
@@ -879,15 +885,6 @@ impl<'a> Decoder<'a> {
         }
         !self.finished
     }
-}
-
-/// Where the read that meets an odd final byte of UTF-16 starts: Xerces reads 128 bytes before
-/// the declaration is scanned and 8192 at a time after.
-fn utf16_last_chunk_start(length: usize) -> usize {
-    if length <= 128 {
-        return 0;
-    }
-    128 + (length - 1 - 128) / 8192 * 8192
 }
 
 /// Whether `c` is an XML 1.0 `Char`.
@@ -2513,6 +2510,36 @@ mod tests {
             .flat_map(u16::to_le_bytes)
             .collect();
         assert_eq!(root(&doc), Ok(Some((String::new(), "r".into()))));
+    }
+
+    /// UTF-16 delivers every character before an odd final byte and then fails, where Xerces
+    /// drops the whole read of 8192 bytes the byte falls in (#186).
+    #[test]
+    fn reads_utf16_up_to_an_odd_final_byte() {
+        let text = "y".repeat(10_000);
+        let mut bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        bytes.push(b'<');
+        let mut read = String::new();
+        let malformed = decode(Reader::Utf16 { big_endian: true }, &bytes, 0, |c, _| {
+            read.push(c);
+            true
+        });
+        assert!(malformed);
+        assert_eq!(read, text);
+        let mut doc = vec![0xFE, 0xFF];
+        doc.extend("<a>x</a>".encode_utf16().flat_map(u16::to_be_bytes));
+        doc.push(b' ');
+        assert_eq!(events(&doc).1, Err(XmlError::CharConversion));
+    }
+
+    /// An unpaired surrogate of UTF-16 is a malformed sequence, where Xerces makes it U+FFFE.
+    #[test]
+    fn fails_on_an_unpaired_utf16_surrogate() {
+        let mut doc = vec![0xFE, 0xFF];
+        doc.extend("<a>x".encode_utf16().flat_map(u16::to_be_bytes));
+        doc.extend([0xD8, 0x00]);
+        doc.extend("</a>".encode_utf16().flat_map(u16::to_be_bytes));
+        assert_eq!(events(&doc).1, Err(XmlError::CharConversion));
     }
 
     #[test]
