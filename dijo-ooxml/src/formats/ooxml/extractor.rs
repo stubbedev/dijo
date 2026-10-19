@@ -4,7 +4,7 @@
 //! relationships of the main parts that embed documents (OLE objects opened as POI opens them)
 //! or lead out of the package, and the thumbnail.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use super::package::{
     Package, Relationship, Unported, HYPERLINK_RELATIONSHIP, RELATIONSHIPS_CONTENT_TYPE,
@@ -13,9 +13,10 @@ use crate::config::OfficeParserConfig;
 use crate::formats::embedded::{self, ResourceType, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole10_native::{self, Ole10Native, Unread};
+use crate::formats::ole2::vba::Macros;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::Failure;
+use crate::formats::{Difference, Failure};
 use crate::input::Input;
 use crate::java::is_blank;
 use crate::mime::is_ole10_native;
@@ -271,14 +272,32 @@ fn embedding(package: &Package, relationship: &Relationship) -> Option<(usize, E
     Some((target, embedding))
 }
 
+/// What [`check_embedded`] read of the relationships of a package's main parts for
+/// [`write_embedded_parts`] to hand on, so that nothing is read twice: the macros of each VBA
+/// project extracted when asked to, by its part.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Checked {
+    macros: BTreeMap<usize, Macros>,
+}
+
+impl Checked {
+    /// Where Tika hands on what was read otherwise, if it does: the first project's macros it
+    /// hands on otherwise.
+    pub(crate) fn difference(&self) -> Option<Difference> {
+        self.macros.values().find_map(Macros::difference)
+    }
+}
+
 /// What of `handleEmbeddedPart`'s work on one relationship of a main part this port does not
 /// do: following an internal relationship POI names no part for, which Tika records failing on;
-/// reading an OLE object Tika records failing to read; and extracting macros when asked to.
+/// and reading an OLE object Tika records failing to read. The macros of a VBA project, when
+/// asked for, are read into `checked`, as `handleMacros` reads them.
 pub(crate) fn check_embedded(
     package: &Package,
     config: &OfficeParserConfig,
     source: usize,
     relationship: &Relationship,
+    checked: &mut Checked,
 ) -> Result<(), Unported> {
     if relationship.is_internal() && !relationship.names_a_part() {
         return Err(Unported(format!(
@@ -291,13 +310,17 @@ pub(crate) fn check_embedded(
     let Some((target, embedding)) = embedding(package, relationship) else {
         return Ok(());
     };
-    if embedding == Embedding::Macros && config.extracts_macros() {
-        return Err(Unported(format!(
-            "{} embeds {} ({}), which Tika parses",
-            package.name(source),
-            package.name(target),
-            relationship.kind
-        )));
+    if embedding == Embedding::Macros
+        && config.extracts_macros()
+        && !checked.macros.contains_key(&target)
+    {
+        let data = package.read(target).map_err(|_| {
+            Unported(format!(
+                "the VBA project {} cannot be read, which Tika fails the package on",
+                package.name(target)
+            ))
+        })?;
+        checked.macros.insert(target, Macros::of_project(&data));
     }
     if embedding == Embedding::OleObject {
         read_ole_object(package, target, &read_part(package, target)?)?;
@@ -340,18 +363,27 @@ fn set_prog_id(described: &DescribedPart, metadata: &mut TikaMetadata) {
 }
 
 /// `handleEmbeddedParts` for the relationships of the `main_parts`, once [`check_embedded`]
-/// passed them all: each embedded file and the document each OLE object holds parsed, with the
-/// metadata `anchor` adds to a file's and the names the main parts give the parts they
-/// `described`, and a link for each relationship that leads out of the package, each target
-/// once.
+/// passed them all into `checked`: each embedded file and the document each OLE object holds
+/// parsed, with the metadata `anchor` adds to a file's and the names the main parts give the
+/// parts they `described`, the macros of each VBA project read, and a link for each
+/// relationship that leads out of the package, each target once.
 pub(crate) fn write_embedded_parts(
     package: &Package,
     main_parts: &[usize],
+    checked: &Checked,
     described: &DescribedParts,
     xhtml: &mut Xhtml,
     anchor: &dyn Fn(usize, &mut TikaMetadata),
 ) -> Result<(), Failure> {
-    write_embedded_parts_but(package, main_parts, &|_, _| false, described, xhtml, anchor)
+    write_embedded_parts_but(
+        package,
+        main_parts,
+        &|_, _| false,
+        checked,
+        described,
+        xhtml,
+        anchor,
+    )
 }
 
 /// [`write_embedded_parts`] but for the relationships `written` says the document has
@@ -360,6 +392,7 @@ pub(crate) fn write_embedded_parts_but(
     package: &Package,
     main_parts: &[usize],
     written: &dyn Fn(usize, &Relationship) -> bool,
+    checked: &Checked,
     described: &DescribedParts,
     xhtml: &mut Xhtml,
     anchor: &dyn Fn(usize, &mut TikaMetadata),
@@ -408,7 +441,12 @@ pub(crate) fn write_embedded_parts_but(
                 Embedding::OleObject => {
                     write_ole_object(package, target, &id, described, anchor, xhtml)?;
                 }
-                Embedding::SmallOleObject | Embedding::Macros => {}
+                Embedding::Macros => {
+                    if let Some(macros) = checked.macros.get(&target) {
+                        macros.write(xhtml)?;
+                    }
+                }
+                Embedding::SmallOleObject => {}
             }
             handled.insert(relationship.target_uri());
         }

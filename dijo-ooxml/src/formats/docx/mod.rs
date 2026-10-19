@@ -27,11 +27,11 @@ use crate::config::{OfficeParserConfig, ParserConfigs};
 use crate::formats::embedded;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::metafile;
-use crate::formats::ooxml::extractor::{self, DescribedPart, DescribedParts};
+use crate::formats::ooxml::extractor::{self, Checked, DescribedPart, DescribedParts};
 use crate::formats::ooxml::{self, Package, Properties, Relationship, Unported};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Input;
 use crate::input::Pages;
 use crate::java::JavaHashMap;
@@ -123,9 +123,10 @@ impl Parser for DocxParser {
         ]
     }
 
-    /// Leaves unread documents with macros Tika extracts when asked to, an OLE object it fails to
-    /// read, an EMF picture that embeds documents, parts read whole whose XML Tika reports failing
-    /// on, parts declaring a document type, and packages POI does not open as this port does.
+    /// Leaves unread documents with an OLE object Tika fails to read, an EMF picture that embeds
+    /// documents, parts read whole whose XML Tika reports failing on, parts declaring a document
+    /// type, and packages POI does not open as this port does. Macros are extracted when asked
+    /// to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -146,7 +147,8 @@ impl Parser for DocxParser {
         let read = Document::open(package, &configs.office)
             .and_then(Document::prepare)
             .map_err(|Unported(reason)| reason)?;
-        Ok(Box::new(move |xhtml| read.write(xhtml)))
+        let difference = read.checked.difference();
+        unless_different(Box::new(move |xhtml| read.write(xhtml)), difference)
     }
 }
 
@@ -232,16 +234,23 @@ impl<'a> Document<'a> {
         parts
     }
 
-    /// Finds what this port does not read in a package it could open (embedded documents,
-    /// macros to extract, parts read whole whose XML Tika fails on, document types, properties
-    /// it does not read), and reads what Tika reads whole before it writes anything of a main
-    /// document: the properties, each story's numbering, styles, notes and comments, and the
+    /// Finds what this port does not read in a package it could open (embedded documents, parts
+    /// read whole whose XML Tika fails on, document types, properties it does not read), and
+    /// reads what Tika reads whole before it writes anything of a main document: the macros to
+    /// extract, the properties, each story's numbering, styles, notes and comments, and the
     /// first story's settings. The parts written as they are read are only checked here, and
     /// parsed once, as they are written.
     fn prepare(self) -> Result<Read<'a>, Unported> {
+        let mut checked = Checked::default();
         for &source in &self.main_parts() {
             for relationship in self.relationships(source) {
-                extractor::check_embedded(&self.package, self.config, source, relationship)?;
+                extractor::check_embedded(
+                    &self.package,
+                    self.config,
+                    source,
+                    relationship,
+                    &mut checked,
+                )?;
             }
         }
         let icons = self.icon_names()?;
@@ -255,6 +264,7 @@ impl<'a> Document<'a> {
             properties,
             stories,
             icons,
+            checked,
         })
     }
 
@@ -679,6 +689,7 @@ struct Read<'a> {
     /// The parts of each story, then of each glossary.
     stories: Vec<StoryParts<'a>>,
     icons: IconNames,
+    checked: Checked,
 }
 
 impl Read<'_> {
@@ -688,6 +699,7 @@ impl Read<'_> {
             properties,
             stories,
             icons,
+            checked,
         } = self;
         let mut described = DescribedParts::new();
         document.write_package_metadata(xhtml.metadata_mut());
@@ -711,6 +723,7 @@ impl Read<'_> {
         extractor::write_embedded_parts(
             &document.package,
             &document.main_parts(),
+            &checked,
             &described,
             xhtml,
             &|_, _| {},
