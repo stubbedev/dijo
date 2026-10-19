@@ -15,17 +15,21 @@
 //! - a message cut at 50,000,000 bytes, the lines up to the next `From ` line dropped, is
 //!   reported in a warning; Tika cuts it silently.
 
+use std::io::{self, BufWriter, Write};
+use std::ops::Range;
+
 use super::address::{flatten, parse_address_list, Address};
 use super::date::parse_date;
 use super::handler::set_name_and_email;
 use super::structured::ContentType;
 use super::Unported;
 use crate::config::ParserConfigs;
+use crate::errors::Error;
 use crate::formats::auto_detect_reader::line_ranges;
 use crate::formats::embedded::{Wrapping, EXCEPTION_WARNING};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
-use crate::input::{Pages, Paging};
+use crate::input::{Input, Pages, Paging, Spool};
 use crate::java::to_lower_case;
 use crate::text::charset::Charset;
 
@@ -38,28 +42,47 @@ const HEADER_PREFIX: &str = "mbox:";
 /// A message of the mailbox: its lines, which the extractor is handed each ending in a line
 /// feed, the metadata it is handed with them, and whether it was cut at the size limit.
 struct Message<'a> {
-    lines: Vec<&'a [u8]>,
+    lines: Lines<'a>,
+    /// How many bytes the extractor is handed.
+    size: usize,
     metadata: TikaMetadata,
     cut: bool,
     /// The first header the port does not read as Tika does, which its metadata leaves out.
     unported: Option<Unported>,
 }
 
-impl Message<'_> {
-    /// The bytes the extractor is handed.
-    fn bytes(&self) -> Vec<u8> {
-        let length = self.lines.iter().map(|line| line.len() + 1).sum();
-        let mut bytes = Vec::with_capacity(length);
-        for line in &self.lines {
-            bytes.extend_from_slice(line);
-            bytes.push(b'\n');
-        }
-        bytes
-    }
+/// The lines of a message in the mailbox.
+enum Lines<'a> {
+    /// Lines that each end in a line feed alone, with it: the bytes the extractor is handed, as
+    /// they are.
+    Ended(&'a [u8]),
+    /// Lines from the first's start to the last's end, of which one ends otherwise, which the
+    /// extractor is handed each ending in a line feed.
+    Spanned(&'a [u8]),
+}
 
-    /// How many bytes of the mailbox the message takes, near enough.
-    fn size(&self) -> usize {
-        self.lines.iter().map(|line| line.len() + 1).sum()
+impl<'a> Message<'a> {
+    /// The bytes the extractor is handed: the mailbox's own, read in place, where each line
+    /// ends in a line feed alone, else the lines spooled, each ending in one.
+    fn bytes(&self, pages: Pages<'a>) -> Result<Input<'a>, Failure> {
+        let span = match self.lines {
+            Lines::Ended(bytes) => return Ok(Input::Within(bytes, pages)),
+            Lines::Spanned(span) => span,
+        };
+        let unspooled = |error: io::Error| {
+            Failure::Extraction(Error::IoError(format!(
+                "spooling a message of the mailbox fails: {error}"
+            )))
+        };
+        let mut spool = Spool::new(Some(self.size as u64));
+        let mut out = BufWriter::new(&mut spool);
+        for range in line_ranges(span) {
+            out.write_all(&span[range]).map_err(unspooled)?;
+            out.write_all(b"\n").map_err(unspooled)?;
+        }
+        out.flush().map_err(unspooled)?;
+        drop(out);
+        spool.finish().map_err(unspooled)
     }
 }
 
@@ -102,28 +125,40 @@ fn declared_charset(headers: &[Vec<u8>]) -> Option<Charset> {
 
 /// What `MboxParser.parse` hands the extractor, a message at a time, or `None` for an empty
 /// input, on whose missing first line it fails.
-fn messages(input: &[u8]) -> Option<Messages<'_, impl Iterator<Item = &[u8]>>> {
-    let mut lines = line_ranges(input).map(|range| &input[range]);
+fn messages(input: &[u8]) -> Option<Messages<'_, impl Iterator<Item = Range<usize>> + '_>> {
+    let mut lines = line_ranges(input);
     let current = lines.next()?;
     Some(Messages {
+        input,
         lines,
         current: Some(current),
     })
 }
 
 /// The messages of a mailbox, read from its lines as they are asked for.
-struct Messages<'a, I: Iterator<Item = &'a [u8]>> {
+struct Messages<'a, I: Iterator<Item = Range<usize>>> {
+    input: &'a [u8],
+    /// Where the lines lie in the input.
     lines: I,
-    /// The line reading goes on from.
-    current: Option<&'a [u8]>,
+    /// Where the line reading goes on from lies.
+    current: Option<Range<usize>>,
 }
 
-impl<'a, I: Iterator<Item = &'a [u8]>> Iterator for Messages<'a, I> {
+impl<'a, I: Iterator<Item = Range<usize>>> Messages<'a, I> {
+    /// The next line and where it lies, if any.
+    fn next_line(&mut self) -> Option<(Range<usize>, &'a [u8])> {
+        let range = self.lines.next()?;
+        Some((range.clone(), &self.input[range]))
+    }
+}
+
+impl<'a, I: Iterator<Item = Range<usize>>> Iterator for Messages<'a, I> {
     type Item = Message<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let input = self.input;
         loop {
-            let current = self.current?;
+            let current = &input[self.current.clone()?];
             if !current.starts_with(RECORD_DIVIDER) {
                 self.current = self.lines.next();
                 continue;
@@ -136,19 +171,19 @@ impl<'a, I: Iterator<Item = &'a [u8]>> Iterator for Messages<'a, I> {
             );
             metadata.set("Content-Type", MESSAGE);
             metadata.set("tk:content-type-parser-override", MESSAGE);
-            let Some(mut line) = self.lines.next() else {
+            let Some((mut range, mut line)) = self.next_line() else {
                 self.current = None;
                 return None;
             };
             // A `From ` line right after another starts the next message: Tika takes it for
             // the first line of this one.
             if line.starts_with(RECORD_DIVIDER) {
-                self.current = Some(line);
+                self.current = Some(range);
                 continue;
             }
+            let start = range.start;
             let mut in_header = true;
             let mut headers: Vec<Vec<u8>> = Vec::new();
-            let mut lines = Vec::new();
             let mut size = 0;
             let (next, cut) = loop {
                 if in_header && line.iter().all(|&byte| byte <= b' ') {
@@ -165,20 +200,27 @@ impl<'a, I: Iterator<Item = &'a [u8]>> Iterator for Messages<'a, I> {
                         _ => headers.push(line.to_vec()),
                     }
                 }
-                lines.push(line);
                 size += line.len() + 1;
-                match self.lines.next() {
-                    Some(next) if !next.starts_with(RECORD_DIVIDER) => {
+                match self.next_line() {
+                    Some((next_range, next)) if !next.starts_with(RECORD_DIVIDER) => {
                         if size >= MAIL_MAX_SIZE {
                             break (
-                                self.lines.find(|line| line.starts_with(RECORD_DIVIDER)),
+                                self.lines
+                                    .find(|line| input[line.clone()].starts_with(RECORD_DIVIDER)),
                                 true,
                             );
                         }
-                        line = next;
+                        (range, line) = (next_range, next);
                     }
-                    next => break (next, false),
+                    next => break (next.map(|(range, _)| range), false),
                 }
+            };
+            let end = range.end;
+            let span = &input[start..end];
+            let lines = if !span.contains(&b'\r') && input.get(end) == Some(&b'\n') {
+                Lines::Ended(&input[start..=end])
+            } else {
+                Lines::Spanned(span)
             };
             self.current = next;
             let charset = declared_charset(&headers);
@@ -190,6 +232,7 @@ impl<'a, I: Iterator<Item = &'a [u8]>> Iterator for Messages<'a, I> {
             }
             return Some(Message {
                 lines,
+                size,
                 metadata,
                 cut,
                 unported,
@@ -298,7 +341,7 @@ impl Parser for MboxParser {
         let mut unported = None;
         for message in messages(input).into_iter().flatten() {
             unported = unported.or(message.unported);
-            paging.read(message.size());
+            paging.read(message.size);
         }
         paging.release();
         let reading: Prepared<'a> = Box::new(move |xhtml| {
@@ -309,7 +352,7 @@ impl Parser for MboxParser {
                 Failure::Malformed("The mailbox has no first line to read".to_owned())
             })?;
             for (index, message) in messages.enumerate() {
-                paging.read(message.size());
+                paging.read(message.size);
                 if message.cut {
                     xhtml.metadata_mut().add(
                         EXCEPTION_WARNING,
@@ -319,8 +362,8 @@ impl Parser for MboxParser {
                         ),
                     );
                 }
-                xhtml.parse_embedded(
-                    &message.bytes(),
+                xhtml.parse_embedded_input(
+                    &message.bytes(pages)?,
                     &message.metadata,
                     Wrapping::PackageEntry,
                 )?;
@@ -405,8 +448,9 @@ Third.\n";
             get(0, "mbox:from"),
             "ada@example.org Mon Jan  1 00:00:00 2024"
         );
-        assert!(messages[0].bytes().ends_with(b"\nBody \x81.\n"));
-        assert!(!messages[0].bytes().starts_with(RECORD_DIVIDER));
+        let bytes = messages[0].bytes(Pages::IN_MEMORY).unwrap();
+        assert!(bytes.ends_with(b"\nBody \x81.\n"));
+        assert!(!bytes.starts_with(RECORD_DIVIDER));
         assert_eq!(get(1, "dc:subject"), "Caf\u{e9}");
         assert_eq!(get(1, "message:from-name"), "Bob @ home");
         assert_eq!(get(1, "message:from-email"), "bob@example.org");
