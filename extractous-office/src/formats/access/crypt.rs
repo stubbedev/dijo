@@ -2,19 +2,24 @@
 //! opens it: the encryption provider the header page describes, its verifier checked against
 //! the password, and the key each later page is decrypted with, made of the provider's key and
 //! the database's encoding key XORed with the page's number. Agile encryption, standard
-//! encryption, CryptoAPI's RC4 and Office 97's binary RC4 are ported; agile encryption with a
-//! cipher other than AES in CBC or ECB mode, or with a hash RustCrypto has no port of here, is
-//! left to Tika.
+//! encryption, CryptoAPI's RC4 and Office 97's binary RC4 are ported, agile encryption with each
+//! of its hashes and with AES, RC2, DES and triple DES in CBC, ECB or CFB mode, on RustCrypto's
+//! ciphers; agile encryption with RC4, or in CCM or GCM mode, which BouncyCastle adapts
+//! otherwise, is left to Tika.
 //!
 //! Jackcess checks a password against standard encryption with a key derived from the number of
 //! the last of its 50,000 hashing rounds, where [MS-OFFCRYPTO] derives it from block 0: its
 //! iterations overwrite the buffer that holds the block's number. It refuses the right password
 //! of a database Office encrypted, which the port opens, as a reading that differs from Tika's.
 
+use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt};
+use aes::{Aes128, Aes192, Aes256};
+use des::{Des, TdesEde2, TdesEde3};
+use rc2::Rc2;
 use rc4::{KeyInit, Rc4, StreamCipher};
 
 use super::buffer::{Buffer, Thrown, ILLEGAL_ARGUMENT};
-use crate::formats::crypt::{AesKey, Hash};
+use crate::formats::crypt::Hash;
 use crate::formats::xml::{attribute_named, parse_sax, Attribute, SaxHandler, StartTag};
 use crate::formats::{Difference, Failure};
 
@@ -109,47 +114,153 @@ fn iterate(hash: Hash, base: Vec<u8>, iterations: u32) -> Vec<u8> {
     })
 }
 
-/// An AES key of BouncyCastle's `AESEngine`, which throws on another length.
-fn aes_key(key: &[u8]) -> Result<AesKey, Thrown> {
-    AesKey::new(key)
-        .map_err(|_| Thrown::runtime(ILLEGAL_ARGUMENT, "Key length not 128/192/256 bits."))
+/// The block ciphers of agile encryption (`XmlEncryptionDescriptor.CipherAlgorithm`) this port
+/// decrypts with: all but RC4, which BouncyCastle wraps as a block cipher of its own. Both
+/// `_3DES` and `_3DES112` are BouncyCastle's `DESedeEngine`, which takes a key of two or three
+/// DES keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cipher {
+    Aes,
+    Rc2,
+    Des,
+    TripleDes,
 }
 
-/// `decryptBytes` of a block cipher: whole blocks, as `doFinal` throws on a part of one.
-fn whole_blocks(data: &[u8]) -> Result<(), Thrown> {
-    if !data.len().is_multiple_of(16) {
-        return Err(Thrown::runtime(DATA_LENGTH, "data not block size aligned"));
+/// A block cipher keyed, as its BouncyCastle engine is initialised with the key.
+enum BlockKey {
+    Aes128(Aes128),
+    Aes192(Aes192),
+    Aes256(Aes256),
+    Rc2(Rc2),
+    Des(Des),
+    TripleDes(TdesEde3),
+    TwoKeyTripleDes(TdesEde2),
+}
+
+impl Cipher {
+    /// The cipher keyed with `key`, or what BouncyCastle's engine throws on a key of its length.
+    fn key(self, key: &[u8]) -> Result<BlockKey, Thrown> {
+        let wrong = |message: &str| Thrown::runtime(ILLEGAL_ARGUMENT, message);
+        Ok(match (self, key.len()) {
+            (Cipher::Aes, 16) => BlockKey::Aes128(Aes128::new_from_slice(key).expect("16")),
+            (Cipher::Aes, 24) => BlockKey::Aes192(Aes192::new_from_slice(key).expect("24")),
+            (Cipher::Aes, 32) => BlockKey::Aes256(Aes256::new_from_slice(key).expect("32")),
+            (Cipher::Aes, _) => return Err(wrong("Key length not 128/192/256 bits.")),
+            (Cipher::Rc2, 1..=128) => BlockKey::Rc2(Rc2::new_with_eff_key_len(key, key.len() * 8)),
+            (Cipher::Rc2, _) => return Err(wrong("RC2 key length must be 1 to 128 bytes")),
+            (Cipher::Des, 8) => BlockKey::Des(Des::new_from_slice(key).expect("8")),
+            (Cipher::Des, _) => return Err(wrong("DES key too long - should be 8 bytes")),
+            (Cipher::TripleDes, 24) => {
+                BlockKey::TripleDes(TdesEde3::new_from_slice(key).expect("24"))
+            }
+            (Cipher::TripleDes, 16) => {
+                BlockKey::TwoKeyTripleDes(TdesEde2::new_from_slice(key).expect("16"))
+            }
+            (Cipher::TripleDes, _) => return Err(wrong("key size must be 16 or 24 bytes.")),
+        })
     }
-    Ok(())
 }
 
-/// The chaining of an agile cipher this port decrypts with.
+/// Runs `$apply` with the cipher of a [`BlockKey`], whatever its type.
+macro_rules! with_cipher {
+    ($key:expr, $cipher:ident => $apply:expr) => {
+        match $key {
+            BlockKey::Aes128($cipher) => $apply,
+            BlockKey::Aes192($cipher) => $apply,
+            BlockKey::Aes256($cipher) => $apply,
+            BlockKey::Rc2($cipher) => $apply,
+            BlockKey::Des($cipher) => $apply,
+            BlockKey::TripleDes($cipher) => $apply,
+            BlockKey::TwoKeyTripleDes($cipher) => $apply,
+        }
+    };
+}
+
+/// One block of `cipher`, decrypted in place.
+fn decrypt_block<C: BlockCipherDecrypt>(cipher: &C, block: &mut [u8]) {
+    cipher.decrypt_block(block.try_into().expect("a block of the cipher's size"));
+}
+
+/// One block of `cipher`, encrypted in place.
+fn encrypt_block<C: BlockCipherEncrypt>(cipher: &C, block: &mut [u8]) {
+    cipher.encrypt_block(block.try_into().expect("a block of the cipher's size"));
+}
+
+impl BlockKey {
+    fn block_size(&self) -> usize {
+        match self {
+            BlockKey::Aes128(_) | BlockKey::Aes192(_) | BlockKey::Aes256(_) => 16,
+            _ => 8,
+        }
+    }
+
+    fn decrypt_block(&self, block: &mut [u8]) {
+        with_cipher!(self, cipher => decrypt_block(cipher, block));
+    }
+
+    fn encrypt_block(&self, block: &mut [u8]) {
+        with_cipher!(self, cipher => encrypt_block(cipher, block));
+    }
+}
+
+/// The chaining of an agile cipher (`XmlEncryptionDescriptor.CipherChaining`) this port
+/// decrypts with: all but CCM and GCM, which BouncyCastle adapts from AEAD ciphers. CFB is
+/// BouncyCastle's `CFBBlockCipher` of 8 bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Chaining {
     Cbc,
     Ecb,
+    Cfb8,
 }
 
-/// AES in `chaining` mode, its IV the first block of `iv` in CBC mode, of `data`.
-fn aes_decrypt(
-    key: &AesKey,
-    chaining: Chaining,
-    iv: &[u8],
-    data: &[u8],
-) -> Result<Vec<u8>, Thrown> {
-    whole_blocks(data)?;
+/// `decryptBytes` of `data` with `key` in `chaining` mode, its IV `iv`: in CBC mode one of the
+/// cipher's block size, as BouncyCastle requires; in CFB mode as much of `iv` as fills a block,
+/// after zeros where it is shorter. ECB and CBC decrypt whole blocks only, as `doFinal` throws
+/// on a part of one.
+fn decrypt(key: &BlockKey, chaining: Chaining, iv: &[u8], data: &[u8]) -> Result<Vec<u8>, Thrown> {
+    let size = key.block_size();
+    let mut out = data.to_vec();
+    if chaining != Chaining::Cfb8 && !data.len().is_multiple_of(size) {
+        return Err(Thrown::runtime(DATA_LENGTH, "data not block size aligned"));
+    }
     match chaining {
-        Chaining::Ecb => Ok(key.decrypt_ecb(data)),
+        Chaining::Ecb => {
+            for block in out.chunks_exact_mut(size) {
+                key.decrypt_block(block);
+            }
+        }
         Chaining::Cbc => {
-            let iv: &[u8; 16] = iv.try_into().map_err(|_| {
-                Thrown::runtime(
+            if iv.len() != size {
+                return Err(Thrown::runtime(
                     ILLEGAL_ARGUMENT,
                     "initialisation vector must be the same length as block size",
-                )
-            })?;
-            Ok(key.decrypt_cbc(iv, data))
+                ));
+            }
+            let mut previous = iv;
+            for (block, encrypted) in out.chunks_exact_mut(size).zip(data.chunks_exact(size)) {
+                key.decrypt_block(block);
+                for (byte, chained) in block.iter_mut().zip(previous) {
+                    *byte ^= chained;
+                }
+                previous = encrypted;
+            }
+        }
+        Chaining::Cfb8 => {
+            let mut register = vec![0; size];
+            let kept = iv.len().min(size);
+            register[size - kept..].copy_from_slice(&iv[..kept]);
+            let mut stream = vec![0; size];
+            for byte in &mut out {
+                stream.copy_from_slice(&register);
+                key.encrypt_block(&mut stream);
+                let encrypted = *byte;
+                *byte ^= stream[0];
+                register.rotate_left(1);
+                register[size - 1] = encrypted;
+            }
         }
     }
+    Ok(out)
 }
 
 /// RC4 with `key` applied to `parts`, one stream after the other.
@@ -199,7 +310,7 @@ enum Provider {
     /// Agile encryption: the key data's cipher, keyed by the key the password opens, its IV
     /// the key data's hash of its salt and the block.
     Agile {
-        key: Box<AesKey>,
+        key: Box<BlockKey>,
         chaining: Chaining,
         hash: Hash,
         salt: Vec<u8>,
@@ -292,8 +403,8 @@ impl Decryption {
                 iterated,
                 key_bytes,
             } => {
-                let key = aes_key(&standard_key(iterated, &block, *key_bytes)?)?;
-                aes_decrypt(&key, Chaining::Ecb, &[], page)
+                let key = Cipher::Aes.key(&standard_key(iterated, &block, *key_bytes)?)?;
+                decrypt(&key, Chaining::Ecb, &[], page)
             }
             Provider::Agile {
                 key,
@@ -303,7 +414,7 @@ impl Decryption {
                 block_size,
             } => {
                 let iv = fixed(&hash.digest(&[salt, &block]), *block_size, 0x36)?;
-                aes_decrypt(key, *chaining, &iv, page)
+                decrypt(key, *chaining, &iv, page)
             }
         }
     }
@@ -567,9 +678,9 @@ fn standard(
     );
     let key_bytes = i64::from(header.key_bits / 8);
     let check = |block: [u8; 4]| -> Result<bool, Thrown> {
-        let key = aes_key(&standard_key(&iterated, &block, key_bytes)?)?;
-        let verifier = aes_decrypt(&key, Chaining::Ecb, &[], &header.verifier)?;
-        let verifier_hash = aes_decrypt(&key, Chaining::Ecb, &[], &header.verifier_hash)?;
+        let key = Cipher::Aes.key(&standard_key(&iterated, &block, key_bytes)?)?;
+        let verifier = decrypt(&key, Chaining::Ecb, &[], &header.verifier)?;
+        let verifier_hash = decrypt(&key, Chaining::Ecb, &[], &header.verifier_hash)?;
         let size = i64::from(header.verifier_hash_size);
         Ok(fixed(&verifier_hash, size, 0)? == fixed(&Hash::Sha1.digest(&[&verifier]), size, 0)?)
     };
@@ -775,28 +886,34 @@ impl Parameters {
             "SHA384" => Ok(Hash::Sha384),
             "SHA512" => Ok(Hash::Sha512),
             "MD5" => Ok(Hash::Md5),
-            "MD4" | "MD2" | "RIPEMD128" | "RIPEMD160" | "WHIRLPOOL" => Err(Thrown::unported(
-                format!("agile encryption hashed with {}", self.hash),
-            )),
+            "MD4" => Ok(Hash::Md4),
+            "MD2" => Ok(Hash::Md2),
+            "RIPEMD128" => Ok(Hash::Ripemd128),
+            "RIPEMD160" => Ok(Hash::Ripemd160),
+            "WHIRLPOOL" => Ok(Hash::Whirlpool),
             _ => Err(unsupported_parameter(&self.hash)),
         }
     }
 
-    /// `XmlEncryptionDescriptor.initCipher`: the chaining of AES this port decrypts with.
-    fn cipher(&self) -> Result<Chaining, Thrown> {
+    /// `XmlEncryptionDescriptor.initCipher`: the cipher and chaining this port decrypts with.
+    fn cipher(&self) -> Result<(Cipher, Chaining), Thrown> {
         let chaining = match enum_name(&self.chaining).as_str() {
             "CHAININGMODECBC" => Some(Chaining::Cbc),
             "CHAININGMODEECB" => Some(Chaining::Ecb),
-            "CHAININGMODECFB" | "CHAININGMODECCM" | "CHAININGMODEGCM" => None,
+            "CHAININGMODECFB" => Some(Chaining::Cfb8),
+            "CHAININGMODECCM" | "CHAININGMODEGCM" => None,
             _ => return Err(unsupported_parameter(&self.chaining)),
         };
-        let aes = match enum_name(&self.cipher).as_str() {
-            "AES" => true,
-            "RC2" | "RC4" | "DES" | "_3DES" | "_3DES112" => false,
+        let algorithm = match enum_name(&self.cipher).as_str() {
+            "AES" => Some(Cipher::Aes),
+            "RC2" => Some(Cipher::Rc2),
+            "DES" => Some(Cipher::Des),
+            "_3DES" | "_3DES112" => Some(Cipher::TripleDes),
+            "RC4" => None,
             _ => return Err(unsupported_parameter(&self.cipher)),
         };
-        match chaining {
-            Some(chaining) if aes => Ok(chaining),
+        match (algorithm, chaining) {
+            (Some(algorithm), Some(chaining)) => Ok((algorithm, chaining)),
             _ => Err(Thrown::unported(format!(
                 "agile encryption with {} in {}",
                 self.cipher, self.chaining
@@ -925,7 +1042,13 @@ impl Agile {
     }
 
     /// `cryptDeriveKey`: the password's key of a block, cut or filled with 0x36 to the key size.
-    fn derive_key(&self, hash: Hash, password: &[u8], block: &[u8]) -> Result<AesKey, Thrown> {
+    fn derive_key(
+        &self,
+        hash: Hash,
+        algorithm: Cipher,
+        password: &[u8],
+        block: &[u8],
+    ) -> Result<BlockKey, Thrown> {
         let base = hash.digest(&[&self.password.salt, password]);
         let iterated = iterate(hash, base, self.spin_count as u32);
         let key = fixed(
@@ -933,7 +1056,7 @@ impl Agile {
             i64::from(self.password.key_bits as i32 / 8),
             0x36,
         )?;
-        aes_key(&key)
+        algorithm.key(&key)
     }
 
     /// The rest of the constructor and `verifyPassword`: the provider, and whether `password`
@@ -946,10 +1069,10 @@ impl Agile {
             )));
         }
         let hash = self.password.hash()?;
-        let chaining = self.password.cipher()?;
+        let (algorithm, chaining) = self.password.cipher()?;
         let decrypt = |block: &[u8], encrypted: &[u8]| -> Result<Vec<u8>, Thrown> {
-            let key = self.derive_key(hash, password, block)?;
-            aes_decrypt(&key, chaining, &self.password.salt, encrypted)
+            let key = self.derive_key(hash, algorithm, password, block)?;
+            decrypt(&key, chaining, &self.password.salt, encrypted)
         };
         let key_value = decrypt(&KEY_VALUE_BLOCK, &self.key_value)?;
         let verifier = decrypt(&VERIFIER_INPUT_BLOCK, &self.verifier_input)?;
@@ -966,10 +1089,10 @@ impl Agile {
         }
         let verified = verifier_hash == test_hash;
         let key_hash = self.key_data.hash()?;
-        let key_chaining = self.key_data.cipher()?;
+        let (key_algorithm, key_chaining) = self.key_data.cipher()?;
         Ok((
             Provider::Agile {
-                key: Box::new(aes_key(&key_value)?),
+                key: Box::new(key_algorithm.key(&key_value)?),
                 chaining: key_chaining,
                 hash: key_hash,
                 salt: self.key_data.salt,
@@ -989,6 +1112,114 @@ mod tests {
         assert_eq!(enum_name(" ChainingModeCBC "), "CHAININGMODECBC");
         assert_eq!(enum_name("3DES_112"), "_3DES112");
         assert_eq!(enum_name("SHA-512"), "SHA512");
+    }
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// Each cipher and chaining of agile encryption decrypts the vectors of FIPS 46-3 and
+    /// SP 800-38A as BouncyCastle does (#186).
+    #[test]
+    fn decrypts_each_agile_cipher_and_chaining() {
+        let aes = Cipher::Aes
+            .key(&hex("2b7e151628aed2a6abf7158809cf4f3c"))
+            .unwrap();
+        let iv = hex("000102030405060708090a0b0c0d0e0f");
+        assert_eq!(
+            decrypt(
+                &aes,
+                Chaining::Cbc,
+                &iv,
+                &hex("7649abac8119b246cee98e9b12e9197d")
+            )
+            .unwrap(),
+            hex("6bc1bee22e409f96e93d7e117393172a")
+        );
+        assert_eq!(
+            decrypt(
+                &aes,
+                Chaining::Cfb8,
+                &iv,
+                &hex("3b79424c9c0dd436bace9e0ed4586a4f32b9")
+            )
+            .unwrap(),
+            hex("6bc1bee22e409f96e93d7e117393172aae2d")
+        );
+        let des = Cipher::Des.key(&hex("133457799bbcdff1")).unwrap();
+        assert_eq!(
+            decrypt(&des, Chaining::Ecb, &[], &hex("85e813540f0ab405")).unwrap(),
+            hex("0123456789abcdef")
+        );
+        let triple = Cipher::TripleDes
+            .key(&hex("133457799bbcdff1133457799bbcdff1133457799bbcdff1"))
+            .unwrap();
+        assert_eq!(
+            decrypt(&triple, Chaining::Ecb, &[], &hex("85e813540f0ab405")).unwrap(),
+            hex("0123456789abcdef")
+        );
+        let two_key = Cipher::TripleDes
+            .key(&hex("133457799bbcdff1133457799bbcdff1"))
+            .unwrap();
+        assert_eq!(
+            decrypt(&two_key, Chaining::Ecb, &[], &hex("85e813540f0ab405")).unwrap(),
+            hex("0123456789abcdef")
+        );
+        let rc2 = Cipher::Rc2
+            .key(&hex("88bca90e90875a7f0f79c384627bafb2"))
+            .unwrap();
+        assert_eq!(rc2.block_size(), 8);
+        assert!(matches!(
+            decrypt(&rc2, Chaining::Cbc, &iv, &[0; 8]),
+            Err(Thrown::Exception(_))
+        ));
+        assert!(matches!(
+            decrypt(&aes, Chaining::Ecb, &[], &[0; 15]),
+            Err(Thrown::Exception(_))
+        ));
+        assert!(Cipher::Des.key(&[0; 16]).is_err());
+    }
+
+    /// The hashes of agile encryption that Jackcess takes from BouncyCastle hash as it does
+    /// (#186).
+    #[test]
+    fn names_every_agile_hash() {
+        let parameters = |hash: &str| Parameters {
+            block_size: 16,
+            key_bits: 128,
+            cipher: "AES".into(),
+            chaining: "ChainingModeCFB".into(),
+            hash: hash.into(),
+            salt: Vec::new(),
+        };
+        for (name, hash) in [
+            ("MD4", Hash::Md4),
+            ("MD2", Hash::Md2),
+            ("RIPEMD-128", Hash::Ripemd128),
+            ("RIPEMD-160", Hash::Ripemd160),
+            ("WHIRLPOOL", Hash::Whirlpool),
+        ] {
+            assert_eq!(parameters(name).hash().unwrap(), hash);
+        }
+        assert_eq!(
+            parameters("SHA1").cipher().unwrap(),
+            (Cipher::Aes, Chaining::Cfb8)
+        );
+        assert_eq!(
+            Hash::Md4.digest(&[b"abc"]),
+            hex("a448017aaf21d8525fc10ae87aa6729d")
+        );
+        assert_eq!(
+            Hash::Ripemd160.digest(&[b"abc"]),
+            hex("8eb208f7e05d987a9b044a8e98c6b087f15a0bfc")
+        );
+        assert_eq!(
+            Hash::Md2.digest(&[b"abc"]),
+            hex("da853b0d3f88d99b30283a69e6ded6bb")
+        );
     }
 
     #[test]

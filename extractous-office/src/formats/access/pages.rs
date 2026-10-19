@@ -61,8 +61,7 @@ impl<'a> Pages<'a> {
                     .try_into()
                     .expect("two bytes"),
             );
-            pages.charset =
-                Charset::of_code_page(code_page).unwrap_or_else(Charset::jackcess_default);
+            pages.charset = Charset::of_jet3_code_page(code_page)?;
         }
         let start = format.offset_encoding_key;
         let key: [u8; ENCODING_KEY_LENGTH] = root[start..start + ENCODING_KEY_LENGTH]

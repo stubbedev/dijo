@@ -26,6 +26,10 @@ const COLUMN_UNUSED: i16 = -1;
 const USAGE_MAP_REFERENCE: usize = 4;
 const MAX_BYTE: i64 = 256;
 const VALIDATION_RULE: &str = "ValidationRule";
+/// `OFFSET_COLUMN_COMPLEX_ID` of the formats before Access 2007, which have no complex columns:
+/// Jackcess reads a complex column's id there, the byte before its definition, and then fails
+/// to find the system table of complex columns such a database lacks.
+const BEFORE_COMPLEX_COLUMNS: i64 = -1;
 const VALIDATION_TEXT: &str = "ValidationText";
 const RESULT_TYPE: &str = "ResultType";
 
@@ -249,12 +253,10 @@ impl Table {
             }
             let mut column = Column::create(buffer, offset, format, name, &definition, type_byte)?;
             if column.data_type == DataType::ComplexType && !column.is_calculated() {
-                let Some(id_offset) = format.offset_column_complex_id else {
-                    return Err(Thrown::unported(
-                        "a complex column in a database before Access 2007",
-                    ));
-                };
-                let complex_id = buffer.i32_at(offset + id_offset as i64)?;
+                let id_offset = format
+                    .offset_column_complex_id
+                    .map_or(BEFORE_COMPLEX_COLUMNS, |at| at as i64);
+                let complex_id = buffer.i32_at(offset + id_offset)?;
                 let (context, page) = context;
                 column.complex = Some(context.complex(page, &self.name, &column, complex_id)?);
             }

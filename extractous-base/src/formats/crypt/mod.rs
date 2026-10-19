@@ -9,10 +9,14 @@ mod agile;
 pub mod xor;
 
 use aes::cipher::BlockCipherDecrypt;
+use md2::Md2;
+use md4::Md4;
 use md5::Md5;
 use rc4::{KeyInit, Rc4, StreamCipher};
+use ripemd::{Ripemd128, Ripemd160};
 use sha1::{Digest, Sha1};
 use sha2::{Sha256, Sha384, Sha512};
+use whirlpool::Whirlpool;
 
 use crate::config::{ParserConfigs, Password};
 use crate::errors::Error;
@@ -70,6 +74,11 @@ pub enum Hash {
     Sha256,
     Sha384,
     Sha512,
+    Md2,
+    Md4,
+    Ripemd128,
+    Ripemd160,
+    Whirlpool,
 }
 
 impl Hash {
@@ -88,17 +97,22 @@ impl Hash {
             Hash::Sha256 => run::<Sha256>(parts),
             Hash::Sha384 => run::<Sha384>(parts),
             Hash::Sha512 => run::<Sha512>(parts),
+            Hash::Md2 => run::<Md2>(parts),
+            Hash::Md4 => run::<Md4>(parts),
+            Hash::Ripemd128 => run::<Ripemd128>(parts),
+            Hash::Ripemd160 => run::<Ripemd160>(parts),
+            Hash::Whirlpool => run::<Whirlpool>(parts),
         }
     }
 
     /// `hashSize`.
     pub fn size(self) -> usize {
         match self {
-            Hash::Md5 => 16,
-            Hash::Sha1 => 20,
+            Hash::Md5 | Hash::Md2 | Hash::Md4 | Hash::Ripemd128 => 16,
+            Hash::Sha1 | Hash::Ripemd160 => 20,
             Hash::Sha256 => 32,
             Hash::Sha384 => 48,
-            Hash::Sha512 => 64,
+            Hash::Sha512 | Hash::Whirlpool => 64,
         }
     }
 

@@ -301,11 +301,12 @@ pub(crate) fn safely_clone(data: &[u8], offset: i64, length: i64, max: i64) -> R
     safely_borrow(data, offset, length, max).map(<[u8]>::to_vec)
 }
 
-/// The bytes [`safely_clone`] copies, where they are.
+/// The bytes [`safely_clone`] copies, where they are. A negative offset, length or maximum
+/// throws POI's `RecordFormatException`, its `length` spelt right where POI misspells it (#185).
 pub(crate) fn safely_borrow(data: &[u8], offset: i64, length: i64, max: i64) -> Read<&[u8]> {
     if offset < 0 || length < 0 || max < 0 {
         return record_format(format!(
-            "Invalid offset/length specified: offset: {offset}, lenght: {length}, maxLength: \
+            "Invalid offset/length specified: offset: {offset}, length: {length}, maxLength: \
              {max}"
         ));
     }
@@ -423,6 +424,18 @@ mod tests {
         assert_eq!(
             u16_at(&[1, 2, 3], 7).unwrap_err().to_string(),
             "java.lang.ArrayIndexOutOfBoundsException: Index 7 out of bounds for length 3"
+        );
+    }
+
+    /// `safelyClone` refuses a negative offset, length or maximum as POI does, with `length`
+    /// spelt right where POI writes `lenght` (#185).
+    #[test]
+    fn refuses_negative_ranges_with_their_message_spelt_right() {
+        assert_eq!(
+            safely_clone(&[1, 2, 3], -1, 2, 512).unwrap_err(),
+            Thrown::record_format(
+                "Invalid offset/length specified: offset: -1, length: 2, maxLength: 512"
+            )
         );
     }
 

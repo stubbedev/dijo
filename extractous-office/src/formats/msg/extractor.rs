@@ -13,7 +13,7 @@ use super::named;
 use super::properties::{Value, PROPERTIES};
 use super::types::property;
 use crate::config::ParserConfigs;
-use crate::formats::embedded::{ResourceType, Wrapping, RESOURCE_NAME};
+use crate::formats::embedded::{ResourceType, Wrapping, EXCEPTION_WARNING, RESOURCE_NAME};
 use crate::formats::handlers::parse_inline;
 use crate::formats::mail::{decode_encoded_words, parse_date, MailDate};
 use crate::formats::metadata::TikaMetadata;
@@ -144,7 +144,8 @@ pub(super) struct Extracted<'a> {
 }
 
 /// `OutlookExtractor` of the message in `file`'s root, its strings decoded as Tika guesses, and
-/// where the native reading differs from Tika's, if it does: an HTML body read differently.
+/// where the native reading differs from Tika's, if it does: streams or values left out that
+/// POI reads otherwise, or an HTML body read differently.
 pub(super) fn extract<'a>(
     file: &Ole2<'a>,
     mut message: Message<'a>,
@@ -157,7 +158,11 @@ pub(super) fn extract<'a>(
     write_metadata(&message, &mut scratch)?;
     let (body, content_ids, read_otherwise) = body(&message)?;
     let attachments = attachments(file, &message, &content_ids, configs)?;
-    let read_otherwise = read_otherwise.or_else(|| attachments.iter().find_map(Handed::difference));
+    let read_otherwise = message
+        .left_out()
+        .map(|left_out| Difference(format!("the port leaves out {left_out}")))
+        .or(read_otherwise)
+        .or_else(|| attachments.iter().find_map(Handed::difference));
     Ok((
         Extracted {
             message,
@@ -182,13 +187,20 @@ impl Extracted<'_> {
         }
     }
 
-    /// Writes the message as `OutlookExtractor.parse` does.
+    /// Writes the message as `OutlookExtractor.parse` does, with a warning of what the port
+    /// leaves out of it, if anything.
     pub(super) fn write(self, xhtml: &mut Xhtml) -> Result<(), Failure> {
         write_metadata(&self.message, xhtml.metadata_mut()).map_err(|unread| {
             Failure::Malformed(format!(
                 "the message reads otherwise the second time it is read: {unread:?}"
             ))
         })?;
+        if let Some(left_out) = self.message.left_out() {
+            xhtml.metadata_mut().add(
+                EXCEPTION_WARNING,
+                format!("left out of the message: {left_out}"),
+            );
+        }
         match self.body {
             Body::Html { prepared, from_rtf } => {
                 parse_inline(prepared, xhtml)?;

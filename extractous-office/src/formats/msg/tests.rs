@@ -358,3 +358,63 @@ fn reads_a_submission_id_poi_leaves_unread() {
         }]
     );
 }
+
+/// A stream that cannot be read and a directory named as a value of a multi-valued property
+/// are left out of the message, which is read without them, noting what POI reads otherwise
+/// (#186): a build with Tika hands it to Tika's path, one without warns of them.
+#[test]
+fn leaves_out_unreadable_streams_and_directory_values() {
+    use crate::ole2::{write, Node, Storage};
+    const SENDER: &str = "__substg1.0_0C1A001F";
+    const KEYWORD: &str = "__substg1.0_3A54101F-0000000D";
+    let mut message = message_of_a_bad_chunk_name();
+    message
+        .entries
+        .retain(|(name, _)| *name != units("__substg1.0_003700"));
+    message
+        .entries
+        .push((units(SENDER), Node::Owned(unicode("Ann"))));
+    message.entries.push((
+        units(KEYWORD),
+        Node::Storage(Storage {
+            class_id: [0; 16],
+            entries: Vec::new(),
+        }),
+    ));
+    let mut data = write(&message).unwrap();
+    let name = unicode(SENDER);
+    let entry = data
+        .windows(name.len())
+        .position(|window| window == name)
+        .unwrap();
+    data[entry + 120..entry + 124].copy_from_slice(&4000u32.to_le_bytes());
+
+    let file = Ole2::open(&data).unwrap();
+    let read = chunks::Message::read(&file, file.root(), false).unwrap();
+    assert!(read.main.all(0x0C1A).next().is_none());
+    assert!(read.main.all(0x3A54).next().is_none());
+    let left_out = read.left_out().unwrap();
+    assert!(
+        left_out.contains(&format!("the stream {SENDER}, which cannot be read")),
+        "{left_out}"
+    );
+    assert!(
+        left_out.contains(&format!("the directory {KEYWORD}")),
+        "{left_out}"
+    );
+    let (_, difference) = extract(&file, read, &ParserConfigs::default()).unwrap();
+    assert!(difference.is_some_and(|Difference(reason)| reason.contains(SENDER)));
+
+    #[cfg(not(feature = "tika"))]
+    {
+        let (text, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(&data)
+            .unwrap();
+        assert!(text.contains("Minutes"), "{text}");
+        let warnings = &metadata[crate::formats::embedded::EXCEPTION_WARNING];
+        assert!(
+            warnings.iter().any(|warning| warning.contains(KEYWORD)),
+            "{warnings:?}"
+        );
+    }
+}

@@ -396,6 +396,7 @@ fn prepare<'a>(input: &'a [u8], configs: &'a ParserConfigs) -> Result<Prepared<'
     let pages = Database::pages(input, password).map_err(|thrown| match thrown {
         Thrown::Exception(exception) => Decline::Fails(failure(&exception, UNKNOWN_DATABASE)),
         Thrown::Unported(what) => deferred(what),
+        Thrown::Unreadable(what) => Decline::Fails(Error::ParseError(what)),
     })?;
     let refused = pages.refused();
     let planned = Database::open(pages)
@@ -421,6 +422,7 @@ fn prepare<'a>(input: &'a [u8], configs: &'a ParserConfigs) -> Result<Prepared<'
         ),
         Err(Halt::Written(never)) => match never {},
         Err(Halt::Thrown(Thrown::Unported(what))) => Err(deferred(what)),
+        Err(Halt::Thrown(Thrown::Unreadable(what))) => Err(Decline::Fails(Error::ParseError(what))),
         Err(Halt::Thrown(Thrown::Exception(exception))) => Err(Decline::Differs {
             difference: refused.unwrap_or_else(|| {
                 Difference(format!(

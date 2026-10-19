@@ -161,7 +161,14 @@ impl Package {
         pages: Pages<'_>,
         configs: &ParserConfigs,
     ) -> Result<Package, Decline<'static>> {
-        let file = office::open(input, configs, MEDIA_TYPE, "protected package")?;
+        if configs.office.extracts_macros() {
+            return Err(Unported(
+                "macros are extracted from a protected package, which this port does not do"
+                    .to_owned(),
+            )
+            .into());
+        }
+        let file = office::open(input, MEDIA_TYPE, "protected package")?;
         let summaries = Summaries::read(&file, file.root())?;
         let info = file.root_document(ENCRYPTION_INFO).map_err(Unported)?;
         let encryption = PackageEncryption::read(&info).map_err(|unopened| match unopened {

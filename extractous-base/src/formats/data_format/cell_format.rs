@@ -27,8 +27,22 @@ fn thrown<T>(reason: impl Into<String>) -> Outcome<T> {
     Err(FormatError::Thrown(reason.into()))
 }
 
-/// What `toString` of a `Date` writes: a time zone's name, which this port does not have.
-const DATE_TO_STRING: &str = "a date as Date.toString writes it, with its time zone's name";
+/// `Date.toString`, and `DataFormatter`'s default date format, of the instant `epoch_millis`
+/// in `zone`: `EEE MMM dd HH:mm:ss zzz yyyy`, the zone by its short name. Only UTC, the zone the
+/// formatter writes dates in, has its name here, `UTC` as Java names it; a date in any other
+/// zone is not written.
+pub(super) fn date_to_string(epoch_millis: i64, zone: &TimeZone) -> Outcome<String> {
+    static IN_UTC: LazyLock<SimpleDateFormat> = LazyLock::new(|| {
+        SimpleDateFormat::new("EEE MMM dd HH:mm:ss 'UTC' yyyy")
+            .expect("Date.toString's pattern compiles")
+    });
+    if *zone != TimeZone::fixed(0) {
+        return Err(FormatError::Unported(
+            "a date as Date.toString writes it, in a time zone other than UTC",
+        ));
+    }
+    Ok(IN_UTC.format(epoch_millis, zone)?)
+}
 
 /// `HSSFColor.HSSFColorPredefined`'s names, which a section's colour may be.
 const PREDEFINED_COLORS: [&str; 48] = [
@@ -465,11 +479,11 @@ fn parse_format(
 impl Formatter {
     fn format(&self, value: CellValue, zone: &TimeZone) -> Outcome<String> {
         match self {
-            Formatter::General => general_format(value),
+            Formatter::General => general_format(value, zone),
             Formatter::Number(number) => number.format(value),
             Formatter::Date(date) => date.format(value, zone),
             Formatter::Elapsed(elapsed) => elapsed.format(value),
-            Formatter::Text(text) => text.format(value),
+            Formatter::Text(text) => text.format(value, zone),
         }
     }
 
@@ -478,8 +492,9 @@ impl Formatter {
         match self {
             Formatter::General | Formatter::Elapsed(_) => self.format(value, zone),
             Formatter::Number(_) => {
-                let CellValue::Number(number) = value else {
-                    return Err(FormatError::Unported(DATE_TO_STRING));
+                let number = match value {
+                    CellValue::Number(number) => number,
+                    CellValue::Date(millis) => return date_to_string(millis, zone),
                 };
                 let pattern = if number % 1.0 == 0.0 { "#" } else { "#.#" };
                 NumberFormatter::new(pattern)
@@ -491,7 +506,7 @@ impl Formatter {
                 .format(value, zone),
             Formatter::Text(_) => TextFormatter::new("@")
                 .map_err(FormatError::Thrown)?
-                .format(value),
+                .format(value, zone),
         }
     }
 }
@@ -503,10 +518,11 @@ fn number_of(value: CellValue) -> Outcome<f64> {
     }
 }
 
-/// `CellGeneralFormatter.formatValue`.
-fn general_format(value: CellValue) -> Outcome<String> {
-    let CellValue::Number(value) = value else {
-        return Err(FormatError::Unported(DATE_TO_STRING));
+/// `CellGeneralFormatter.formatValue`: a date as `Date.toString` writes it.
+fn general_format(value: CellValue, zone: &TimeZone) -> Outcome<String> {
+    let value = match value {
+        CellValue::Number(number) => number,
+        CellValue::Date(millis) => return date_to_string(millis, zone),
     };
     if value == 0.0 {
         return Ok("0".to_owned());
@@ -580,11 +596,12 @@ impl TextFormatter {
         Ok(Self { desc, positions })
     }
 
-    fn format(&self, value: CellValue) -> Outcome<String> {
-        let CellValue::Number(number) = value else {
-            return Err(FormatError::Unported(DATE_TO_STRING));
-        };
-        let text = utf16(&java_double_to_string(number));
+    /// The format with each `@` replaced by the value's `toString`.
+    fn format(&self, value: CellValue, zone: &TimeZone) -> Outcome<String> {
+        let text = utf16(&match value {
+            CellValue::Number(number) => java_double_to_string(number),
+            CellValue::Date(millis) => date_to_string(millis, zone)?,
+        });
         let mut output = self.desc.clone();
         for position in &self.positions {
             let Some(position) = *position else {

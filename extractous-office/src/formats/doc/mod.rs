@@ -10,8 +10,8 @@
 //! A document before Word 97 is read as POI's `HWPFOldDocument` reads it for Tika's
 //! `parseWord6`: a paragraph for each of its paragraphs. An encrypted document is decrypted with
 //! the password, or failed as Tika's path fails it where the password does not open it. A
-//! document POI reads differently from this port is left to Tika, as are macros extracted when
-//! asked to: see [`DocParser::defers`].
+//! document POI reads differently from this port is left to Tika. The macros follow when asked
+//! for.
 //!
 //! The document is read twice: once as far as deciding whether it is extracted, every
 //! paragraph read and its events let go, then as it is written, its events handed on as they
@@ -19,6 +19,7 @@
 
 mod bins;
 mod bytes;
+mod cp950;
 mod document;
 mod extractor;
 mod fib;
@@ -41,6 +42,7 @@ use crate::config::ParserConfigs;
 use crate::formats::compound::detected_otherwise;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
+use crate::formats::ole2::vba::Macros;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::{planned, written, Halt};
 use crate::formats::xhtml::Xhtml;
@@ -48,6 +50,31 @@ use crate::formats::{unless_different, Decline, Difference, Failure, Footprint, 
 use crate::ole2::Ole2;
 
 const MEDIA_TYPE: &str = "application/msword";
+
+/// For the parity tests: a document with paragraphs past every paragraph run, which the native
+/// parser gives no properties as Word does, and POI the last run's again, so that their styles,
+/// lists and tables are other than Tika's (#185). Its body is compared as its text.
+#[cfg(all(any(test, feature = "testing"), feature = "tika"))]
+pub const PARAGRAPHS_PAST_RUNS: crate::formats::parity::Departures =
+    &[crate::formats::parity::Departure::Elements("#185")];
+
+/// For the parity tests: whether the Word 97 document at `path`, opened without a password,
+/// has paragraphs past every paragraph run, which depart by [`PARAGRAPHS_PAST_RUNS`].
+#[cfg(any(test, feature = "testing"))]
+pub fn has_paragraphs_past_runs(path: &std::path::Path) -> bool {
+    let input =
+        std::fs::read(path).unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+    let configs = ParserConfigs::default();
+    let Ok(file) = office::open(&input, MEDIA_TYPE, "Word document") else {
+        return false;
+    };
+    let Ok(Word::Modern(streams)) = Word::read(&file, file.root(), &configs) else {
+        return false;
+    };
+    streams
+        .document()
+        .is_ok_and(|document| document.paragraphs.past_runs.is_some())
+}
 
 pub struct DocParser;
 
@@ -79,7 +106,7 @@ impl Parser for DocParser {
     }
 
     /// Fails encrypted documents the password does not open and documents POI or Tika throws
-    /// on, and defers macros extracted when asked to.
+    /// on, and writes the macros after the document when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -90,13 +117,17 @@ impl Parser for DocParser {
             return parser.prepare(input, metadata, configs);
         }
         let (file, summaries, difference) = plan(input, configs)?;
-        unless_different(
-            Box::new(move |xhtml| {
-                summaries.write(xhtml.metadata_mut());
-                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-                written(read(&file, configs, &mut |out| write(out, xhtml))).map(|_| ())
-            }),
-            difference,
+        let macros = Macros::of(&file, configs);
+        Macros::followed_by(
+            unless_different(
+                Box::new(move |xhtml| {
+                    summaries.write(xhtml.metadata_mut());
+                    xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+                    written(read(&file, configs, &mut |out| write(out, xhtml))).map(|_| ())
+                }),
+                difference,
+            ),
+            macros,
         )
     }
 }
@@ -108,7 +139,7 @@ fn plan<'a>(
     input: &'a [u8],
     configs: &ParserConfigs,
 ) -> Result<(Ole2<'a>, Summaries, Option<Difference>), Decline<'static>> {
-    let file = office::open(input, configs, MEDIA_TYPE, "Word document")?;
+    let file = office::open(input, MEDIA_TYPE, "Word document")?;
     let difference = planned(read(&file, configs, &mut |_| Ok::<(), Infallible>(())))?;
     let summaries = Summaries::read(&file, file.root())?;
     Ok((file, summaries, difference))

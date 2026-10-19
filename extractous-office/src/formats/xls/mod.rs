@@ -16,8 +16,7 @@
 //!
 //! An encrypted workbook is decrypted with the password, or failed as Tika's path fails it where
 //! the password does not open it. One POI or Tika's listener throws on fails as Tika's path
-//! fails it. A cell of a format the port does not write and macros extracted when asked to are
-//! left to Tika.
+//! fails it. The macros follow when asked for.
 
 mod factory;
 mod listener;
@@ -41,6 +40,7 @@ use crate::formats::escher::{self, Escher};
 use crate::formats::metadata::write_sheet_numbers;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
+use crate::formats::ole2::vba::Macros;
 use crate::formats::ole2::{office_document, Handed, Summaries};
 use crate::formats::poi::{written, Halt, Thrown, Unread, ILLEGAL_ARGUMENT, OFFICE_PARSER};
 use crate::formats::xhtml::{Stop, Xhtml};
@@ -193,7 +193,7 @@ impl Parser for XlsParser {
     }
 
     /// Fails encrypted workbooks the password does not open and workbooks POI or Tika throws on,
-    /// and defers macros extracted when asked to. A compound document typed a workbook that
+    /// and writes the macros after the workbook when asked to. A compound document typed a workbook that
     /// POI's container detection names a kind of no content, such as an MS Graph chart, is read
     /// as `OfficeParser` reads it once it has detected that kind: its summary information only.
     fn prepare<'a>(
@@ -217,7 +217,11 @@ impl Parser for XlsParser {
         }
         let mut workbook = Workbook::read(input, pages, configs)?;
         let difference = workbook.difference.take();
-        unless_different(Box::new(move |xhtml| workbook.write(xhtml)), difference)
+        let macros = workbook.macros.take();
+        Macros::followed_by(
+            unless_different(Box::new(move |xhtml| workbook.write(xhtml)), difference),
+            macros,
+        )
     }
 }
 
@@ -240,6 +244,8 @@ struct Workbook<'a> {
     summaries: Summaries,
     media_type: &'static str,
     difference: Option<Difference>,
+    /// The macros, where they are asked for.
+    macros: Option<Macros>,
     content: WorkbookContent<'a>,
 }
 
@@ -292,7 +298,7 @@ impl<'a> Workbook<'a> {
         configs: &'a ParserConfigs,
     ) -> Result<Self, Decline<'static>> {
         let (file, media_type) =
-            office::open_as(input, configs, &MEDIA_TYPES, "workbook").map_err(Unread::declined)?;
+            office::open_as(input, &MEDIA_TYPES, "workbook").map_err(Unread::declined)?;
         let root = file.root();
         let summaries = Summaries::read(&file, root)?;
         let Some(name) = WORKBOOK_ENTRY_NAMES
@@ -317,6 +323,7 @@ impl<'a> Workbook<'a> {
                 summaries,
                 media_type,
                 difference: None,
+                macros: Macros::of(&file, configs),
                 content: WorkbookContent::Old(stream),
             });
         };
@@ -345,6 +352,7 @@ impl<'a> Workbook<'a> {
             summaries,
             media_type,
             difference,
+            macros: Macros::of(&file, configs),
             content: WorkbookContent::Biff8(Box::new(Biff8 {
                 file,
                 stream,

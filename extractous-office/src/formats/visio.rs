@@ -1,8 +1,8 @@
 //! Visio drawings before Visio 2013 (VSD) as Tika's `OfficeParser` reads them with POI's HDGF:
 //! the summary information as metadata, then a paragraph for each text `VisioTextExtractor`
 //! finds. The document stream's trailer points to streams, compressed or not, which point to
-//! more streams or hold chunks, among them the text chunks. A drawing POI throws on is left to
-//! Tika, as are macros extracted when asked to.
+//! more streams or hold chunks, among them the text chunks, and the macros after them when asked
+//! for. A drawing POI throws on is left to Tika.
 
 use std::borrow::Cow;
 
@@ -10,6 +10,7 @@ use crate::config::ParserConfigs;
 use crate::formats::compound::detected_otherwise;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::office;
+use crate::formats::ole2::vba::Macros;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::{
     i16_at, i32_at, safely_borrow, safely_clone, thrown, u8_at, Lzw, Read, Thrown, Unread,
@@ -74,7 +75,7 @@ impl Parser for VisioParser {
         Footprint::Bounded
     }
 
-    /// Defers macros extracted when asked to, and fails drawings POI throws on.
+    /// Fails drawings POI throws on; writes the macros after the text when asked to.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -84,25 +85,32 @@ impl Parser for VisioParser {
         if let Some(parser) = detected_otherwise(input, &[MEDIA_TYPE]) {
             return parser.prepare(input, metadata, configs);
         }
-        let (summaries, texts) = read(input, configs).map_err(Unread::declined)?;
-        Ok(Box::new(move |xhtml| {
-            summaries.write(xhtml.metadata_mut());
-            xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-            for text in &texts {
-                xhtml.element("p", text)?;
-            }
-            Ok(())
-        }))
+        let (summaries, texts, macros) = read(input, configs).map_err(Unread::declined)?;
+        Macros::followed_by(
+            Ok(Box::new(move |xhtml| {
+                summaries.write(xhtml.metadata_mut());
+                xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+                for text in &texts {
+                    xhtml.element("p", text)?;
+                }
+                Ok(())
+            })),
+            macros,
+        )
     }
 }
 
-/// The summary information and the texts `VisioTextExtractor.getAllText` gives.
-fn read(input: &[u8], configs: &ParserConfigs) -> Result<(Summaries, Vec<String>), Unread> {
-    let file = office::open(input, configs, MEDIA_TYPE, "Visio drawing")?;
+/// The summary information and the texts `VisioTextExtractor.getAllText` gives, and the
+/// macros where they are asked for.
+fn read(
+    input: &[u8],
+    configs: &ParserConfigs,
+) -> Result<(Summaries, Vec<String>, Option<Macros>), Unread> {
+    let file = office::open(input, MEDIA_TYPE, "Visio drawing")?;
     let root = file.root();
     let summaries = Summaries::read(&file, root)?;
     let texts = texts(&file, root)?;
-    Ok((summaries, texts))
+    Ok((summaries, texts, Macros::of(&file, configs)))
 }
 
 /// `new HDGFDiagram(root)` and `getAllText`: the streams the trailer points to, read in order,

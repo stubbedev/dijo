@@ -356,6 +356,10 @@ pub(super) struct Paragraphs {
     /// for a paragraph whose merged runs held no properties, as POI leaves it.
     changes: Vec<(usize, Option<u32>)>,
     grpprls: Vec<SprmBuffer>,
+    /// The first paragraph whose mark lies past every run, if any: it and those after it have
+    /// no properties, where POI gives each the last run's again (#185).
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) past_runs: Option<usize>,
 }
 
 impl Paragraphs {
@@ -415,6 +419,8 @@ impl ParagraphsBuilder {
                 ends,
                 changes: Vec::new(),
                 grpprls: Vec::new(),
+                #[cfg(any(test, feature = "testing"))]
+                past_runs: None,
             },
             made: 0,
             known: HashMap::new(),
@@ -437,6 +443,17 @@ impl ParagraphsBuilder {
             self.paragraphs.changes.push((self.made, id));
         }
         self.made += 1;
+    }
+
+    /// The paragraphs left to make lie past every run: each has no properties.
+    fn push_past_runs(&mut self) {
+        #[cfg(any(test, feature = "testing"))]
+        if self.made < self.paragraphs.len() {
+            self.paragraphs.past_runs = Some(self.made);
+        }
+        while self.made < self.paragraphs.len() {
+            self.push(Some(SprmBuffer::empty(2)));
+        }
     }
 
     fn finish(self) -> Paragraphs {
@@ -528,8 +545,9 @@ fn paragraph_modifiers(clx: &ComplexFileTable) -> Read<Vec<PropertyRun>> {
 }
 
 /// `PAPBinTable.rebuild` of runs read in the order they end: each mark takes the runs that
-/// end in it as they are read. Once the runs are all taken, each later mark takes the last
-/// again, as POI's index stays at the last run.
+/// end in it as they are read. The marks after the one the last run ends in lie past every run
+/// and have no properties, as Word lays the paragraphs out, where POI's index stays at the last
+/// run and gives each of them the last run again (#185).
 fn rebuild_paragraphs_in_order(
     main: &[u8],
     data: &[u8],
@@ -540,7 +558,6 @@ fn rebuild_paragraphs_in_order(
     let mut builder = ParagraphsBuilder::new(marks);
     let mut mark = 0;
     let mut ending: Vec<PropertyRun> = Vec::new();
-    let mut last: Option<PropertyRun> = None;
     visit_paragraph_runs(main, data, pages, clx, &mut |run| {
         while mark < builder.paragraphs.len() && run.end > builder.paragraphs.end(mark) {
             let start = builder.paragraphs.start(mark);
@@ -551,56 +568,77 @@ fn rebuild_paragraphs_in_order(
             mark += 1;
         }
         if mark < builder.paragraphs.len() {
-            ending.push(run.clone());
+            ending.push(run);
         }
-        last = Some(run);
         Ok(())
     })?;
-    let last = last.expect("at least one run, empty where the pages hold none");
-    while mark < builder.paragraphs.len() {
+    if mark < builder.paragraphs.len() {
         let start = builder.paragraphs.start(mark);
         let end = builder.paragraphs.end(mark);
-        let sprms = if ending.is_empty() {
-            rebuilt_sprms(start, end, &[&last])
-        } else {
-            rebuilt_sprms(start, end, &ending.iter().collect::<Vec<_>>())
-        };
-        builder.push(sprms);
-        ending.clear();
-        mark += 1;
+        builder.push(rebuilt_sprms(
+            start,
+            end,
+            &ending.iter().collect::<Vec<_>>(),
+        ));
     }
+    builder.push_past_runs();
     Ok(builder.finish())
 }
 
 /// `PAPBinTable.rebuild`: a paragraph for each paragraph, cell or page mark of the text, at the
 /// positions `marks` gives in order, with the grpprls of the runs ending in it joined in the
-/// order they were read.
+/// order they were read. The marks after the one the last run ends in lie past every run and
+/// have no properties, as Word lays the paragraphs out, where POI's index stays at the last run
+/// and gives each of them the last run again (#185).
 fn rebuild_paragraphs(runs: Vec<PropertyRun>, marks: Vec<i32>) -> Paragraphs {
     let mut by_end: Vec<usize> = (0..runs.len()).collect();
     by_end.sort_by_key(|&i| runs[i].end);
     let mut builder = ParagraphsBuilder::new(marks);
-    let mut last_index = 0;
+    let mut next = 0;
     for mark in 0..builder.paragraphs.len() {
+        if next == by_end.len() {
+            break;
+        }
         let start_inclusive = builder.paragraphs.start(mark);
         let end_exclusive = builder.paragraphs.end(mark);
-        let char_index = end_exclusive - 1;
-        let mut broken = false;
-        let mut ending: Vec<usize> = Vec::new();
-        for (position, &i) in by_end.iter().enumerate().skip(last_index) {
-            broken = false;
-            if runs[i].end - 1 > char_index {
-                last_index = position;
-                broken = true;
-                break;
-            }
-            ending.push(i);
-        }
-        if !broken {
-            last_index = by_end.len().saturating_sub(1);
-        }
+        let ending_here = by_end[next..]
+            .iter()
+            .take_while(|&&i| runs[i].end <= end_exclusive)
+            .count();
+        let mut ending = by_end[next..next + ending_here].to_vec();
+        next += ending_here;
         ending.sort_unstable();
         let ending: Vec<&PropertyRun> = ending.iter().map(|&i| &runs[i]).collect();
         builder.push(rebuilt_sprms(start_inclusive, end_exclusive, &ending));
     }
+    builder.push_past_runs();
     builder.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs read out of the order they end, as the pieces' modifiers add them, give the
+    /// paragraphs they end in their properties, and the paragraphs past every run none (#185).
+    #[test]
+    fn gives_paragraphs_past_every_run_no_properties_whatever_the_order_of_the_runs() {
+        let run = |start, end, istd: u8| {
+            PropertyRun::new(start, end, Some(SprmBuffer::from_bytes(vec![istd, 0]))).unwrap()
+        };
+        let paragraphs = rebuild_paragraphs(vec![run(5, 10, 2), run(0, 5, 1)], vec![4, 9, 14, 19]);
+        assert_eq!(paragraphs.len(), 4);
+        assert_eq!(paragraphs.past_runs, Some(2));
+        let styles: Vec<i16> = (0..4)
+            .map(|index| paragraphs.istd(index).unwrap())
+            .collect();
+        assert_eq!(styles, [1, 2, 0, 0]);
+        for index in [2, 3] {
+            assert_eq!(
+                paragraphs.sprms(index),
+                Some(&SprmBuffer::empty(2)),
+                "{index}"
+            );
+        }
+    }
 }

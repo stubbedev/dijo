@@ -11,6 +11,8 @@ const OFFSET_VERSION: usize = 20;
 const HEADER_LENGTH: usize = 21;
 const OFFSET_ENGINE_NAME: usize = 4;
 const MSISAM_ENGINE: &[u8] = b"MSISAM Database";
+/// The ANSI code page of Access 97, that of a Jet 3 database whose header names none.
+const ANSI_CODE_PAGE: u16 = 1252;
 
 /// `BASE_HEADER_MASK`: what the bytes from `OFFSET_MASKED_HEADER` of the first page are XORed
 /// with.
@@ -54,18 +56,26 @@ pub(super) enum Charset {
 }
 
 impl Charset {
-    /// Jackcess's charset of every Jet 3 database, `Charset.defaultCharset()`: UTF-8, as the
-    /// JVM Tika runs in has it. The port decodes a Jet 3 database in its own code page, except
-    /// one it has no charset of, which it decodes as Jackcess does (#122).
-    pub(super) fn jackcess_default() -> Charset {
-        Charset::CodePage(JdkCharset::named("UTF-8"))
-    }
-
-    /// The charset of the Windows code page `code_page`, where it names one the port decodes.
-    pub(super) fn of_code_page(code_page: u16) -> Option<Charset> {
-        let charset =
-            codepage_encoding(i32::from(code_page)).and_then(|name| JdkCharset::for_name(&name))?;
-        charset.decode(&[]).map(|_| Charset::CodePage(charset))
+    /// The charset of the text of a Jet 3 database whose header names the Windows code page
+    /// `code_page`: that code page's, or code page 1252's, the ANSI code page of Access 97, where
+    /// it names none. Jackcess decodes every Jet 3 database in the JVM's default charset, UTF-8,
+    /// whatever its code page (#122, #185). A code page without a charset the port decodes fails
+    /// the parse.
+    pub(super) fn of_jet3_code_page(code_page: u16) -> Result<Charset, Thrown> {
+        let named = match code_page {
+            0 => ANSI_CODE_PAGE,
+            named => named,
+        };
+        codepage_encoding(i32::from(named))
+            .and_then(|name| JdkCharset::for_name(&name))
+            .filter(|charset| charset.decode(&[]).is_some())
+            .map(Charset::CodePage)
+            .ok_or_else(|| {
+                Thrown::Unreadable(format!(
+                    "a Jet 3 database in code page {code_page}, which has no charset the port \
+                     decodes"
+                ))
+            })
     }
 
     /// The text of `bytes`, malformed input replaced as the JDK replaces it.
