@@ -1,3 +1,10 @@
+# 0.2.3 (2026-10-20)
+
+### Added
+
+* Pack200 archives (`.pack`, `.pack.gz`): unpacked natively into the jar they were packed from, so
+  every format Tika reads is now read.
+
 # 0.2.2 (2026-10-20)
 
 ### Renamed to dijo
