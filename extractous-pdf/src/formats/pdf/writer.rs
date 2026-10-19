@@ -443,8 +443,13 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
 
     /// The annotations of a page, as `processPageAnnotation` writes and records them.
     fn annotations(&mut self, pdf: &Pdf, page: Page) -> Result<(), WriteFailure> {
-        let Some(annotations) = pdf.array(page.dict, b"Annots") else {
+        let Some((listed, Object::Array(annotations))) = pdf.get_identified(page.dict, b"Annots")
+        else {
             return Ok(());
+        };
+        let holder = match listed {
+            Identity::Direct(_) => page.identity,
+            listed => listed,
         };
         for item in annotations {
             let Some((identity, object)) = pdf.resolve_identified(item) else {
@@ -457,6 +462,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
                 ));
                 continue;
             };
+            let identity = pdf.held_within(holder, identity, annotation);
             let annotated = self.annotation(pdf, identity, annotation);
             gone_past(pdf, "an annotation", annotated)?;
         }
@@ -482,7 +488,12 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         match subtype.as_deref() {
             Some("FileAttachment") => {
                 let source = "annotationFileAttachment";
-                let spec = attachment::file_spec(pdf.get_identified(annotation, b"FS"))?;
+                let spec = attachment::file_spec(pdf.get_identified(annotation, b"FS").map(
+                    |(spec, object)| match as_dict(object) {
+                        Some(dict) => (pdf.held_within(identity, spec, dict), object),
+                        None => (spec, object),
+                    },
+                ))?;
                 self.annotation_file(pdf, source, spec)?;
             }
             Some("Widget") => {}

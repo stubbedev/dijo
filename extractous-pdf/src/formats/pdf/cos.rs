@@ -44,6 +44,14 @@ const XPACKET: &[u8] = b"<?xpacket ";
 pub(super) enum Identity {
     Indirect(ObjectId),
     Direct(usize),
+    /// A direct object by the indirect object that holds it and where it comes in a walk of
+    /// that object, each object before those it holds: the same however often the holder is
+    /// read again, as PDFBox's one `COSBase` of the holder, read once for the document, keeps
+    /// the objects it holds.
+    Within {
+        holder: ObjectId,
+        ordinal: usize,
+    },
     /// An object PDFBox creates afresh each time it is asked for, such as the font of a
     /// graphics state parameter dictionary: the count of those created before it.
     Unshared(usize),
@@ -745,6 +753,33 @@ impl<'p> Pdf<'p> {
         None
     }
 
+    /// The identity of `dict`, of the identity `identity`, held directly at any depth within
+    /// what `holder` identifies, as [`Identity::Within`] that holder's indirect object; as it is
+    /// where neither is held in an indirect object.
+    pub(super) fn held_within(
+        &self,
+        holder: Identity,
+        identity: Identity,
+        dict: &Dictionary,
+    ) -> Identity {
+        let root = match (identity, holder) {
+            (
+                Identity::Direct(_),
+                Identity::Indirect(root) | Identity::Within { holder: root, .. },
+            ) => root,
+            _ => return identity,
+        };
+        let held = self
+            .indirect(root)
+            .expect("the holder of a direct object reads again from where it was read");
+        let ordinal = ordinal_within(held, dict)
+            .expect("a direct object is held within the object that holds it");
+        Identity::Within {
+            holder: root,
+            ordinal,
+        }
+    }
+
     /// `COSDictionary.getDictionaryObject`: the resolved value of `key`.
     pub(super) fn get<'a>(&'a self, dict: &'a Dictionary, key: &[u8]) -> Option<&'a Object> {
         dict.get(key).ok().and_then(|object| self.resolve(object))
@@ -1099,6 +1134,28 @@ pub(super) fn as_dict(object: &Object) -> Option<&Dictionary> {
         Object::Stream(stream) => Some(&stream.dict),
         _ => None,
     }
+}
+
+/// Where the dictionary or stream of `dict` comes in a walk of `root` that takes each object
+/// before the objects it holds; none where `root` does not hold it.
+fn ordinal_within(root: &Object, dict: &Dictionary) -> Option<usize> {
+    let mut pending = vec![root];
+    let mut ordinal = 0;
+    while let Some(object) = pending.pop() {
+        if as_dict(object).is_some_and(|held| std::ptr::eq(held, dict)) {
+            return Some(ordinal);
+        }
+        ordinal += 1;
+        match object {
+            Object::Array(items) => pending.extend(items.iter().rev()),
+            object => {
+                if let Some(held) = as_dict(object) {
+                    pending.extend(held.iter().map(|(_, value)| value).rev());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Whether `object` is a dictionary or a stream.

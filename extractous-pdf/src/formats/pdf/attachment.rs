@@ -206,6 +206,7 @@ pub(super) fn find_file_specs<'p>(
     find(
         pdf,
         Node::Dictionary(identity, annotation),
+        identity,
         0,
         &mut HashSet::new(),
         &mut found,
@@ -251,9 +252,11 @@ impl<'p> Node<'p> {
     }
 }
 
+/// The specifications within `node`, held in what `holder` identifies.
 fn find<'p>(
     pdf: &'p Pdf,
     node: Node<'p>,
+    holder: Identity,
     depth: usize,
     seen: &mut HashSet<(u8, usize)>,
     found: &mut Vec<(Identity, &'p Dictionary)>,
@@ -268,22 +271,29 @@ fn find<'p>(
     match node {
         Node::Reference(id) => {
             if let Some(target) = pdf.indirect(id) {
-                let target = Node::of(Identity::Indirect(id), target);
-                find(pdf, target, depth + 1, seen, found);
+                let identity = Identity::Indirect(id);
+                find(
+                    pdf,
+                    Node::of(identity, target),
+                    identity,
+                    depth + 1,
+                    seen,
+                    found,
+                );
             }
         }
         Node::Dictionary(identity, dict) => match pdf.name(dict, b"Type") {
-            Some(FILESPEC) => found.push((identity, dict)),
+            Some(FILESPEC) => found.push((pdf.held_within(holder, identity, dict), dict)),
             Some(b"P" | b"Page" | b"Parent") => {}
             _ => {
                 for (_, value) in dict.iter() {
-                    find(pdf, Node::direct(value), depth + 1, seen, found);
+                    find(pdf, Node::direct(value), holder, depth + 1, seen, found);
                 }
             }
         },
         Node::Array(items) => {
             for item in items {
-                find(pdf, Node::direct(item), depth + 1, seen, found);
+                find(pdf, Node::direct(item), holder, depth + 1, seen, found);
             }
         }
         Node::Other => {}

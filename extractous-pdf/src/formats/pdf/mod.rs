@@ -1550,6 +1550,58 @@ mod tests {
         assert_same_as_tika_delegating(&as_paths(&paths), tika_name(), &DELEGATES);
     }
 
+    /// The text of the file that [`shared_annotation`] embeds.
+    const SHARED_FILE: &str = "Delt vedh\u{e6}ftning.";
+
+    /// Documents of two pages that share a file attachment annotation, which holds its file
+    /// specification directly: both listing the annotation, object 7, and both listing the
+    /// annotations of object 7, which holds the annotation directly.
+    fn shared_annotations() -> [Vec<u8>; 2] {
+        let annotation = "<< /Type /Annot /Subtype /FileAttachment /Rect [0 0 10 10] \
+                          /FS << /Type /Filespec /F (vedlagt.txt) /EF << /F 8 0 R >> >> >>";
+        [
+            ("[7 0 R]", annotation.to_owned()),
+            ("7 0 R", format!("[{annotation}]")),
+        ]
+        .map(|(annotations, seventh)| {
+            let mut objects = page_objects(TEXT);
+            objects[1] = "<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>".to_owned();
+            let page = format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R \
+                 /Resources << /Font << /F1 5 0 R >> >> /Annots {annotations} >>"
+            );
+            objects[2] = page.clone();
+            objects.extend([
+                page,
+                seventh,
+                format!(
+                    "<< /Type /EmbeddedFile /Length {} >>\nstream\n{SHARED_FILE}\nendstream",
+                    SHARED_FILE.len()
+                ),
+            ]);
+            let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
+            document(&objects, b"", &[])
+        })
+    }
+
+    #[test]
+    fn parses_the_file_of_an_annotation_two_pages_share_once() {
+        for input in shared_annotations() {
+            let (xml, _) = native_xml(&input);
+            assert_eq!(xml.matches(SHARED_FILE).count(), 1, "{xml}");
+        }
+    }
+
+    #[cfg(feature = "tika")]
+    #[test]
+    fn parses_the_file_of_an_annotation_two_pages_share_as_tikas_path_does() {
+        let scratch = Scratch::new("pdf-shared-annotation");
+        let [listed, held] = shared_annotations();
+        let listed = scratch.write("listed.pdf", &listed);
+        let held = scratch.write("held.pdf", &held);
+        assert_same_as_tika_delegating(&[&listed, &held], tika_name(), &DELEGATES);
+    }
+
     #[test]
     fn parses_each_embedded_file_once_and_every_name_of_the_tree() {
         // Tika extracts the Mac copy apart, under its name `  ` before `UF`, keeps only the
