@@ -81,7 +81,8 @@ fn stored_tuples(
     class: &Class,
     keys: &HashSet<Key>,
 ) -> Option<Vec<Tuple>> {
-    let this = pool.class_name(&ClassRef::Pool(class.this));
+    let this_ref = ClassRef::Pool(class.this);
+    let this = pool.class_name(&this_ref);
     let mut by_name: HashMap<&[u16], usize> = HashMap::new();
     for (at, tuple) in tuples.iter().enumerate() {
         by_name.entry(tuple.this.as_slice()).or_insert(at);
@@ -454,7 +455,8 @@ impl Builder<'_> {
     /// class up to its first character no greater than `$`, followed by `.java`, as
     /// commons-compress's `ClassBands` derives it.
     fn source_file(&self) -> Vec<u16> {
-        let name = self.pool.class_name(&ClassRef::Pool(self.class.this));
+        let this_ref = ClassRef::Pool(self.class.this);
+        let name = self.pool.class_name(&this_ref);
         let start = name
             .iter()
             .rposition(|&c| c == u16::from(b'/') || c == u16::from(b'.'))

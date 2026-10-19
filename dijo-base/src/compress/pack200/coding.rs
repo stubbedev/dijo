@@ -417,10 +417,6 @@ impl<'a> Cursor<'a> {
     pub(super) fn remaining(&self) -> usize {
         self.data.len() - self.position
     }
-
-    pub(super) fn position(&self) -> usize {
-        self.position
-    }
 }
 
 /// The bands of a segment and the band headers that hold their coding specifiers.

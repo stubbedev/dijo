@@ -7,8 +7,8 @@
 //! bytecode bands and the file bands with the file bits ([`Segment::read`]). [`unpack`] reads
 //! every segment of an archive into the files of the jar it was packed from, in order.
 //!
-//! An archive wrapped in gzip, or a jar that was stored rather than packed, both of which
-//! commons-compress's `Archive` takes too, are left to the caller.
+//! [`decode`] writes those files as the jar `Pack200CompressorInputStream` gives Tika. Entry times are written in UTC, where commons-compress shifts them by the raw offset of the
+//! JVM's default time zone. An archive wrapped in gzip is unwrapped first by the gzip decoder.
 
 mod attributes;
 mod bytecode;
@@ -21,7 +21,14 @@ mod ic;
 mod layout;
 mod pool;
 
-use super::{throws, Undecoded, MAX_DECODED};
+use std::io::{Cursor as IoCursor, Write};
+
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, DateTime, ZipWriter};
+
+use super::{throws, Decoding, Limited, Undecoded, MAX_DECODED};
+use crate::input::Input;
+use crate::java::time::civil;
 use attributes::Definitions;
 use classes::Class;
 use coding::{Bands, Cursor};
@@ -73,6 +80,8 @@ pub(crate) struct JarEntry {
     pub(crate) modified_seconds: i64,
     /// Its content: the file bits, or for a class file the class file rebuilt.
     pub(crate) bytes: Vec<u8>,
+    /// Whether the jar deflates it: by its `file_options`, or by the segment's deflate hint.
+    pub(crate) deflated: bool,
 }
 
 /// A segment of an archive, all of its bands read.
@@ -149,6 +158,7 @@ impl<'a> Segment<'a> {
                 name,
                 modified_seconds: i64::from(self.header.modtime as i32) + i64::from(file.modtime),
                 bytes,
+                deflated: file.deflate() || self.header.has(header::DEFLATE_HINT),
             });
         }
         Ok(())
@@ -179,3 +189,58 @@ pub(crate) fn unpack(input: &[u8]) -> Result<Vec<JarEntry>> {
     }
     Ok(entries)
 }
+
+/// The jar the Pack200 archive `data` was packed from, as `Pack200CompressorInputStream`
+/// decodes it, or why it is not decoded natively.
+pub(crate) fn decode(data: &[u8]) -> Result<Limited<Input<'static>>> {
+    let jar = jar(&unpack(data)?)?;
+    let mut decoding = Decoding::spooled(data.len(), None);
+    decoding.write(&jar)?;
+    decoding.finish()
+}
+
+/// The jar holding `entries`, in order, each deflated or stored as it says.
+fn jar(entries: &[JarEntry]) -> Result<Vec<u8>> {
+    let failed = |error: &dyn std::fmt::Display| malformed(format!("writing the jar: {error}"));
+    let mut writer = ZipWriter::new(IoCursor::new(Vec::new()));
+    for entry in entries {
+        let options = SimpleFileOptions::default()
+            .compression_method(if entry.deflated {
+                CompressionMethod::Deflated
+            } else {
+                CompressionMethod::Stored
+            })
+            .last_modified_time(zip_time(entry.modified_seconds));
+        writer
+            .start_file(entry.name.as_str(), options)
+            .map_err(|error| failed(&error))?;
+        writer
+            .write_all(&entry.bytes)
+            .map_err(|error| failed(&error))?;
+    }
+    let jar = writer.finish().map_err(|error| failed(&error))?;
+    Ok(jar.into_inner())
+}
+
+/// The zip time of `seconds` since the epoch in UTC, or the earliest zip time for one before
+/// 1980 or after 2107, which a zip entry cannot hold.
+fn zip_time(seconds: i64) -> DateTime {
+    let days = seconds.div_euclid(86_400);
+    let second_of_day = seconds.rem_euclid(86_400);
+    let (year, month, day) = civil::civil_from_days(days);
+    let fields = (
+        u16::try_from(year),
+        u8::try_from(month),
+        u8::try_from(day),
+        u8::try_from(second_of_day / 3600),
+        u8::try_from(second_of_day / 60 % 60),
+        u8::try_from(second_of_day % 60),
+    );
+    let (Ok(year), Ok(month), Ok(day), Ok(hour), Ok(minute), Ok(second)) = fields else {
+        return DateTime::default();
+    };
+    DateTime::from_date_and_time(year, month, day, hour, minute, second).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests;

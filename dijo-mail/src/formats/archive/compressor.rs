@@ -16,7 +16,7 @@ use crate::java::is_blank;
 use crate::Error;
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
-const NATIVE: [Compressor; 10] = [
+const NATIVE: [Compressor; 11] = [
     Compressor::Gzip,
     Compressor::Bzip2,
     Compressor::Zlib,
@@ -27,6 +27,7 @@ const NATIVE: [Compressor; 10] = [
     Compressor::Lzma,
     Compressor::Zstd,
     Compressor::Brotli,
+    Compressor::Pack200,
 ];
 
 const MEDIA_TYPES: [&str; NATIVE.len()] = [
@@ -40,6 +41,7 @@ const MEDIA_TYPES: [&str; NATIVE.len()] = [
     NATIVE[7].media_type(),
     NATIVE[8].media_type(),
     NATIVE[9].media_type(),
+    NATIVE[10].media_type(),
 ];
 
 /// The types whose subtypes without parsers of their own Tika reads as the compressed files

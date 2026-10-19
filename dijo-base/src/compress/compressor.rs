@@ -2,7 +2,7 @@
 //! `detect` recognizes by their first bytes, and Brotli, which has no signature and is decoded
 //! only as named.
 
-use super::{brotli, bzip2, gzip, lz4, lzw, snappy, xz, zlib, zstd, Limited, Undecoded};
+use super::{brotli, bzip2, gzip, lz4, lzw, pack200, snappy, xz, zlib, zstd, Limited, Undecoded};
 use crate::input::Input;
 
 /// A compression format `CompressorStreamFactory` decodes.
@@ -128,7 +128,7 @@ impl Compressor {
             Compressor::Lzma => xz::decode_lzma(data).map(content),
             Compressor::Zstd => zstd::decode(data).map(content),
             Compressor::Brotli => brotli::decode(data).map(content),
-            Compressor::Pack200 => Err(Undecoded::Unported("Pack200")),
+            Compressor::Pack200 => pack200::decode(data).map(content),
         }
     }
 }

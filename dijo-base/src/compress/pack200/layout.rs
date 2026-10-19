@@ -70,6 +70,9 @@ enum RefKind {
     Any,
 }
 
+/// The inclusive tag ranges of a union case, and its body.
+type UnionCase = (Vec<(i32, i32)>, Vec<Element>);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Element {
     Int {
@@ -85,7 +88,7 @@ enum Element {
         band: usize,
         tag: Int,
         /// The tags of each case, as inclusive ranges, and its body.
-        cases: Vec<(Vec<(i32, i32)>, Vec<Element>)>,
+        cases: Vec<UnionCase>,
         default: Vec<Element>,
     },
     Call {
