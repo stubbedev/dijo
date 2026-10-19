@@ -293,10 +293,19 @@ impl<'a> Database<'a> {
                 is_table_type(row.object_type) && row.parent == parent && is_named(row, name)
             }),
         };
-        if row.is_some_and(|row| row.object_type != Some(TYPE_TABLE)) {
-            return Err(Thrown::unported(
-                "a linked table, whose database Tika's link resolver refuses to resolve",
-            ));
+        match row.and_then(|row| row.object_type) {
+            Some(TYPE_LINKED_TABLE) => {
+                return Err(Thrown::Unreadable(format!(
+                    "the table {name} is linked to another database, which Tika's link resolver \
+                     refuses to open with an AssertionError that fails the parse"
+                )))
+            }
+            Some(TYPE_LINKED_ODBC_TABLE) => {
+                return Err(Thrown::unported(
+                    "a table linked over ODBC, which Jackcess reads as a definition of no rows",
+                ))
+            }
+            _ => {}
         }
         Ok(row)
     }

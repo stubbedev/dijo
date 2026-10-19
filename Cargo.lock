@@ -661,6 +661,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "des"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "916a94e407b54f9034d71dd748234cd1e516ced6284009906ae246f177eafe5a"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "digest"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -798,10 +807,13 @@ dependencies = [
  "lz4_flex",
  "lzma-rust2",
  "md-5",
+ "md2",
+ "md4",
  "memchr",
  "memmap2",
  "rc4",
  "regex",
+ "ripemd",
  "ruzstd",
  "sevenz-rust2",
  "sha1",
@@ -813,6 +825,7 @@ dependencies = [
  "unicode-general-category",
  "unicode-normalization",
  "unicode-script",
+ "whirlpool",
  "zip",
 ]
 
@@ -951,12 +964,14 @@ name = "extractous-office"
 version = "0.2.1"
 dependencies = [
  "aes",
+ "des",
  "extractous-base",
  "extractous-core",
  "extractous-html",
  "extractous-mail",
  "extractous-mime",
  "flate2",
+ "rc2",
  "rc4",
  "regex",
 ]
@@ -2181,6 +2196,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "md2"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d503fa42a36d0bae709eee924b9531ac3dd5a7f30e47d85185fa7d3ea588a08"
+dependencies = [
+ "digest",
+]
+
+[[package]]
+name = "md4"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd76fb0fd6b2e4be62a73f8e0858ca97f81babcb1af322dcaca196f735f17f80"
+dependencies = [
+ "digest",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2792,6 +2825,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rc2"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ceda21af1ae61033b63175653a1af86cae399d79cd03ca80ba347eb3a6c4a7fe"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "rc4"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2909,6 +2951,15 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "ripemd"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dd4211456b4172d7e44261920c25acf07367c4f04bb5f5d54fc21b090d9b159"
+dependencies = [
+ "digest",
 ]
 
 [[package]]
@@ -3780,6 +3831,15 @@ name = "weezl"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4ca08e5ef825b65b056d9efbd95c8750683f0a6d0466d02e96dc2e4e360f3d2"
+
+[[package]]
+name = "whirlpool"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f91573899d76e68467e923f18e87a7cee644a243a4ff110de3e6c173667d1c7"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "winapi"

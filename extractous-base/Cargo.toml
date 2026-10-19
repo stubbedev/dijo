@@ -32,10 +32,13 @@ libc = { version = "0.2.178" }
 lz4_flex = "0.14.0"
 lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz"] }
 md-5 = "0.11.0"
+md2 = "0.11.0"
+md4 = "0.11.0"
 memchr = "2.8.3"
 memmap2 = "0.9.11"
 rc4 = "0.2.0"
 regex = "1.13.1"
+ripemd = "0.2.0"
 ruzstd = "0.9.1"
 sevenz-rust2 = { version = "0.23.0", default-features = false, features = ["aes256", "bzip2", "deflate"] }
 sha1 = "0.11.0"
@@ -47,6 +50,7 @@ thiserror = { version = "2.0.17" }
 unicode-general-category = "1.1.0"
 unicode-normalization = "0.1.25"
 unicode-script = "0.5.8"
+whirlpool = "0.11.0"
 zip = { version = "9.0.3", default-features = false, features = ["bzip2", "deflate-flate2-zlib-rs", "deflate64", "legacy-zip", "xz"] }
 
 [target.'cfg(windows)'.dependencies]
