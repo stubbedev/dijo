@@ -13,6 +13,7 @@
 mod attributes;
 mod bytecode;
 mod classes;
+mod classfile;
 mod coding;
 mod files;
 mod header;
@@ -153,14 +154,14 @@ impl<'a> Segment<'a> {
         Ok(())
     }
 
-    /// The class file of the class at `class`, rebuilt from the bands.
-    ///
-    /// Class file reconstruction is not ported yet: this answers that the native readers do
-    /// not read it, and is where the reconstruction belongs, with `self.pool`,
-    /// `self.definitions`, `self.tuples` and `self.classes` at hand.
+    /// The class file of the class at `class`, rebuilt from the bands ([`classfile`]).
     fn class_file(&self, class: usize) -> Result<Vec<u8>> {
-        let _ = (&self.definitions, &self.tuples, class);
-        Err(Undecoded::Unported("the class files of Pack200 archives"))
+        classfile::class_file(
+            &self.pool,
+            &self.definitions,
+            &self.tuples,
+            &self.classes[class],
+        )
     }
 }
 
