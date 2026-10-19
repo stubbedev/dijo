@@ -157,6 +157,9 @@ pub fn visit<W: Held, E>(
     let mut stopped = None;
     reader
         .for_each_entries(|entry, read| {
+            if stopped.is_some() {
+                return Ok(false);
+            }
             let index = (entry as *const ArchiveEntry as usize - first) / size_of::<ArchiveEntry>();
             if index < next || !listed[index].has_data {
                 return Ok(true);
@@ -276,6 +279,26 @@ pub mod tests {
             }
         }
         writer.finish().unwrap().into_inner()
+    }
+
+    /// Handing on stops at the first file `each` fails on, though sevenz-rust2 goes on to the
+    /// archive's next block whatever the closure of a block's file asks.
+    #[test]
+    fn stops_at_the_first_file_each_fails_on() {
+        let data = seven_z(&[("a.txt", b"a"), ("b.txt", b"b"), ("c.txt", b"c")]);
+        let mut handed = Vec::new();
+        let visited = visit(
+            &data,
+            None,
+            |compressed, _| Decoding::discarded(compressed),
+            |listed, _| {
+                handed.push(listed.name.clone());
+                Err(())
+            },
+        )
+        .unwrap();
+        assert_eq!(visited, Err(()));
+        assert_eq!(handed, ["a.txt"]);
     }
 
     #[test]
