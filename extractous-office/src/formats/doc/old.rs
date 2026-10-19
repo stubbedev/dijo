@@ -8,7 +8,8 @@
 //! the text is kept as its bytes, one unit each, and decoded in the code page the fonts name once
 //! a paragraph is cut out of it. POI decodes it first, and, where a double-byte code page makes
 //! fewer characters than bytes, decodes it in code page 1252 instead, or throws on a complex
-//! document (#119).
+//! document (#119). Text in Big5 POI reads two bytes a character with its own reader of code
+//! page 950, as the port reads it ([`super::cp950`]).
 
 use super::bins::PARAGRAPH_MARKS;
 use super::bins::{
@@ -33,8 +34,8 @@ const LINE_END: [u16; 2] = [0x0D, 0x0A];
 
 /// A Word 6 or 95 document, read.
 pub(super) struct OldDocument {
-    /// The charset of the text, which the pieces and the text hold as bytes.
-    charset: Charset,
+    /// How the pieces and the text hold the characters.
+    charset: TextCharset,
     /// The text of each piece, in the order of their ends.
     piece_texts: Vec<Vec<u16>>,
     text: Vec<u16>,
@@ -185,9 +186,13 @@ fn read_sections(main: &[u8], offset: i32, size: i32) -> Read<()> {
     Ok(())
 }
 
-/// The text pieces of a complex document, each as its bytes in `charset`, at the file positions
+/// The text pieces of a complex document, each held as `charset` holds it, at the file positions
 /// the piece descriptors give as they are.
-fn complex_pieces(main: &[u8], offset: i32, charset: Charset) -> Result<ComplexFileTable, Unread> {
+fn complex_pieces(
+    main: &[u8],
+    offset: i32,
+    charset: TextCharset,
+) -> Result<ComplexFileTable, Unread> {
     let (grpprls, descriptors) = read_clx(main, offset)?;
     let mut pieces = Vec::with_capacity(descriptors.len());
     for descriptor in descriptors {
@@ -197,13 +202,13 @@ fn complex_pieces(main: &[u8], offset: i32, charset: Charset) -> Result<ComplexF
             descriptor.end.wrapping_sub(descriptor.start),
             MAX_PIECE_LENGTH,
         )?;
-        check_decodes(charset, &bytes)?;
+        charset.check_decodes(&bytes)?;
         pieces.push(TextPiece::read(
             main,
             descriptor.start,
             descriptor.end,
             descriptor.fc,
-            Encoding::Bytes,
+            charset.encoding(),
             descriptor.prm,
             MAX_PIECE_LENGTH,
         )?);
@@ -211,26 +216,58 @@ fn complex_pieces(main: &[u8], offset: i32, charset: Charset) -> Result<ComplexF
     Ok(ComplexFileTable::new(grpprls, pieces))
 }
 
-/// `buildTextPiece`: the text from `fcMin` to `fcMac` as one piece, as its bytes in `charset`.
+/// `buildTextPiece`: the text from `fcMin` to `fcMac` as one piece, held as `charset` holds it:
+/// a character of each two bytes in Big5.
 fn whole_text(
     main: &[u8],
     fc_min: i32,
     fc_mac: i32,
-    charset: Charset,
+    charset: TextCharset,
 ) -> Result<ComplexFileTable, Unread> {
     let bytes = safely_clone(main, fc_min, fc_mac.wrapping_sub(fc_min), MAX_RECORD_LENGTH)?;
-    let length = i32::try_from(bytes.len()).expect("a record of at most ten million bytes");
-    check_decodes(charset, &bytes)?;
+    let bytes_length = i32::try_from(bytes.len()).expect("a record of at most ten million bytes");
+    let length = match charset {
+        TextCharset::CodePage(_) => bytes_length,
+        TextCharset::Cp950 => bytes_length / 2,
+    };
+    charset.check_decodes(&bytes)?;
     let piece = TextPiece::read(
         main,
         0,
         length,
         fc_min,
-        Encoding::Bytes,
+        charset.encoding(),
         0,
         MAX_RECORD_LENGTH,
     )?;
     Ok(ComplexFileTable::new(Vec::new(), vec![piece]))
+}
+
+/// How the text of a Word 6 or 95 document is held: as its bytes in a code page, one unit each,
+/// decoded once a paragraph is cut out of it, or as the characters POI's reader of code page 950
+/// decodes of Big5, two bytes each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextCharset {
+    CodePage(Charset),
+    Cp950,
+}
+
+impl TextCharset {
+    /// How the pieces hold the text.
+    fn encoding(self) -> Encoding {
+        match self {
+            TextCharset::CodePage(_) => Encoding::Bytes,
+            TextCharset::Cp950 => Encoding::Cp950,
+        }
+    }
+
+    /// Whether `bytes` decode as Java decodes them, where they are held undecoded.
+    fn check_decodes(self, bytes: &[u8]) -> Result<(), Unread> {
+        match self {
+            TextCharset::CodePage(charset) => check_decodes(charset, bytes),
+            TextCharset::Cp950 => Ok(()),
+        }
+    }
 }
 
 /// Whether text in `charset` decodes as `new String(bytes, charset)` decodes it, which the
@@ -245,9 +282,13 @@ fn check_decodes(charset: Charset, bytes: &[u8]) -> Result<(), Unread> {
     Ok(())
 }
 
-/// Text kept as bytes, one unit each, decoded in `charset`; a unit past a byte, which cleaning a
-/// paragraph puts in, kept as it is.
-fn decoded(units: &[u16], charset: Charset) -> Vec<u16> {
+/// Text held as `charset` holds it, decoded: kept as bytes, one unit each, decoded in the code
+/// page, a unit past a byte, which cleaning a paragraph puts in, kept as it is; Big5 decoded
+/// already.
+fn decoded(units: &[u16], charset: TextCharset) -> Vec<u16> {
+    let TextCharset::CodePage(charset) = charset else {
+        return units.to_vec();
+    };
     let mut text = Vec::with_capacity(units.len());
     let mut bytes = Vec::new();
     let flush = |bytes: &mut Vec<u8>, text: &mut Vec<u16>| {
@@ -299,7 +340,7 @@ fn font_charset(chs: u8) -> Option<&'static str> {
 
 /// `guessCodePage(new OldFontTable(...))`: the charset of the first font whose character set
 /// is named and is no ANSI, default or symbol set, else code page 1252.
-fn guess_charset(main: &[u8], offset: i32, length: i32) -> Result<Charset, Unread> {
+fn guess_charset(main: &[u8], offset: i32, length: i32) -> Result<TextCharset, Unread> {
     let character_sets = font_character_sets(main, offset, length)?;
     let named = character_sets
         .into_iter()
@@ -307,18 +348,16 @@ fn guess_charset(main: &[u8], offset: i32, length: i32) -> Result<Charset, Unrea
         .find_map(font_charset);
     let name = named.unwrap_or("Cp1252");
     if name == "Big5" {
-        return Err(Unported(
-            "a Word 6 document in Big5, which POI reads with its own code page 950 reader"
-                .to_owned(),
-        )
-        .into());
+        return Ok(TextCharset::Cp950);
     }
-    Charset::for_name(name).ok_or_else(|| {
-        Unported(format!(
-            "a Word 6 document in {name}, a charset this port does not have"
-        ))
-        .into()
-    })
+    Charset::for_name(name)
+        .map(TextCharset::CodePage)
+        .ok_or_else(|| {
+            Unported(format!(
+                "a Word 6 document in {name}, a charset this port does not have"
+            ))
+            .into()
+        })
 }
 
 /// `new OldFontTable(buf, offset, length)`: the character set of each font, failing where

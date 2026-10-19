@@ -58,11 +58,22 @@ fn ends_the_lines_of_a_piece_as_word6_extractor_falls_back_to() {
     assert_eq!(piece_text(&piece), units("a\r\nb"));
 }
 
+/// Text in Big5 is read two bytes a character, as POI's reader of code page 950 reads it, its
+/// ASCII padded with a zero byte (#186).
+#[test]
+fn reads_big5_text_as_pois_code_page_950_reader_does() {
+    let mut text = vec![0x40, 0xA4, 0x40, 0xF9, b'\r', 0x00];
+    for byte in b"World\r" {
+        text.extend([*byte, 0x00]);
+    }
+    let document = OldDocument::read(&word6(&text, 0x88)).unwrap();
+    assert_eq!(
+        document.paragraph_text(),
+        [units("\u{4E00}\u{7E98}\n"), units("World\n")]
+    );
+}
+
 #[test]
 fn leaves_what_poi_throws_on_to_tika() {
     assert!(OldDocument::read(&[0; 0x80]).is_err());
-    assert!(matches!(
-        OldDocument::read(&word6(b"x", 0x88)),
-        Err(Unread::Unported(Unported(reason))) if reason.contains("Big5")
-    ));
 }

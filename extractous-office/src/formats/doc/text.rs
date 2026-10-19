@@ -28,13 +28,16 @@ pub(super) enum Encoding {
     /// A byte each, undecoded, as the text of Word 6 and 95 is kept until a paragraph is cut
     /// out of it.
     Bytes,
+    /// Two bytes each, as POI's `LittleEndianCP950Reader` decodes the text of Word 6 and 95 in
+    /// Big5.
+    Cp950,
 }
 
 impl Encoding {
     /// How many bytes a character takes.
     fn width(self) -> i32 {
         match self {
-            Encoding::Unicode => 2,
+            Encoding::Unicode | Encoding::Cp950 => 2,
             Encoding::Windows1252 | Encoding::Bytes => 1,
         }
     }
@@ -43,6 +46,7 @@ impl Encoding {
     fn characters(self, length: usize) -> usize {
         match self {
             Encoding::Unicode => length.div_ceil(2),
+            Encoding::Cp950 => length / 2,
             Encoding::Windows1252 | Encoding::Bytes => length,
         }
     }
@@ -53,6 +57,7 @@ impl Encoding {
             Encoding::Unicode => Charset::named("UTF-16LE"),
             Encoding::Windows1252 => Charset::named("windows-1252"),
             Encoding::Bytes => return bytes.iter().map(|&byte| u16::from(byte)).collect(),
+            Encoding::Cp950 => return super::cp950::decode(bytes),
         };
         charset
             .decode(bytes)
@@ -420,8 +425,11 @@ impl Text {
             let bytes = piece.bytes(main, segment.start - base..segment.end - base);
             let width = piece.encoding.width() as usize;
             for (at, character) in bytes.chunks_exact(width).enumerate() {
-                let is_unit = match character {
-                    [low, 0] | [low] => units.contains(low),
+                let is_unit = match (piece.encoding, character) {
+                    (Encoding::Cp950, &[trailing, leading]) => units
+                        .iter()
+                        .any(|&unit| super::cp950::is_ascii_unit(trailing, leading, unit)),
+                    (_, [low, 0] | [low]) => units.contains(low),
                     _ => false,
                 };
                 if is_unit {

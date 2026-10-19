@@ -19,6 +19,7 @@
 
 mod bins;
 mod bytes;
+mod cp950;
 mod document;
 mod extractor;
 mod fib;
