@@ -241,7 +241,7 @@ fn worker_processes_give_the_same_output_in_input_order() {
 #[test]
 fn a_killed_worker_process_does_not_lose_its_documents() {
     let scratch = Scratch::new("killed-worker");
-    let inputs: Vec<String> = (0..24)
+    let inputs: Vec<String> = (0..96)
         .map(|index| {
             let path = scratch.0.join(format!("report-{index:02}.pdf"));
             fs::copy(document("2022_Q3_AAPL.pdf"), &path).unwrap();
@@ -273,15 +273,18 @@ fn a_killed_worker_process_does_not_lose_its_documents() {
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    let mut written = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut lines = String::new();
+    std::io::BufRead::read_line(&mut written, &mut lines).unwrap();
     assert!(Command::new("kill")
         .args(["-KILL", &worker])
         .status()
         .unwrap()
         .success());
+    std::io::Read::read_to_string(&mut written, &mut lines).unwrap();
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let records: Vec<serde_json::Value> = stdout(&output)
+    let records: Vec<serde_json::Value> = lines
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
