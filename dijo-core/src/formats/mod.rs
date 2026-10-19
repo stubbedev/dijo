@@ -33,6 +33,7 @@ pub(crate) use dijo_office::formats::access;
 pub(crate) use dijo_office::formats::compound;
 pub(crate) use dijo_office::formats::dgn;
 pub(crate) use dijo_office::formats::doc;
+pub(crate) use dijo_office::formats::hwp;
 pub(crate) use dijo_office::formats::msg;
 pub(crate) use dijo_office::formats::ppt;
 pub(crate) use dijo_office::formats::pst;
@@ -142,6 +143,7 @@ static PARSERS: &[&dyn Parser] = &[
     &image::RawTiffParser,
     &image::RecognizedImageParser,
     &image::TiffParser,
+    &hwp::HwpV5Parser,
     &hwpx::HwpxParser,
     &hdf::HdfParser,
     &idml::IdmlParser,
@@ -1251,29 +1253,29 @@ mod tests {
     /// embedded in a document a native parser reads as unread, the embedding document going on.
     #[test]
     fn fails_documents_no_native_parser_reads_with_why() {
-        let hwp = crate::ole2::tests::compound(&["\u{5}HwpSummaryInformation"], b"");
-        let no_parser = Unsupported::Format("application/x-hwp-v5".to_owned());
+        let mso = b"ActiveMime\0\0\x01\xf0 an ActiveMime object".to_vec();
+        let no_parser = Unsupported::Format("application/x-activemime".to_owned());
         let extractor = crate::Extractor::new();
-        let failed = extractor.extract_bytes_to_string(&hwp).unwrap_err();
+        let failed = extractor.extract_bytes_to_string(&mso).unwrap_err();
         assert!(
             matches!(&failed, Error::Unsupported(why) if *why == no_parser),
             "{failed:?}"
         );
-        let streamed = extractor.extract_bytes(&hwp).map(|_| ()).unwrap_err();
+        let streamed = extractor.extract_bytes(&mso).map(|_| ()).unwrap_err();
         assert!(
             matches!(&streamed, Error::Unsupported(why) if *why == no_parser),
             "{streamed:?}"
         );
         let archive = crate::compress::zip::file::tests::zip(&[
             ("notes.txt", b"Plain text."),
-            ("data.hwp", &hwp),
+            ("data.mso", &mso),
         ]);
         let (text, metadata) = extractor.extract_bytes_to_string(&archive).unwrap();
         assert!(text.contains("Plain text."), "{text}");
         assert_eq!(
             metadata["tk:exception:embedded-exception"],
             [format!(
-                "dijo could not parse the embedded document \"data.hwp\": {no_parser}"
+                "dijo could not parse the embedded document \"data.mso\": {no_parser}"
             )]
         );
     }

@@ -724,6 +724,15 @@ impl<'a> Content<'a> {
         self.runs.iter().map(|run| self.bytes_of(run))
     }
 
+    /// The content read in order, as `DocumentInputStream` reads it, each piece where it lies.
+    pub fn reader(&self) -> ContentReader<'_, 'a> {
+        ContentReader {
+            content: self,
+            run: 0,
+            at: 0,
+        }
+    }
+
     /// `length` bytes from `offset`, in place where they lie in one run and copied together
     /// otherwise, or `None` where they run past the end.
     pub fn range(&self, offset: usize, length: usize) -> Option<Cow<'a, [u8]>> {
@@ -762,6 +771,31 @@ impl<'a> Content<'a> {
 
     pub fn to_vec(&self) -> Vec<u8> {
         self.bytes().into_owned()
+    }
+}
+
+/// A [`Content`] read in order, by [`Content::reader`]: the run it is in, and how far into it.
+pub struct ContentReader<'c, 'a> {
+    content: &'c Content<'a>,
+    run: usize,
+    at: usize,
+}
+
+impl std::io::Read for ContentReader<'_, '_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        while let Some(run) = self.content.runs.get(self.run) {
+            let rest = &self.content.bytes_of(run)[self.at..];
+            if rest.is_empty() {
+                self.run += 1;
+                self.at = 0;
+                continue;
+            }
+            let length = rest.len().min(out.len());
+            out[..length].copy_from_slice(&rest[..length]);
+            self.at += length;
+            return Ok(length);
+        }
+        Ok(0)
     }
 }
 
@@ -972,7 +1006,8 @@ pub mod tests {
     }
 
     /// A content of runs gives a range in place where it lies in one run, and copied together
-    /// across runs and the zeros past the end of a file.
+    /// across runs and the zeros past the end of a file; it reads as its runs one after the
+    /// other.
     #[test]
     fn gathers_ranges_across_runs() {
         let data = b"abcdefghij";
@@ -991,6 +1026,9 @@ pub mod tests {
         assert_eq!(content.range(1, 7).unwrap().as_ref(), b"bcghij\0");
         assert_eq!(content.to_vec(), b"abcghij\0\0");
         assert_eq!(content.range(8, 2), None);
+        let mut read = Vec::new();
+        std::io::Read::read_to_end(&mut content.reader(), &mut read).unwrap();
+        assert_eq!(read, content.to_vec());
     }
 
     #[test]

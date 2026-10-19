@@ -65,7 +65,7 @@ type Read<T> = Result<T, Fault>;
 /// A property's value as `Property.getValue` gives it, by its Java class; `None` is Java's
 /// `null`.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum Value {
+pub(crate) enum Value {
     Byte(i8),
     Integer(i32),
     Long(i64),
@@ -83,7 +83,7 @@ pub(super) enum Value {
 /// A section: its format id and its properties in the order of POI's `LinkedHashMap`, the
 /// dictionary aside.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Section {
+pub(crate) struct Section {
     format_id: [u8; 16],
     properties: Vec<(u32, Option<Value>)>,
     dictionary: Option<BTreeMap<u32, String>>,
@@ -91,8 +91,8 @@ pub(super) struct Section {
 
 /// A property set's sections.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct PropertySet {
-    pub(super) sections: Vec<Section>,
+pub(crate) struct PropertySet {
+    pub(crate) sections: Vec<Section>,
 }
 
 impl PropertySet {
@@ -131,7 +131,7 @@ fn invert(raw: &[u8; 16]) -> [u8; 16] {
 
 /// `new PropertySet(stream)`: `Ok(None)` where the stream is no property set or POI throws on
 /// it, which Tika passes over.
-pub(super) fn read(stream: &[u8]) -> Result<Option<PropertySet>, Unported> {
+pub(crate) fn read(stream: &[u8]) -> Result<Option<PropertySet>, Unported> {
     if !is_property_set_stream(stream) {
         return Ok(None);
     }
@@ -298,7 +298,7 @@ impl Section {
     }
 
     /// The properties in POI's order, with their ids.
-    pub(super) fn properties(&self) -> impl Iterator<Item = (u32, Option<&Value>)> {
+    pub(crate) fn properties(&self) -> impl Iterator<Item = (u32, Option<&Value>)> {
         self.properties
             .iter()
             .map(|(id, value)| (*id, value.as_ref()))
@@ -665,15 +665,12 @@ pub(super) fn filetime_to_millis(filetime: i64) -> i64 {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A property set of one section with `format_id` and the given properties, each an id
     /// and the bytes after its offset, the type first.
-    pub(in crate::formats::ole2) fn property_set(
-        format_id: [u8; 16],
-        properties: &[(u32, Vec<u8>)],
-    ) -> Vec<u8> {
+    pub(crate) fn property_set(format_id: [u8; 16], properties: &[(u32, Vec<u8>)]) -> Vec<u8> {
         sections(&[(format_id, properties.to_vec())])
     }
 
@@ -727,7 +724,7 @@ pub(super) mod tests {
         bytes
     }
 
-    pub(in crate::formats::ole2) fn lpwstr(text: &str) -> Vec<u8> {
+    pub(crate) fn lpwstr(text: &str) -> Vec<u8> {
         let mut bytes = (vt::LPWSTR as u32).to_le_bytes().to_vec();
         let units: Vec<u16> = text.encode_utf16().chain([0]).collect();
         bytes.extend((units.len() as i32).to_le_bytes());
@@ -735,7 +732,7 @@ pub(super) mod tests {
         bytes
     }
 
-    pub(in crate::formats::ole2) fn typed(variant: i32, value: &[u8]) -> Vec<u8> {
+    pub(crate) fn typed(variant: i32, value: &[u8]) -> Vec<u8> {
         let mut bytes = (variant as u32).to_le_bytes().to_vec();
         bytes.extend(value);
         bytes
