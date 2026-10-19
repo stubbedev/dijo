@@ -153,8 +153,9 @@ fn read<E>(
 }
 
 /// Writes events of the presentation as Tika's extractor does while it reads it. Where the
-/// length limit of a string extraction is reached in a shape's object, Tika's extractor records
-/// the `WriteLimitReachedException` and goes on, the text it writes after it dropped.
+/// length limit of a string extraction is reached in a shape's object or in the macros, Tika's
+/// extractor records the `WriteLimitReachedException` and goes on, the text it writes after it
+/// dropped.
 fn write(out: Vec<Out<'_>>, xhtml: &mut Xhtml) -> Result<(), Failure> {
     for event in out {
         match event {
@@ -180,7 +181,10 @@ fn write(out: Vec<Out<'_>>, xhtml: &mut Xhtml) -> Result<(), Failure> {
             Out::StreamException(exception) => {
                 record_stream_exception(xhtml.metadata_mut(), &exception)
             }
-            Out::Macros(macros) => macros.write(xhtml)?,
+            Out::Macros(macros) => match macros.write(xhtml) {
+                Err(Failure::Stopped(Stop::LimitReached)) => record_write_limit(xhtml),
+                other => other?,
+            },
         }
     }
     Ok(())
