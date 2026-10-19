@@ -347,7 +347,7 @@ impl Pool {
 }
 
 /// The values of a band of references into a pool of `len` constants, checked.
-fn references(values: Vec<i32>, len: usize, pool: &str) -> Result<Vec<usize>> {
+pub(super) fn references(values: Vec<i32>, len: usize, pool: &str) -> Result<Vec<usize>> {
     values
         .into_iter()
         .map(|value| index(value, len, pool))
