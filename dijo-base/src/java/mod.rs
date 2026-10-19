@@ -431,7 +431,7 @@ pub fn ascii(bytes: &[u8]) -> String {
 }
 
 /// `new String(bytes, UTF_16LE)`: each unpaired surrogate, and an odd byte at the end,
-/// decoded as U+FFFD, as the JDK's decoder replaces them.
+/// decoded as U+FFFD, as WHATWG's decoder replaces them.
 pub fn utf16le(bytes: &[u8]) -> String {
     let (pairs, rest) = bytes.as_chunks::<2>();
     let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
@@ -442,7 +442,8 @@ pub fn utf16le(bytes: &[u8]) -> String {
     text
 }
 
-/// `new String(bytes, UTF_8)`: malformed input replaced as the JDK's decoder replaces it.
+/// `new String(bytes, UTF_8)`: each malformed sequence replaced by one U+FFFD, as WHATWG
+/// delimits them (#186).
 pub fn utf8(bytes: &[u8]) -> String {
     if bytes.is_ascii() {
         return latin1(bytes);

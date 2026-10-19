@@ -1,12 +1,12 @@
 //! The JDK's charsets as Tika's encoding detection names and decodes them: every charset of the
 //! JDK Tika runs on, found by name or alias as `Charset.forName` finds it. Single-byte charsets
 //! and the East Asian multi-byte ones decode with the JDK's own tables
-//! (`models/java-charsets.bin`, written by `just encoding-reference`), character for character as
-//! Java does; UTF-8, UTF-16 and UTF-32 decode with ports of the JDK's decoders, which replace
-//! malformed input differently from WHATWG's, as does ISCII-91, whose decoder holds characters
-//! back, and ISO-2022-KR and ISO-2022-CN, whose decoders read the JDK's KS X 1001, GB 2312 and
-//! CNS 11643 tables; ISO-2022-JP decodes with `encoding_rs`, whose decoder is the WHATWG
-//! equivalent of the JDK's; the rest, rarely seen charsets such as the IBM EBCDIC double-byte ones, are known by
+//! (`models/java-charsets.bin`, written by `just encoding-reference`); UTF-8, UTF-16 and
+//! ISO-2022-JP decode with `encoding_rs`, as WHATWG specifies, each malformed sequence one U+FFFD
+//! (#186); UTF-32 decodes each unit outside Unicode, and a partial unit at the end, as one U+FFFD;
+//! ISCII-91, whose decoder holds characters back, and ISO-2022-KR and ISO-2022-CN, whose decoders
+//! read the JDK's KS X 1001, GB 2312 and CNS 11643 tables, decode with ports of the JDK's
+//! decoders; the rest, rarely seen charsets such as the IBM EBCDIC double-byte ones, are known by
 //! name but not decoded.
 
 mod iscii91;
@@ -32,13 +32,9 @@ enum Decoding {
     SingleByte(Box<[char; 256]>),
     MultiByte(MultiByte),
     Whatwg(&'static Encoding),
-    Utf8,
-    /// With `sniff_bom` (Java's `UTF-16`), a byte order mark at the start sets the byte order
-    /// and is dropped.
-    Utf16 {
-        big_endian: bool,
-        sniff_bom: bool,
-    },
+    /// Java's `UTF-16`: a byte order mark at the start sets the byte order and is dropped, and
+    /// without one the text is big-endian.
+    Utf16,
     Utf32 {
         big_endian: bool,
         sniff_bom: bool,
@@ -115,19 +111,10 @@ impl Registry {
                     Decoding::SingleByte(table)
                 }
                 0 => match name.as_str() {
-                    "UTF-8" => Decoding::Utf8,
-                    "UTF-16" => Decoding::Utf16 {
-                        big_endian: true,
-                        sniff_bom: true,
-                    },
-                    "UTF-16BE" => Decoding::Utf16 {
-                        big_endian: true,
-                        sniff_bom: false,
-                    },
-                    "UTF-16LE" => Decoding::Utf16 {
-                        big_endian: false,
-                        sniff_bom: false,
-                    },
+                    "UTF-8" => Decoding::Whatwg(encoding_rs::UTF_8),
+                    "UTF-16" => Decoding::Utf16,
+                    "UTF-16BE" => Decoding::Whatwg(encoding_rs::UTF_16BE),
+                    "UTF-16LE" => Decoding::Whatwg(encoding_rs::UTF_16LE),
                     "UTF-32" => Decoding::Utf32 {
                         big_endian: true,
                         sniff_bom: true,
@@ -200,8 +187,8 @@ impl Charset {
         !matches!(self.decoding(), Decoding::None)
     }
 
-    /// The text `new String(bytes, charset)` gives, malformed input replaced by U+FFFD, or
-    /// `None` for a charset this port does not decode.
+    /// The text of `bytes`, malformed input replaced by U+FFFD, or `None` for a charset this
+    /// port does not decode.
     pub fn decode(self, bytes: &[u8]) -> Option<String> {
         Some(match self.decoding() {
             Decoding::SingleByte(table) => bytes.iter().map(|&b| table[usize::from(b)]).collect(),
@@ -209,11 +196,10 @@ impl Charset {
             Decoding::Whatwg(encoding) => {
                 encoding.decode_without_bom_handling(bytes).0.into_owned()
             }
-            Decoding::Utf8 => decode_utf8(bytes),
-            Decoding::Utf16 {
-                big_endian,
-                sniff_bom,
-            } => decode_utf16(bytes, *big_endian, *sniff_bom),
+            Decoding::Utf16 => {
+                let (rest, encoding) = utf16_bom(bytes);
+                encoding.decode_without_bom_handling(rest).0.into_owned()
+            }
             Decoding::Utf32 {
                 big_endian,
                 sniff_bom,
@@ -226,32 +212,23 @@ impl Charset {
         })
     }
 
-    /// The text `new String(bytes, charset)` gives, as [`Charset::decode`], or `None` also where
-    /// the port's decoding may differ from the JDK's: malformed input of a charset decoded with
-    /// `encoding_rs`, which replaces it differently.
-    pub fn decode_exactly(self, bytes: &[u8]) -> Option<String> {
-        if let Decoding::Whatwg(encoding) = self.decoding() {
-            let (text, malformed) = encoding.decode_without_bom_handling(bytes);
-            return (!malformed).then(|| text.into_owned());
-        }
-        self.decode(bytes)
-    }
-
     /// The text of `bytes` as [`Charset::decode`] gives it, in pieces decoded one at a time
     /// from at least `size` bytes each, the last from what is left, so that decoding a large
     /// input holds no more than a piece of it. `None` for a charset this port does not decode.
     pub fn pieces(self, bytes: &[u8], size: usize) -> Option<Pieces<'_>> {
         let decoding = self.decoding();
+        let mut whatwg = None;
         let (rest, big_endian) = match decoding {
             Decoding::None => return None,
-            Decoding::Utf16 {
-                big_endian,
-                sniff_bom,
-            } => match bytes {
-                [0xFE, 0xFF, rest @ ..] if *sniff_bom => (rest, true),
-                [0xFF, 0xFE, rest @ ..] if *sniff_bom => (rest, false),
-                _ => (bytes, *big_endian),
-            },
+            Decoding::Whatwg(encoding) => {
+                whatwg = Some(encoding.new_decoder_without_bom_handling());
+                (bytes, true)
+            }
+            Decoding::Utf16 => {
+                let (rest, encoding) = utf16_bom(bytes);
+                whatwg = Some(encoding.new_decoder_without_bom_handling());
+                (rest, true)
+            }
             Decoding::Utf32 {
                 big_endian,
                 sniff_bom,
@@ -262,10 +239,7 @@ impl Charset {
             },
             _ => (bytes, true),
         };
-        let whatwg = match decoding {
-            Decoding::Whatwg(encoding) => Some(encoding.new_decoder_without_bom_handling()),
-            _ => None,
-        };
+        let dropped_bom = rest.len() < bytes.len();
         let iso2022 = match decoding {
             Decoding::Iso2022(variant) => Some(Self::iso2022(*variant)),
             _ => None,
@@ -277,6 +251,7 @@ impl Charset {
             big_endian,
             whatwg,
             iso2022,
+            dropped_bom,
         })
     }
 
@@ -293,14 +268,13 @@ impl Charset {
 }
 
 /// The pieces of [`Charset::pieces`]. Each piece ends where decoding it apart from what
-/// follows gives what decoding the whole gives: anywhere for a single-byte charset, before an
-/// ASCII byte for UTF-8, which no sequence continues with, after a whole unit that is no high
-/// surrogate for UTF-16 and after a whole unit for UTF-32, once a byte order mark has set the
-/// byte order; ISCII-91, whose decoder can hold a character back to the end, in one piece. The
-/// East Asian multi-byte charsets decode the characters that end past the piece's size, looking
-/// ahead into what follows as the whole's decoding does, and so do ISO-2022-KR and ISO-2022-CN,
-/// whose decoders keep the state their escapes and shifts set from one piece to the next;
-/// ISO-2022-JP decodes with `encoding_rs`'s streaming decoder.
+/// follows gives what decoding the whole gives: anywhere for a single-byte charset and after a
+/// whole unit for UTF-32, once a byte order mark has set the byte order; ISCII-91, whose decoder
+/// can hold a character back to the end, in one piece. The East Asian multi-byte charsets decode
+/// the characters that end past the piece's size, looking ahead into what follows as the whole's
+/// decoding does, and so do ISO-2022-KR and ISO-2022-CN, whose decoders keep the state their
+/// escapes and shifts set from one piece to the next; UTF-8, UTF-16 and ISO-2022-JP decode with
+/// `encoding_rs`'s streaming decoders.
 pub struct Pieces<'a> {
     decoding: &'static Decoding,
     rest: &'a [u8],
@@ -308,9 +282,17 @@ pub struct Pieces<'a> {
     big_endian: bool,
     whatwg: Option<encoding_rs::Decoder>,
     iso2022: Option<iso2022::Decoder>,
+    /// Whether a byte order mark that set the byte order was dropped from the start.
+    dropped_bom: bool,
 }
 
 impl Pieces<'_> {
+    /// Whether the decoder dropped a byte order mark from the start, which Java's `UTF-16` and
+    /// `UTF-32` read to set the byte order.
+    pub fn dropped_bom(&self) -> bool {
+        self.dropped_bom
+    }
+
     /// How many of the bytes are still to be decoded.
     pub fn unread(&self) -> usize {
         self.rest.len()
@@ -323,31 +305,14 @@ impl Pieces<'_> {
         if rest.len() <= size {
             return rest.len();
         }
-        let at_or_end = |found: Option<usize>| found.map_or(rest.len(), |at| size + at);
         match self.decoding {
             Decoding::SingleByte(_)
             | Decoding::MultiByte(_)
             | Decoding::Iso2022(_)
             | Decoding::Whatwg(_)
+            | Decoding::Utf16
             | Decoding::None => size,
-            Decoding::Utf8 => at_or_end(rest[size..].iter().position(u8::is_ascii)),
             Decoding::Iscii91 => rest.len(),
-            Decoding::Utf16 { .. } => {
-                let mut cut = size.next_multiple_of(2);
-                while cut <= rest.len() {
-                    let unit = [rest[cut - 2], rest[cut - 1]];
-                    let unit = if self.big_endian {
-                        u16::from_be_bytes(unit)
-                    } else {
-                        u16::from_le_bytes(unit)
-                    };
-                    if !(0xD800..=0xDBFF).contains(&unit) {
-                        return cut;
-                    }
-                    cut += 2;
-                }
-                rest.len()
-            }
             Decoding::Utf32 { .. } => size.next_multiple_of(4).min(rest.len()),
         }
     }
@@ -377,11 +342,9 @@ impl Iterator for Pieces<'_> {
             Decoding::MultiByte(_) | Decoding::Iso2022(_) => {
                 unreachable!("a multi-byte or ISO-2022 charset decodes its own pieces")
             }
-            Decoding::Utf8 => decode_utf8(piece),
-            Decoding::Utf16 { .. } => decode_utf16(piece, self.big_endian, false),
             Decoding::Utf32 { .. } => decode_utf32(piece, self.big_endian, false),
             Decoding::Iscii91 => iscii91::decode(piece),
-            Decoding::Whatwg(_) => {
+            Decoding::Whatwg(_) | Decoding::Utf16 => {
                 let decoder = self
                     .whatwg
                     .as_mut()
@@ -404,158 +367,14 @@ impl Iterator for Pieces<'_> {
     }
 }
 
-fn is_continuation(b: u8) -> bool {
-    b & 0xC0 == 0x80
-}
-
-/// The bytes the JDK's UTF-8 decoder (`sun.nio.cs.UTF_8`) replaces as one malformed sequence at
-/// the start of `bytes`, which starts with a non-ASCII byte, or `None` for a well-formed
-/// character. Input that ends inside a sequence the decoder cannot yet call malformed is one
-/// malformed sequence to the end.
-fn utf8_malformed_length(bytes: &[u8]) -> Option<usize> {
-    let b1 = bytes[0];
-    let at = |i: usize| bytes.get(i).copied();
-    let continues = |i: usize| at(i).is_some_and(is_continuation);
-    Some(match b1 {
-        0xC2..=0xDF if bytes.len() < 2 => bytes.len(),
-        0xC2..=0xDF if !continues(1) => 1,
-        0xC2..=0xDF => return None,
-        0xE0..=0xEF => {
-            let overlong = |b2: u8| b1 == 0xE0 && b2 & 0xE0 == 0x80;
-            match (at(1), at(2)) {
-                (Some(b2), _) if overlong(b2) || !is_continuation(b2) => 1,
-                (Some(_), Some(b3)) if !is_continuation(b3) => 2,
-                (Some(b2), Some(b3)) => {
-                    let unit = (u32::from(b1 & 0x0F) << 12)
-                        | (u32::from(b2 & 0x3F) << 6)
-                        | u32::from(b3 & 0x3F);
-                    if (0xD800..=0xDFFF).contains(&unit) {
-                        3
-                    } else {
-                        return None;
-                    }
-                }
-                _ => bytes.len(),
-            }
-        }
-        0xF0..=0xF7 => {
-            let bad_second = |b2: u8| {
-                b1 > 0xF4
-                    || (b1 == 0xF0 && !(0x90..=0xBF).contains(&b2))
-                    || (b1 == 0xF4 && b2 & 0xF0 != 0x80)
-                    || !is_continuation(b2)
-            };
-            match (at(1), at(2), at(3)) {
-                _ if b1 > 0xF4 => 1,
-                (Some(b2), _, _) if bad_second(b2) => 1,
-                (Some(_), Some(b3), _) if !is_continuation(b3) => 2,
-                (Some(_), Some(_), Some(b4)) if !is_continuation(b4) => 3,
-                (Some(_), Some(_), Some(_)) => return None,
-                _ => bytes.len(),
-            }
-        }
-        _ => 1,
-    })
-}
-
-/// What `new String(bytes, UTF_8)` gives: each malformed sequence, as the JDK's decoder
-/// delimits it, replaced by one U+FFFD.
-fn decode_utf8(bytes: &[u8]) -> String {
-    let mut text = String::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let ascii = bytes[i..].iter().take_while(|b| b.is_ascii()).count();
-        text.push_str(std::str::from_utf8(&bytes[i..i + ascii]).expect("ASCII is UTF-8"));
-        i += ascii;
-        if i == bytes.len() {
-            break;
-        }
-        match utf8_malformed_length(&bytes[i..]) {
-            Some(length) => {
-                text.push(char::REPLACEMENT_CHARACTER);
-                i += length;
-            }
-            None => {
-                let length = match bytes[i] {
-                    0xC2..=0xDF => 2,
-                    0xE0..=0xEF => 3,
-                    _ => 4,
-                };
-                text.push_str(
-                    std::str::from_utf8(&bytes[i..i + length])
-                        .expect("the JDK's well-formed UTF-8 is Rust's"),
-                );
-                i += length;
-            }
-        }
+/// The bytes of Java's `UTF-16` after a byte order mark, and the `encoding_rs` decoder of the
+/// byte order it sets, big-endian without one.
+fn utf16_bom(bytes: &[u8]) -> (&[u8], &'static Encoding) {
+    match bytes {
+        [0xFE, 0xFF, rest @ ..] => (rest, encoding_rs::UTF_16BE),
+        [0xFF, 0xFE, rest @ ..] => (rest, encoding_rs::UTF_16LE),
+        _ => (bytes, encoding_rs::UTF_16BE),
     }
-    text
-}
-
-/// What `new String(bytes, charset)` gives for Java's UTF-16 charsets (`UnicodeDecoder`): an
-/// unpaired low surrogate replaced by U+FFFD, a high
-/// surrogate followed by anything but a low one replaced together with what follows, and an
-/// incomplete unit or pair at the end replaced.
-fn decode_utf16(bytes: &[u8], big_endian: bool, sniff_bom: bool) -> String {
-    let mut big_endian = big_endian;
-    let mut body = bytes;
-    if sniff_bom {
-        match bytes {
-            [0xFE, 0xFF, rest @ ..] => {
-                big_endian = true;
-                body = rest;
-            }
-            [0xFF, 0xFE, rest @ ..] => {
-                big_endian = false;
-                body = rest;
-            }
-            _ => {}
-        }
-    }
-    let (pairs, remainder) = body.as_chunks::<2>();
-    let units: Vec<u16> = pairs
-        .iter()
-        .map(|&pair| {
-            if big_endian {
-                u16::from_be_bytes(pair)
-            } else {
-                u16::from_le_bytes(pair)
-            }
-        })
-        .collect();
-    let mut text = String::with_capacity(units.len());
-    let mut i = 0;
-    while i < units.len() {
-        let unit = units[i];
-        match unit {
-            0xD800..=0xDBFF => {
-                let Some(&low) = units.get(i + 1) else {
-                    text.push(char::REPLACEMENT_CHARACTER);
-                    return text;
-                };
-                if (0xDC00..=0xDFFF).contains(&low) {
-                    let cp =
-                        0x10000 + ((u32::from(unit) - 0xD800) << 10) + (u32::from(low) - 0xDC00);
-                    text.push(char::from_u32(cp).expect("a surrogate pair is a character"));
-                } else {
-                    text.push(char::REPLACEMENT_CHARACTER);
-                }
-                i += 2;
-            }
-            0xDC00..=0xDFFF => {
-                text.push(char::REPLACEMENT_CHARACTER);
-                i += 1;
-            }
-            _ => {
-                text.push(char::from_u32(u32::from(unit)).expect("a unit outside surrogates"));
-                i += 1;
-            }
-        }
-    }
-    if !remainder.is_empty() {
-        text.push(char::REPLACEMENT_CHARACTER);
-    }
-    text
 }
 
 fn decode_utf32(bytes: &[u8], big_endian: bool, sniff_bom: bool) -> String {
@@ -712,6 +531,39 @@ mod tests {
         assert_eq!(kr.decode(b"ok\x1b$)").as_deref(), Some("ok\u{FFFD}"));
     }
 
+    /// UTF-8 replaces each malformed sequence as WHATWG delimits it: an encoded surrogate is
+    /// three, where the JDK's decoder makes it one U+FFFD (#186).
+    #[test]
+    fn replaces_malformed_utf8_as_whatwg_does() {
+        let utf8 = Charset::named("UTF-8");
+        assert_eq!(utf8.decode("añ€😀".as_bytes()).as_deref(), Some("añ€😀"));
+        assert_eq!(
+            utf8.decode(b"a\xED\xA0\x80b").as_deref(),
+            Some("a\u{FFFD}\u{FFFD}\u{FFFD}b")
+        );
+        assert_eq!(utf8.decode(b"a\xE2\x82").as_deref(), Some("a\u{FFFD}"));
+    }
+
+    /// UTF-16 replaces an unpaired high surrogate alone and keeps what follows it, where the
+    /// JDK's decoder replaces it together with the next unit (#186); `UTF-16` reads a byte order
+    /// mark to set the byte order and drops it.
+    #[test]
+    fn replaces_malformed_utf16_as_whatwg_does() {
+        let be = Charset::named("UTF-16BE");
+        assert_eq!(be.decode(b"\x00a\xD8\x3D\xDE\x00").as_deref(), Some("a😀"));
+        assert_eq!(be.decode(b"\xD8\x00\x00A").as_deref(), Some("\u{FFFD}A"));
+        let le = Charset::named("UTF-16LE");
+        assert_eq!(
+            le.decode(b"\x00\xDCa\x00b").as_deref(),
+            Some("\u{FFFD}a\u{FFFD}")
+        );
+        let sniffing = Charset::named("UTF-16");
+        assert_eq!(sniffing.decode(b"\xFF\xFEa\x00").as_deref(), Some("a"));
+        assert_eq!(sniffing.decode(b"\x00a").as_deref(), Some("a"));
+        assert!(sniffing.pieces(b"\xFE\xFF\x00a", 4).unwrap().dropped_bom());
+        assert!(!be.pieces(b"\xFE\xFF\x00a", 4).unwrap().dropped_bom());
+    }
+
     #[test]
     fn decodes_in_pieces_as_whole() {
         let mut random = SplitMix64(0x9133);
@@ -767,11 +619,7 @@ mod tests {
             .filter(|entry| {
                 matches!(
                     entry.decoding,
-                    Decoding::MultiByte(_)
-                        | Decoding::Utf8
-                        | Decoding::Utf16 { .. }
-                        | Decoding::Iscii91
-                        | Decoding::Iso2022(_)
+                    Decoding::MultiByte(_) | Decoding::Iscii91 | Decoding::Iso2022(_)
                 )
             })
             .map(|entry| entry.name.as_str())
@@ -780,7 +628,7 @@ mod tests {
         ported.sort_unstable();
         assert_eq!(
             expected, ported,
-            "the reference covers every multi-byte, UTF-8, UTF-16, ISCII-91 and ISO-2022 charset"
+            "the reference covers every multi-byte, ISCII-91 and ISO-2022 charset"
         );
         let mismatches: Vec<String> = REFERENCE
             .lines()

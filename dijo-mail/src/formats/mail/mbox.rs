@@ -89,7 +89,7 @@ impl<'a> Message<'a> {
 /// The text of a line of a mailbox: in `charset` where it is given and decodes, else UTF-8
 /// where the line is, else windows-1252.
 fn decode_line(line: &[u8], charset: Option<Charset>) -> String {
-    if let Some(text) = charset.and_then(|charset| charset.decode_exactly(line)) {
+    if let Some(text) = charset.and_then(|charset| charset.decode(line)) {
         return text;
     }
     match std::str::from_utf8(line) {

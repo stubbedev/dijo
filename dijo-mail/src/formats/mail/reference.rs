@@ -76,6 +76,9 @@ fn answer(kind: &str, value: &str) -> Result<Option<String>, Unported> {
 /// The reference's values the port reads differently from mime4j on purpose, by the issue that
 /// names mime4j's behaviour.
 const DEPARTURES: &[(&str, &str, &str)] = &[
+    ("words", "=?iso-2022-jp?b?GRCRnxLXDhsGyhC?=", "#186"),
+    ("words", "=?iso-2022-jp?b?G9yRCRnxLXDhsGyhC?=", "#186"),
+    ("words", "=?iso-2022-jp?b?GyRCRnxyRCRnxLXDhsGyhC?=", "#186"),
     ("cdisp", "inline; filename=a/b.txt", "#75"),
     ("cdisp", "inline; filename=a/b.tt", "#75"),
     ("cdisp", "inline; filename=a/b.taxt", "#75"),
@@ -322,18 +325,9 @@ fn reads_headers_as_mime4j_and_tika_do() {
         mismatches.len(),
         mismatches.join("\n")
     );
-    let zones = unported
-        .iter()
-        .filter(|line| line.ends_with("TimeZone"))
-        .count();
-    let charsets = unported
-        .iter()
-        .filter(|line| line.ends_with("Charset"))
-        .count();
-    assert_eq!(
-        (zones, charsets),
-        (16, 4),
-        "values the port leaves out: dates naming a time zone, and malformed ISO-2022-JP:\n{}",
+    assert!(
+        unported.len() == 16 && unported.iter().all(|line| line.ends_with("TimeZone")),
+        "values the port leaves out: dates naming a time zone:\n{}",
         unported.join("\n")
     );
 }

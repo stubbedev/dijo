@@ -532,7 +532,7 @@ impl<'a> Protobuf<'a> {
         })
     }
 
-    /// A string, decoded as Java's `new String(bytes, UTF_8)` decodes it.
+    /// A string, decoded as UTF-8, each malformed sequence one U+FFFD.
     fn string(&mut self) -> Result<String, Refusal> {
         let length = self.varint()?;
         let start = self

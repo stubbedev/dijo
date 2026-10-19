@@ -196,13 +196,12 @@ fn complex_pieces(
     let (grpprls, descriptors) = read_clx(main, offset)?;
     let mut pieces = Vec::with_capacity(descriptors.len());
     for descriptor in descriptors {
-        let bytes = safely_clone(
+        safely_clone(
             main,
             descriptor.fc,
             descriptor.end.wrapping_sub(descriptor.start),
             MAX_PIECE_LENGTH,
         )?;
-        charset.check_decodes(&bytes)?;
         pieces.push(TextPiece::read(
             main,
             descriptor.start,
@@ -230,7 +229,6 @@ fn whole_text(
         TextCharset::CodePage(_) => bytes_length,
         TextCharset::Cp950 => bytes_length / 2,
     };
-    charset.check_decodes(&bytes)?;
     let piece = TextPiece::read(
         main,
         0,
@@ -260,26 +258,6 @@ impl TextCharset {
             TextCharset::Cp950 => Encoding::Cp950,
         }
     }
-
-    /// Whether `bytes` decode as Java decodes them, where they are held undecoded.
-    fn check_decodes(self, bytes: &[u8]) -> Result<(), Unread> {
-        match self {
-            TextCharset::CodePage(charset) => check_decodes(charset, bytes),
-            TextCharset::Cp950 => Ok(()),
-        }
-    }
-}
-
-/// Whether text in `charset` decodes as `new String(bytes, charset)` decodes it, which the
-/// pieces keep as its bytes, one unit each.
-fn check_decodes(charset: Charset, bytes: &[u8]) -> Result<(), Unread> {
-    charset.decode_exactly(bytes).ok_or_else(|| {
-        Unported(format!(
-            "text in {}, which this port does not decode as Java does",
-            charset.name()
-        ))
-    })?;
-    Ok(())
 }
 
 /// Text held as `charset` holds it, decoded: kept as bytes, one unit each, decoded in the code
@@ -351,10 +329,11 @@ fn guess_charset(main: &[u8], offset: i32, length: i32) -> Result<TextCharset, U
         return Ok(TextCharset::Cp950);
     }
     Charset::for_name(name)
+        .filter(|charset| charset.decodes())
         .map(TextCharset::CodePage)
         .ok_or_else(|| {
             Unported(format!(
-                "a Word 6 document in {name}, a charset this port does not have"
+                "a Word 6 document in {name}, a charset the native decoders do not decode"
             ))
             .into()
         })

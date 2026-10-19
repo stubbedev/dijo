@@ -7,11 +7,19 @@ use crate::formats::reference::{cases, difference, Compared};
 const REFERENCE: &[u8] = include_bytes!("../../../tests/fixtures/text/text-reference.tsv.gz");
 
 /// The inputs whose text the port writes differently from Tika on purpose: a character outside
-/// the Basic Multilingual Plane on a read boundary, which Tika splits into two U+FFFD (#66).
-const DEPARTURES: [&str; 3] = [
+/// the Basic Multilingual Plane on a read boundary, which Tika splits into two U+FFFD (#66);
+/// malformed UTF-8 and UTF-16, which the port replaces as WHATWG delimits malformed sequences and
+/// Java's decoders otherwise, and a declared UTF-16 starting with two byte order marks, of which
+/// Tika drops both and the port only the one that sets the byte order (#186).
+const DEPARTURES: [&str; 8] = [
     "synthetic/emoji-after-sniff.txt",
     "synthetic/emoji-at-4096.txt",
     "synthetic/emoji-at-8192.txt",
+    "synthetic/utf16le-lone-surrogate.txt",
+    "synthetic/utf8-malformed-0.txt",
+    "synthetic/utf8-malformed-1.txt",
+    "synthetic/utf8-malformed-2.txt",
+    "declared/utf16-double-bom-declared-utf16",
 ];
 
 #[test]

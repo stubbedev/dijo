@@ -9,9 +9,8 @@
 //! reading names the difference: modules in the order the projects name them, where Tika writes
 //! them in the order of a `java.util.HashMap`; a stream of a `VBA` storage no project names as a
 //! module, which POI hands on undecompressed as if it were a module's source; a project in code
-//! page 1256, which POI reads in code page 1255; text whose malformed bytes the native decoders
-//! may replace otherwise than Java's; and macros POI fails to read, which Tika records in an
-//! entry of no content (#186).
+//! page 1256, which POI reads in code page 1255; and macros POI fails to read, which Tika
+//! records in an entry of no content (#186).
 
 use std::collections::HashMap;
 
@@ -488,8 +487,6 @@ struct ModuleMap {
     charset: Charset,
     /// The code page the last project names.
     code_page: Option<i32>,
-    /// What of the projects' text the native decoders may decode otherwise than Java's.
-    inexact: bool,
 }
 
 impl ModuleMap {
@@ -504,17 +501,14 @@ impl ModuleMap {
         self.modules.push((name, module));
     }
 
-    /// `new String(bytes, charset)`, noting where the native decoder may differ from Java's.
-    fn decode(&mut self, bytes: &[u8]) -> Read<String> {
-        let exact = self.charset.decode_exactly(bytes);
-        self.inexact |= exact.is_none();
-        match exact.or_else(|| self.charset.decode(bytes)) {
-            Some(text) => Ok(text),
-            None => Err(Thrown::Runtime(format!(
+    /// `new String(bytes, charset)`.
+    fn decode(&self, bytes: &[u8]) -> Read<String> {
+        self.charset.decode(bytes).ok_or_else(|| {
+            Thrown::Runtime(format!(
                 "text in {}, which the native decoders do not decode",
                 self.charset.name()
-            ))),
-        }
+            ))
+        })
     }
 }
 
@@ -526,7 +520,6 @@ fn read_macros(file: &Ole2<'_>) -> Read<(Vec<Module>, Vec<String>)> {
         index: HashMap::new(),
         charset: Charset::named("windows-1252"),
         code_page: None,
-        inexact: false,
     };
     find_macros(file, file.root(), &mut modules)?;
     find_named(file, file.root(), "projectwm", &mut |_| Ok(()))?;
@@ -563,13 +556,6 @@ fn read_macros(file: &Ole2<'_>) -> Read<(Vec<Module>, Vec<String>)> {
     }
     if modules.code_page == Some(ARABIC) {
         differences.push("a project in code page 1256, which POI reads in code page 1255".into());
-    }
-    if modules.inexact {
-        differences.push(format!(
-            "text in {} with malformed bytes, which the native decoders may replace otherwise \
-             than Java's",
-            modules.charset.name()
-        ));
     }
     if !in_java_order(&names, &read) {
         differences.push(

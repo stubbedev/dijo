@@ -9,10 +9,9 @@ const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 const EQ: u8 = b'=';
 
-/// `new String(bytes, charset)`, or the charset when the port does not decode it as the JDK
-/// does.
+/// The text of `bytes` in `charset`, or the charset when the port does not decode it.
 pub(super) fn decode(charset: Charset, bytes: &[u8]) -> Result<String, Unported> {
-    charset.decode_exactly(bytes).ok_or(Unported::Charset)
+    charset.decode(bytes).ok_or(Unported::Charset)
 }
 
 /// `CharsetUtil.lookup`: the JDK charset of a name or alias.

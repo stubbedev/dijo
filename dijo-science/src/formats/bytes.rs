@@ -238,8 +238,8 @@ pub(crate) fn uint(bytes: &[u8], order: Order) -> u64 {
     }
 }
 
-/// The text of `bytes` up to the first NUL, as UTF-8, a malformed sequence replaced, as Java's
-/// `new String(bytes, 0, count, UTF_8)` reads it.
+/// The text of `bytes` up to the first NUL, as UTF-8, each malformed sequence replaced by one
+/// U+FFFD.
 pub(crate) fn text_to_nul(bytes: &[u8]) -> String {
     let end = memchr::memchr(0, bytes).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
