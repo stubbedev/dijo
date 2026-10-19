@@ -8,16 +8,17 @@ use std::collections::HashMap;
 use super::W_NAMESPACE;
 use crate::formats::xml::{attribute, Attribute, SaxHandler};
 use crate::formats::Failure;
-use crate::java::JavaHashMap;
+use crate::ordered_map::OrderedMap;
 
 /// The notes and comments of a document, and the relationships of the parts holding them.
 #[derive(Debug, Default)]
 pub(crate) struct InlineParts {
     pub(super) footnotes: HashMap<String, Vec<Recorded>>,
     pub(super) endnotes: HashMap<String, Vec<Recorded>>,
-    /// The comments in the order of a `java.util.HashMap`, which is the order Tika writes the
-    /// comments no paragraph refers to.
-    pub(super) comments: JavaHashMap<Vec<Recorded>>,
+    /// The comments in the order the comments part gives them, the order the comments no
+    /// paragraph refers to are written in, where Tika writes them in the order of a
+    /// `java.util.HashMap` (#186).
+    pub(super) comments: OrderedMap<Vec<Recorded>>,
     pub(super) relationships: HashMap<String, String>,
 }
 

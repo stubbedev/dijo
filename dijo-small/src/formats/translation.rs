@@ -142,10 +142,11 @@ impl Tmx<'_, '_> {
         Ok(self.xhtml.start_element_with(name, &borrowed)?)
     }
 
-    /// `endDocument`: the target languages, in the order of a `HashSet`, and the counts.
+    /// `endDocument`: the target languages, in the order they first appear, where Tika lists them
+    /// in the order of a `HashSet` (#186), and the counts.
     fn end_document(&mut self) {
         let metadata = self.xhtml.metadata_mut();
-        for language in java::hash_set_order(self.target_languages.iter().map(String::as_str)) {
+        for language in &self.target_languages {
             metadata.add("target-language", language);
         }
         metadata.set("tu-count", self.units.to_string());

@@ -34,7 +34,7 @@ use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Input;
 use crate::input::Pages;
-use crate::java::JavaHashMap;
+use crate::ordered_map::OrderedMap;
 
 /// The WordprocessingML namespace.
 const W_NAMESPACE: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
@@ -738,7 +738,9 @@ pub(crate) fn write_general_text_part(
 /// `XWPFFeatureExtractor`'s handler: hidden text, tracked changes and their authors, comments.
 #[derive(Default)]
 struct Features {
-    authors: JavaHashMap<()>,
+    /// The authors of tracked changes, in the order they first appear, where Tika lists them in
+    /// the order of a `java.util.HashSet` (#186).
+    authors: OrderedMap<()>,
     hidden: bool,
     track_changes: bool,
     comments: bool,

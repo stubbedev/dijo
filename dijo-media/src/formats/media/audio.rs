@@ -10,7 +10,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::{Decline, Footprint, Parser, Prepared};
 use crate::input::Pages;
-use crate::java::JavaHashMap;
+use crate::ordered_map::OrderedMap;
 
 const TIKA_NAME: &str = "org.apache.tika.parser.audio.AudioParser";
 
@@ -74,7 +74,8 @@ struct FileFormat {
     sample_rate: f32,
     sample_size_in_bits: i32,
     channels: i32,
-    /// The audio format's properties, `toString` of each value, in Java's order.
+    /// The audio format's properties, `toString` of each value, in the order they are read,
+    /// where Java lists them in the order of a `java.util.HashMap` (#186).
     properties: Vec<(String, String)>,
 }
 
@@ -525,7 +526,7 @@ fn wave_extensible(bytes: &[u8]) -> Read<FileFormat> {
         ))
     })?;
     let (channels, sample_rate, frame_size, bits, valid_bits, mask, sub_format, tail) = format;
-    let mut properties = JavaHashMap::default();
+    let mut properties = OrderedMap::default();
     if let Some(order) = channel_order(mask) {
         properties.insert("channelOrder", order);
     }
@@ -546,7 +547,6 @@ fn wave_extensible(bytes: &[u8]) -> Read<FileFormat> {
         ))));
     }
     let properties = properties
-        .copied()
         .iter()
         .map(|(name, value)| (name.to_owned(), value.clone()))
         .collect();

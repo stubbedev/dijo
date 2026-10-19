@@ -11,7 +11,7 @@
 use super::codec::{decode_encoded_words, lookup, percent_decode, UrlDecodeError};
 use super::field::unfold;
 use super::Unported;
-use crate::java::JavaHashMap;
+use crate::ordered_map::OrderedMap;
 
 /// A token of the grammars' lexers.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,7 +246,7 @@ pub(super) struct ContentType {
     /// `type/subtype` in lower case.
     pub(super) mime_type: Option<String>,
     /// The parameters by lower-case name, a later one replacing an earlier.
-    parameters: JavaHashMap<String>,
+    parameters: OrderedMap<String>,
 }
 
 impl ContentType {
@@ -274,7 +274,7 @@ impl ContentType {
     #[cfg(test)]
     pub(super) fn parameters(&self) -> impl Iterator<Item = (&str, &str)> {
         self.parameters
-            .iter_inserted()
+            .iter()
             .map(|(name, value)| (name, value.as_str()))
     }
 }
@@ -302,8 +302,9 @@ fn content_type(
 pub(super) struct ContentDisposition {
     /// The disposition type in lower case, empty when none was read.
     pub(super) kind: String,
-    /// The decoded parameters by lower-case name, in the order Java's map lists them.
-    pub(super) parameters: JavaHashMap<String>,
+    /// The decoded parameters by lower-case name, in the order the field gives them, where
+    /// mime4j lists them in the order of a `java.util.HashMap` (#186).
+    pub(super) parameters: OrderedMap<String>,
 }
 
 impl ContentDisposition {
@@ -317,7 +318,7 @@ impl ContentDisposition {
         };
         Ok(ContentDisposition {
             kind: kind.to_lowercase(),
-            parameters: mapping.parameters()?.copied(),
+            parameters: mapping.parameters()?,
         })
     }
 
@@ -348,13 +349,13 @@ enum ParameterKind {
     Continuation,
 }
 
-/// `MimeParameterMapping`: parameters filed by name, with Java's map and set orders.
+/// `MimeParameterMapping`: parameters filed by name, in the order the field gives them.
 #[derive(Debug, Default)]
 struct ParameterMapping {
-    names: JavaHashMap<()>,
-    standard: JavaHashMap<String>,
-    extended: JavaHashMap<String>,
-    continuation: JavaHashMap<String>,
+    names: OrderedMap<()>,
+    standard: OrderedMap<String>,
+    extended: OrderedMap<String>,
+    continuation: OrderedMap<String>,
 }
 
 impl ParameterMapping {
@@ -389,9 +390,9 @@ impl ParameterMapping {
     }
 
     /// `getParameters`: each name's value, in the order of the set of names.
-    fn parameters(&mut self) -> Result<JavaHashMap<String>, Unported> {
+    fn parameters(&mut self) -> Result<OrderedMap<String>, Unported> {
         let names: Vec<String> = self.names.iter().map(|(name, _)| name.to_owned()).collect();
-        let mut parameters = JavaHashMap::default();
+        let mut parameters = OrderedMap::default();
         for name in names {
             let value = self.get(&name)?;
             parameters.insert(&name, value);
@@ -449,6 +450,24 @@ fn decode(value: &str, kind: ParameterKind) -> Result<Result<String, UrlDecodeEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A disposition's parameters come in the order the field gives them, where mime4j lists
+    /// them in the order of a `java.util.HashMap`, which puts `size` before `filename` (#186).
+    #[test]
+    fn lists_disposition_parameters_in_the_fields_order() {
+        let parsed = ContentDisposition::parse(
+            "Attachment; filename*0*=utf-8''caf%C3%A9; filename*1=.txt; size=12",
+        )
+        .unwrap();
+        assert_eq!(parsed.kind, "attachment");
+        assert_eq!(
+            parsed.parameters.iter().collect::<Vec<_>>(),
+            [
+                ("filename", &"café.txt".to_owned()),
+                ("size", &"12".to_owned())
+            ]
+        );
+    }
 
     #[test]
     fn reads_content_types() {

@@ -10,7 +10,8 @@
 
 use super::packets::{Packet, Reader, Thrown, HEAD};
 use crate::input::Pages;
-use crate::java::{self, JavaHashMap};
+use crate::java;
+use crate::ordered_map::OrderedMap;
 
 /// A little-endian `int` at `offset`, `IOUtils.getInt4` cast to `int`; past the data an
 /// `ArrayIndexOutOfBoundsException`.
@@ -39,12 +40,13 @@ fn utf8(data: &[u8], offset: i64, length: i32) -> Result<String, Thrown> {
 }
 
 /// A stream's Vorbis-style comments, `VorbisStyleComments`: the packet they were read from, the
-/// vendor, and the comments by their normalised tags in a `HashMap`.
+/// vendor, and the comments by their normalised tags, in the order the tags first come, where
+/// vorbis-java holds them in a `java.util.HashMap` (#186).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Comments {
     pub(super) data: Vec<u8>,
     pub(super) vendor: String,
-    pub(super) all: JavaHashMap<Vec<String>>,
+    pub(super) all: OrderedMap<Vec<String>>,
 }
 
 /// `normaliseTag`: lower-cased, with only the characters from U+0020 to U+007D but `=`.
@@ -64,7 +66,7 @@ impl Comments {
         let mut offset = begins_at + 4 + i64::from(vendor_length);
         let count = int4(&data, offset)?;
         offset += 4;
-        let mut all = JavaHashMap::default();
+        let mut all = OrderedMap::default();
         for _ in 0..count.max(0) {
             let length = int4(&data, offset)?;
             offset += 4;

@@ -280,6 +280,18 @@ const DEPARTURES: &[(&str, &str, &str)] = &[
     ("to", "\"=?UTF-8?Q?=3D=3FUTF-8=3FQ=3FX=3F=3D?=\" <R@E>", "#77"),
 ];
 
+/// A `Content-Disposition` answer with its parameters sorted by name: the port lists them in
+/// the order the field gives them, where mime4j lists them in the order of a `java.util.HashMap`
+/// (#186), so only which parameters are read is compared.
+fn parameters_sorted(kind: &str, answer: String) -> String {
+    if kind != "cdisp" {
+        return answer;
+    }
+    let mut fields: Vec<&str> = answer.split(SEPARATOR).collect();
+    fields[1..].sort_unstable();
+    fields.join(&SEPARATOR.to_string())
+}
+
 #[test]
 fn reads_headers_as_mime4j_and_tika_do() {
     let mut reference = String::new();
@@ -305,7 +317,10 @@ fn reads_headers_as_mime4j_and_tika_do() {
             departed.push(departure);
             continue;
         }
-        match answer(kind, &value) {
+        let expected = expected.map(|expected| parameters_sorted(kind, expected));
+        match answer(kind, &value)
+            .map(|actual| actual.map(|actual| parameters_sorted(kind, actual)))
+        {
             Ok(actual) if actual == expected => {}
             Ok(actual) => mismatches.push(format!(
                 "{kind} {value:?}: expected {expected:?}, got {actual:?}"
