@@ -12,7 +12,7 @@ use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, Attribute, SaxHandler};
-use crate::formats::{Decline, Failure, Parser, Prepared};
+use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
 
 /// `DIF`: the prefix of the metadata of each leaf element.
@@ -38,6 +38,12 @@ impl Parser for DifParser {
 
     fn media_types(&self) -> &'static [&'static str] {
         &["application/dif+xml"]
+    }
+
+    /// Proportional: every leaf element's text is kept as `dif:` metadata, which the document's
+    /// head holds until its end, so the record is as large as its leaves.
+    fn footprint(&self) -> Footprint {
+        Footprint::Proportional
     }
 
     fn prepare<'a>(

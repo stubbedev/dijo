@@ -22,7 +22,7 @@ use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::data_uri;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
-use crate::formats::{unless_different, Decline, Difference, Failure, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::java;
 use crate::mime::MediaType;
 
@@ -44,6 +44,12 @@ impl Parser for MarkdownParser {
 
     fn media_types(&self) -> &'static [&'static str] {
         &[MEDIA_TYPE]
+    }
+
+    /// Proportional: a link reference definition anywhere in the document resolves links before
+    /// it, so CommonMark parsing needs the whole decoded text before it writes the first block.
+    fn footprint(&self) -> Footprint {
+        Footprint::Proportional
     }
 
     fn prepare<'a>(
