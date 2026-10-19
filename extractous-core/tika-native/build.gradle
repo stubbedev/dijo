@@ -113,7 +113,7 @@ class ThirdPartyLicensesRenderer implements ReportRenderer {
 
 
 def tikaVersion = "4.1.0"
-def twelveMonkeysVersion = "3.15.2"
+def twelveMonkeysVersion = "3.15.3"
 def numThreads = Runtime.getRuntime().availableProcessors()
 def currentOs = org.gradle.internal.os.OperatingSystem.current()
 
