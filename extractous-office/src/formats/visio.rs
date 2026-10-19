@@ -2,7 +2,7 @@
 //! the summary information as metadata, then a paragraph for each text `VisioTextExtractor`
 //! finds. The document stream's trailer points to streams, compressed or not, which point to
 //! more streams or hold chunks, among them the text chunks, and the macros after them when asked
-//! for. A drawing POI throws on is left to Tika.
+//! for. A drawing POI throws on fails, as it fails Tika's parse.
 
 use std::borrow::Cow;
 
@@ -656,8 +656,8 @@ mod tests {
         assert_eq!(metadata["Content-Type"], ["application/vnd.visio"]);
     }
 
-    /// A drawing POI throws on fails without Tika, as it fails Tika's parse, though with the
-    /// port's account of the exception, which a build with Tika leaves to Tika's path.
+    /// A drawing POI throws on fails, as it fails Tika's parse, though with the port's account
+    /// of the exception, which is recorded as a difference from Tika.
     #[test]
     fn fails_drawings_poi_throws_on() {
         let damaged = crate::ole2::tests::compound(&["VisioDocument"], b"no Visio header");

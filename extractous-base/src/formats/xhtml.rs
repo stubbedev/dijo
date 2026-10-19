@@ -11,13 +11,12 @@ use crate::formats::embedded::{
 use crate::formats::handlers::Body;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::secure::{Secure, ZipBomb, ZIP_BOMB_DETECTED};
-use crate::formats::{self, Bridged, EmbeddedRoute, Failure, Opened, Unrouted};
+use crate::formats::{self, EmbeddedRoute, Failure, Opened, Unprepared, Unrouted};
 use crate::input::{Input, Pages};
 use crate::memory;
 use crate::Metadata;
 
-/// What an embedded document no native parser reads is recorded as unread by, in a build
-/// without Tika.
+/// What an embedded document no native parser reads is recorded as unread by.
 const UNSUPPORTED: &str = "extractous";
 
 /// Whether the extraction holds no more memory than its budget, which it checks as it writes.
@@ -247,7 +246,7 @@ impl ContentHandler for Embedded<'_, '_> {
     /// Ends `name`, unless the embedded document has no element of that name open: a parser
     /// stopped by the length limit inside its body ends its document, whose `body` end tag the
     /// `BodyContentHandler` in front of this passes on while the body's elements are still open.
-    /// Tika's path writes that `</body>` into the embedding document (#113).
+    /// Tika writes that `</body>` into the embedding document (#113).
     fn end_element_in(&mut self, namespace: &str, name: &str) -> Result<(), Stop> {
         if !self.open.iter().any(|open| open.name() == name) {
             return Ok(());
@@ -827,8 +826,8 @@ impl<'h> Xhtml<'h> {
     ///
     /// A document a native parser takes ([`formats::route_embedded`]) is parsed here, its
     /// events passed on as they come, through an `EmbeddedContentHandler` over a
-    /// `BodyContentHandler`, so the output stops it where it stops Tika's. Any other is parsed
-    /// by Tika's path and its events replayed.
+    /// `BodyContentHandler`, so the output stops it where it stops Tika's. Any other is recorded
+    /// as unread.
     pub fn parse_embedded(
         &mut self,
         data: &[u8],
@@ -1005,8 +1004,8 @@ impl<'h> Xhtml<'h> {
         Ok(true)
     }
 
-    /// Parses an embedded document with its native parser, if it has one, and with Tika's
-    /// path otherwise. One of no bytes no parser starts: its failure is recorded as Tika's
+    /// Parses an embedded document with its native parser, if it has one, and records it as
+    /// unread otherwise. One of no bytes no parser starts: its failure is recorded as Tika's
     /// zero-byte check fails it.
     fn parse_routed(
         &mut self,
@@ -1020,31 +1019,31 @@ impl<'h> Xhtml<'h> {
         let configs = self.embedding.context().configs();
         match formats::route_embedded(data, pages, metadata, opened, configs) {
             Ok(route) => self.parse_natively(data.len(), route, metadata, handed, open, target),
-            Err(Bridged::Unrouted(Unrouted::Empty)) => {
+            Err(Unprepared::Unrouted(Unrouted::Empty)) => {
                 self.embedding.record_zero_bytes();
                 Ended::Recorded
             }
-            Err(Bridged::Unwritten(parser, start)) => {
+            Err(Unprepared::Unwritten(parser, start)) => {
                 let parsed = formats::unwritten(parser, start, configs).to_map();
                 self.embedding.absorb_parsers(&parsed);
                 self.embedding.absorb_failures(&parsed, None);
                 Ended::Clean
             }
-            Err(Bridged::Fails(parser, error)) => {
+            Err(Unprepared::Fails(parser, error)) => {
                 self.record_unread(parser, metadata, &embedded::error_reason(&error))
             }
-            Err(Bridged::Deferred(parser, reason)) => {
-                let unsupported = crate::Unsupported::Deferred { parser, reason };
+            Err(Unprepared::Unread(parser, reason)) => {
+                let unsupported = crate::Unsupported::Unread { parser, reason };
                 self.record_unread(UNSUPPORTED, metadata, &unsupported.to_string())
             }
-            Err(Bridged::Unrouted(Unrouted::Unsupported(unsupported))) => {
+            Err(Unprepared::Unrouted(Unrouted::Unsupported(unsupported))) => {
                 self.record_unread(UNSUPPORTED, metadata, &unsupported.to_string())
             }
         }
     }
 
-    /// Records that an embedded document stays unread, in a build without Tika, where its parse
-    /// on Tika's path would be: what did not read it, which document and why. The document
+    /// Records that an embedded document stays unread: what did not read it, which document and
+    /// why. The document
     /// embedding it goes on, as it does past an embedded document whose parser fails.
     fn record_unread(&mut self, reader: &str, metadata: &TikaMetadata, reason: &str) -> Ended {
         let failure = embedded::describe_failure(reader, metadata, reason);
@@ -1082,7 +1081,7 @@ impl<'h> Xhtml<'h> {
     /// parser fails on the document, as Tika's would throw, the failure is recorded in this
     /// document's metadata, which goes on: what failed, on which document and why, where Tika
     /// records the stack trace of the exception its own parser throws (#68). Where the parser
-    /// reads the document differently from Tika's parser, in a build without Tika, the
+    /// reads the document differently from Tika's parser, the
     /// difference is recorded first, as a failure of the embedded document.
     fn parse_natively(
         &mut self,

@@ -11,11 +11,11 @@
 //!
 //! A message POI or Tika throws on fails, as Tika's parse fails; a stored message POI throws on
 //! is written with its summary information and its failure recorded, as Tika's embedded
-//! document extractor records it. What the port does not read is left to Tika: strings and
-//! headers in charsets the native decoders do not decode, a body the native parsers leave to
-//! Tika. The macros follow when asked for. A stream that cannot be read, and a directory named
-//! as a value of a multi-valued property, are left out with a warning; POI reads them otherwise,
-//! so a build with Tika hands such a message to Tika's path.
+//! document extractor records it. What the port does not read is left unread: strings and
+//! headers in charsets the native decoders do not decode, a body the native parsers do not
+//! read. The macros follow when asked for. A stream that cannot be read, and a directory named
+//! as a value of a multi-valued property, are left out with a warning, since POI reads them
+//! otherwise.
 
 mod chunks;
 pub(super) mod extractor;
@@ -66,7 +66,7 @@ impl Parser for MsgParser {
         Footprint::Bounded
     }
 
-    /// Fails messages POI or Tika throws on, and defers those it leaves to Tika's parsers. Tika
+    /// Fails messages POI or Tika throws on, and leaves unread those it does not read. Tika
     /// writes the named properties and times of a message in the order of hash maps keyed by
     /// identity, which its head shows; the native head lists them sorted by name (#64).
     fn prepare<'a>(
@@ -192,7 +192,7 @@ impl<'a> EmbeddedMessage<'a> {
 
 /// The message stored in `directory` of `file` as a message file of its own: its properties
 /// stream with the header of a message, and the named properties of the message it is stored
-/// in, which a stored message shares (#112). Tika's path spools it empty (#116).
+/// in, which a stored message shares (#112). Tika spools it empty (#116).
 fn standalone<'a>(file: &Ole2<'a>, directory: EntryId) -> Result<Storage<'a>, Unreadable> {
     let mut storage = file.storage(directory)?;
     let properties: Vec<u16> = PROPERTIES.encode_utf16().collect();

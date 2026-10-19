@@ -19,7 +19,7 @@ pub(super) enum Json {
     Object(Vec<(String, Json)>),
 }
 
-/// Why a JSON document is left to Tika's path: serde_json does not read it, which Jackson may,
+/// Why the port does not read a JSON document: serde_json does not read it, which Jackson may,
 /// or a value Jackson writes as text the port does not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Unread(pub(super) &'static str);

@@ -222,8 +222,8 @@ static PARSERS: &[&dyn Parser] = &[
 /// fallback, the [`empty::EmptyParser`]. A supertype's parser takes the document only where it
 /// reads that type's subtypes. Where Tika's parser for a type is not native, and at a type the
 /// default types do not declare, whose parser in Tika's composite parser only a parse could
-/// tell, Tika's path reads the document; but for the undeclared types Tika's detection names
-/// that it is known to read with no parser.
+/// tell, no native parser reads the document, which fails as unsupported; but for the undeclared
+/// types Tika's detection names that it is known to read with no parser.
 fn parser_for(media_type: &str) -> Result<&'static dyn Parser, Unsupported> {
     install_routes(&Registry);
     let Some(parsed) = MediaType::parse(media_type) else {
@@ -316,8 +316,8 @@ fn open_file(path: Cow<'_, str>) -> ExtractResult<Document<'_>> {
 
 /// Opens the document `source` names for a native extraction, as [`open`] does, unless the
 /// extraction cannot be native: while the memory is capped, in a program that does not count
-/// its allocations, a native extraction cannot be held to the cap, and Tika's path, whose heap
-/// the cap bounds, extracts every document from its source.
+/// its allocations, a native extraction cannot be held to the cap, and the extraction fails as
+/// unsupported.
 pub(crate) fn open_to_extract(
     source: Source<'_>,
     deadline: Option<Instant>,
@@ -335,16 +335,13 @@ pub struct Routed<'a> {
     pub input: Input<'a>,
 }
 
-/// Routes a document to its native parser, if its format has one, or says why it stays with
-/// Tika. The document is detected in Rust, without the JVM, so a document a native parser reads
-/// never starts it. In a build with Tika, a file too large to read whole goes to its native
-/// parser only if that parser's memory stays bounded whatever its input's size, and otherwise to
-/// Tika, which streams it; a build without Tika has every parser read it mapped, under the
-/// extraction's memory budget. The parser itself may still leave the document to Tika, when [`parse_to_string`] or
-/// [`parse_to_stream`] has it prepare the document.
+/// Routes a document to its native parser, if its format has one, or says why no native parser
+/// reads it. The document is detected in Rust. A file too large to read whole is read mapped by
+/// every parser, under the extraction's memory budget. The parser itself may still not read the
+/// document, when [`parse_to_string`] or [`parse_to_stream`] has it prepare the document.
 ///
-/// A document Tika's detection throws on (a corrupt binary property list, say) is routed to
-/// Tika's path, whose own detection then fails it exactly as Tika does.
+/// A document Tika's detection throws on (a corrupt binary property list, say) fails with why,
+/// as Tika's detection fails it.
 pub(crate) fn route<'a>(document: &Document<'a>) -> Result<Routed<'a>, Unsupported> {
     let detected = Detected::detect(&document.from, &document.input, Intent::Parse)
         .map_err(|error| Unsupported::Undetected(error.to_string()))?;
@@ -362,9 +359,8 @@ pub fn route_file(path: &str) -> Result<Routed<'_>, Unsupported> {
     route(&open(Source::File(path), None).expect("the file opens"))
 }
 
-/// Detects the media type of a document as Tika's `DefaultDetector` does: in Rust, and with Tika
-/// for a document Tika's detection throws on, so the failure is Tika's own. A build without Tika
-/// fails with why Tika's detection throws.
+/// Detects the media type of a document as Tika's `DefaultDetector` does, in Rust. A document
+/// Tika's detection throws on fails with why Tika's detection throws.
 pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
     let document = open(source, None)?;
     match Detected::detect(&document.from, &document.input, Intent::Detect) {
@@ -376,28 +372,28 @@ pub(crate) fn detect(source: Source<'_>) -> ExtractResult<String> {
 /// What a native parser prepared of a document that the extraction takes.
 struct Taken<'a> {
     prepared: Prepared<'a>,
-    /// Where the parser reads the document differently from Tika's parser, in a build without
-    /// Tika, which takes the native reading and records the difference.
+    /// Where the parser reads the document differently from Tika's parser: the extraction takes
+    /// the native reading and records the difference.
     difference: Option<Difference>,
 }
 
 /// Why the extraction writes nothing of what a native parser prepared of a document, which the
 /// parser reads.
 enum Refused {
-    /// The extraction fails at once, without output, as Tika's path does.
+    /// The extraction fails at once, without output, as Tika's does.
     Fails(Error),
     /// The parser writes no document of it and leaves this metadata.
     Unwritten(TikaMetadata),
 }
 
-/// What the extraction takes of what `parser` `prepared` of a document, or why Tika's path
-/// should extract it, which a build without Tika fails with. A reading that differs from Tika's
-/// parser's is left to Tika's path in a build with Tika, and taken in a build without it.
+/// What the extraction takes of what `parser` `prepared` of a document, or why the parser does
+/// not read it, which the extraction fails with. A reading that differs from Tika's parser's is
+/// taken.
 fn take<'a>(
     parser: &dyn Parser,
     prepared: Result<Prepared<'a>, Decline<'a>>,
 ) -> Result<Result<Taken<'a>, Refused>, Unsupported> {
-    let leave_to_tika = |reason| Unsupported::Deferred {
+    let unread = |reason| Unsupported::Unread {
         parser: parser.name(),
         reason,
     };
@@ -413,7 +409,7 @@ fn take<'a>(
             prepared: reading,
             difference: Some(difference),
         })),
-        Err(Decline::Deferred(reason)) => Err(leave_to_tika(reason)),
+        Err(Decline::Unread(reason)) => Err(unread(reason)),
         Err(Decline::Fails(error)) => Ok(Err(Refused::Fails(error))),
         Err(Decline::Unwritten(metadata)) => Ok(Err(Refused::Unwritten(metadata))),
     }
@@ -476,7 +472,7 @@ fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {
 }
 
 /// Parses `input` into a string of at most `max_length` UTF-16 code units of text, through the
-/// handlers of [`Chain::String`]; why not when the parser leaves the document to Tika.
+/// handlers of [`Chain::String`]; why not when the parser does not read the document.
 pub fn parse_to_string(
     parser: &dyn Parser,
     input: &Input<'_>,
@@ -508,7 +504,7 @@ pub(crate) fn parse_to_string_through(
 }
 
 /// Parses `input` on this thread through the handlers of `chain`, a string extraction's, into
-/// `out`: the final metadata, or why not when the parser leaves the document to Tika.
+/// `out`: the final metadata, or why not when the parser does not read the document.
 pub(crate) fn parse_through<W: Write>(
     parser: &dyn Parser,
     input: &Input<'_>,
@@ -633,13 +629,13 @@ pub(crate) struct StreamOptions {
 }
 
 /// Parses `input` on a thread of its own into a stream encoded with the options' charset,
-/// through the handlers `ParsingInputStream` uses; why not when the parser leaves the document
-/// to Tika. Like `ParsingInputStream`, it returns once the parse has written its first chunk or
+/// through the handlers `ParsingInputStream` uses; why not when the parser does not read the
+/// document. Like `ParsingInputStream`, it returns once the parse has written its first chunk or
 /// ended, or with the failure of a parse that ended without writing anything. It returns the
 /// metadata known before the parse, of the input and its detection, whatever the parse has
 /// found by then: the final metadata comes with [`NativeStream::metadata`] once the stream is
-/// read. Tika's path returns a copy of the metadata made as the first chunk is written, the
-/// final metadata for a document whose output fits in one chunk (#67).
+/// read. Tika returns a copy of the metadata made as the first chunk is written, the final
+/// metadata for a document whose output fits in one chunk (#67).
 pub(crate) fn parse_to_stream(
     parser: &'static dyn Parser,
     input: Input<'static>,
@@ -899,7 +895,7 @@ mod tests {
     }
 
     /// An embedded HTML document the length limit stops in its body ends its own document,
-    /// whose `</body>` stays out of the embedding document, which Tika's path writes (#113).
+    /// whose `</body>` stays out of the embedding document, which Tika writes (#113).
     #[test]
     fn keeps_the_body_end_of_an_embedded_document_cut_short_out() {
         install_routes(&Registry);
@@ -1048,11 +1044,10 @@ mod tests {
         }
     }
 
-    /// A reading that differs from Tika's parser's is left to Tika's path in a build with Tika,
-    /// and taken in a build without it, which records the difference as a warning, in a string
-    /// extraction and a stream alike (#144).
+    /// A reading that differs from Tika's parser's is taken, and the difference recorded as a
+    /// warning, in a string extraction and a stream alike (#144).
     #[test]
-    fn takes_a_reading_that_differs_from_tikas_only_without_tika() {
+    fn takes_a_reading_that_differs_from_tikas() {
         let routed = route_file("../test_files/documents/simple.odt").unwrap();
         let parsed = parse_to_string(
             &DifferingParser,
@@ -1252,7 +1247,7 @@ mod tests {
         }
     }
 
-    /// A build without Tika fails a document no native parser reads with why, and records one
+    /// The extraction fails a document no native parser reads with why, and records one
     /// embedded in a document a native parser reads as unread, the embedding document going on.
     #[test]
     fn fails_documents_no_native_parser_reads_with_why() {
@@ -1283,7 +1278,7 @@ mod tests {
         );
     }
 
-    /// A build without Tika reads natively an embedded document its parser reads differently
+    /// The extraction reads natively an embedded document its parser reads differently
     /// from Tika's parser, and records the difference in the embedding document (#144).
     #[test]
     fn reads_an_embedded_document_its_parser_reads_differently_from_tika() {

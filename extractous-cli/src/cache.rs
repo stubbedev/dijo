@@ -38,8 +38,8 @@ impl OutputSettings<'_> {
 }
 
 /// Rendered output of complete extractions, keyed by everything that determines it: the input's
-/// content and name, the settings that shape the output, this exact build of extractous with
-/// Tika inside it, and the tesseract that runs OCR. Where the input came from is not part of the
+/// content and name, the settings that shape the output, this exact build of extractous,
+/// and the tesseract that runs OCR. Where the input came from is not part of the
 /// key: a replayed entry reports the provenance it is replayed for, so the same attachment in
 /// many emails is extracted once. Safe to share between threads and processes.
 pub struct Cache {

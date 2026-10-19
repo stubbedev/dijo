@@ -4,10 +4,10 @@
 //! and the OLE objects its shapes show, then the pictures and the objects no shape showed, and
 //! the hidden slides, animations and comment authors as metadata.
 //!
-//! An encrypted presentation is decrypted with the password, or failed as Tika's path fails it
-//! where the password does not open it. A presentation POI or Tika throws on is left to Tika, as
-//! is one before PowerPoint 97 and one whose pictures or objects Tika fails on and records: see
-//! [`PptParser::prepare`].
+//! An encrypted presentation is decrypted with the password, or failed as Tika fails it
+//! where the password does not open it. A presentation POI or Tika throws on, one before
+//! PowerPoint 97 and one whose pictures or objects Tika fails on and records are not read as
+//! Tika reads them: see [`PptParser::prepare`].
 //!
 //! The presentation is read twice: once as far as deciding whether it is extracted, every slide
 //! read and its events let go, then as it is written, a slide, a picture or an object at a time.

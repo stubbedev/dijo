@@ -6,7 +6,7 @@
 //! the presentation and its masters embed, parsed as embedded documents.
 //!
 //! A package POI would read in a degraded way or refuse, and one whose parts or OLE objects Tika
-//! records failing on, are left to Tika: see [`Presentation::check`].
+//! records failing on, are not read: see [`Presentation::check`].
 //!
 //! Where Tika slips, this port does not (#102): each comment holds its own text; only the
 //! content of a placeholder is skipped, in the handout master too; each part resolves links by
@@ -130,7 +130,7 @@ impl Parser for PptxParser {
         ]
     }
 
-    /// Defers presentations whose parts or OLE objects Tika records failing on, which hold
+    /// Leaves unread presentations whose parts or OLE objects Tika records failing on, which hold
     /// macros Tika extracts when asked to, and packages POI does not open as this port does.
     fn prepare<'a>(
         &self,
@@ -239,7 +239,7 @@ impl<'a> Presentation<'a> {
         parts
     }
 
-    /// Finds what this port leaves to Tika in a package it could open (parts whose XML Tika
+    /// Finds what this port does not read in a package it could open (parts whose XML Tika
     /// records failing on, pictures it cannot place, links and OLE objects it fails to read, and
     /// macros to extract), and reads what Tika reads whole: the properties and the comment
     /// authors. The parts written as they are read are only checked here.

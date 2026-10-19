@@ -5,7 +5,7 @@
 //! modules handed on, each an embedded document of its source.
 //!
 //! What POI reads is read as it reads it, up to the exceptions it throws, which fail the reading
-//! of the macros. Where Tika's path writes the macros otherwise than the native reading, the
+//! of the macros. Where Tika writes the macros otherwise than the native reading, the
 //! reading names the difference: modules in the order the projects name them, where Tika writes
 //! them in the order of a `java.util.HashMap`; a stream of a `VBA` storage no project names as a
 //! module, which POI hands on undecompressed as if it were a module's source; a project in code
@@ -370,7 +370,7 @@ fn decompress(compressed: &[u8]) -> Read<Vec<u8>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Macros {
     read: Result<Vec<Module>, String>,
-    /// Where Tika's path hands them on otherwise, if it does.
+    /// Where Tika hands them on otherwise, if it does.
     difference: Option<Difference>,
 }
 
@@ -396,7 +396,7 @@ impl Macros {
                 read: Ok(modules),
                 difference: (!differences.is_empty()).then(|| {
                     Difference(format!(
-                        "Tika's path hands on the macros otherwise: {}",
+                        "Tika hands on the macros otherwise: {}",
                         differences.join("; ")
                     ))
                 }),
@@ -414,14 +414,14 @@ impl Macros {
         }
     }
 
-    /// Where Tika's path hands the macros on otherwise, if it does.
+    /// Where Tika hands the macros on otherwise, if it does.
     pub(crate) fn difference(&self) -> Option<Difference> {
         self.difference.clone()
     }
 
     /// The reading a parser of a compound document `prepared`, with `macros`, if any, written
     /// after it, as `OfficeParser.parse` extracts them once its parser is done; and different
-    /// from Tika's path where either is. A storage of a compound document, which Tika hands its
+    /// from Tika's where either is. A storage of a compound document, which Tika hands its
     /// parser as an open container, has its macros handed on by the document it is stored in,
     /// and none of its own (TIKA-4116).
     pub(crate) fn followed_by<'a>(
@@ -519,7 +519,7 @@ impl ModuleMap {
 }
 
 /// `readMacros` of the whole compound document: the modules in the order the projects name
-/// them, and where Tika's path hands them on otherwise; or the exception POI throws.
+/// them, and where Tika hands them on otherwise; or the exception POI throws.
 fn read_macros(file: &Ole2<'_>) -> Read<(Vec<Module>, Vec<String>)> {
     let mut modules = ModuleMap {
         modules: Vec::new(),

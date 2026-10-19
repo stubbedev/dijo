@@ -333,7 +333,7 @@ fn reads_headers_as_mime4j_and_tika_do() {
     assert_eq!(
         (zones, charsets),
         (16, 4),
-        "values left to Tika: dates naming a time zone, and malformed ISO-2022-JP:\n{}",
+        "values the port leaves out: dates naming a time zone, and malformed ISO-2022-JP:\n{}",
         unported.join("\n")
     );
 }

@@ -100,7 +100,7 @@ impl std::fmt::Display for Thrown {
 }
 
 impl Thrown {
-    /// The error Tika's path fails with when the parser `tika_name` throws this: the
+    /// The error Tika fails with when the parser `tika_name` throws this: the
     /// `TikaException` `CompositeParser` wraps it in, as our Java reports it.
     pub fn into_error(self, tika_name: &str) -> Error {
         let (wrapped, cause) = match self {

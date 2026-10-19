@@ -7,11 +7,10 @@
 //! cleaned of control characters as our `WordText` cleans it, and the other stories' paragraphs
 //! are given as our substitute for POI's `getParagraphText` gives them.
 //!
-//! A document before Word 97 is read as POI's `HWPFOldDocument` reads it for Tika's
-//! `parseWord6`: a paragraph for each of its paragraphs. An encrypted document is decrypted with
-//! the password, or failed as Tika's path fails it where the password does not open it. A
-//! document POI reads differently from this port is left to Tika. The macros follow when asked
-//! for.
+//! A document before Word 97 is read as POI's `HWPFOldDocument` reads it for Tika's `parseWord6`: a
+//! paragraph for each of its paragraphs. An encrypted document is decrypted with the password, or
+//! failed as Tika fails it where the password does not open it. A document POI reads differently
+//! from this port is not read as Tika reads it. The macros follow when asked for.
 //!
 //! The document is read twice: once as far as deciding whether it is extracted, every
 //! paragraph read and its events let go, then as it is written, its events handed on as they

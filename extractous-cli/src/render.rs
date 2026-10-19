@@ -87,7 +87,7 @@ struct Copied {
 /// An extraction whose text has not been read yet, or why it could not start.
 pub type Opened = Result<(StreamReader, Metadata), ExtractionError>;
 
-/// Starts extracting `path`; Tika has detected the type and found a parser once this returns.
+/// Starts extracting `path`; the type is detected and a parser found once this returns.
 pub fn open(extractor: &Extractor, path: &Path) -> Opened {
     let path = path.to_str().ok_or_else(|| {
         ExtractionError::from_message(format!("{} is not valid UTF-8", path.display()))
@@ -175,7 +175,7 @@ fn outcome(
     }
 }
 
-/// Fetches the metadata Tika finished with and the documents it spooled; a failure to do so
+/// Fetches the metadata the parse finished with and the documents it spooled; a failure to do so
 /// fails the extraction.
 fn finish(stream: &StreamReader, copied: &mut Copied) -> (Option<Metadata>, Vec<SpooledEmbedded>) {
     if copied.error.is_some() {

@@ -109,8 +109,8 @@ impl Parser for XlsbParser {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
-    /// Defers workbooks with OLE objects Tika opens, macros it extracts when asked to, a strict
-    /// or other main document, and packages POI does not open as this port does.
+    /// Leaves unread workbooks with OLE objects Tika opens, macros it extracts when asked to, a
+    /// strict or other main document, and packages POI does not open as this port does.
     fn prepare_paged<'a>(
         &self,
         input: &'a [u8],

@@ -17,7 +17,7 @@ impl From<Unread> for Decline<'_> {
     fn from(unread: Unread) -> Self {
         match unread {
             Unread::Malformed(reason) => Decline::Fails(Error::ParseError(reason)),
-            Unread::Unported(reason) => Decline::Deferred(reason),
+            Unread::Unported(reason) => Decline::Unread(reason),
         }
     }
 }

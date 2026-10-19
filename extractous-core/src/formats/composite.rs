@@ -1,5 +1,5 @@
-//! What Tika's composite parser reads, in extractous's configuration of it
-//! (`TikaNativeMain.createParser`): the types it has a parser for, where
+//! What Tika's composite parser reads, in the configuration extractous's former Java
+//! implementation gave it (`TikaNativeMain.createParser`): the types it has a parser for, where
 //! [`super::parser_for`], walking a document's types as `CompositeParser.getParser` does, stops
 //! for a type no native parser reads.
 
@@ -53,7 +53,7 @@ mod tests {
     }
 
     /// The undeclared types Tika's detection names that no parser of Tika's reads fall back to
-    /// the empty parser, as Tika's composite parser does, rather than go to Tika's path (#119).
+    /// the empty parser, as Tika's composite parser does, rather than fail as unsupported (#119).
     #[test]
     fn falls_back_to_the_empty_parser_for_an_undeclared_type_tika_detects() {
         for kind in UNPARSED_UNDECLARED {
@@ -70,7 +70,7 @@ mod tests {
     ];
 
     /// The documents of Tika's that its composite parser reads with the empty parser, as their
-    /// detected types say, are read with the empty parser, rather than go to Tika's path (#144).
+    /// detected types say, are read with the empty parser, rather than fail as unsupported (#144).
     #[test]
     #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
     fn reads_with_the_empty_parser_the_documents_tika_reads_with_none() {

@@ -142,7 +142,7 @@ const READERS: [(&[&str], &dyn Parser); 6] = [
 /// parser it was given to: `OfficeParser` reads whatever kind it detects, whichever type Tika's
 /// path gave it the document as. A kind it reads only the summary information of, as
 /// [`CompoundDocumentParser`] does, is an MS Graph chart by its `CompObj` stream, another kind
-/// `POIFSDocumentType` knows of no content, or no known kind: Tika's path hands a chart to
+/// `POIFSDocumentType` knows of no content, or no known kind: Tika hands a chart to
 /// `OfficeParser` as a workbook, stored in another document as an open storage its detection
 /// names a workbook by its entry names alone, or as an `Excel.Chart.8` object of a
 /// presentation, typed so by its program id.

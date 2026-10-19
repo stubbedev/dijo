@@ -5,7 +5,7 @@
 //! encryption, CryptoAPI's RC4 and Office 97's binary RC4 are ported, agile encryption with each
 //! of its hashes and with AES, RC2, DES and triple DES in CBC, ECB or CFB mode, on RustCrypto's
 //! ciphers; agile encryption with RC4, or in CCM or GCM mode, which BouncyCastle adapts
-//! otherwise, is left to Tika.
+//! otherwise, is not read.
 //!
 //! Jackcess checks a password against standard encryption with a key derived from the number of
 //! the last of its 50,000 hashing rounds, where [MS-OFFCRYPTO] derives it from block 0: its
@@ -60,7 +60,7 @@ const VERIFIER_INPUT_BLOCK: [u8; 8] = [0xfe, 0xa7, 0xd2, 0x76, 0x3b, 0x4b, 0x9e,
 const VERIFIER_VALUE_BLOCK: [u8; 8] = [0xd7, 0xaa, 0x0f, 0x6d, 0x30, 0x61, 0x34, 0x4e];
 const KEY_VALUE_BLOCK: [u8; 8] = [0x14, 0x6e, 0x0b, 0xe7, 0xab, 0xac, 0xd0, 0xd6];
 /// The most hashing rounds the port spends on a password; a descriptor asking for more keeps
-/// Jackcess hashing, and is left to Tika.
+/// Jackcess hashing, and is not read.
 const MAX_SPIN_COUNT: i64 = 10_000_000;
 const ENCRYPTION_NAMESPACE: &str = "http://schemas.microsoft.com/office/2006/encryption";
 const PASSWORD_NAMESPACE: &str = "http://schemas.microsoft.com/office/2006/keyEncryptor/password";

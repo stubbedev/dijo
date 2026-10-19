@@ -78,7 +78,7 @@ pub(super) fn is_encrypted(main: &[u8]) -> Read<bool> {
     Ok(u16_at(main, 0xA)? & 0x0100 != 0)
 }
 
-/// The FIB, as far as Tika's path reads it.
+/// The FIB, as far as Tika reads it.
 #[derive(Debug, Clone)]
 pub(super) struct Fib {
     pub(super) n_fib: i16,

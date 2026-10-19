@@ -205,7 +205,7 @@ fn rel(id: &str, kind_name: &str, target: &str) -> (String, String, String) {
     (id.to_owned(), kind_name.to_owned(), target.to_owned())
 }
 
-/// Workbooks of the features Tika reads, each small, compared with Tika's path.
+/// Workbooks of the features Tika reads, each small, compared with Tika's.
 fn snippets() -> Vec<(&'static str, Vec<u8>)> {
     // No negative number is in a date format: Tika writes it with the date format it made for
     // an earlier cell (#92), which `data_format`'s tests check the port does not.
@@ -512,7 +512,7 @@ fn drawing_snippets() -> Vec<(&'static str, Vec<u8>)> {
 }
 
 #[test]
-fn defers_links_inside_the_package() {
+fn falls_short_on_links_inside_the_package() {
     let input = workbook(
         &[SheetSpec {
             name: "Linked",
@@ -526,7 +526,7 @@ fn defers_links_inside_the_package() {
         Vec::new(),
     );
     let reason = XlsxParser
-        .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
+        .shortfall(&input, &TikaMetadata::new(), &ParserConfigs::default())
         .unwrap();
     assert!(reason.contains("links to #Sheet2!A1"), "{reason}");
 }
@@ -705,7 +705,7 @@ fn failing_sheet() -> Vec<u8> {
 fn records_a_sheet_whose_xml_fails_and_goes_on() {
     let input = failing_sheet();
     assert_eq!(
-        XlsxParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default()),
+        XlsxParser.shortfall(&input, &TikaMetadata::new(), &ParserConfigs::default()),
         None
     );
     let (xml, metadata) = extract(&input);

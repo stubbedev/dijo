@@ -57,7 +57,7 @@ pub struct Summaries(Vec<PropertySet>);
 
 impl Summaries {
     /// `SummaryExtractor.parseSummaries(directory)`'s reading: the property sets POI reads, or
-    /// why Tika's path should read them.
+    /// why the port does not read them.
     pub fn read(file: &Ole2<'_>, directory: EntryId) -> Result<Summaries, Unported> {
         let mut sets = Vec::new();
         for name in [SUMMARY_INFORMATION, DOCUMENT_SUMMARY_INFORMATION] {

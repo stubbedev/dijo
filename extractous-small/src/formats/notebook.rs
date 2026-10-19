@@ -36,7 +36,7 @@ const MAX_NAME_LENGTH: usize = 50_000;
 /// What the port reads differently from Jackson where serde_json rejects the notebook.
 const REJECTED: Unread = Unread("JSON serde_json rejects, which Jackson may read");
 
-/// What the port reads differently from Jackson, which Tika's path then reads.
+/// What the port reads differently from Jackson, which it then does not read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Unread(&'static str);
 
@@ -392,7 +392,7 @@ struct Notebook<'a> {
 }
 
 impl<'a> Notebook<'a> {
-    /// The notebook `input` holds, or the failure Tika's path reports before it starts the
+    /// The notebook `input` holds, or the failure Tika reports before it starts the
     /// document, once Jackson would read it and each of its cells reads.
     fn read(input: &'a [u8]) -> Result<Result<Self, Error>, Unread> {
         let not_an_object = || Error::ParseError("The notebook is not a JSON object".to_owned());
@@ -446,7 +446,7 @@ impl Parser for NotebookParser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let notebook = Notebook::read(input)
-            .map_err(|Unread(why)| Decline::Deferred(why.to_owned()))?
+            .map_err(|Unread(why)| Decline::Unread(why.to_owned()))?
             .map_err(Decline::Fails)?;
         Ok(Box::new(move |xhtml| {
             let written = notebook.each_block(&mut |block| match block {
@@ -469,7 +469,7 @@ mod tests {
 
     use super::*;
 
-    /// The notebook's blocks, or the failure Tika's path reports before it starts the document.
+    /// The notebook's blocks, or the failure Tika reports before it starts the document.
     fn notebook_blocks(input: &[u8]) -> Result<Result<Vec<Block>, Error>, Unread> {
         Ok(Notebook::read(input)?.map(|notebook| {
             let mut blocks = Vec::new();
@@ -539,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn defers_what_jackson_reads_differently() {
+    fn falls_short_on_what_jackson_reads_differently() {
         let long_number = format!(r#"{{"nbformat": {}}}"#, "1".repeat(MAX_NUMBER_LENGTH + 1));
         let long_name = format!(r#"{{"{}": 1}}"#, "n".repeat(MAX_NAME_LENGTH + 1));
         for input in [

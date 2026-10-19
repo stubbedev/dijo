@@ -2,8 +2,7 @@
 //! `ParsingEmbeddedDocumentExtractor` parses them under our Java `ContentEmbeddedDocumentExtractor`:
 //! every one but a thumbnail, by the extraction's own parser and settings, OCR included, its body
 //! written into the embedding document, in a `package-entry` div headed by its name when the
-//! parser asks for one. Until every format has a native parser, Tika parses them, through
-//! `TikaNativeMain.parseEmbeddedBytes`, and its events are replayed here. An extraction that
+//! parser asks for one. One no native parser reads is recorded as unread. An extraction that
 //! spools its embedded documents copies each to a file of its own instead, as our Java
 //! `EmbeddedSpooler` does.
 
@@ -387,8 +386,7 @@ pub(crate) fn describe_failure(parser: &str, metadata: &TikaMetadata, reason: &s
 
 /// How the native parser named `parser` reading a document embedded with `metadata` differently
 /// from Tika's parser, in the way `difference` says, is recorded in the document embedding it,
-/// as [`describe_failure`] records a failure, in a build without Tika, which keeps the native
-/// reading.
+/// as [`describe_failure`] records a failure, the native reading kept.
 pub(crate) fn describe_difference(
     parser: &str,
     metadata: &TikaMetadata,

@@ -3,7 +3,7 @@
 //! with the record's and the response's headers as `warc:` and `warc:http:` metadata. Other
 //! records write nothing.
 //!
-//! What Tika's path records as jwarc throws it, a response whose HTTP header does not parse, a
+//! What Tika records as jwarc throws it, a response whose HTTP header does not parse, a
 //! chunked payload cut short, a record cut short of its length or with a negative one, the
 //! native path records without jwarc's message, and a record ID it does not check as
 //! `URI.create` does it takes as it stands: such an archive's reading differs from Tika's.
@@ -82,7 +82,7 @@ impl Parser for WarcParser {
     }
 
     /// Decompresses the archive, to a spool where it is gzipped, and reads its records to rule
-    /// out what Tika's path reads otherwise, keeping none of them; they are read again as they
+    /// out what Tika reads otherwise, keeping none of them; they are read again as they
     /// are written, a record at a time.
     fn prepare_paged<'a>(
         &self,

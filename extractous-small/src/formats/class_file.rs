@@ -4,7 +4,7 @@
 //!
 //! The port reads class files whose structures are whole and well-formed, where ASM reads
 //! every part the visitor sees without throwing. A malformed one, which ASM reads only up to
-//! where it throws, after the visitor has written part of the document, stays on Tika's path;
+//! where it throws, after the visitor has written part of the document, is not read;
 //! one of a version newer than ASM reads fails before anything is written, as in Tika's.
 //!
 //! The class file is read in place, its code and other attributes passed over. What the parser

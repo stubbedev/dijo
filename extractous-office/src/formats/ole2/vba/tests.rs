@@ -199,7 +199,7 @@ fn reads_a_project_in_code_page_1256_in_it() {
     assert!(reason.contains("code page 1256"), "{reason}");
 }
 
-/// Where POI throws reading the macros, the reading fails and differs from Tika's path, which
+/// Where POI throws reading the macros, the reading fails and differs from Tika's, which
 /// records the failure in an entry of no content: a document module the PROJECT stream names
 /// without its cookie, and a module the `dir` stream names but the storage lacks.
 #[test]

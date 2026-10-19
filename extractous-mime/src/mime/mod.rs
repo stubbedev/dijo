@@ -1,5 +1,5 @@
-//! A port of the media type detection extractous runs through Tika 4.1: `new DefaultDetector()`
-//! on the native image's class path, as `TikaNativeMain.detect` calls it.
+//! A port of the media type detection of Tika 4.1 as extractous's former Java implementation ran
+//! it: `new DefaultDetector()` on its class path, as `TikaNativeMain.detect` called it.
 //!
 //! `DefaultDetector` asks `MimeTypes` first (the magic, names and XML roots of
 //! `tika-mimetypes.xml` and extractous's `custom-mimetypes.xml`), records that answer as
@@ -12,7 +12,7 @@
 //! wins.
 //!
 //! The answers match Tika's own, which `tests/fixtures/mime/mime-reference.tsv` holds for every
-//! document of the parity corpora.
+//! document of the reference corpora.
 
 mod archive;
 mod detected;
@@ -100,10 +100,10 @@ pub struct Detection {
 /// Why Tika's detection throws instead of answering.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DetectionError {
-    /// The `IOException` `TikaNativeMain` reports as an input it could not open.
+    /// An `IOException`, reported as an input that could not be opened.
     #[error("Tika's {0} detector fails on the input with an IOException")]
     Unreadable(&'static str),
-    /// A `RuntimeException`, which escapes `TikaNativeMain` altogether.
+    /// A `RuntimeException`, which escapes the detection altogether.
     #[error("Tika's {0} detector fails on the input with a RuntimeException")]
     Crashes(&'static str),
     /// An archive the ZIP detector salvages otherwise than the port.
@@ -191,7 +191,7 @@ pub fn zip_container_type(data: &[u8]) -> MediaType {
     }
 }
 
-/// `DefaultDetector.detect` on a document, as `TikaNativeMain.detect` runs it.
+/// `DefaultDetector.detect` on a document, run alone.
 pub fn detect(data: &[u8], origin: Origin<'_>) -> Result<Detection, DetectionError> {
     detect_with(data, origin, Intent::Detect)
 }

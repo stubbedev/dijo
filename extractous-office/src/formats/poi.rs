@@ -142,7 +142,7 @@ impl Unread {
     }
 
     /// What a parser declines a document with that Tika reads with its parser `tika_name`: what
-    /// the port does not read is left to Tika's path, and a document POI throws on fails, as it
+    /// the port does not read is left unread, and a document POI throws on fails, as it
     /// fails Tika's parse: see [`Thrown::failure`]. The failure is a reading that may differ,
     /// as the port may throw where POI does not.
     pub fn declined_by<'a>(self, tika_name: &'static str) -> Decline<'a> {

@@ -1,8 +1,8 @@
-//! FITS files, which Tika's path leaves empty: its scientific module, which its native image
-//! lacks (#172), reads them only by running GDAL's `gdalinfo` (`GDALParser`). The native parser
-//! reads the header of each HDU in place, its 2880-byte blocks of 80-character cards, and skips
-//! the data the header sizes. The primary header's keywords go into the metadata under `fits:`, its
-//! commentary under `fits:COMMENT` and `fits:HISTORY`; the text lists every HDU with its cards.
+//! FITS files, which Tika without its scientific module leaves empty: that module (#172) reads them
+//! only by running GDAL's `gdalinfo` (`GDALParser`). The native parser reads the header of each HDU
+//! in place, its 2880-byte blocks of 80-character cards, and skips the data the header sizes. The
+//! primary header's keywords go into the metadata under `fits:`, its commentary under
+//! `fits:COMMENT` and `fits:HISTORY`; the text lists every HDU with its cards.
 
 use crate::config::ParserConfigs;
 use crate::formats::bytes::{malformed, Bytes, Read};

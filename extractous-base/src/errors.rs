@@ -22,7 +22,7 @@ pub enum Error {
     #[error("{0}")]
     Utf8Error(#[from] Utf8Error),
 
-    /// The document needs Tika's path, which this build does not have.
+    /// No native parser extracts the document.
     #[error("{0}")]
     Unsupported(#[from] Unsupported),
 
@@ -36,8 +36,7 @@ pub enum Error {
     MemoryLimit(u64),
 }
 
-/// Why no native parser extracts a document: what a build with Tika leaves to Tika's path, and a
-/// build without it fails with.
+/// Why no native parser extracts a document, which the extraction fails with.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum Unsupported {
     /// No native parser reads documents of this media type.
@@ -45,7 +44,7 @@ pub enum Unsupported {
     Format(String),
     /// The native parser of this name does not read this document yet, for this reason.
     #[error("{parser} does not read this document natively yet: {reason}")]
-    Deferred {
+    Unread {
         parser: &'static str,
         reason: String,
     },

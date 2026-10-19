@@ -30,7 +30,7 @@ const MAX_CURRENT_USER: usize = 131_072;
 /// The longest document stream POI reads.
 const MAX_DOCUMENT: usize = 100_000_000;
 /// How many user edits this port follows before it leaves a document whose edits POI repairs
-/// in a loop to Tika.
+/// in a loop unread.
 const MAX_USER_EDITS: usize = 100_000;
 /// The slide lists' instances: of slides, masters and notes.
 const SLIDES: i32 = 0;
@@ -133,13 +133,13 @@ pub(super) struct Records {
     /// `tops`.
     core: BTreeMap<i32, Option<usize>>,
     pub(super) encryption: Option<Encryption>,
-    /// Where Tika's path reads the records otherwise, if it does: persist pointers that give two
+    /// Where Tika reads the records otherwise, if it does: persist pointers that give two
     /// persist ids one offset, of which POI keeps the one a `java.util.HashMap` iterates last,
     /// where the native reading keeps the greatest id (#186).
     pub(super) difference: Option<Difference>,
 }
 
-/// Why Tika's path reads persist pointers that give two persist ids one offset otherwise.
+/// Why Tika reads persist pointers that give two persist ids one offset otherwise.
 const SHARED_OFFSET: &str = "persist pointers that give two persist ids one offset, of which \
                              POI keeps the one a java.util.HashMap iterates last, and the port \
                              the greatest";

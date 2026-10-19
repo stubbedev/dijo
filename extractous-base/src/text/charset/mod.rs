@@ -3,8 +3,8 @@
 //! the content type names each report a declared charset, Mojibuster reports what the bytes prove
 //! or most likely are, and when the reports disagree the JunkFilter decodes the probe in each and
 //! keeps the one that reads most like text; when it does not, the first report stands. Tika runs
-//! its detectors in the order of their jars on the class path; the order here is the extractous
-//! native image's: the HTML declaration, Mojibuster, the byte order mark, the content type. The
+//! its detectors in the order of their jars on the class path; the order here is fixed: the
+//! HTML declaration, Mojibuster, the byte order mark, the content type. The
 //! answers match Tika's own, which `tests/fixtures/charset/encoding-reference.tsv.gz` holds.
 
 mod html;

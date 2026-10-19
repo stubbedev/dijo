@@ -10,7 +10,7 @@
 //! 3 March, and a date without a time 12:00 UTC.
 //!
 //! A time zone the date names by a region or by a name, whose rules java.time looks up in its
-//! time-zone database, leaves the message to Tika.
+//! time-zone database, is left out, and the message's reading then differs from Tika's.
 
 use super::Unported;
 use crate::java::time::{civil, format_instant};

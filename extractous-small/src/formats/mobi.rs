@@ -372,12 +372,12 @@ impl Parser for MobiParser {
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let (headers, text) = read(input, pages).map_err(Decline::Fails)?;
         let (html, difference) = noted(html::prepare_input(text, &headers.metadata()))
-            .map_err(|reason| Decline::Deferred(format!("the book's HTML defers: {reason}")))?;
+            .map_err(|reason| Decline::Unread(format!("the book's HTML is not read: {reason}")))?;
         unless_different(
             Box::new(move |xhtml| {
                 book_metadata(&headers, xhtml.metadata_mut()).map_err(Failure::Extraction)?;
                 // The HTML parser writes into a copy, so what it reads from the HTML stays out of
-                // the book's metadata, as in Tika's path.
+                // the book's metadata, as in Tika.
                 let book = xhtml.metadata_mut().clone();
                 xhtml.with_metadata(book, |xhtml| {
                     html(xhtml)?;

@@ -33,7 +33,7 @@ mod level {
     pub(super) const ATTACHMENT: u8 = 0x02;
 }
 
-/// The ids of the TNEF attributes Tika's path reads, `TNEFProperty.ID_*`.
+/// The ids of the TNEF attributes Tika reads, `TNEFProperty.ID_*`.
 mod id {
     pub(super) const ATTACH_DATA: u16 = 0x800F;
     pub(super) const ATTACH_TITLE: u16 = 0x8010;

@@ -71,8 +71,8 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1:9998", env = "EXTRACTOUS_LISTEN")]
     pub listen: std::net::SocketAddr,
 
-    /// Extraction workers: threads, at most 4 by default since threads share one isolate, or
-    /// with --isolation process, processes, one per core by default.
+    /// Extraction workers: threads, at most 4 by default, or with --isolation process,
+    /// processes, one per core by default.
     #[arg(long, env = "EXTRACTOUS_WORKERS")]
     pub workers: Option<NonZeroUsize>,
 
@@ -351,8 +351,7 @@ pub struct ExtractArgs {
     pub output: Option<PathBuf>,
 
     /// Number of inputs extracted in parallel, by default one per core. Past two, they run in
-    /// worker processes of two each, since the extractions in a process share one isolate and
-    /// contend in it. Output stays in input order.
+    /// worker processes of two each. Output stays in input order.
     #[arg(short, long, env = "EXTRACTOUS_JOBS", default_value_t = cores())]
     pub jobs: NonZeroUsize,
 
@@ -412,9 +411,8 @@ pub enum Ocr {
     Always,
 }
 
-/// The most extractions that run well in parallel in one isolate: past it they contend inside
-/// the isolate, and the whole gets slower.
-const SHARED_ISOLATE_JOBS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+/// The most worker threads a server runs by default.
+const THREAD_WORKERS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
 fn cores() -> NonZeroUsize {
     std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
@@ -430,15 +428,15 @@ fn share(processors: NonZeroUsize, jobs: NonZeroUsize, jobs_per_process: usize) 
     NonZeroUsize::new(processors.get() * jobs_per_process / jobs.get()).unwrap_or(NonZeroUsize::MIN)
 }
 
-fn shared_isolate_jobs() -> NonZeroUsize {
-    cores().min(SHARED_ISOLATE_JOBS)
+fn thread_workers() -> NonZeroUsize {
+    cores().min(THREAD_WORKERS)
 }
 
 impl ServeArgs {
     /// The workers to run: as given, or by default as many as run well in parallel.
     pub fn workers(&self) -> NonZeroUsize {
         self.workers.unwrap_or_else(|| match self.isolation {
-            Isolation::Thread => shared_isolate_jobs(),
+            Isolation::Thread => thread_workers(),
             Isolation::Process => cores(),
         })
     }

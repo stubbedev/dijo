@@ -10,7 +10,7 @@
 //! so an entry's data is junrar's, checked against its CRC, but where junrar slips (#122). An
 //! entry the port cannot give whole, one whose data does not match its CRC, is compressed for
 //! an unknown RAR version, continues in another volume or fails to unpack, is recorded as a
-//! failure where Tika's path gives it empty.
+//! failure where Tika gives it empty.
 
 mod extract;
 mod headers;

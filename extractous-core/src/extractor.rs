@@ -45,7 +45,7 @@ pub struct StreamReader {
     pub(crate) inner: Stream,
 }
 
-/// Where a stream's text comes from: Tika's parse in the isolate, or a native parser.
+/// Where a stream's text comes from: a native parser.
 pub(crate) enum Stream {
     Native(NativeStream),
 }
@@ -175,10 +175,9 @@ impl Extractor {
     /// Extracts text from a file path. Returns a tuple with stream of the extracted text and metadata.
     /// the stream is decoded using the extractor's `encoding`
     ///
-    /// For a document a native parser reads, the metadata is what is known before the parse:
-    /// the input's and its detection's. The parse's final metadata comes from
-    /// [`StreamReader::metadata`] once the stream has been read. A document Tika reads returns
-    /// the metadata as Tika had it when the first output was written.
+    /// The metadata is what is known before the parse: the input's and its detection's. The
+    /// parse's final metadata comes from [`StreamReader::metadata`] once the stream has been
+    /// read.
     pub fn extract_file(&self, file_path: &str) -> ExtractResult<(StreamReader, Metadata)> {
         self.extract_to_stream(Source::File(file_path), None)
     }
@@ -321,7 +320,7 @@ impl Extractor {
         }))
     }
 
-    /// Fails a document no native parser reads, in a build without Tika, with why.
+    /// Fails a document no native parser reads, with why.
     fn stream_without_native(
         &self,
         _: Source,
@@ -372,7 +371,7 @@ impl Extractor {
         )
     }
 
-    /// Fails a document no native parser reads, in a build without Tika, with why.
+    /// Fails a document no native parser reads, with why.
     fn extract_without_native(
         &self,
         _: Source,

@@ -1,7 +1,7 @@
 //! The native parsers' common ground (#41). A [`Parser`] writes a document as XHTML through an
 //! [`Xhtml`], the port of Tika's `XHTMLContentHandler`, into the same handler chains extractous
-//! puts behind Tika's parsers, so a native parser's text, XHTML and metadata are what Tika's
-//! path gives. The parsers themselves live in the crates of their formats; `extractous-core`
+//! puts behind Tika's parsers, so a native parser's text, XHTML and metadata are what Tika
+//! gives. The parsers themselves live in the crates of their formats; `extractous-core`
 //! gathers them and routes a media type to its native parser, if it has one.
 
 pub mod auto_detect_reader;
@@ -31,7 +31,7 @@ use handlers::{AnchoredBlocks, BlockBreaks, Body, ToText, ToXml, WellFormed, Wri
 use metadata::TikaMetadata;
 use xhtml::{ContentHandler, Stop, Xhtml};
 
-/// Why a native parser leaves a document to Tika: what of it the port does not reproduce.
+/// Why a native parser does not read a document: what of it the port does not reproduce.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unported(pub String);
 
@@ -55,13 +55,13 @@ impl From<Stop> for Failure {
     }
 }
 
-/// Why Tika's path should extract a document rather than its native parser: a feature of the
-/// document the parser cannot read.
-pub type Deferral = String;
+/// Why a native parser does not read a document, which then fails as unsupported: a feature of
+/// the document the parser cannot read.
+pub type UnreadReason = String;
 
 /// A detail in which a native parser's reading of a document differs from Tika's parser's, which
-/// the parser otherwise reads: why a build with Tika reads the document on Tika's path, where a
-/// build without it keeps the native reading and records the difference.
+/// the parser otherwise reads: the extraction keeps the native reading and records the difference
+/// as a warning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Difference(pub String);
 
@@ -74,8 +74,8 @@ impl Difference {
         Self(reason.into())
     }
 
-    /// The warning a build without Tika records on a document the parser `parser` read with
-    /// this difference.
+    /// The warning the extraction records on a document the parser `parser` read with this
+    /// difference.
     pub fn warning(&self, parser: &str) -> String {
         format!("{parser} read the document {DIFFERS_FROM_TIKA}{}", self.0)
     }
@@ -84,17 +84,16 @@ impl Difference {
 /// Why a native parser does not take a document as it prepared it. A [`Decline<'static>`] holds no
 /// reading borrowed from its input.
 pub enum Decline<'a> {
-    /// The parser cannot read it: Tika's path should extract it.
-    Deferred(Deferral),
+    /// The parser does not read it: the extraction fails as unsupported, with this reason.
+    Unread(UnreadReason),
     /// The parser reads it, as `reading` writes it, but differently from Tika's parser in the
-    /// `difference`: Tika's path should extract it in a build that has Tika, and a build
-    /// without Tika takes the reading.
+    /// `difference`: the extraction takes the reading and records the difference.
     Differs {
         reading: Prepared<'a>,
         difference: Difference,
     },
     /// Tika's parser throws this on it before it starts the document: the extraction fails at
-    /// once, without output, as Tika's path does.
+    /// once, without output, as Tika's does.
     Fails(Error),
     /// Tika's parser writes no document of it, not even its start and end, and leaves only
     /// this metadata: what it started from, with what it found.
@@ -104,7 +103,7 @@ pub enum Decline<'a> {
 impl std::fmt::Debug for Decline<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Deferred(deferral) => f.debug_tuple("Deferred").field(deferral).finish(),
+            Self::Unread(reason) => f.debug_tuple("Unread").field(reason).finish(),
             Self::Differs { difference, .. } => f
                 .debug_struct("Differs")
                 .field("difference", difference)
@@ -115,9 +114,9 @@ impl std::fmt::Debug for Decline<'_> {
     }
 }
 
-impl From<Deferral> for Decline<'_> {
-    fn from(deferral: Deferral) -> Self {
-        Self::Deferred(deferral)
+impl From<UnreadReason> for Decline<'_> {
+    fn from(reason: UnreadReason) -> Self {
+        Self::Unread(reason)
     }
 }
 
@@ -129,14 +128,14 @@ impl Unported {
 
 impl From<Unported> for Decline<'_> {
     fn from(Unported(reason): Unported) -> Self {
-        Self::Deferred(reason)
+        Self::Unread(reason)
     }
 }
 
 impl std::fmt::Display for Decline<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Deferred(deferral) => f.write_str(deferral),
+            Self::Unread(reason) => f.write_str(reason),
             Self::Differs {
                 difference: Difference(difference),
                 ..
@@ -158,7 +157,7 @@ pub fn noted<'a>(
             reading,
             difference,
         }) => Ok((reading, Some(difference))),
-        Err(Decline::Deferred(deferral)) => Err(Decline::Deferred(deferral)),
+        Err(Decline::Unread(reason)) => Err(Decline::Unread(reason)),
         Err(Decline::Fails(error)) => Err(Decline::Fails(error)),
         Err(Decline::Unwritten(metadata)) => Err(Decline::Unwritten(metadata)),
     }
@@ -197,9 +196,8 @@ pub fn unless_different(
 /// How the memory a native parser takes grows with its input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Footprint {
-    /// With the input: it reads all of it into structures of its own. In a build with Tika, a
-    /// file larger than [`input::MAX_READ_WHOLE`] is left to Tika, which streams it; a build
-    /// without Tika reads it mapped, under the extraction's memory budget.
+    /// With the input: it reads all of it into structures of its own. A file larger than
+    /// [`input::MAX_READ_WHOLE`] is read mapped, under the extraction's memory budget.
     Proportional,
     /// Bounded whatever the input's size: it reads only bounded parts of its input, such as
     /// headers and indexes, in place, and skips the rest. It reads a file of any size, mapped.
@@ -216,7 +214,7 @@ pub trait Parser: Sync {
     /// The name recorded in `tk:parsed-by` for the documents it parses.
     fn name(&self) -> &'static str;
 
-    /// The class name of the parser Tika's path parses its documents with, which it replaces.
+    /// The class name of the Tika parser it ports, which it replaces.
     fn tika_name(&self) -> &'static str;
 
     /// The parsers it records delegating to, each native name paired with the class name of
@@ -263,16 +261,16 @@ pub trait Parser: Sync {
         self.prepare(input, metadata, configs)
     }
 
-    /// Why Tika's path should extract `input`, in a build that has Tika, if it should: what of it
-    /// the parser cannot read, or where it reads it differently from Tika's parser.
-    fn defers(
+    /// What of `input` the parser falls short of Tika's parser on, if anything: what of it the
+    /// parser cannot read, or where it reads it differently from Tika's parser.
+    fn shortfall(
         &self,
         input: &[u8],
         metadata: &TikaMetadata,
         configs: &ParserConfigs,
-    ) -> Option<Deferral> {
+    ) -> Option<String> {
         match self.prepare(input, metadata, configs) {
-            Err(Decline::Deferred(deferral)) => Some(deferral),
+            Err(Decline::Unread(reason)) => Some(reason),
             Err(Decline::Differs { difference, .. }) => Some(difference.0),
             Ok(_) | Err(Decline::Fails(_) | Decline::Unwritten(_)) => None,
         }
@@ -295,7 +293,7 @@ pub enum InputFile {
 pub enum Unrouted {
     /// It is without content, which Tika's zero-byte check fails.
     Empty,
-    /// No native parser reads it, which Tika's path parses in a build with Tika.
+    /// No native parser reads it, which is recorded as an unread embedded document.
     Unsupported(Unsupported),
 }
 
@@ -315,21 +313,21 @@ pub struct EmbeddedRoute<'a> {
     /// The metadata the parser starts from.
     pub start: TikaMetadata,
     pub prepared: Prepared<'a>,
-    /// Where the parser reads it differently from Tika's parser, in a build without Tika, which
-    /// takes the native reading where a build with Tika parses the document on Tika's path.
+    /// Where the parser reads it differently from Tika's parser: the extraction takes the native
+    /// reading and records the difference.
     pub difference: Option<Difference>,
 }
 
-/// Why no native parser prepares a document embedded in one a native parser reads: Tika's path
-/// parses it, unless it is empty or its parser writes no document of it, which the native path
-/// records as Tika does. Tika's path records the failure of one Tika's parser fails before it
-/// starts, which only that path can tell.
+/// Why no native parser prepares a document embedded in one a native parser reads, which the
+/// embedding document records and goes on past: it is empty, which is recorded as Tika's
+/// zero-byte check fails it, its parser writes no document of it, as Tika's does, its parser
+/// fails it before it starts, as Tika's throws, or no native parser reads it.
 #[derive(Debug)]
-pub enum Bridged {
+pub enum Unprepared {
     /// No native parser prepares it.
     Unrouted(Unrouted),
     /// Its native parser, of this name, cannot read it, for this reason.
-    Deferred(&'static str, Deferral),
+    Unread(&'static str, UnreadReason),
     /// Tika's parser throws this on it before it starts, as its native parser, of this name,
     /// reproduces.
     Fails(&'static str, Error),
@@ -343,7 +341,7 @@ pub enum Bridged {
 /// stream was `opened`, as Tika's `AutoDetectParser` and `CompositeParser` route it: detected
 /// with the resource name and `Content-Type` of its metadata as hints, then parsed by the parser
 /// of the type the metadata overrides the parser with, else of the detected type. Otherwise why
-/// Tika's path parses it: that parser is not native, the document is empty, which Tika's
+/// no native parser reads it: that parser is not native, the document is empty, which Tika's
 /// zero-byte check fails, or Tika's detection throws on it.
 pub fn embedded_parser(
     data: &[u8],
@@ -383,16 +381,16 @@ fn routes() -> &'static dyn Routes {
 
 /// Routes a document embedded in one a native parser reads, whose bytes `data` have the pages
 /// `pages`, to its [`embedded_parser`], and returns what that parser prepared, if it takes the
-/// document, or why Tika's path parses it. A build without Tika takes the reading of a parser
-/// that reads the document differently from Tika's.
+/// document, or why it does not. The reading of a parser that reads the document differently from
+/// Tika's is taken, with the difference.
 pub fn route_embedded<'a>(
     data: &'a [u8],
     pages: Pages<'a>,
     metadata: &TikaMetadata,
     opened: Opened,
     configs: &'a ParserConfigs,
-) -> Result<EmbeddedRoute<'a>, Bridged> {
-    let (parser, start) = embedded_parser(data, metadata, opened).map_err(Bridged::Unrouted)?;
+) -> Result<EmbeddedRoute<'a>, Unprepared> {
+    let (parser, start) = embedded_parser(data, metadata, opened).map_err(Unprepared::Unrouted)?;
     let name = parser.name();
     let (prepared, difference) = match parser.prepare_paged(data, pages, &start, configs) {
         Ok(prepared) => (prepared, None),
@@ -400,9 +398,9 @@ pub fn route_embedded<'a>(
             reading,
             difference,
         }) => (reading, Some(difference)),
-        Err(Decline::Deferred(deferral)) => return Err(Bridged::Deferred(name, deferral)),
-        Err(Decline::Fails(error)) => return Err(Bridged::Fails(name, error)),
-        Err(Decline::Unwritten(left)) => return Err(Bridged::Unwritten(name, left)),
+        Err(Decline::Unread(reason)) => return Err(Unprepared::Unread(name, reason)),
+        Err(Decline::Fails(error)) => return Err(Unprepared::Fails(name, error)),
+        Err(Decline::Unwritten(left)) => return Err(Unprepared::Unwritten(name, left)),
     };
     Ok(EmbeddedRoute {
         parser,
@@ -451,9 +449,9 @@ pub enum Output {
 }
 
 /// The handlers extractous puts behind a parser. Both entry points hold back anchored blocks,
-/// which only Tika's streamed extraction (`ParsingInputStream`) does: its string extraction
-/// (`TikaNativeMain.parseToString`) leaves them where they cut the paragraph they are anchored
-/// in (#63).
+/// which only Tika's streamed extraction (`ParsingInputStream`) does: the string extraction of
+/// extractous's former Java implementation (`TikaNativeMain.parseToString`) leaves them where
+/// they cut the paragraph they are anchored in (#63).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chain {
     /// A stream's: XML declaring its `encoding`.
@@ -463,8 +461,9 @@ pub enum Chain {
     },
     /// A string's: at most `max_length` UTF-16 code units of text.
     String { output: Output, max_length: usize },
-    /// `TikaNativeMain.parseToString`'s, without anchored blocks held back, which the parity
-    /// tests compare a native parser's string extraction with Tika's under (#63).
+    /// The string extraction of extractous's former Java implementation, without anchored
+    /// blocks held back, for the tests that compare a native parser's string extraction with
+    /// Tika's under it (#63).
     #[cfg(any(test, feature = "testing"))]
     TikaString { output: Output, max_length: usize },
 }

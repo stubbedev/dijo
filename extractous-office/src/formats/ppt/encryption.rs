@@ -38,7 +38,7 @@ pub(super) struct Encryption {
 
 impl Encryption {
     /// `new HSLFSlideShowEncrypted(docstream, records)` past finding the atom at `atom`: its
-    /// encryption opened with the password, failing as Tika's path does where it does not open
+    /// encryption opened with the password, failing as Tika does where it does not open
     /// it.
     pub(super) fn open(
         atom: i32,

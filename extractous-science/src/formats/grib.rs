@@ -1,6 +1,6 @@
 //! GRIB files, editions 1 and 2, in the layout of Tika's `GribParser`: the global attributes as
-//! metadata, then a list of the dimensions and of the variables with their attributes. Tika's
-//! path leaves them empty, as its native image lacks the scientific module (#172), and
+//! metadata, then a list of the dimensions and of the variables with their attributes. Tika
+//! without its scientific module leaves them empty (#172), and
 //! `GribParser` itself reads only the type `application/x-grib2`, which Tika's detection never
 //! names. The native parser reads the sections of each message in place, never their data, and
 //! gathers the messages into variables as netcdf-java does: one for each parameter, level type

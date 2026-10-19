@@ -1,11 +1,11 @@
-//! The character, paragraph and table properties Tika's path looks at, as POI's
+//! The character, paragraph and table properties Tika looks at, as POI's
 //! `CharacterSprmUncompressor`, `ParagraphSprmUncompressor` and `TableSprmUncompressor` apply
 //! sprms to them, with POI's reads of each sprm's bytes so a sprm fails where POI's fails.
 
 use super::sprm::{find_sprm, SprmIterator, SprmOperation, TYPE_CHP, TYPE_PAP, TYPE_TAP};
 use crate::formats::poi::{i16_at, u8_at, Read, Thrown};
 
-/// `CharacterProperties`, as far as Tika's path reads them.
+/// `CharacterProperties`, as far as Tika reads them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Chp {
     pub(super) bold: bool,
@@ -193,7 +193,7 @@ fn character_style_index(grpprl: &[u8]) -> Option<i32> {
     style
 }
 
-/// `ParagraphProperties`, as far as Tika's path reads them.
+/// `ParagraphProperties`, as far as Tika reads them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Pap {
     pub(super) istd: i32,

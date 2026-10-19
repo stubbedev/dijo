@@ -14,7 +14,7 @@ use super::{
 };
 
 /// A description, or the exception metadata-extractor throws describing the tag, which the port
-/// does not reproduce: the document is left to Tika's path.
+/// does not reproduce: the document is not read.
 pub(crate) type Described = Result<Option<String>, Unported>;
 
 /// `getDescription`, dispatched to the directory's descriptor.

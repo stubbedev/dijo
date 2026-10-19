@@ -11,8 +11,8 @@ pub(crate) mod zip;
 /// What a detector throws out of Tika's detection, which then fails as a whole.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Thrown {
-    /// An `IOException`: `TikaNativeMain` reports the input as one it could not open.
+    /// An `IOException`: the input is reported as one that could not be opened.
     Io,
-    /// A `RuntimeException`, which `TikaNativeMain` does not catch.
+    /// A `RuntimeException`, which the detection does not catch.
     Runtime,
 }

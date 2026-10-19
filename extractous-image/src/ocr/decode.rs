@@ -160,8 +160,8 @@ pub(crate) enum Undecoded {
     NoDecoder,
     /// It could not be decoded, for this reason.
     Failed(String),
-    /// libheif, which Tika's path decodes it with as well, cannot decode it, failing with this
-    /// message, which Tika's path throws.
+    /// libheif, which Tika decodes it with as well, cannot decode it, failing with this
+    /// message, which Tika throws.
     Rejected(String),
 }
 
@@ -661,7 +661,7 @@ mod tests {
         );
     }
 
-    /// A truncated HEIC or AVIF file, which libheif rejects for Tika's path too, is rejected with
+    /// A truncated HEIC or AVIF file, which libheif rejects for Tika too, is rejected with
     /// libheif's failure (#173).
     #[test]
     fn rejects_heif_files_libheif_cannot_decode() {

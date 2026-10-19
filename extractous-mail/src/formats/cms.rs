@@ -10,16 +10,16 @@
 //! the content info, the version and digest or compression algorithms, and the encapsulated
 //! content info, its OCTET STRING primitive or constructed; tags of any number, lengths of any
 //! form Bouncy Castle takes. Content no native parser takes, and data laid out otherwise than
-//! the port reads as Bouncy Castle does, stay on Tika's path. Data Bouncy Castle fails to read
-//! as signed or compressed data, such as digested data or PEM text typed as a signature, or a
-//! malformed encoding, fails as it fails on Tika's path; data whose content type it fails to
+//! the port reads as Bouncy Castle does, are not read. Data Bouncy Castle fails to read as
+//! signed or compressed data, such as digested data or PEM text typed as a signature, or a
+//! malformed encoding, fails as it fails in Tika; data whose content type it fails to
 //! read is no CMS data to Tika, an empty document.
 
 use crate::compress::{zlib, Limited};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::{self, Decline, Deferral, Failure, Footprint, Opened, Parser, Prepared};
+use crate::formats::{self, Decline, Failure, Footprint, Opened, Parser, Prepared, UnreadReason};
 use crate::input::{Input, Pages};
 use crate::mime::MediaType;
 
@@ -71,7 +71,7 @@ const ENCRYPTED: [(&[u8], &str); 3] = [
 
 /// `CmsParser.contentType`: the content of the object identifier that opens the outer SEQUENCE
 /// of the first 64 bytes, `None` when they do not hold one, or `Err` for one Bouncy Castle
-/// rejects, which the port leaves to Tika's path.
+/// rejects, which the port does not read.
 fn header_content_type(input: &[u8]) -> Result<Option<&[u8]>, &'static str> {
     let header = &input[..input.len().min(HEADER_BYTES)];
     if header.len() < 2 || header[0] != SEQUENCE {
@@ -521,8 +521,8 @@ fn typed_as_signature(metadata: &TikaMetadata) -> bool {
 }
 
 /// What `CmsParser`, and the `Pkcs7Parser` it hands what it does not report itself, write for
-/// `input`, typed by `metadata`, when it is not encrypted; how it fails, as Tika's path fails it;
-/// or why Tika's path is left to read it.
+/// `input`, typed by `metadata`, when it is not encrypted; how it fails, as Tika fails it; or
+/// why the port does not read it.
 fn prepare_unencrypted<'a>(
     input: &'a [u8],
     pages: Pages<'a>,
@@ -549,7 +549,7 @@ fn prepare_unencrypted<'a>(
         Some(SIGNED_DATA) => match signed_content(input).ok_or_else(unread)? {
             Signed::Read(pieces) => signed(pieces),
             Signed::Detached(Ok(refined)) => Ok(empty(Some(refined))),
-            Signed::Detached(Err(Unread::Unported)) => Err(Decline::Deferred(unread())),
+            Signed::Detached(Err(Unread::Unported)) => Err(Decline::Unread(unread())),
             Signed::Detached(Err(Unread::Thrown(exception))) | Signed::Fails(exception) => {
                 Err(unreadable_signed_data(exception))
             }
@@ -578,7 +578,7 @@ fn empty<'a>(content_type: Option<&'static str>) -> Prepared<'a> {
 
 /// The `Content-Type` refined to `content_type`, then `content` parsed by the parser Tika's
 /// `AutoDetectParser` routes it to, from the metadata it starts from, into the same handler; or
-/// why Tika's path is left to read it, when that parser is not native or declines it. The parser
+/// why the port does not read it, when that parser is not native or declines it. The parser
 /// prepares the content here, to tell whether it takes it, and again as the document is written,
 /// as what it prepares borrows the content, which the document owns: the input's bytes in
 /// place, or a spool.
@@ -590,11 +590,11 @@ fn with_content<'a>(
     content_type: &'static str,
     content: Input<'a>,
     configs: &'a ParserConfigs,
-) -> Result<Prepared<'a>, Deferral> {
+) -> Result<Prepared<'a>, UnreadReason> {
     let mut given = TikaMetadata::new();
     given.set("Content-Length", content.len().to_string());
     let (parser, start) = formats::embedded_parser(&content, &given, Opened::Alone)
-        .map_err(|unrouted| format!("content Tika's path parses: {unrouted:?}"))?;
+        .map_err(|unrouted| format!("content no native parser reads: {unrouted:?}"))?;
     if parser
         .prepare_paged(&content, content.pages(), &start, configs)
         .is_err()
@@ -683,11 +683,11 @@ mod tests {
     }
 
     /// The `meta` element of the `Content-Length` the head of signed or compressed content
-    /// shows, which Tika's path does not give the content (#113).
+    /// shows, which Tika does not give the content (#113).
     const CONTENT_LENGTH: &str = "<meta name=\"Content-Length\" content=\"";
 
     /// A native text without the `Content-Length` of the content of signed or compressed data
-    /// in its head, which Tika's path does not give it (#113): the head of such content shows
+    /// in its head, which Tika does not give it (#113): the head of such content shows
     /// the content's metadata, which has no resource name, where a document's own has one.
     fn without_content_length(native: &str) -> String {
         let Some(head_end) = native.find("</head>") else {

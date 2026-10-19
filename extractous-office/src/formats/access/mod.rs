@@ -9,7 +9,7 @@
 //! the system catalog, the definition of the table being read and the queries' definitions, as
 //! Jackcess does. A database under Office encryption is decrypted with the
 //! password given, and fails as encrypted without the right one. A damaged database fails as
-//! Tika's path fails on it, rethrown as `JackcessParser` rethrows what Jackcess throws; where
+//! Tika fails on it, rethrown as `JackcessParser` rethrows what Jackcess throws; where
 //! Jackcess throws reading pages past the first, the failure is a reading that may differ from
 //! Tika's. An MSISAM (Microsoft Money) database is read as Jackcess reads it, its pages
 //! decoded as `jackcess-encrypt` decodes them.
@@ -320,12 +320,12 @@ fn date(bits: i64) -> String {
     text
 }
 
-/// Why the port leaves a database to Tika: what of it the port does not read.
-fn deferred(what: String) -> Decline<'static> {
-    Decline::Deferred(format!("{what}, which the port does not read"))
+/// Why the port does not read a database: what of it the port does not read.
+fn unread(what: String) -> Decline<'static> {
+    Decline::Unread(format!("{what}, which the port does not read"))
 }
 
-/// What Tika's path fails with where Jackcess, or Tika's extractor over it, throws `exception`
+/// What Tika fails with where Jackcess, or Tika's extractor over it, throws `exception`
 /// reading the database Jackcess names `database`: what `JackcessParser.parse` rethrows it as,
 /// wrapped as `CompositeParser` wraps it.
 fn failure(exception: &Exception, database: &str) -> Error {
@@ -384,14 +384,14 @@ fn database_name(file: &InputFile) -> &str {
 /// any, twice: once to its end as far as deciding whether it is extracted, its events let go,
 /// so that what Jackcess throws is known before anything is written; then as it is written,
 /// each row handed on as it is read. What Jackcess throws opening the file, before it reads a
-/// page past the first, the parse fails with as Tika's path does. What it throws reading the
+/// page past the first, the parse fails with as Tika does. What it throws reading the
 /// database the port reads it to fail with, but Jackcess may throw on a damaged database
-/// elsewhere and otherwise: Tika's path extracts such a database in a build with Tika.
+/// elsewhere and otherwise: such a reading is recorded as differing from Tika's.
 fn prepare<'a>(input: &'a [u8], configs: &'a ParserConfigs) -> Result<Prepared<'a>, Decline<'a>> {
     let password = configs.password.as_ref().map_or("", Password::expose);
     let pages = Database::pages(input, password).map_err(|thrown| match thrown {
         Thrown::Exception(exception) => Decline::Fails(failure(&exception, UNKNOWN_DATABASE)),
-        Thrown::Unported(what) => deferred(what),
+        Thrown::Unported(what) => unread(what),
         Thrown::Unreadable(what) => Decline::Fails(Error::ParseError(what)),
     })?;
     let refused = pages.refused();
@@ -417,7 +417,7 @@ fn prepare<'a>(input: &'a [u8], configs: &'a ParserConfigs) -> Result<Prepared<'
             refused.or(difference),
         ),
         Err(Halt::Written(never)) => match never {},
-        Err(Halt::Thrown(Thrown::Unported(what))) => Err(deferred(what)),
+        Err(Halt::Thrown(Thrown::Unported(what))) => Err(unread(what)),
         Err(Halt::Thrown(Thrown::Unreadable(what))) => Err(Decline::Fails(Error::ParseError(what))),
         Err(Halt::Thrown(Thrown::Exception(exception))) => Err(Decline::Differs {
             difference: refused.unwrap_or_else(|| {
@@ -634,7 +634,7 @@ fn rich_text(html: &str, configs: &ParserConfigs) -> Result<(String, Option<Diff
     metadata.set("Content-Type", "text/html; charset=UTF-8");
     let (prepared, difference) =
         noted(html::prepare(html.as_bytes(), &metadata)).map_err(|reason| {
-            Thrown::unported(format!("rich text the HTML parser defers: {reason}"))
+            Thrown::unported(format!("rich text the HTML parser does not read: {reason}"))
         })?;
     let context = ParseContext::new(configs);
     let mut out = StringOut::default();

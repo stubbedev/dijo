@@ -3,7 +3,7 @@
 //! the file, in the `idat` box or constructed from other items, decoded by rav1d, its colours
 //! converted with its matrix coefficients, and cropped, rotated and mirrored as its
 //! transformative properties say. A file whose primary image is coded otherwise, or which this
-//! module cannot decode, is left to libheif, which decides for Tika's path whether it decodes.
+//! module cannot decode, is left to libheif, which decides whether it decodes.
 
 use std::collections::BTreeMap;
 
@@ -151,7 +151,7 @@ enum Transform {
     },
     /// `irot`: quarter turns anticlockwise.
     Rotate(u8),
-    /// `imir`, whose axis libheif reads as Tika's path decodes with it: 0 swaps top and bottom,
+    /// `imir`, whose axis libheif reads as Tika decodes with it: 0 swaps top and bottom,
     /// 1 left and right.
     Mirror { top_to_bottom: bool },
 }
@@ -191,7 +191,7 @@ struct Items<'a> {
 pub(crate) enum Avif {
     Decoded(Bitmap),
     /// Its primary image, or a tile of it, is no AV1 image, such as one coded with HEVC or
-    /// JPEG, which libheif decodes for Tika's path.
+    /// JPEG, which libheif decodes.
     OfOtherCodecs,
 }
 
@@ -876,7 +876,7 @@ mod tests {
 
     /// The test cards of `tests/fixtures/avif`, coded with each layout, range, depth, matrix and
     /// transformative property the decoder reads, and the corpus's scan decode as libheif
-    /// decodes them for Tika's path, `heif-dec` in the development shell, but for the rounding
+    /// decodes them, `heif-dec` in the development shell, but for the rounding
     /// of a colour's grey; colour cards in colour.
     #[test]
     fn decodes_as_libheif_does() {

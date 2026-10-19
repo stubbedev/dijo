@@ -1,4 +1,4 @@
-//! `java.text.DecimalFormat` with the `en_US` symbols the native image formats in: a pattern of
+//! `java.text.DecimalFormat` with the `en_US` symbols: a pattern of
 //! `#`, `0`, `,`, `.`, `E`, `%` and quoted text compiled as `applyPattern` compiles it, and
 //! numbers formatted through `DigitList` as its slow path does, doubles from the digits of the
 //! JDK's `FloatingDecimal` and `BigDecimal`s from their exact digits.

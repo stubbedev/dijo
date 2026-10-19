@@ -2,7 +2,7 @@
 //! descriptor and `AgileDecryptor` opens it: the key data and data integrity, and the password
 //! key encryptor whose verifier a password is checked against and whose encrypted key it opens.
 //! AES in CBC mode is ported; the other ciphers and chaining modes POI knows Office never
-//! writes, and are left to Tika.
+//! writes, and are not opened.
 
 use std::collections::HashMap;
 
@@ -23,7 +23,7 @@ const INTEGRITY_VALUE_BLOCK: [u8; 8] = 0xa067_7f02_b22c_8433u64.to_be_bytes();
 /// The chunks `AgileCipherInputStream` decrypts the package in, each with the IV of its number.
 pub(super) const SEGMENT: usize = 4096;
 /// The most hashing rounds this port spends on a password; a descriptor asking for more keeps
-/// Tika's parse hashing, which is left to it.
+/// Tika's parse hashing, and is not read.
 const MAX_SPIN_COUNT: i32 = 10_000_000;
 
 fn unparsed() -> Unopened {

@@ -1,6 +1,6 @@
 //! What extracting a document writes, recorded in the order it is written: the XHTML, the
 //! metadata, the files it embeds and where the pages begin and end. The document is read once,
-//! into a recording, which decides whether Tika's path takes it instead; the recording is then
+//! into a recording, which decides whether the port reads it at all; the recording is then
 //! replayed into the document's [`Xhtml`], exactly as the extraction would have written it there.
 //! A document too large to record whole is streamed: its recording is flushed into the
 //! [`Xhtml`] after each page.

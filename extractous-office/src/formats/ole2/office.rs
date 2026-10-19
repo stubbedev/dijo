@@ -16,7 +16,7 @@ const MIN_DECLARED_BAT_BLOCKS: i64 = 4;
 /// header's declared size does not describe the document.
 const MAX_DECLARED_AMPLIFICATION: i64 = 16;
 
-/// The compound document `input`, opened as Tika's path opens it, or why it is not read as Tika's
+/// The compound document `input`, opened as Tika opens it, or why it is not read as Tika's
 /// path reads it: a file POI cannot open, which fails Tika's parse.
 pub fn open_file(input: &[u8]) -> Result<Ole2<'_>, Unread> {
     opened_as_detected(input).map_err(|Unreadable(reason)| {
@@ -53,7 +53,7 @@ fn honest_declared_size(input: &[u8]) -> Option<i64> {
 }
 
 /// [`open_file`] of a compound document `media_type`, the type of a `kind` of document; one its
-/// container detection names otherwise is left to Tika's path.
+/// container detection names otherwise is not read.
 pub fn open<'a>(input: &'a [u8], media_type: &str, kind: &str) -> Result<Ole2<'a>, Unread> {
     open_as(input, &[media_type], kind).map(|(file, _)| file)
 }

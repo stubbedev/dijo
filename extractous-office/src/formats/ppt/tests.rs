@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-fn defers_what_is_no_presentation() {
+fn falls_short_on_what_is_no_presentation() {
     let compound = crate::ole2::tests::compound(&["WordDocument"], b"");
     assert!(matches!(
         plan(&compound, &ParserConfigs::default()),
-        Err(Decline::Deferred(reason)) if reason.contains("no presentation")
+        Err(Decline::Unread(reason)) if reason.contains("no presentation")
     ));
 }
 

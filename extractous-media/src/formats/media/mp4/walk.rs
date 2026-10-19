@@ -44,7 +44,7 @@ struct Context {
 
 /// A file's boxes read: the movie's directory, the tracks' in the order their handler boxes
 /// came, what was written while reading, in order, and where the reading may differ from
-/// Tika's path, if anywhere.
+/// Tika's, if anywhere.
 #[derive(Debug)]
 pub(super) struct Walked<'a> {
     pub(super) movie: Directory<Movie>,
@@ -245,8 +245,8 @@ impl<'a> Walk<'a> {
 
     /// `TikaMp4BoxHandler.processBox` of a box with its payload. A `uuid` box keeps nothing:
     /// metadata-extractor reads those of Exif, IPTC, Photoshop and XMP data into directories of
-    /// their own, which `MP4Parser` does not read. Tika's native image fails a document on Exif
-    /// data where metadata-extractor reports an error outside its IFDs, as it cannot make the
+    /// their own, which `MP4Parser` does not read. Tika built as a native image fails a document on
+    /// Exif data where metadata-extractor reports an error outside its IFDs, as it cannot make the
     /// `ErrorDirectory` that takes it, so an Exif `uuid` box makes the reading differ.
     fn movie_box(&mut self, kind: &str, payload: &'a [u8], size: i64) -> Read<Handler> {
         match kind {
@@ -265,9 +265,9 @@ impl<'a> Walk<'a> {
             "tkhd" => track_header(payload)?,
             "uuid" if payload.starts_with(&EXIF_UUID) => {
                 self.difference = Some(Difference::new(
-                    "an Exif uuid box, on whose TIFF data Tika's native image fails the document \
-                     where metadata-extractor reports an error outside its IFDs, being unable to \
-                     make the ErrorDirectory that takes it",
+                    "an Exif uuid box, on whose TIFF data Tika built as a native image fails the \
+                     document where metadata-extractor reports an error outside its IFDs, being \
+                     unable to make the ErrorDirectory that takes it",
                 ));
             }
             _ => {}

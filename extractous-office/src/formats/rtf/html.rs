@@ -2,7 +2,7 @@
 //! with Tika's JFlex `RTFTokenizer` and `RTFState`: the text of its `\*\htmltag` groups and of
 //! what lies outside them, without what `\htmlrtf` marks as RTF only, decoded with the charset
 //! of the font in effect. A document with a picture or an embedded object, which Tika parses as
-//! a document of its own while it reads the HTML, is left to Tika.
+//! a document of its own while it reads the HTML, is not read.
 
 use std::collections::HashMap;
 

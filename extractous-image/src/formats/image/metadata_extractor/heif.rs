@@ -34,7 +34,7 @@ pub(super) fn describe(directory: &Directory, tag: i32) -> Described {
 }
 
 /// Why reading stopped: an `IOException`, which the loop reading the boxes catches, or a runtime
-/// exception, which Java throws out of the reader and the port leaves to Tika's path.
+/// exception, which Java throws out of the reader and the port does not read past.
 #[derive(Debug)]
 pub(crate) enum Stop {
     Io,

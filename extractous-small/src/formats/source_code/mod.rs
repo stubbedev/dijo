@@ -88,7 +88,7 @@ impl Parser for SourceCodeParser {
         let name = metadata.get(RESOURCE_NAME).unwrap_or_default().to_owned();
         let unicode = detection.decode_as.name().starts_with("UTF-");
         if !unicode && name.chars().any(|c| !c.is_ascii() && !is_entity(c)) {
-            return Err(Decline::Deferred(
+            return Err(Decline::Unread(
                 "a resource name the renderer writes in the document's charset, which may not \
                  hold it"
                     .to_owned(),

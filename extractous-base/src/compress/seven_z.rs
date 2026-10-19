@@ -2,8 +2,8 @@
 //! `SevenZParser` their files: in the order the archive lists them, with their times, under
 //! the memory limit Tika sets for the LZMA and LZMA2 coders, encrypted ones decrypted with the
 //! password the extraction was given. One that needs a password none was given for fails, as
-//! Tika's path does; one a password does not decrypt stays with Tika's path, whose decoders
-//! fail on its garbled data otherwise than sevenz-rust2's.
+//! Tika does; one a password does not decrypt is not read, since Tika's decoders fail on its
+//! garbled data otherwise than sevenz-rust2's.
 
 use std::convert::Infallible;
 use std::io::{Cursor, Read};

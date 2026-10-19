@@ -1,7 +1,7 @@
 //! NetCDF classic files, as Tika's `NetCDFParser` reads them through netcdf-java: the file type
 //! and the global attributes as metadata, then a list of the dimensions and one of the
-//! variables, each with its attributes. Tika's path leaves them empty, as its native image lacks
-//! the scientific module (#172). The header is read in place, the data never: the classic
+//! variables, each with its attributes. Tika without its scientific module leaves them
+//! empty (#172). The header is read in place, the data never: the classic
 //! format (CDF-1), the 64-bit offset format (CDF-2) and the 64-bit data format (CDF-5).
 //!
 //! Numeric global attributes are written whole, each value as Java writes it, where

@@ -107,7 +107,7 @@ pub(in crate::formats) fn usual_type(id: i32) -> Option<Type> {
         .map(|index| KNOWN[index].1)
 }
 
-/// The properties Tika's path asks for by name, by id.
+/// The properties Tika asks for by name, by id.
 pub(in crate::formats) mod property {
     pub(in crate::formats) const MESSAGE_CLASS: i32 = 0x001A;
     pub(in crate::formats) const SUBJECT: i32 = 0x0037;

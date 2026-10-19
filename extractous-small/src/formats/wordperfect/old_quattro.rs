@@ -33,7 +33,7 @@ const LABEL: u16 = 0x000F;
 const FORMULA: u16 = 0x0010;
 const STRING: u16 = 0x0033;
 
-/// The spreadsheets of Quattro Pro 1 to 6, which Tika's path hands to `OfficeParser`.
+/// The spreadsheets of Quattro Pro 1 to 6, which Tika hands to `OfficeParser`.
 pub struct OldQuattroProParser;
 
 impl Parser for OldQuattroProParser {
@@ -58,8 +58,8 @@ impl Parser for OldQuattroProParser {
         Footprint::Bounded
     }
 
-    /// Reads a spreadsheet's cells, and defers one that is a compound document after all, which
-    /// `OfficeParser` opens.
+    /// Reads a spreadsheet's cells, and leaves unread one that is a compound document after all,
+    /// which `OfficeParser` opens.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -67,7 +67,7 @@ impl Parser for OldQuattroProParser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         if ole2::is_ole(input) {
-            return Err(Decline::Deferred(
+            return Err(Decline::Unread(
                 "a compound document, which OfficeParser opens".to_owned(),
             ));
         }

@@ -13,8 +13,8 @@
 //! extraction, and one made before an extraction and freed within it lowers that extraction's
 //! count.
 //!
-//! Without the counting allocator nothing is counted, and an extraction with a budget is left to
-//! Tika's path, whose heap cap bounds it.
+//! Without the counting allocator nothing is counted, and an extraction with a budget fails as
+//! unsupported ([`crate::Unsupported::UncountedMemoryCap`]).
 
 use std::alloc::{handle_alloc_error, GlobalAlloc, Layout, System};
 use std::cell::{Cell, UnsafeCell};

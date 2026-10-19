@@ -5,7 +5,7 @@
 //! The count is all the packet shows of that tree, so the port builds only its shape: the DOM
 //! XMPCore reads (`XMPMetaParser`), the nodes `ParseRDF` makes of it, and the changes
 //! `XMPNormalizer` makes to them. The packets XMPCore re-reads after fixing their bytes are read
-//! here only when they are UTF-8 throughout. Two cases are left to Tika's path: a simple
+//! here only when they are UTF-8 throughout. Two cases are not read: a simple
 //! `exif:UserComment` with qualifiers, on which XMPCore throws an exception XmpReader does not
 //! catch, and an `xmpDM:copyright` beside an existing `dc:rights`, which XMPCore merges into it.
 
@@ -145,7 +145,7 @@ pub(super) fn extract(bytes: &[u8], metadata: &mut Metadata) -> Result<(), Unpor
 }
 
 /// Why no count is made: XMPCore throws an `XMPException` with this message, or the packet is
-/// one the port leaves to Tika's path.
+/// one the port does not read.
 #[derive(Debug)]
 enum Failure {
     Xmp(String),

@@ -6,8 +6,8 @@
 //! reads it, and again as it is written, one at a time.
 //!
 //! `IDMLParser` keeps its page counts in fields of its one instance and never resets them, so
-//! Tika's path adds each document's counts to those of the documents it parsed before. The native
-//! path counts each document's own pages.
+//! Tika adds each document's counts to those of the documents it parsed before. The native path
+//! counts each document's own pages.
 
 use crate::config::ParserConfigs;
 use crate::formats::jdk_zip::{self, Archive, Checked, Refusal};
@@ -84,7 +84,7 @@ enum Kind {
 }
 
 /// The entries `handleZipFile` hands `handleZipEntry`, `META-INF/metadata.xml` first, read
-/// ahead; a package Tika's path reads otherwise left to it.
+/// ahead; a package Tika reads otherwise left unread.
 fn entries(archive: &Archive<'_>) -> Result<Vec<Entry>, Refusal> {
     let zip = archive.zip();
     let metadata = jdk_zip::entry(zip, METADATA)?;

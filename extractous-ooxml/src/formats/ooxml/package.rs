@@ -98,7 +98,7 @@ pub(crate) struct Part {
 /// Why a package is not opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Unopened {
-    /// What this port does not open as POI does: Tika's path reads it.
+    /// What this port does not open as POI does, which it does not read.
     Unported(Unported),
     /// Why POI fails to open it, where `OOXMLExtractorFactory` throws `Error opening OOXML file`.
     Corrupt(String),

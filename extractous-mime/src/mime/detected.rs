@@ -27,7 +27,7 @@ pub enum OpenedFrom<'a> {
     Bytes,
     /// A document fetched from a URL, as `TikaInputStream.get(URL, metadata)` opens it, with
     /// what the server said of it. Its `Content-Length` is the server's, or where the server
-    /// sends none, the length of what it sent: Tika's path records that only once a detector or
+    /// sends none, the length of what it sent: Tika records that only once a detector or
     /// parser happens to spool the stream to a file.
     Url(Headers),
 }
@@ -48,10 +48,10 @@ pub struct Headers {
 
 impl Detected {
     /// Detects `input`, opened as `from` says, with the metadata Tika holds after its
-    /// detection, alone as `TikaNativeMain.detect` runs it or before a parse as
-    /// `AutoDetectParser` runs it, as `intent` says: what `TikaInputStream` writes as it opens
-    /// the input (for a file its name and length, for a fetched document what the server said
-    /// of it), then what the detectors write, in the order they write it.
+    /// detection, run alone or before a parse as `AutoDetectParser` runs it, as `intent` says:
+    /// what `TikaInputStream` writes as it opens the input (for a file its name and length, for a
+    /// fetched document what the server said of it), then what the detectors write, in the order
+    /// they write it.
     pub fn detect(
         from: &OpenedFrom<'_>,
         input: &[u8],

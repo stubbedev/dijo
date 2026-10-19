@@ -46,7 +46,7 @@ pub const MAX_DECODED: usize = 256 * 1024 * 1024;
 
 /// The most bytes a stream of `compressed` bytes is decoded into a spool: [`MAX_DECODED`], or a
 /// hundred bytes per compressed byte where that is more, the ratio of output to input past
-/// which Tika's `SecureContentHandler` takes a document for a zip bomb. Tika's path streams what
+/// which Tika's `SecureContentHandler` takes a document for a zip bomb. Tika streams what
 /// it decodes into the parser, whose output that guard stops; the native path decodes a stream
 /// to a spool before its parser reads it, so it stops a bomb as it decodes, before the bomb
 /// fills the disk.
@@ -57,12 +57,12 @@ pub fn decode_limit(compressed: usize) -> u64 {
 /// Why a compressed stream or an archive is not read natively.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Undecoded {
-    /// Reading it fails, for this reason, as reading it fails on Tika's path.
+    /// Reading it fails, for this reason, as reading it fails in Tika.
     Fails(String),
     /// It decodes into more than [`decode_limit`] bytes, or, decoded into memory, than
     /// [`MAX_DECODED`] bytes.
     TooLarge,
-    /// It holds what the native readers do not read the way Tika's path does.
+    /// It holds what the native readers do not read the way Tika does.
     Unported(&'static str),
     /// It is encrypted, and no password was given for it.
     Encrypted,

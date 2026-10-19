@@ -6,9 +6,9 @@
 //! an XHTML handler of its own into `OfficeParser`'s, so that the line breaks after block
 //! elements and the tabs before indented ones come out twice; here they come once (#119).
 //!
-//! A package whose encryption this port does not open, one whose own parser leaves it to Tika,
-//! and macros extracted when asked to, are left to Tika; where no password opens the package,
-//! the parse fails as Tika's path fails it.
+//! A package whose encryption this port does not open, one whose own parser does not read it,
+//! and macros extracted when asked to, are not read; where no password opens the package,
+//! the parse fails as Tika fails it.
 //!
 //! The package is decrypted a chunk at a time into a spool, in memory as far as a file is read
 //! whole and to a mapped temporary file beyond, which the parser of its format reads with its
@@ -66,8 +66,9 @@ impl Parser for ProtectedParser {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
-    /// Fails packages no password opens, and defers those whose encryption this port does not
-    /// open, those the parser of their format defers, and macros extracted when asked to.
+    /// Fails packages no password opens, and leaves unread those whose encryption this port does
+    /// not open, those the parser of their format does not read, and macros extracted when asked
+    /// to.
     ///
     /// The package is decrypted here and prepared by its parser to learn whether that parser
     /// extracts it; the parser prepares it again as the document is written, as what it

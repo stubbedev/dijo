@@ -8,9 +8,9 @@
 //! embedded documents, and the form. The pages `TextLayerCheckingPdfParser` reads by OCR are
 //! rendered and read with tesseract ([`ocr`]). An encrypted document opens with the password
 //! the extraction gives, or the empty one, as PDFBox opens it ([`security`]), and fails as
-//! Tika's path fails it where that password does not open it. Documents with a page Tika would
-//! OCR with no tesseract to run, and documents with what the port does not do (fonts it cannot
-//! measure, among others), are left to Tika.
+//! Tika fails it where that password does not open it. Documents with a page Tika would OCR
+//! with no tesseract to run, and documents with what the port does not do (fonts it cannot
+//! measure, among others), are not read.
 
 mod afm;
 mod attachment;
@@ -287,8 +287,8 @@ fn new_recording(metadata: TikaMetadata, configs: &ParserConfigs) -> Recording {
 }
 
 /// The document's extraction, recorded from `metadata`, and the OCR of the pages our
-/// `TextLayerCheckingPdfParser` reads, with the first detail it reads otherwise than Tika's
-/// path, unless the document is left to Tika: for a setting the port does not read, something
+/// `TextLayerCheckingPdfParser` reads, with the first detail it reads otherwise than Tika,
+/// unless the port does not read the document: for a setting the port does not read, something
 /// in the document it does not do, or a page Tika would OCR whose OCR the port does not run.
 /// The document is read once, into the recording, which holds no more of it than its output
 /// and the files it embeds. A recording that grows past `limit` bytes while no page is read by
@@ -394,14 +394,14 @@ fn write_read(
 }
 
 /// A document too large to record, extracted page by page as it is read from its start once
-/// more. What would leave the document to Tika is decided for its first pages, which the
+/// more. What would leave the document unread is decided for its first pages, which the
 /// recording held; met on a later page, it fails the extraction, the pages before it written.
 struct Streamed<'s, 'a> {
     loaded: &'s Loaded<'a>,
     input: &'a [u8],
     settings: Settings,
     configs: &'a ParserConfigs,
-    /// Whether the recording of its first pages read it otherwise than Tika's path.
+    /// Whether the recording of its first pages read it otherwise than Tika.
     known: bool,
 }
 
@@ -454,9 +454,8 @@ impl Streamed<'_, '_> {
     }
 }
 
-/// A detail in which a streamed document is read otherwise than Tika's path, met after its
-/// first pages were written: recorded as the difference of a document read so from the start
-/// is, where there is no Tika.
+/// A detail in which a streamed document is read otherwise than Tika, met after its first pages
+/// were written: recorded as the difference of a document read so from the start is.
 fn late_difference(xhtml: &mut Xhtml, difference: Difference) -> Result<(), Failure> {
     let warning = difference.warning(PdfParser.name());
     crate::formats::embedded::record_exception(xhtml.metadata_mut(), &warning);
@@ -500,7 +499,7 @@ struct Loaded<'a> {
 
 /// The document's objects where PDFBox finds them, decrypted with the password Tika's
 /// `PDFParser` asks its `PasswordProvider` for, or the empty one: a document that password does
-/// not open fails as Tika's path fails it. RC4 is opened as PDFBox opens it and decrypted with
+/// not open fails as Tika fails it. RC4 is opened as PDFBox opens it and decrypted with
 /// the user password; AES-256 is opened and decrypted by `lopdf`. The objects decrypt as they
 /// are read.
 fn load<'a>(
@@ -636,7 +635,7 @@ fn io_failure(exception: Exception) -> Decline<'static> {
     Decline::Fails(Thrown::Io(exception).into_error(TIKA_PDF_PARSER))
 }
 
-/// How a document the password does not open declines: as Tika's path fails it, where PDFBox
+/// How a document the password does not open declines: as Tika fails it, where PDFBox
 /// throws `InvalidPasswordException`.
 fn refused(refusal: Refusal) -> Decline<'static> {
     match refusal {
@@ -752,9 +751,9 @@ mod tests {
     }
 
     impl Why {
-        /// Whether the port leaves a document for this reason to Tika: one whose pages Tika's
-        /// PDF parser wants OCR for when no tesseract runs.
-        fn defers(self) -> bool {
+        /// Whether the port falls short of Tika on a document for this reason: one whose pages
+        /// Tika's PDF parser wants OCR for when no tesseract runs.
+        fn falls_short(self) -> bool {
             match self {
                 Self::Ocr | Self::Unmapped => !ocr_runs(),
                 Self::Doubtful => false,
@@ -762,8 +761,8 @@ mod tests {
         }
     }
 
-    /// The documents of the corpora whose pages OCR reads, or which the port leaves to Tika,
-    /// and why.
+    /// The documents of the corpora whose pages OCR reads, or on which the port falls short of
+    /// Tika, and why.
     const NOT_THE_TEXT_LAYER: [(&str, Why); 8] = [
         ("arabic.pdf", Why::Unmapped),
         ("deu-ocr.pdf", Why::Ocr),
@@ -779,11 +778,11 @@ mod tests {
         CORPORA.iter().map(Path::new).collect()
     }
 
-    fn deferral_of(path: &Path) -> String {
+    fn shortfall_of(path: &Path) -> String {
         let input = std::fs::read(path).unwrap();
         PdfParser
-            .defers(&input, &TikaMetadata::new(), &ParserConfigs::default())
-            .unwrap_or_else(|| panic!("{} is not deferred", path.display()))
+            .shortfall(&input, &TikaMetadata::new(), &ParserConfigs::default())
+            .unwrap_or_else(|| panic!("{} has no shortfall", path.display()))
     }
 
     /// A document of the given objects, numbered from 1 with the catalog first, and a
@@ -904,17 +903,17 @@ mod tests {
             .unwrap()
     }
 
-    /// Where the native parser reads a document otherwise than Tika's path, and the XHTML of
-    /// its reading, which a build without Tika takes.
+    /// Where the native parser reads a document otherwise than Tika, and the XHTML of its
+    /// reading, which the extraction takes.
     pub(super) fn differing_reading(input: &[u8], configs: &ParserConfigs) -> (Difference, String) {
         match prepared_reading(input, configs) {
             (Some(difference), xhtml) => (difference, xhtml),
-            (None, _) => panic!("the document is read as Tika's path reads it"),
+            (None, _) => panic!("the document is read as Tika reads it"),
         }
     }
 
     /// The XHTML of the native parser's reading of a document, and where it reads it otherwise
-    /// than Tika's path, if anywhere.
+    /// than Tika, if anywhere.
     pub(super) fn prepared_reading(
         input: &[u8],
         configs: &ParserConfigs,
@@ -1351,7 +1350,7 @@ mod tests {
         };
         for (name, input) in xfa_document_types() {
             assert_eq!(
-                PdfParser.defers(&input, &TikaMetadata::new(), &configs),
+                PdfParser.shortfall(&input, &TikaMetadata::new(), &configs),
                 None,
                 "{name}"
             );
@@ -1423,9 +1422,9 @@ mod tests {
     fn decrypts_the_object_streams_a_search_finds() {
         for path in ENCRYPTED_OBJECT_STREAMS {
             let input = moved_objects(path);
-            let deferral =
-                PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
-            assert_eq!(deferral, None, "{path}");
+            let shortfall =
+                PdfParser.shortfall(&input, &TikaMetadata::new(), &ParserConfigs::default());
+            assert_eq!(shortfall, None, "{path}");
             let (xml, _) = native_xml(&input);
             assert!(
                 xml.contains("Den yngste var den smukkeste"),
@@ -1572,9 +1571,9 @@ mod tests {
     #[test]
     fn follows_the_references_of_the_cross_reference_as_pdfbox_does() {
         for (input, title) in indirect_cross_references() {
-            let deferral =
-                PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
-            assert_eq!(deferral, None, "{title}");
+            let shortfall =
+                PdfParser.shortfall(&input, &TikaMetadata::new(), &ParserConfigs::default());
+            assert_eq!(shortfall, None, "{title}");
             let (xml, _) = native_xml(&input);
             assert!(xml.contains(&format!("<title>{title}</title>")), "{xml}");
             assert!(xml.contains("Den yngste var den smukkeste"), "{xml}");
@@ -1617,8 +1616,9 @@ mod tests {
     #[test]
     fn extracts_the_files_of_both_generations_of_an_object() {
         let input = two_generations();
-        let deferral = PdfParser.defers(&input, &TikaMetadata::new(), &ParserConfigs::default());
-        assert_eq!(deferral, None);
+        let shortfall =
+            PdfParser.shortfall(&input, &TikaMetadata::new(), &ParserConfigs::default());
+        assert_eq!(shortfall, None);
         let (xml, _) = native_xml(&input);
         let old = xml.find("Den gamle udgave af filen.").expect(&xml);
         let new = xml.find("Den nye udgave af filen.").expect(&xml);
@@ -1767,7 +1767,7 @@ mod tests {
         }
         let (name, input) = kid;
         assert_eq!(
-            PdfParser.defers(&input, &TikaMetadata::new(), &configs),
+            PdfParser.shortfall(&input, &TikaMetadata::new(), &configs),
             None,
             "{name}"
         );
@@ -1856,7 +1856,7 @@ mod tests {
         let configs = ParserConfigs::default();
         for (name, input) in read_metadata() {
             assert_eq!(
-                PdfParser.defers(&input, &TikaMetadata::new(), &configs),
+                PdfParser.shortfall(&input, &TikaMetadata::new(), &configs),
                 None,
                 "{name}"
             );
@@ -2086,20 +2086,20 @@ mod tests {
     }
 
     #[test]
-    fn defers_what_the_port_does_not_do() {
-        let (_, deferred) = documents(&PdfParser, &corpora());
-        let mut found: Vec<(String, String)> = deferred
+    fn falls_short_on_what_the_port_does_not_do() {
+        let (_, shortfalls) = documents(&PdfParser, &corpora());
+        let mut found: Vec<(String, String)> = shortfalls
             .iter()
             .map(|path| {
                 let name = path.file_name().unwrap().to_str().unwrap().to_owned();
-                (name, deferral_of(path))
+                (name, shortfall_of(path))
             })
             .collect();
         found.sort();
         let expected: Vec<(&str, Why)> = NOT_THE_TEXT_LAYER
             .iter()
             .copied()
-            .filter(|(_, why)| why.defers())
+            .filter(|(_, why)| why.falls_short())
             .collect();
         assert_eq!(
             found
@@ -2113,7 +2113,7 @@ mod tests {
                 Why::Ocr | Why::Unmapped => {
                     reason.starts_with("page ") && reason.contains("wants OCR")
                 }
-                Why::Doubtful => unreachable!("{name} is deferred for a doubtful page"),
+                Why::Doubtful => unreachable!("{name} falls short on a doubtful page"),
             };
             assert!(as_expected, "{name}: {reason}");
         }

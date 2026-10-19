@@ -116,7 +116,7 @@ impl Parser for MatParser {
 
 /// A file holding an element that inflates into more than
 /// [`decode_limit`](crate::compress::decode_limit) of its compressed bytes, as `reason` says,
-/// which jmatio inflates into memory whole: Tika's path takes it where there is one.
+/// which jmatio inflates into memory whole: the extraction fails past the limit.
 fn too_large(reason: String) -> Decline<'static> {
     Decline::Fails(Error::LimitExceeded(format!(
         "{reason}, the most the native parser inflates"

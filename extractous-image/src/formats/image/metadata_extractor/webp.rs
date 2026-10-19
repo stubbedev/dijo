@@ -1,7 +1,7 @@
 //! metadata-extractor's `RiffReader` with its `WebpRiffHandler`: the chunks of a WebP file, its
 //! size and flags from the VP8X, VP8L or VP8 chunk, and its Exif and ICC chunks read into
-//! directories of their own. An XMP chunk, which metadata-extractor reads with XMPCore, is left
-//! to Tika's path.
+//! directories of their own. An XMP chunk, which metadata-extractor reads with XMPCore, is not
+//! read.
 
 use super::descriptions::{base, Described};
 use super::reader::{Bounds, Reader, Sequential};

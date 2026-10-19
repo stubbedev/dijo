@@ -80,11 +80,11 @@ impl Exception {
     }
 }
 
-/// Why reading a database stops: an exception Jackcess throws, which ends the parse, something
-/// the port leaves to Tika, which it then leaves the database to, or what the port cannot read
-/// right where Jackcess reads it wrongly, which fails the parse. The port reads no usage map but
-/// a table's owned pages, which hold its rows: Jackcess reads the others too, and fails the
-/// parse on any it cannot read but a column's (#122).
+/// Why reading a database stops: an exception Jackcess throws, which ends the parse, something the
+/// port does not read, which it then leaves the database unread for, or what the port cannot read
+/// right where Jackcess reads it wrongly, which fails the parse. The port reads no usage map but a
+/// table's owned pages, which hold its rows: Jackcess reads the others too, and fails the parse on
+/// any it cannot read but a column's (#122).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Thrown {
     Exception(Exception),

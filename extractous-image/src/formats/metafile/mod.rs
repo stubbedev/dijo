@@ -314,7 +314,7 @@ fn unicode_string(bytes: &[u8]) -> Option<String> {
 /// What Tika's `EMFParser` records in `emf:icon-string` of the EMF picture `input`, parsed as
 /// `resolveEmfNames` parses the icon of an OLE object, which swallows the parser's failure: the
 /// name of the file the icon shows, or none where it names none or the parser fails. A picture
-/// whose comments embed documents, which Tika parses there, is left to Tika.
+/// whose comments embed documents, which Tika parses there, is not read.
 pub fn emf_icon_name(input: &[u8]) -> Result<Option<String>, Unported> {
     /// Why the steps of the picture stop: it failed, or it embeds documents.
     enum Unnamed {

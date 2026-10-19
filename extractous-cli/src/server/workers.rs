@@ -26,9 +26,9 @@ pub struct QueueFull;
 /// Where the pool's workers run extractions.
 #[derive(Clone)]
 pub enum Workers {
-    /// In threads of this process, attached to its isolate for good.
+    /// In threads of this process.
     Threads(Option<Arc<Cache>>),
-    /// In worker processes, one per worker thread, each with its own isolate.
+    /// In worker processes, one per worker thread.
     Processes(ProcessOptions),
 }
 

@@ -10,7 +10,7 @@ fn body(picture: &[u8]) -> String {
     xml[xml.find("<body>").unwrap()..].to_owned()
 }
 
-/// Where Tika's path fails on a record POI cannot read, decodes ANSI text as UTF-8 or a WMF's
+/// Where Tika fails on a record POI cannot read, decodes ANSI text as UTF-8 or a WMF's
 /// text in the last font made, the port reads on and decodes text in the font selected (#127).
 #[test]
 fn reads_records_tika_fails_on_and_text_in_the_font_selected() {

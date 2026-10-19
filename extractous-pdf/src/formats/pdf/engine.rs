@@ -296,7 +296,7 @@ fn number(object: &Object) -> Option<f32> {
     float_value(object)
 }
 
-/// Notes that `pdf` is read otherwise than Tika's path, where the port leaves out `what` of a
+/// Notes that `pdf` is read otherwise than Tika, where the port leaves out `what` of a
 /// page for the reason `unported`, on which PDFBox throws or which the port does not read.
 pub(super) fn differ_past(pdf: &Pdf, what: &str, Unported(reason): Unported) {
     pdf.differ(Difference(format!("the port leaves out {what}: {reason}")));
@@ -339,7 +339,7 @@ impl<'p> Run<'p, '_> {
 
     /// The operators of a content stream. Where PDFBox throws on one, or the port does not
     /// read it, the port goes on past it, and where it throws on the stream itself, the port
-    /// stops there, noting that it reads the page otherwise than Tika's path.
+    /// stops there, noting that it reads the page otherwise than Tika.
     fn process_operators(&mut self, data: &[u8]) -> Result<(), Unported> {
         let mut lexer = Lexer::new(data);
         let mut operands: Vec<Object> = Vec::new();

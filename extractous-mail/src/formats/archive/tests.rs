@@ -1,4 +1,4 @@
-//! The archive parsers compared with Tika's path: on the archives of the repository's corpora,
+//! The archive parsers compared with Tika: on the archives of the repository's corpora,
 //! on synthetic ones written for what the corpora lack, and on Tika's own test documents.
 
 use super::*;
@@ -147,9 +147,8 @@ fn extract(archive: &[u8]) -> (String, Result<Vec<String>, crate::Error>) {
 }
 
 /// Asserts that the extraction `ended` at the zip bomb limit of Tika's `SecureContentHandler`
-/// for `cause`. The native path fails with [`Error::LimitExceeded`]. Tika's path, which takes a
-/// zip bomb in a build that has it, fails with its exception or records it, as its wrapping of
-/// the guard's exception has it.
+/// for `cause`. The native path fails with [`Error::LimitExceeded`], where Tika fails with its
+/// exception or records it, as its wrapping of the guard's exception has it.
 fn assert_zip_bomb(ended: Result<Vec<String>, crate::Error>, cause: &str) {
     let message = match ended {
         Err(Error::LimitExceeded(message)) => message,

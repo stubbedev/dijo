@@ -365,7 +365,7 @@ impl Parser for HwpxParser {
         let mut sections = Vec::with_capacity(package.spine.len());
         for idref in &package.spine {
             match package.section(idref) {
-                Err(Refusal::Unread(why)) => return Err(Decline::Deferred(why.to_owned())),
+                Err(Refusal::Unread(why)) => return Err(Decline::Unread(why.to_owned())),
                 Err(Refusal::Unspooled(reason)) => return Err(Refusal::Unspooled(reason).into()),
                 section => sections.push(section),
             }

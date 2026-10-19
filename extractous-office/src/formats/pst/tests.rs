@@ -5,7 +5,7 @@ use crate::text::charset::Charset;
 const OST: &str = "../test_files/documents/offline-folder.ost";
 
 #[test]
-fn reads_messages_without_tika() {
+fn reads_messages_natively() {
     let (text, metadata) = crate::Extractor::new().extract_file_to_string(OST).unwrap();
     for expected in [
         "Top of Outlook data file",

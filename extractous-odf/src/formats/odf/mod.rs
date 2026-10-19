@@ -605,12 +605,12 @@ mod tests {
             .unwrap()
     }
 
-    /// What Tika's path gets wrong and the native parser does not (#90): headings and notes end
+    /// What Tika gets wrong and the native parser does not (#90): headings and notes end
     /// as blocks, `text:c` counts spaces, malformed style values are ignored rather than failing
     /// the document, keywords and creators are values of their own, and the attributes of
     /// OpenOffice.org 1 documents are read.
     #[test]
-    fn reads_what_tikas_path_misreads() {
+    fn reads_what_tika_misreads() {
         let text = content(
             r#"<office:text><text:h text:outline-level="x">Heading</text:h><text:p>a<text:s text:c="3"/>b<text:note><text:note-body><text:p>Note</text:p></text:note-body></text:note>after</text:p><text:p><text:span text:style-name="T3">semi</text:span><text:span text:style-name="T1">bold</text:span></text:p></office:text>"#,
         )
@@ -660,7 +660,7 @@ mod tests {
         let picture = document(TEXT, &[("content.xml", &text), ("Pictures/a.png", "png")]);
         assert_eq!(
             OpenDocumentParser
-                .defers(&picture, &TikaMetadata::new(), &ParserConfigs::default())
+                .shortfall(&picture, &TikaMetadata::new(), &ParserConfigs::default())
                 .as_deref(),
             None
         );
@@ -670,7 +670,7 @@ mod tests {
         );
         assert_eq!(
             OpenDocumentParser
-                .defers(
+                .shortfall(
                     &object_thumbnail,
                     &TikaMetadata::new(),
                     &ParserConfigs::default()
@@ -689,7 +689,7 @@ mod tests {
         );
         assert_eq!(
             OpenDocumentParser
-                .defers(&binary, &TikaMetadata::new(), &ParserConfigs::default())
+                .shortfall(&binary, &TikaMetadata::new(), &ParserConfigs::default())
                 .as_deref(),
             None
         );
@@ -702,7 +702,7 @@ mod tests {
         );
         assert_eq!(
             OpenDocumentParser
-                .defers(&mentioned, &TikaMetadata::new(), &ParserConfigs::default())
+                .shortfall(&mentioned, &TikaMetadata::new(), &ParserConfigs::default())
                 .as_deref(),
             None
         );
@@ -712,7 +712,7 @@ mod tests {
         );
         assert_eq!(
             OpenDocumentParser
-                .defers(&thumbnail, &TikaMetadata::new(), &ParserConfigs::default())
+                .shortfall(&thumbnail, &TikaMetadata::new(), &ParserConfigs::default())
                 .as_deref(),
             None
         );

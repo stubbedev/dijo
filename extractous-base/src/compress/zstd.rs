@@ -1,6 +1,5 @@
 //! Zstandard files, which ruzstd decodes: every frame in turn, skippable frames passed over,
-//! as `zstd -d` and zstd-jni's `ZstdInputStream` read them. Tika's path does not decode them,
-//! since its native image lacks zstd-jni.
+//! as `zstd -d` and zstd-jni's `ZstdInputStream` read them.
 
 use ruzstd::decoding::errors::{FrameDecoderError, ReadFrameHeaderError};
 use ruzstd::decoding::StreamingDecoder;

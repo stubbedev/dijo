@@ -1,6 +1,6 @@
 //! Cell values as Tika's `TikaExcelDataFormatter` writes them: POI's `DataFormatter` in the
-//! `en_US` locale the native image formats in, with a general format of 15 significant digits
-//! for `General` in any case, dates as their cells hold them, in the document's date system.
+//! `en_US` locale, with a general format of 15 significant digits for `General` in any case,
+//! dates as their cells hold them, in the document's date system.
 //!
 //! Each value is formatted by a format made for a value of its kind, a date or a number, and
 //! a date format is given each value it formats.

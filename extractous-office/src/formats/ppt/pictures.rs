@@ -131,7 +131,7 @@ pub(super) struct Pictures<'p> {
     stream: Content<'p>,
     pub(super) pictures: Vec<Picture>,
     pub(super) store: Option<Vec<StoreEntry>>,
-    /// Where Tika's path matches the pictures otherwise, if it does: by checksum among blip
+    /// Where Tika matches the pictures otherwise, if it does: by checksum among blip
     /// store entries of several offsets, which POI orders by a `java.util.HashMap` and the port
     /// by the store (#186).
     pub(super) difference: Option<Difference>,

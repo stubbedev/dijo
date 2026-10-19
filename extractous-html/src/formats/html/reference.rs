@@ -34,17 +34,17 @@ fn parses_as_tika_does() {
     extractous_core::testing::install_routes();
     let cases = cases(REFERENCE);
     let mut mismatches = Vec::new();
-    let mut deferred = Vec::new();
+    let mut short = Vec::new();
     let mut departed = Vec::new();
     let mut whatwg = 0;
     for case in &cases {
         let mut metadata = TikaMetadata::new();
         metadata.set("Content-Type", case.content_type.clone());
         if JSoupParser
-            .defers(&case.input, &metadata, &ParserConfigs::default())
+            .shortfall(&case.input, &metadata, &ParserConfigs::default())
             .is_some()
         {
-            deferred.push(case.label.as_str());
+            short.push(case.label.as_str());
             continue;
         }
         let document = read(&case.input, Pages::IN_MEMORY, Some(&case.content_type));
@@ -78,7 +78,7 @@ fn parses_as_tika_does() {
         "the reference has {} inputs",
         cases.len()
     );
-    assert!(deferred.is_empty(), "deferred: {deferred:?}");
+    assert!(short.is_empty(), "short: {short:?}");
     assert!(
         mismatches.is_empty(),
         "{} of {} inputs differ:\n{}",

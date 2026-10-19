@@ -9,7 +9,7 @@
 //! from Tika a document with a data URI of text in a charset this port does not encode, which it
 //! encodes in UTF-8, one whose blocks nest deeper than commonmark-java opens them, where it
 //! flattens the rest into paragraph text, a table commonmark-java reads leniently and a link
-//! whose title is ambiguous to the parser: a build with Tika leaves them to Tika's path.
+//! whose title is ambiguous to the parser, and records the difference.
 
 use std::ops::Range;
 

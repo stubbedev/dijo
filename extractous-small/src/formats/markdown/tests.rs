@@ -24,7 +24,7 @@ fn reads_titles_and_tables_as_commonmark_java_does() {
     assert_eq!(titles, [Some(String::new()), None]);
 }
 
-/// A link to a data URI of text without a media type, which Tika's path fails on.
+/// A link to a data URI of text without a media type, which Tika fails on.
 const UNTYPED_DATA_URI: &str = "[tekst](data:,hej)\n";
 
 #[test]

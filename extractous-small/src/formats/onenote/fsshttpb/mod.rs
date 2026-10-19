@@ -156,8 +156,8 @@ fn thrown(class: &str, message: impl fmt::Display) -> Thrown {
 }
 
 /// The `ArrayIndexOutOfBoundsException` of reading the byte at `index` of an array of `length`
-/// bytes, with the message the JVM gives it, where the native image of Tika's path gives one
-/// that says its stack trace is imprecise (#129).
+/// bytes, with the message the JVM gives it, where Tika built as a native image gives
+/// one that says its stack trace is imprecise (#129).
 fn out_of_bounds(index: usize, length: usize) -> Thrown {
     thrown(
         "java.lang.ArrayIndexOutOfBoundsException",

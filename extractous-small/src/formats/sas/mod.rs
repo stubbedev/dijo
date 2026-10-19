@@ -5,7 +5,7 @@
 //! The file is read as parso's `SasFileParser` reads it ([`reader`]), its compressed rows
 //! decompressed as parso decompresses them ([`decompress`]), and each cell read and written as
 //! parso reads and writes it ([`values`]). A file whose text is in a charset this port does not
-//! decode is left to Tika.
+//! decode is not read.
 
 mod decompress;
 mod reader;
@@ -52,8 +52,8 @@ impl Parser for Sas7bdatParser {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
-    /// Reads the file's metadata as parso does, failing where parso throws, and leaves a file
-    /// whose text is in a charset this port does not decode to Tika.
+    /// Reads the file's metadata as parso does, failing where parso throws, and leaves unread a
+    /// file whose text is in a charset this port does not decode.
     fn prepare_paged<'a>(
         &self,
         input: &'a [u8],
@@ -66,7 +66,7 @@ impl Parser for Sas7bdatParser {
             .and_then(|&byte| reader::encoding_name(byte));
         let decoder = match named {
             Some(name) => Some(Decoder::named(name).ok_or_else(|| {
-                Decline::Deferred(format!(
+                Decline::Unread(format!(
                     "text in {name}, which the native parser does not decode"
                 ))
             })?),

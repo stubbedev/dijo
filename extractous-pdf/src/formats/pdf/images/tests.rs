@@ -20,8 +20,8 @@ fn without_page_ocr(unique_only: bool) -> ParserConfigs {
     }
 }
 
-fn deferral(input: &[u8], configs: &ParserConfigs) -> Option<String> {
-    PdfParser.defers(input, &TikaMetadata::new(), configs)
+fn shortfall(input: &[u8], configs: &ParserConfigs) -> Option<String> {
+    PdfParser.shortfall(input, &TikaMetadata::new(), configs)
 }
 
 fn hex(data: &[u8]) -> String {
@@ -271,7 +271,7 @@ fn xyz_images() -> Vec<u8> {
 fn converts_images_of_an_xyz_profile() {
     let configs = without_page_ocr(false);
     let input = xyz_images();
-    assert_eq!(deferral(&input, &configs), None);
+    assert_eq!(shortfall(&input, &configs), None);
     let (xml, _) = extracting(&input, &configs);
     assert_eq!(
         image_names(&xml),
@@ -280,15 +280,15 @@ fn converts_images_of_an_xyz_profile() {
     );
 }
 
-/// Tika's native image lacks the JDK's CIE XYZ profile, so that PDFBox's conversion of a CIE
-/// colour throws a `CMMException` Tika does not catch and the whole document fails; the
-/// native parser converts the colours as PDFBox does on the JVM (#125), which the colour
-/// space's own test checks.
+/// Tika built as a native image lacks the JDK's CIE XYZ profile, so that PDFBox's conversion of a
+/// CIE colour throws a `CMMException` Tika does not catch and the whole document fails; the native
+/// parser converts the colours as PDFBox does on the JVM (#125), which the colour space's own test
+/// checks.
 #[test]
 fn converts_cie_based_images_where_tikas_native_image_fails() {
     let input = colour_space_images_drawing(CIE_IMAGES.into_iter());
     let configs = without_page_ocr(false);
-    assert_eq!(deferral(&input, &configs), None);
+    assert_eq!(shortfall(&input, &configs), None);
     let (xml, _) = extracting(&input, &configs);
     let names: Vec<String> = CIE_IMAGES
         .iter()
@@ -394,7 +394,7 @@ fn spooled_images(input: &[u8], configs: &ParserConfigs) -> Vec<(String, Vec<u8>
 fn encodes_jpegs_of_other_colour_spaces_anew() {
     let configs = without_page_ocr(false);
     let input = jpegs_written_anew();
-    assert_eq!(deferral(&input, &configs), None);
+    assert_eq!(shortfall(&input, &configs), None);
     let spooled = spooled_images(&input, &configs);
     let names: Vec<&str> = spooled.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(names, ["image-0.jpg", "image-1.jpg", "image-2.jpg"]);
@@ -456,7 +456,7 @@ fn ccitt_images(content: &str) -> Vec<u8> {
 fn decodes_byte_aligned_group_3_rows_as_unaligned_ones() {
     let configs = without_page_ocr(false);
     let input = ccitt_images("q 40 0 0 20 0 600 cm /Im1 Do Q q 40 0 0 20 50 600 cm /Im2 Do Q");
-    assert_eq!(deferral(&input, &configs), None);
+    assert_eq!(shortfall(&input, &configs), None);
     let spooled = spooled_images(&input, &configs);
     let [(_, sniffed), (_, aligned)] = &spooled[..] else {
         panic!(
@@ -479,7 +479,7 @@ fn ccitt_written_as_tiff() -> Vec<u8> {
 fn writes_ccitt_images_as_black_and_white_tiffs() {
     let configs = without_page_ocr(false);
     let input = ccitt_written_as_tiff();
-    assert_eq!(deferral(&input, &configs), None);
+    assert_eq!(shortfall(&input, &configs), None);
     let spooled = spooled_images(&input, &configs);
     let names: Vec<&str> = spooled.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(names, ["image-0.tif", "image-1.tif"]);
@@ -590,7 +590,7 @@ fn decoded_images() -> Vec<u8> {
 fn decodes_jbig2_and_crypt_filtered_images() {
     let configs = without_page_ocr(false);
     let input = decoded_images();
-    assert_eq!(deferral(&input, &configs), None);
+    assert_eq!(shortfall(&input, &configs), None);
     let (xml, metadata) = extracting(&input, &configs);
     assert_eq!(
         image_names(&xml),
@@ -671,7 +671,7 @@ fn scales_the_smaller_of_an_image_and_its_mask() {
     ];
     let input = drawing(&draw_each(2), &xobjects(2), &images);
     let configs = without_page_ocr(false);
-    assert_eq!(deferral(&input, &configs), None);
+    assert_eq!(shortfall(&input, &configs), None);
     let spooled = spooled_images(&input, &configs);
     let decoded: Vec<image::RgbaImage> = spooled
         .iter()

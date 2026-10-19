@@ -162,7 +162,7 @@ impl Parser for ZipParser {
 
     /// Opens the archive, or where `ZipFile` cannot open it, the archive Tika's detector
     /// salvaged from it for the parser, as its metadata says, and reads each entry to rule out
-    /// what Tika's path reads otherwise. The entries are read again as they are written:
+    /// what Tika reads otherwise. The entries are read again as they are written:
     /// holding them all would hold every entry's data at once, where writing holds one at a
     /// time, for decompression that costs little beside the parse of each entry. A stored
     /// entry's data is the archive's own.
@@ -451,8 +451,8 @@ impl Streamed {
                     Some(Difference::new(format!(
                         "the entry {} has a data descriptor after data compressed with method \
                          {}, for which commons-compress's stream opens no decompressor, so that \
-                         Tika's path fails the archive with a NullPointerException, where the \
-                         native parser reads the data to its end",
+                         Tika fails the archive with a NullPointerException, where the native \
+                         parser reads the data to its end",
                         entry.name, entry.method
                     )))
                 });
@@ -703,20 +703,20 @@ mod tests {
         data.len() - 22 - 47
     }
 
-    fn defers(input: &[u8]) -> Option<String> {
-        ZipParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
+    fn shortfall(input: &[u8]) -> Option<String> {
+        ZipParser.shortfall(input, &TikaMetadata::new(), &ParserConfigs::default())
     }
 
     #[test]
     fn parses_archives_zip_file_reads() {
-        assert_eq!(defers(&zip(&[("a", b"hej")])), None);
+        assert_eq!(shortfall(&zip(&[("a", b"hej")])), None);
     }
 
     #[test]
     fn reads_archives_zip_file_cannot_open_by_their_local_headers_or_as_salvaged() {
         let data = zip(&[("a", b"hej")]);
         let cut = &data[..data.len() - 10];
-        assert_eq!(defers(cut), None);
+        assert_eq!(shortfall(cut), None);
         let (xml, _) = crate::Extractor::new()
             .set_xml_output(true)
             .extract_bytes_to_string(cut)
@@ -725,7 +725,7 @@ mod tests {
         let mut salvaged = TikaMetadata::new();
         salvaged.set(Key::Salvaged.name(), "true");
         assert_eq!(
-            ZipParser.defers(cut, &salvaged, &ParserConfigs::default()),
+            ZipParser.shortfall(cut, &salvaged, &ParserConfigs::default()),
             None
         );
     }
@@ -746,7 +746,7 @@ mod tests {
         ];
         for (method, data) in methods {
             let archive = zip_compressed("a.txt", method, &data, text.len() as u32);
-            assert_eq!(defers(&archive), None, "method {method}");
+            assert_eq!(shortfall(&archive), None, "method {method}");
             let zip = ZipFile::open(&archive).unwrap();
             let entry = &zip.entries()[0];
             assert_eq!(entry.method, method);
@@ -766,12 +766,12 @@ mod tests {
     }
 
     #[test]
-    fn defers_entries_cut_short() {
+    fn falls_short_on_entries_cut_short() {
         let mut data = zip(&[("a", &[7u8; 5000])]);
         let cd = central_record(&data);
         data[18..22].copy_from_slice(&2u32.to_le_bytes());
         data[cd + 20..cd + 24].copy_from_slice(&2u32.to_le_bytes());
-        let reason = defers(&data).unwrap();
+        let reason = shortfall(&data).unwrap();
         assert!(reason.contains("cut short"), "{reason}");
     }
 }

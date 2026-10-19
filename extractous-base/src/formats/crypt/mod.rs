@@ -48,7 +48,7 @@ pub fn password(configs: &ParserConfigs) -> &str {
         .map_or(DEFAULT_PASSWORD, Password::expose)
 }
 
-/// The error Tika's path fails with where a parser throws a Tika `EncryptedDocumentException`,
+/// The error Tika fails with where a parser throws a Tika `EncryptedDocumentException`,
 /// wrapping the exception `cause` POI throws where there is one, as our Java reports it.
 pub fn encrypted(cause: Option<&str>) -> Error {
     let message = "Unable to process: document is encrypted";
@@ -58,7 +58,7 @@ pub fn encrypted(cause: Option<&str>) -> Error {
     })
 }
 
-/// The error Tika's path fails with where a parser throws a Tika `EncryptedDocumentException`
+/// The error Tika fails with where a parser throws a Tika `EncryptedDocumentException`
 /// with `message`, as our Java reports it.
 pub fn encrypted_document(message: &str) -> Error {
     Error::Encrypted(format!(
@@ -145,7 +145,7 @@ impl Hash {
 pub enum Unopened {
     /// POI throws reading the encryption, with what it throws.
     Thrown(String),
-    /// An encryption this port does not open, which Tika's path opens.
+    /// An encryption this port does not open, which Tika opens.
     Unported(String),
     /// An encryption [MS-OFFCRYPTO] 2.3.1 does not allow in the document, which no Office
     /// application writes and no decryptor of POI's opens, whatever the password: AES in a

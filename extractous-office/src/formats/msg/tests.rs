@@ -4,8 +4,8 @@ use super::*;
 use crate::formats::testing;
 
 fn corpus(roots: &[&Path]) -> Vec<PathBuf> {
-    let (mut documents, deferred) = testing::documents(&MsgParser, roots);
-    documents.extend(deferred);
+    let (mut documents, shortfalls) = testing::documents(&MsgParser, roots);
+    documents.extend(shortfalls);
     documents.sort();
     documents
 }
@@ -115,7 +115,7 @@ fn message_of_a_bad_chunk_name() -> crate::ole2::Storage<'static> {
     }
 }
 
-/// A message POI throws on fails in the build without Tika as Tika's path fails on it.
+/// A message POI throws on fails as Tika fails on it.
 #[test]
 fn fails_a_message_poi_throws_on_with_tikas_wording() {
     let data = crate::ole2::write(&message_of_a_bad_chunk_name()).unwrap();
@@ -132,7 +132,7 @@ fn fails_a_message_poi_throws_on_with_tikas_wording() {
 
 /// A stored message POI throws on is read as far as its summary information, its failure
 /// written for the message storing it to record, as Tika's embedded document extractor
-/// records it, rather than leaving the message storing it to Tika.
+/// records it, rather than leaving the message storing it unread.
 #[test]
 fn reads_a_stored_message_poi_throws_on_as_its_failure() {
     use crate::ole2::{write, Node, Storage};
@@ -202,11 +202,10 @@ fn reads_a_submission_id_poi_leaves_unread() {
     );
 }
 
-/// A stream that cannot be read is left out of the message, which is read without it, noting
-/// what POI reads otherwise (#186): a build with Tika hands it to Tika's path, one without
-/// warns of it. A directory of a multi-valued property is never one of its values, as its
-/// name, ending in `000D`, holds no decimal index: POI takes it for the property's length, and
-/// so does the port, leaving nothing out.
+/// A stream that cannot be read is left out of the message, which is read without it, noting what
+/// POI reads otherwise (#186) in a warning. A directory of a multi-valued property is never one of
+/// its values, as its name, ending in `000D`, holds no decimal index: POI takes it for the
+/// property's length, and so does the port, leaving nothing out.
 #[test]
 fn leaves_out_unreadable_streams() {
     use crate::ole2::{write, Node, Storage};

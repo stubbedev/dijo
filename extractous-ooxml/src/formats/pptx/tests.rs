@@ -94,8 +94,8 @@ fn sheet(root: &str, attributes: &str, content: &str, after: &str) -> String {
     )
 }
 
-fn defers(input: &[u8]) -> Option<String> {
-    PptxParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
+fn shortfall(input: &[u8]) -> Option<String> {
+    PptxParser.shortfall(input, &TikaMetadata::new(), &ParserConfigs::default())
 }
 
 fn office(config: OfficeParserConfig) -> ParserConfigs {
@@ -106,7 +106,7 @@ fn office(config: OfficeParserConfig) -> ParserConfigs {
 }
 
 #[test]
-fn defers_ole_objects_tika_fails_to_read() {
+fn falls_short_on_ole_objects_tika_fails_to_read() {
     let mut built = Built::new(&[("rId1", kind::SLIDE, "slides/slide1.xml")]);
     built
         .part(
@@ -123,7 +123,7 @@ fn defers_ole_objects_tika_fails_to_read() {
             extractor::OLE_OBJECT_TYPE,
             &[0; 2048],
         );
-    assert!(defers(&built.bytes())
+    assert!(shortfall(&built.bytes())
         .is_some_and(|reason| reason.contains("Tika fails to read the OLE object")));
 }
 
@@ -261,7 +261,7 @@ fn reads_what_tika_slips_on() {
             ),
         );
     let input = built.bytes();
-    assert_eq!(defers(&input), None);
+    assert_eq!(shortfall(&input), None);
     let xml = xml(&input);
     assert!(xml.contains("<a href=\"#_ftn1\">To the note</a>"), "{xml}");
     assert!(
@@ -305,7 +305,7 @@ fn reads_what_tika_slips_on() {
 }
 
 #[test]
-fn defers_macros_only_when_they_are_extracted() {
+fn falls_short_on_macros_only_when_they_are_extracted() {
     let mut built = Built::new(&[("rId1", kind::VBA_PROJECT, "vbaProject.bin")]);
     built.binary(
         "ppt/vbaProject.bin",
@@ -313,9 +313,9 @@ fn defers_macros_only_when_they_are_extracted() {
         b"x",
     );
     let input = built.bytes();
-    assert_eq!(defers(&input), None);
+    assert_eq!(shortfall(&input), None);
     let macros = office(OfficeParserConfig::new().set_extract_macros(true));
     assert!(PptxParser
-        .defers(&input, &TikaMetadata::new(), &macros)
+        .shortfall(&input, &TikaMetadata::new(), &macros)
         .is_some_and(|reason| reason.contains("vbaProject.bin")));
 }

@@ -273,8 +273,8 @@ pub fn format_instant(epoch_millis: i64) -> String {
     instant_string(epoch_millis.div_euclid(1000), 0)
 }
 
-/// `Date.toString` in a zone of a custom offset, as the native image writes it: `EEE MMM dd
-/// HH:mm:ss`, the zone named by its offset (`+02:00`), and the year of the era.
+/// `Date.toString` in a zone of a custom offset, as Java writes it in the `en_US` locale: `EEE MMM
+/// dd HH:mm:ss`, the zone named by its offset (`+02:00`), and the year of the era.
 pub fn date_to_string(epoch_millis: i64, zone: &TimeZone) -> String {
     let local = local_fields(epoch_millis, zone);
     let minutes = local.offset / 60_000;
@@ -426,7 +426,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn writes_dates_as_the_native_images_date_to_string_does() {
+    fn writes_dates_as_javas_date_to_string_does() {
         assert_eq!(
             date_to_string(1_791_836_869_000, &TimeZone::fixed(7200)),
             "Mon Oct 12 22:27:49 +02:00 2026"

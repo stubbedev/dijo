@@ -2004,7 +2004,7 @@ fn search_object_stream_offsets(data: &[u8]) -> Result<Vec<(i64, Key)>, Unported
     Ok(found.into_iter().collect())
 }
 
-/// Why the port leaves a document to Tika whose loading PDFBox fails on while it searches for
+/// Why the port does not read a document whose loading PDFBox fails on while it searches for
 /// its object streams.
 fn loading_fails() -> Unported {
     Unported(

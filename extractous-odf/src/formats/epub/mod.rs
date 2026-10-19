@@ -595,8 +595,8 @@ mod tests {
     use super::*;
     use crate::formats::zip_package::tests::{replace_all, with_method};
 
-    fn deferral(input: &[u8]) -> Option<String> {
-        EpubParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
+    fn shortfall(input: &[u8]) -> Option<String> {
+        EpubParser.shortfall(input, &TikaMetadata::new(), &ParserConfigs::default())
     }
     use std::io::{Cursor, Write};
 
@@ -633,7 +633,7 @@ mod tests {
     }
 
     /// An element of a chapter under a prefix for XHTML is written well-formed, in XHTML, where
-    /// Tika's path writes a prefixed start tag with an unprefixed end tag (#87).
+    /// Tika writes a prefixed start tag with an unprefixed end tag (#87).
     #[test]
     fn writes_xhtml_under_a_prefix_well_formed() {
         let opf = package(
@@ -701,7 +701,7 @@ mod tests {
     /// The XHTML and metadata the native path extracts from the book `entries`.
     fn extract(entries: &[(&str, &str)]) -> (String, crate::Metadata) {
         let input = book(entries);
-        assert_eq!(deferral(&input), None);
+        assert_eq!(shortfall(&input), None);
         crate::Extractor::new()
             .set_xml_output(true)
             .extract_bytes_to_string(&input)

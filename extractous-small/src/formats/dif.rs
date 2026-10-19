@@ -57,7 +57,7 @@ impl Parser for DifParser {
         _configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
         if xml::has_document_type(input) {
-            return Err(Decline::Deferred(
+            return Err(Decline::Unread(
                 "a document type declaration, under which Xerces may report whitespace as \
                  ignorable, which DIFContentHandler writes as it is"
                     .to_owned(),

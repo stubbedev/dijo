@@ -10,7 +10,7 @@
 //! general format, and dates in the workbook's date system as their cells hold them: see
 //! [`crate::formats::data_format`].
 //!
-//! A workbook embedding an OLE object, which Tika opens as a compound file, is left to Tika, as
+//! A workbook embedding an OLE object, which Tika opens as a compound file, is not read, nor
 //! is a package POI would read in a degraded way or refuse, one with a part whose XML Tika
 //! records failing on, and one using what this port does not read: see
 //! [`Workbook::prepare`].
@@ -134,7 +134,7 @@ impl Parser for XlsxParser {
         ]
     }
 
-    /// Defers workbooks with OLE objects Tika opens, macros it extracts when asked to, parts
+    /// Leaves unread workbooks with OLE objects Tika opens, macros it extracts when asked to, parts
     /// whose XML Tika records failing on, and packages POI does not open as this port does.
     fn prepare<'a>(
         &self,
@@ -161,7 +161,7 @@ impl Parser for XlsxParser {
     }
 }
 
-/// What Tika's path fails a Strict OOXML workbook with: `XSSFReader` throws on a package whose
+/// What Tika fails a Strict OOXML workbook with: `XSSFReader` throws on a package whose
 /// main document only a Strict relationship leads to, which the Excel extractor rethrows as an
 /// `IOException`.
 fn strict_unsupported() -> Error {
@@ -174,7 +174,7 @@ fn strict_unsupported() -> Error {
 }
 
 /// Fails a package whose main document, of one of the `workbook_types`, only a Strict
-/// relationship leads to, as Tika's path fails it once it has read the package's properties.
+/// relationship leads to, as Tika fails it once it has read the package's properties.
 fn refuse_strict(package: &Package, workbook_types: &[&str]) -> Result<(), Decline<'static>> {
     if Package::relationships_of(&package.relationships, kind::OFFICE_DOCUMENT)
         .next()
@@ -363,7 +363,7 @@ impl<'a> Workbook<'a> {
         parts
     }
 
-    /// Finds what this port leaves to Tika in a package it could open (embedded documents and
+    /// Finds what this port does not read in a package it could open (embedded documents and
     /// charts, macros to extract, parts whose XML Tika fails on, and properties it does not
     /// read), and reads what Tika reads whole before it writes from it: the properties, styles,
     /// shared strings, each sheet's comments, the workbook's metadata and its people.

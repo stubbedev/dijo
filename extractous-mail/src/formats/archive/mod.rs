@@ -68,7 +68,7 @@ fn record_unreadable(metadata: &mut TikaMetadata, name: &str, reason: &str) {
 }
 
 /// Why the native readers do not read `what`, for the reason `undecoded`, given to Tika's
-/// parser `tika_name`: a stream beyond the memory limit fails at once, as Tika's path fails it,
+/// parser `tika_name`: a stream beyond the memory limit fails at once, as Tika fails it,
 /// and data that fails to decode fails as the reader's `IOException` fails Tika's parser.
 fn undecoded(what: &str, undecoded: Undecoded, tika_name: &str) -> Decline<'static> {
     match undecoded {
@@ -77,7 +77,7 @@ fn undecoded(what: &str, undecoded: Undecoded, tika_name: &str) -> Decline<'stat
             Decline::Fails(Error::LimitExceeded(format!("{what}: {undecoded}")))
         }
         Undecoded::Unspooled(_) => Decline::Fails(Error::IoError(format!("{what}: {undecoded}"))),
-        Undecoded::Unported(_) => Decline::Deferred(format!("{what}: {undecoded}")),
+        Undecoded::Unported(_) => Decline::Unread(format!("{what}: {undecoded}")),
         Undecoded::Fails(_) | Undecoded::Encrypted | Undecoded::BadPassword => Decline::Fails(
             Thrown::Io(Exception::new(
                 "java.io.IOException",

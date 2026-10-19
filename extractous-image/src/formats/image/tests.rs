@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::TesseractOcrConfig;
 
-/// With OCR skipped, the OCR enricher is not recorded among the parsers, where Tika's path
+/// With OCR skipped, the OCR enricher is not recorded among the parsers, where Tika
 /// records it though it reads nothing (#114).
 #[test]
 fn records_no_ocr_parser_where_ocr_is_skipped() {
@@ -16,7 +16,7 @@ fn records_no_ocr_parser_where_ocr_is_skipped() {
 }
 
 /// A HEIC image libheif cannot decode for OCR fails as the `IOException` our Java
-/// `HeifDecoder` throws out of Tika's `HeifParser`, in a build without Tika too (#173).
+/// `HeifDecoder` throws out of Tika's `HeifParser` (#173).
 #[test]
 fn fails_on_heif_images_libheif_cannot_decode() {
     let heic = std::fs::read("../quality/corpus/prose-scan.heic").unwrap();
@@ -126,7 +126,7 @@ fn assert_read_as_the_jdk_does(name: &str, input: &[u8], expected: &JdkRead) {
     }
 }
 
-/// Tika's path reads BMP and WBMP images with the JDK's readers or jai-imageio's, whichever its
+/// Tika reads BMP and WBMP images with the JDK's readers or jai-imageio's, whichever its
 /// registry lists first in an order nothing defines (#114); the native readers read them as the
 /// JDK's do, the readers the Java path has without jai-imageio, as `just bmp-reference`
 /// records them.

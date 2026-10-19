@@ -4,8 +4,8 @@
 //! embedded document extractor, and each null as an empty `null` element, where Tika drops a
 //! null in a dictionary and fails on one elsewhere after starting the list (#104). An XML list
 //! whose root is a dictionary is typed by its keys. Sets, trees that share objects so often
-//! that writing them out would not end, dates far from ours, and what [`xml`] leaves out stay
-//! on Tika's path. ASCII property lists have no media type of their own in Tika, which detects
+//! that writing them out would not end, dates far from ours, and what [`xml`] leaves out are not
+//! read. ASCII property lists have no media type of their own in Tika, which detects
 //! them as text, so they never reach `PListParser`.
 //!
 //! Neither kind of list is read into a tree: a binary list's objects are read in place as they
@@ -50,8 +50,8 @@ const MAX_DATE_MILLIS: u64 = 1_000_000_000_000_000;
 /// that the base64 of the pieces is that of the whole.
 const PIECE: usize = 3 << 14;
 
-/// Why the port does not write a property list as Tika does: Tika's path is left to read it,
-/// or dd-plist fails on it before the document starts.
+/// Why the port does not write a property list as Tika does: the port does not read it, or
+/// dd-plist fails on it before the document starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Problem {
     Unread(&'static str),
@@ -441,7 +441,7 @@ impl Parser for PListParser {
             )),
         };
         prepared.map_err(|problem| match problem {
-            Problem::Unread(why) => Decline::Deferred(why.to_owned()),
+            Problem::Unread(why) => Decline::Unread(why.to_owned()),
             Problem::Failed(reason) => {
                 Decline::Fails(Error::ParseError(format!("problem parsing root: {reason}")))
             }
@@ -478,7 +478,7 @@ mod tests {
     }
 
     /// A binary property list of every kind of object the parser reads, and one of a set, which
-    /// it leaves to Tika, written to `scratch`.
+    /// it does not read, written to `scratch`.
     fn typical_and_set(scratch: &Scratch) -> (PathBuf, PathBuf) {
         use Item::*;
         let typical = bplist(
@@ -540,12 +540,12 @@ mod tests {
     fn reads_every_kind_of_object_but_sets() {
         let scratch = Scratch::new("plist-kinds");
         let (typical, set) = typical_and_set(&scratch);
-        let (parsed, deferred) = documents(&PListParser, &[scratch.directory()]);
-        assert_eq!(deferred, [set]);
+        let (parsed, shortfalls) = documents(&PListParser, &[scratch.directory()]);
+        assert_eq!(shortfalls, [set]);
         assert_eq!(parsed, [typical]);
     }
 
-    /// A build without Tika fails a document its native parser defers with the parser's reason.
+    /// The extraction fails a document its native parser does not read with the parser's reason.
     #[test]
     fn fails_sets_with_why() {
         let set = bplist(&[Item::Set(vec![1]), Item::Ascii("member")], 0);
@@ -555,7 +555,7 @@ mod tests {
         assert!(
             matches!(
                 &failed,
-                Error::Unsupported(crate::Unsupported::Deferred {
+                Error::Unsupported(crate::Unsupported::Unread {
                     parser: "extractous::PListParser",
                     ..
                 })

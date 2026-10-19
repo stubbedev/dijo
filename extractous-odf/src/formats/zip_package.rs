@@ -55,7 +55,7 @@ impl<'a> ZipPackage<'a> {
             match salvage(input) {
                 Ok(salvaged) => return Ok(Self::of(salvaged, Pages::IN_MEMORY)),
                 Err(Unsalvaged::Unported(reason)) => {
-                    return Err(Decline::Deferred(format!(
+                    return Err(Decline::Unread(format!(
                         "Tika's ZIP detector salvaged its archive, which the port does not \
                          salvage, for {reason}"
                     )))
@@ -67,7 +67,7 @@ impl<'a> ZipPackage<'a> {
             }
         }
         if file::has_end_of_central_directory(input) {
-            return Err(Decline::Deferred(
+            return Err(Decline::Unread(
                 "ZipFile cannot open its archive, which Tika's ZIP detector did not salvage, and \
                  the port does not tell which exception ZipFile throws on it"
                     .to_owned(),
@@ -226,8 +226,8 @@ impl Undecoded {
                 reading,
                 difference: Difference::new(format!(
                     "the data of the entry {name} is cut short or corrupt: the native parser \
-                     fails the document as malformed there, where Tika's path fails it with the \
-                     exception its inflater throws"
+                     fails the document as malformed there, where Tika fails it with the exception \
+                     its inflater throws"
                 )),
             },
             Self::Oversized { limit } => {

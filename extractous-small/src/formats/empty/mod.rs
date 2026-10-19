@@ -2,7 +2,7 @@
 //! its parsers takes, by the type or any type it specializes: an empty document, with no
 //! metadata of its own. It takes no type itself; [`super::parser_for`] falls back to it where the
 //! walk through a document's types finds no parser, native or Tika's, so the native path writes
-//! the same empty document without starting the JVM.
+//! the same empty document Tika does.
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;

@@ -2,7 +2,7 @@
 //! a TIFF file or an Exif segment, read into the directories of Exif: IFD0, its Exif and GPS
 //! sub-IFDs, the interoperability IFD, the thumbnail or the further pages that follow IFD0, and
 //! the IPTC, ICC, Photoshop and PrintIM data some tags hold, and Apple's maker note. Other maker
-//! notes and Panasonic's raw IFD0 are left to Tika's path; XMP held in a tag is read by [`xmp`].
+//! notes and Panasonic's raw IFD0 are not read; XMP held in a tag is read by [`xmp`].
 
 use std::collections::HashSet;
 
@@ -155,7 +155,7 @@ pub(crate) enum TiffError {
     Bounds(Bounds),
     /// `TiffProcessingException`: the structure is not TIFF.
     Processing(String),
-    /// A part of it this port leaves to Tika's path.
+    /// A part of it this port does not read.
     Unported(Unported),
 }
 
@@ -365,7 +365,7 @@ impl Handler<'_> {
 
     /// `processMakernote`: Apple's maker note read as its IFD, and as far as telling whether
     /// metadata-extractor reads another maker note as a directory of its own, which the port does
-    /// not: such a note is left to Tika's path.
+    /// not: such a note is not read.
     fn process_makernote(
         &mut self,
         offset: i64,

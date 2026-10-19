@@ -1,6 +1,6 @@
 //! HDF4 and HDF5 files, as Tika's `HDFParser` reads them through netcdf-java: the file type and
-//! the attributes of every group as metadata. Tika's path leaves them empty, as its native image
-//! lacks the scientific module (#172). Where `HDFParser` writes an empty document, the native
+//! the attributes of every group as metadata. Tika without its scientific module leaves them
+//! empty (#172). Where `HDFParser` writes an empty document, the native
 //! parser goes beyond it and lists the variables, the datasets, with their shapes and
 //! attributes, as `NetCDFParser` lists a NetCDF file's, and an HDF4 file's dimensions before
 //! them. Only the headers are read, in place, never the data.

@@ -19,9 +19,9 @@ pub fn install_routes() {
     formats::install_routes(&formats::Registry);
 }
 
-/// Why `parser` leaves the document at `path` unread, given the metadata the detection
-/// starts it from, if it does.
-pub fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Deferral> {
+/// Where `parser` falls short of Tika's parser on the document at `path`, given the metadata
+/// the detection starts it from, if it does: what it does not read, or reads differently.
+pub fn shortfall(parser: &dyn Parser, path: &Path) -> Option<String> {
     let name = path.to_str().unwrap();
     let input = std::fs::read(path).unwrap_or_else(|e| panic!("cannot read {name}: {e}"));
     let detected = formats::Detected::detect(
@@ -30,7 +30,7 @@ pub fn deferral(parser: &dyn Parser, path: &Path) -> Option<formats::Deferral> {
         crate::mime::Intent::Parse,
     )
     .unwrap_or_else(|e| panic!("{name} is not detected: {e:?}"));
-    parser.defers(
+    parser.shortfall(
         &input,
         &detected.metadata_for(parser),
         &ParserConfigs::default(),
@@ -80,12 +80,12 @@ pub fn differing_reading(parser: &dyn Parser, path: &Path) -> (formats::Differen
 }
 
 /// The non-empty files under `roots` whose detected type routing gives `parser`, split into
-/// those it parses and those it leaves unread.
+/// those it parses as Tika's parser does and those it falls short on ([`Parser::shortfall`]).
 pub fn documents(parser: &dyn Parser, roots: &[&Path]) -> (Vec<PathBuf>, Vec<PathBuf>) {
     documents_with(parser, roots, &ParserConfigs::default())
 }
 
-/// [`documents`], deferred under the settings `configs`.
+/// [`documents`], under the settings `configs`.
 pub fn documents_with(
     parser: &dyn Parser,
     roots: &[&Path],
@@ -103,7 +103,7 @@ pub fn documents_with(
         }
     }
     files.sort();
-    let (mut parsed, mut deferred) = (Vec::new(), Vec::new());
+    let (mut parsed, mut shortfalls) = (Vec::new(), Vec::new());
     for file in files {
         let path = file.to_str().unwrap();
         let input = std::fs::read(&file).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
@@ -123,15 +123,15 @@ pub fn documents_with(
             continue;
         }
         if parser
-            .defers(&input, &detected.metadata_for(parser), configs)
+            .shortfall(&input, &detected.metadata_for(parser), configs)
             .is_some()
         {
-            deferred.push(file);
+            shortfalls.push(file);
         } else {
             parsed.push(file);
         }
     }
-    (parsed, deferred)
+    (parsed, shortfalls)
 }
 
 /// Tika's own test documents, which `conformance/prepare.sh` checks out and names in

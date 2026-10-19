@@ -126,7 +126,7 @@ impl<'a> Records<'a> {
     /// `FILEPASS` record: the encryption opened with the password, and the records after it
     /// decrypted as `Biff8DecryptingStream` reads them, each record's type and length plain and
     /// the data of every record but those `isNeverEncryptedRecord` names decrypted by its
-    /// position in the stream; failing as Tika's path does where the password does not open
+    /// position in the stream; failing as Tika does where the password does not open
     /// the encryption. The position is where the records are; POI measures the records before
     /// as it would write them, a `WRITEPROTECT` of four bytes and a missing CSP name as an empty
     /// one, and decrypts out of step where they are otherwise (#119).
@@ -309,7 +309,7 @@ pub(super) enum WorkbookKey {
 /// `FilePassRecord`'s encryption, which a workbook reads as CryptoAPI where its version allows.
 ///
 /// A workbook encrypted with AES, which no Office application writes, fails as encrypted
-/// whatever the password. Tika's path fails on it with the `IllegalArgumentException` POI
+/// whatever the password. Tika fails on it with the `IllegalArgumentException` POI
 /// throws, in a message that names a Java object's hash (#166).
 fn file_pass_encryption(data: &[u8]) -> Result<Encryption, Decline<'static>> {
     let kind = data

@@ -59,7 +59,8 @@ impl Parser for VsdxParser {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
-    /// Defers packages POI does not open as this port does and pages declaring a document type.
+    /// Leaves unread packages POI does not open as this port does and pages declaring a document
+    /// type.
     fn prepare_paged<'a>(
         &self,
         input: &'a [u8],

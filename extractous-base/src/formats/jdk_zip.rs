@@ -6,8 +6,9 @@
 //! that are not UTF-8), and reads local headers with the CRC and size checks `ZipInputStream`
 //! makes. An entry is read as a document of its own ([`Archive::spool`]): a stored one in place,
 //! a deflated one decoded to a spool, which keeps as much in memory as a file read whole and the
-//! rest in a mapped temporary file. What the JDK might read differently (duplicate names, names commons-compress takes
-//! from elsewhere, ZIP64 sizes, data descriptors, damaged data) is left to Tika's path.
+//! rest in a mapped temporary file. What the JDK might read differently (duplicate names, names
+//! commons-compress takes from elsewhere, ZIP64 sizes, data descriptors, damaged data) the port
+//! does not read.
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -27,8 +28,8 @@ const ENCRYPTED: u16 = 0x0001;
 const DATA_DESCRIPTOR: u16 = 0x0008;
 const ZIP64_SIZE: i64 = 0xFFFF_FFFF;
 
-/// Why a port stops reading: Tika's path is left to read the document, or the Java parser
-/// fails on it, for the reason given, or spooling an entry fails.
+/// Why a port stops reading: it does not read the document, or the Java parser fails on it,
+/// for the reason given, or spooling an entry fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     Unread(&'static str),
@@ -40,7 +41,7 @@ pub enum Refusal {
 impl From<Refusal> for Decline<'_> {
     fn from(refusal: Refusal) -> Self {
         match refusal {
-            Refusal::Unread(why) => Decline::Deferred(why.to_owned()),
+            Refusal::Unread(why) => Decline::Unread(why.to_owned()),
             Refusal::Failed(reason) => Decline::Fails(Error::ParseError(reason)),
             Refusal::Unspooled(reason) => Decline::Fails(Error::IoError(reason)),
         }
@@ -104,7 +105,7 @@ pub fn read<'a>(zip: &ZipFile<'a>, entry: &ZipEntry) -> Result<Content<'a>, Refu
 }
 
 /// `zip.getInputStream(entry)` read whole, an entry that inflates past [`MAX_DECODED`] bytes
-/// left to Tika's path.
+/// left unread.
 pub fn read_whole(zip: &ZipFile<'_>, entry: &ZipEntry) -> Result<Vec<u8>, Refusal> {
     match read(zip, entry)? {
         Content::Complete(bytes) => Ok(bytes.into_owned()),
@@ -149,8 +150,7 @@ impl<'a> Archive<'a> {
 
     /// `zip.getInputStream(entry)` read to its end as a document of its own: a stored entry in
     /// place, whose reading releases the archive's pages, a deflated one decoded to a spool, up
-    /// to [`decode_limit`] bytes of its compressed data, past which it is left to Tika's path,
-    /// which streams it.
+    /// to [`decode_limit`] bytes of its compressed data, past which it is left unread.
     pub fn spool(&self, entry: &ZipEntry) -> Result<Input<'a>, Refusal> {
         match self.decode(entry)? {
             Decoded::Complete(input) => Ok(input),
@@ -211,7 +211,7 @@ impl Checked {
 }
 
 /// `zip.getEntry(name)`: the entry of that name, or else the directory of it, which the port
-/// leaves to Tika's path.
+/// does not read.
 pub fn entry<'z>(zip: &'z ZipFile<'_>, name: &str) -> Result<Option<&'z ZipEntry>, Refusal> {
     if let Some(entry) = zip.entry(name) {
         return Ok(Some(entry));

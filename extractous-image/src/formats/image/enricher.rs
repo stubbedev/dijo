@@ -1,8 +1,9 @@
-//! The OCR enricher `TikaNativeMain` hands Tika's image parsers when tesseract runs: our Java
+//! The OCR enricher extractous's former Java implementation handed Tika's image parsers when
+//! tesseract ran: our Java
 //! `PreparingOcrParser`, under Tika's `GuardedEnricher`. It reads the image with tesseract and
 //! writes the text in a div of class `ocr`, the pages of a TIFF each in a div of class `page`,
 //! and adds a report of how each image was read to the metadata. With OCR skipped it is not
-//! run, where Tika's path records it though it reads nothing (#114).
+//! run, where Tika records it though it reads nothing (#114).
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
@@ -109,8 +110,8 @@ impl<'a> Enricher<'a> {
     /// The enricher of an image of `content_type` Tika hands one, `enriched`, unless OCR is
     /// skipped: the image decoded, or of a TIFF of several pages, mapped to the pages of
     /// `memory`, the pages found, to decode one at a time as they are read. An image the port
-    /// cannot decode or read with tesseract is left to Tika's path; one libheif cannot decode
-    /// fails as the `IOException` Tika's path throws out of the image parser `tika_name` (#173).
+    /// cannot decode or read with tesseract is not read; one libheif cannot decode
+    /// fails as the `IOException` Tika throws out of the image parser `tika_name` (#173).
     pub(super) fn of(
         enriched: bool,
         content_type: &str,
@@ -133,9 +134,8 @@ impl<'a> Enricher<'a> {
             ocr::decode(input, memory, format, timeout).map_err(|undecoded| match undecoded {
                 #[cfg(not(feature = "static"))]
                 Undecoded::NoDecoder => Decline::from(Unported::new(format!(
-                "an image of {base}, for which no decoder is bundled or installed: Tika's path \
-                 reports it unread"
-            ))),
+                    "an image of {base}, for which no decoder is bundled or installed"
+                ))),
                 Undecoded::Failed(reason) => Decline::from(Unported::new(format!(
                     "an image of {base} the port cannot decode for OCR: {reason}"
                 ))),

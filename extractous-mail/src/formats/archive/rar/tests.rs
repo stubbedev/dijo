@@ -52,7 +52,7 @@ fn stored<'a>(name: &'a [u8], flags: u16, data: &'a [u8]) -> Stored<'a> {
     Stored { name, flags, data }
 }
 
-/// The documents of an entry the port cannot give whole, which Tika's path gives empty: the
+/// The documents of an entry the port cannot give whole, which Tika gives empty: the
 /// port records why instead (#122).
 const UNREAD: [(&str, &str); 3] = [
     ("corrupt-data.rar", "does not match its CRC"),

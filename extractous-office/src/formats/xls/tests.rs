@@ -444,12 +444,12 @@ fn finds_the_pictures_and_the_sheets_showing_them() {
 
 /// An MS Graph chart, which Tika's detection of an embedded storage names a workbook, is read
 /// natively, as `OfficeParser` reads it once it detects the chart: its summary information
-/// only, where it was left to Tika (#119).
+/// only, where it was left unread (#119).
 #[test]
 fn reads_an_ms_graph_chart_as_office_parser_does_once_it_detects_one() {
     let chart = crate::ole2::tests::compound(&["Workbook", "\u{1}CompObj"], b"..MSGraph.Chart.8..");
     assert_eq!(
-        XlsParser.defers(&chart, &TikaMetadata::new(), &configs()),
+        XlsParser.shortfall(&chart, &TikaMetadata::new(), &configs()),
         None
     );
 }
@@ -580,7 +580,7 @@ fn fails_on_a_link_formula_of_no_operand_as_poi_does() {
     );
 }
 
-/// A workbook POI throws on fails in the build without Tika as Tika's path fails on it, with
+/// A workbook POI throws on fails as Tika fails on it, with
 /// the exception POI throws, which `OfficeParser` lets through.
 #[test]
 fn fails_a_workbook_poi_throws_on_with_tikas_wording() {

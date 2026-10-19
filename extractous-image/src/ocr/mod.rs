@@ -1,5 +1,5 @@
-//! OCR: the tesseract Tika's path runs, and the one native readings run in this process, with
-//! our Java `PreparingOcrParser`'s preparation of the images it reads.
+//! OCR: the tesseract native readings run in this process, with our Java `PreparingOcrParser`'s
+//! preparation of the images it reads.
 
 mod av1;
 mod avif;
@@ -121,8 +121,7 @@ pub fn tesseract_version() -> ExtractResult<String> {
     linked_or_bundled_version().map_err(Error::IoError)
 }
 
-/// The version of the tesseract linked into the static executable, which native readings
-/// and Tika's path both run.
+/// The version of the tesseract linked into the static executable, which native readings run.
 #[cfg(feature = "static")]
 fn linked_or_bundled_version() -> Result<String, String> {
     tesseract()
@@ -133,10 +132,10 @@ fn linked_or_bundled_version() -> Result<String, String> {
 #[cfg(not(feature = "static"))]
 use bundle::tesseract_version as linked_or_bundled_version;
 
-/// Whether tesseract runs, found once per process as `TikaNativeMain` finds it once: the one the
+/// Whether tesseract runs, found once per process: the one the
 /// build carries, whether or not it can be set up, so that a reading fails with why it cannot
-/// rather than reading nothing, or else one on `PATH` that answers `--version`. With one, Tika
-/// reads images and PDF pages with our OCR parsers.
+/// rather than reading nothing, or else one on `PATH` that answers `--version`. With one, images
+/// and PDF pages are read with OCR.
 pub fn tesseract_runs() -> bool {
     static RUNS: OnceLock<bool> = OnceLock::new();
     *RUNS.get_or_init(|| bundle::carries_tesseract() || tesseract_version().is_ok())
@@ -149,7 +148,7 @@ pub enum NoTesseract {
     /// fails with this.
     Broken(OcrError),
     /// The library of the `tesseract` on the `PATH` cannot be loaded, for this reason, where
-    /// Tika's path runs the program.
+    /// Tika runs the program.
     Unloadable(String),
 }
 
@@ -166,7 +165,7 @@ impl fmt::Display for NoTesseract {
 /// the one the build carries cannot be set up.
 pub type Reader = Result<&'static Tesseract, OcrError>;
 
-/// The tesseract readings run with, or why only Tika's path reads: it runs the `tesseract` on the
+/// The tesseract readings run with, or why only Tika reads: it runs the `tesseract` on the
 /// `PATH` whose library this process cannot load.
 pub fn reader() -> Result<Reader, String> {
     match tesseract() {
@@ -334,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn native_readings_run_the_tesseract_tikas_path_runs() {
+    fn native_readings_run_the_tesseract_whose_version_is_reported() {
         let version = tesseract_version().unwrap();
         let linked = tesseract().unwrap().version();
         assert!(version.contains(&linked), "{version} against {linked}");

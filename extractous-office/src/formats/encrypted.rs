@@ -1,6 +1,6 @@
 //! The encrypted Word documents and workbooks `tests/fixtures/crypt/encrypt.py` writes from the
 //! plain ones LibreOffice writes, with XOR obfuscation and with RC4 CryptoAPI, opened with their
-//! password as Tika's path opens them, and failing without it as Tika's path fails; and those
+//! password as Tika opens them, and failing without it as Tika fails; and those
 //! encrypted as nothing decrypts, failing whatever the password.
 
 use std::path::PathBuf;

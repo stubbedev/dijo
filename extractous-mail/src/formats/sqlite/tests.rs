@@ -83,7 +83,7 @@ fn reads_a_database_in_write_ahead_log_mode() {
 }
 
 #[test]
-fn reads_tables_without_tika() {
+fn reads_tables_natively() {
     let (text, metadata) = crate::Extractor::new()
         .extract_file_to_string("../test_files/documents/notes.sqlite")
         .unwrap();

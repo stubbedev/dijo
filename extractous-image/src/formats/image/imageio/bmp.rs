@@ -1,6 +1,6 @@
 //! The JDK's `BMPImageReader` as far as its header, and `BMPMetadata`'s standard tree: its
 //! native tree keeps values in its nodes rather than in attributes, so Tika takes nothing from
-//! it. Every BMP is read so, where Tika's path holds jai-imageio's reader too and takes
+//! it. Every BMP is read so, where Tika holds jai-imageio's reader too and takes
 //! whichever of the two its registry, in an order nothing defines, lists first (#114).
 
 use super::{standard_tree, Eof, Node, Read, Stream};

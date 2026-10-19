@@ -1,6 +1,6 @@
-//! The OCR of a PDF's pages. Whether Tika's path would OCR a page: never under `NO_OCR`; under
-//! `AUTO`, by `AbstractPDF2XHTML.ocrWanted` with the thresholds `PdfConfig.setOcrStrategyAuto`
-//! sets, pages the port leaves to Tika, or, when tesseract runs, by our
+//! The OCR of a PDF's pages. Whether Tika would OCR a page: never under `NO_OCR`; under `AUTO`,
+//! by `AbstractPDF2XHTML.ocrWanted` with the thresholds `PdfConfig.setOcrStrategyAuto` sets,
+//! pages the port does not read, or, when tesseract runs, by our
 //! `TextLayerCheckingPdfParser`, which decides page by page from the text the page's text layer
 //! yields ([`quality`]): a page with next to no text gets OCR text added, a page whose text layer
 //! is garbage has it replaced by OCR text, and a doubtful one is read too and keeps whichever
@@ -106,7 +106,7 @@ impl Thresholds {
 pub(super) struct RejectedThresholds(String);
 
 impl RejectedThresholds {
-    /// The error Tika's path fails with, a Java exception our Java throws as it applies the
+    /// The error Tika fails with, a Java exception our Java throws as it applies the
     /// settings.
     pub(super) fn into_error(self) -> Error {
         let exception = format!("java.lang.IllegalArgumentException: {}", self.0);
@@ -127,7 +127,7 @@ fn digits(text: &str) -> Option<i32> {
     text.parse().ok()
 }
 
-/// How Tika's path decides whether to OCR a page.
+/// How Tika decides whether to OCR a page.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum OcrCheck {
     /// `NO_OCR`: it OCRs no page.
@@ -166,7 +166,7 @@ pub(super) enum PageCheck {
 }
 
 impl OcrCheck {
-    /// The check Tika's path makes under the PDF settings, with tesseract running or not, or
+    /// The check Tika makes under the PDF settings, with tesseract running or not, or
     /// the thresholds our Java rejects. Without tesseract the OCR strategies still read every
     /// page by OCR, which reads nothing ([`PageOcr::of`]).
     pub(super) fn of(config: &PdfParserConfig, ocr_runs: bool) -> Result<Self, RejectedThresholds> {
@@ -306,7 +306,7 @@ impl PageOcr {
             false => {
                 Self::tesseract(&document, &password, page_count, configs).unwrap_or_else(|why| {
                     pdf.differ(Difference(format!(
-                        "pages Tika's path reads by OCR, read without it: {why}"
+                        "pages Tika reads by OCR, read without it: {why}"
                     )));
                     Reader::Skipping
                 })
@@ -424,7 +424,7 @@ impl PageOcr {
     }
 }
 
-/// An OCR failure as `Throwables.describe` renders the exception Tika's path throws for it.
+/// An OCR failure as `Throwables.describe` renders the exception Tika throws for it.
 fn described(failure: &OcrError) -> String {
     let class = match failure {
         OcrError::TimedOut { .. } => "org.apache.tika.exception.TikaTimeoutException",
@@ -461,7 +461,7 @@ impl PageReading {
     }
 
     /// `AbstractPDF2XHTML.enrichCurrentPage` with Tika's PDF parser's own OCR parser: the
-    /// parser recorded and its text written, unless OCR is skipped, where Tika's path records it
+    /// parser recorded and its text written, unless OCR is skipped, where Tika records it
     /// though it reads nothing (#114). A page the OCR parser fails
     /// on fails the document, as `OCR2XHTML` and `PDF2XHTML` throw the first such failure once
     /// every page is written.

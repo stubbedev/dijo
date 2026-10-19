@@ -207,14 +207,14 @@ fn report(display: &str, message: &str) {
     eprintln!("extractous: {display}: {message}");
 }
 
-/// An input together with the file on disk Tika reads it from.
+/// An input together with the file on disk it is read from.
 struct Resolved {
     input: Input,
     path: PathBuf,
 }
 
 /// Resolves every input to a file on disk. Standard input is copied once into the spool, since
-/// Tika needs random access for many formats.
+/// many formats need random access.
 fn resolve_inputs(
     args: &InputArgs,
     spool: &Spool,

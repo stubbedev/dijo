@@ -662,7 +662,7 @@ fn body(message: &Message) -> Reading<(Body, HashSet<String>, Option<Difference>
         _ => None,
     }) {
         let (prepared, difference) = noted(html::prepare(&data, &TikaMetadata::new()))
-            .map_err(|reason| Unported(format!("the HTML body defers: {reason}")))?;
+            .map_err(|reason| Unported(format!("the HTML body is not read: {reason}")))?;
         image_content_ids(&String::from_utf8_lossy(&data), &mut content_ids);
         return Ok((
             Body::Html {

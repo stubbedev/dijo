@@ -1,6 +1,5 @@
-//! Extraction across worker processes. Every extraction in a process shares its one GraalVM
-//! isolate, and past a few at once they contend inside it, so a batch with more parallel jobs
-//! than that runs in worker processes: copies of this executable, started with the same
+//! Extraction across worker processes. A batch with more parallel jobs than
+//! [`JOBS_PER_PROCESS`] runs in worker processes: copies of this executable, started with the same
 //! arguments, that take jobs as JSON lines on standard input and answer each with one on
 //! standard output. Their output goes into the spool directory of the process that started them,
 //! which emits it in input order as before.
@@ -26,10 +25,8 @@ use crate::{
     Sink, SinkFailure, STDOUT_CLOSED,
 };
 
-/// The extractions each worker process runs at once. Two share an isolate without contending,
-/// and take half the processes, and so half the memory and start-up, of one each: 120 copies of
-/// a 28-page PDF on 12 hardware threads took 3.2 s in six processes of two, 3.5 s in twelve of
-/// one, and 6.4 s in a single process running four.
+/// The extractions each worker process runs at once. Two take half the processes, and so half
+/// the memory and start-up, of one each.
 pub const JOBS_PER_PROCESS: usize = 2;
 
 /// Set in a worker process's environment to the spool directory of the process that started it.

@@ -99,7 +99,7 @@ impl Parser for GeoGebraParser {
         })?;
         let archive = Archive::new(zip, pages);
         let book = Book::read(&archive).map_err(|refusal| match refusal {
-            Refusal::Unread(reason) => Decline::Deferred(reason.to_owned()),
+            Refusal::Unread(reason) => Decline::Unread(reason.to_owned()),
             refusal => Decline::from(refusal),
         })?;
         Ok(Box::new(move |xhtml| book.write(&archive, xhtml)))
@@ -139,7 +139,7 @@ struct Book {
     others: Vec<Attachment>,
 }
 
-/// The data of an entry read ahead, or why the port leaves the archive to Tika.
+/// The data of an entry read ahead, or why the port does not read the archive.
 fn data(archive: &Archive<'_>, entry: &ZipEntry) -> Result<Data, Refusal> {
     if !entry.can_read() {
         return Ok(Data::Unsupported);

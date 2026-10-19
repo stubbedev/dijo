@@ -650,7 +650,7 @@ impl<'a> Reader<'a> {
         if encoding.is_some() {
             self.decoder = self
                 .file_decoder
-                .expect("a file whose charset this port does not decode is left to Tika");
+                .expect("a file whose charset this port does not decode is left unread");
         }
         self.properties.encoding = encoding;
         self.properties.name = Some(java_trim(&self.string(&fields[2])));

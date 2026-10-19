@@ -2,7 +2,7 @@
 //! information as metadata, then the text of the Quill contents' text bits, every carriage
 //! return a line break, in one paragraph, as `PublisherTextExtractor` gives it, and the macros
 //! after it when asked for. A document POI throws on, in its Quill contents or its main
-//! contents, is left to Tika.
+//! contents, fails, as it fails Tika's parse.
 //!
 //! HPBF also reads the Escher streams, which hold no text, and reads each of their records at
 //! the start of the stream rather than where it lies, so that a document whose streams are

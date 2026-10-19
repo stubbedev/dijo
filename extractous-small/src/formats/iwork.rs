@@ -7,7 +7,7 @@
 //!
 //! The Java parser opens the package with the JDK's `ZipFile` and an `Index.zip` with its
 //! `ZipInputStream`, which the port reads as [`jdk_zip`] does. Snappy blocks the snap crate
-//! rejects, which commons-compress may still read, stay on Tika's path.
+//! rejects, which commons-compress may still read, are not read.
 //!
 //! The package is read twice, an archive at a time, each spooled: once before anything is
 //! written, to tell whether the port reads it and where its text ends, keeping only where each
@@ -92,7 +92,7 @@ impl<E> From<Refusal> for Halt<E> {
     }
 }
 
-/// The plan of the package `archive` opened, or why it is left to Tika's path or not read.
+/// The plan of the package `archive` opened, or why it is not read.
 fn plan(archive: &Archive<'_>) -> Result<Plan, Decline<'static>> {
     let mut budget = Budget(MAX_DECOMPRESSED_BYTES);
     let mut indexes = Vec::new();

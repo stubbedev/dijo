@@ -1,7 +1,6 @@
 //! Documents named by a URL, opened as Tika's `TikaInputStream.get(URL, metadata)` opens them:
 //! a `file:` URL of a regular file as that file, an `http:` or `https:` URL fetched, with what
-//! the server says of the document recorded as Tika records it. The native image Tika runs in
-//! enables no other protocol.
+//! the server says of the document recorded as Tika records it. No other protocol is enabled.
 
 use crate::mime::Headers;
 use std::io;
@@ -43,7 +42,7 @@ pub(crate) struct Fetched {
 
 /// Where `url` leads: the file it names, or the document fetched from it. A fetch is bounded by
 /// `deadline`, the extraction's time limit, if it has one, and fails with [`Error::Timeout`]
-/// past it; any other failure to open the document is an [`Error::IoError`], as on Tika's path.
+/// past it; any other failure to open the document is an [`Error::IoError`], as in Tika.
 pub(crate) fn locate(url: &str, deadline: Option<Instant>) -> ExtractResult<Located> {
     let unopened = |reason: &dyn std::fmt::Display| {
         Error::IoError(format!("Could not open the input {url}: {reason}"))

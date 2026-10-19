@@ -206,9 +206,9 @@ fn read_zip<'a>(
             difference = difference.or_else(|| {
                 Some(Difference::new(format!(
                     "the entry {} has a data descriptor after data compressed with method {}, \
-                     for which commons-compress's stream opens no decompressor, so that Tika's \
-                     path fails the archive with a NullPointerException, where the native \
-                     parser reads the data to its end",
+                     for which commons-compress's stream opens no decompressor, so that Tika \
+                     fails the archive with a NullPointerException, where the native parser \
+                     reads the data to its end",
                     entry.name, entry.method
                 )))
             });
@@ -350,8 +350,8 @@ mod tests {
     use crate::compress::tar_header::tests::tar;
     use crate::compress::zip::file::tests::zip;
 
-    fn defers(input: &[u8]) -> Option<String> {
-        PackageParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
+    fn shortfall(input: &[u8]) -> Option<String> {
+        PackageParser.shortfall(input, &TikaMetadata::new(), &ParserConfigs::default())
     }
 
     /// The error preparing `input` fails with.
@@ -383,8 +383,8 @@ mod tests {
 
     #[test]
     fn reads_what_commons_compress_streams_without_an_archive_type() {
-        assert_eq!(defers(&tar(&[(b"a.txt", b'0', b"text")])), None);
-        assert_eq!(defers(&cpio(&[("a.txt", b"text")])), None);
+        assert_eq!(shortfall(&tar(&[(b"a.txt", b'0', b"text")])), None);
+        assert_eq!(shortfall(&cpio(&[("a.txt", b"text")])), None);
         let zipped = zip(&[("dir/", b""), ("a.txt", b"text")]);
         assert_eq!(
             entries(&zipped, None),

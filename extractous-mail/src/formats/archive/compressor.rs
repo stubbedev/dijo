@@ -187,13 +187,13 @@ mod tests {
     use super::*;
     use crate::compress::gzip::tests::gzip;
 
-    fn defers(input: &[u8], content_type: &str, name: Option<&str>) -> Option<String> {
+    fn shortfall(input: &[u8], content_type: &str, name: Option<&str>) -> Option<String> {
         let mut metadata = TikaMetadata::new();
         metadata.set("Content-Type", content_type);
         if let Some(name) = name {
             metadata.set(RESOURCE_NAME, name);
         }
-        CompressorParser.defers(input, &metadata, &ParserConfigs::default())
+        CompressorParser.shortfall(input, &metadata, &ParserConfigs::default())
     }
 
     #[test]
@@ -214,17 +214,23 @@ mod tests {
 
     #[test]
     fn decodes_what_commons_compress_decodes_whole() {
-        assert_eq!(defers(&gzip(b"text", None), "application/gzip", None), None);
         assert_eq!(
-            defers(&gzip(b"text", None), "application/gzip; x=y", None),
+            shortfall(&gzip(b"text", None), "application/gzip", None),
             None
         );
         assert_eq!(
-            defers(&gzip(b"text", None), "image/x-emf-compressed", None),
+            shortfall(&gzip(b"text", None), "application/gzip; x=y", None),
+            None
+        );
+        assert_eq!(
+            shortfall(&gzip(b"text", None), "image/x-emf-compressed", None),
             None
         );
         let data = gzip(b"text", None);
-        assert_eq!(defers(&data, "application/gzip", Some("\u{130}.Z")), None);
+        assert_eq!(
+            shortfall(&data, "application/gzip", Some("\u{130}.Z")),
+            None
+        );
     }
 
     #[test]

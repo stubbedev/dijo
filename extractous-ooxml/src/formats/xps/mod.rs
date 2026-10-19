@@ -53,7 +53,7 @@ impl Parser for XpsParser {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
-    /// Defers packages POI does not open as this port does.
+    /// Leaves unread packages POI does not open as this port does.
     fn prepare_paged<'a>(
         &self,
         input: &'a [u8],

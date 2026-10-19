@@ -98,7 +98,7 @@ fn prepare<'a, B: Body + 'a>(
     body: B,
 ) -> Result<Prepared<'a>, Decline<'a>> {
     if xml::has_document_type(input) {
-        return Err(Decline::Deferred(
+        return Err(Decline::Unread(
             "a document type declaration, under which Xerces may report whitespace as \
              ignorable, which the property handlers keep and the body's drop"
                 .to_owned(),

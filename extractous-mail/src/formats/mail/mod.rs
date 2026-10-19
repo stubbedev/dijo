@@ -17,13 +17,11 @@
 //! A header that needs a charset the native decoders do not decode, or names a time zone
 //! java.time would look up in its time-zone database, is left out, and an HTML part the native
 //! HTML parser reads otherwise than Tika's is read so: the message's reading then differs from
-//! Tika's. A message defers to Tika when it holds a text or HTML part the native parsers of
-//! those defer.
+//! Tika's. A message fails when it holds a text or HTML part the native parsers of those do not
+//! read.
 //!
-//! A build with Tika reads a message whole before it writes anything of it, to decide first
-//! whether Tika's path should read it. A build without Tika has nothing to decide: it writes
-//! each part as it reads it, its body spooled, HTML written as its DOM is built, and records a
-//! difference from Tika's reading once it meets it.
+//! The message is written as it is read: each part as it is read, its body spooled, HTML written
+//! as its DOM is built, and a difference from Tika's reading recorded once it is met.
 
 mod address;
 mod codec;
@@ -58,7 +56,7 @@ use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::input::{Pages, Paging};
 use crate::java::parse_long;
 
-/// What the port leaves to Tika.
+/// What the port does not read as Tika does, and leaves out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unported {
     /// A charset the JDK knows and the native decoders do not decode.
@@ -296,8 +294,8 @@ fn failed<'a>(failure: Failure) -> Prepared<'a> {
 
 /// The message written as it is read, a part at a time, each part's body spooled and let go of
 /// once written, HTML built only as far as it may still change. A detail the port reads
-/// otherwise than Tika is met only once it is read, and recorded as the difference of a message
-/// a build without Tika reads natively.
+/// otherwise than Tika is met only once it is read, and recorded as the difference of the
+/// message.
 fn read_message<'a>(
     parser: &'static str,
     message: &'a [u8],

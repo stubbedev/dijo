@@ -14,8 +14,8 @@
 //! them. A workbook before BIFF8, whose stream is named "Book", is read as POI's
 //! `OldExcelExtractor` reads it for Tika's `OldExcelParser`: a paragraph per line of its text.
 //!
-//! An encrypted workbook is decrypted with the password, or failed as Tika's path fails it where
-//! the password does not open it. One POI or Tika's listener throws on fails as Tika's path
+//! An encrypted workbook is decrypted with the password, or failed as Tika fails it where
+//! the password does not open it. One POI or Tika's listener throws on fails as Tika
 //! fails it. The macros follow when asked for.
 
 mod factory;

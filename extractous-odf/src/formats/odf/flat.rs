@@ -315,7 +315,7 @@ mod tests {
     use crate::formats::odf::tests::{document, MANIFEST};
 
     /// Documents whose master pages have text, headers and footers or placeholders, which
-    /// Tika's path leaves out (#69), with text of each the native parser extracts.
+    /// Tika leaves out (#69), with text of each the native parser extracts.
     const WITH_MASTER_PAGES: [(&str, &[&str]); 2] = [
         (
             "../test_files/documents/table.fods",
@@ -408,7 +408,7 @@ mod tests {
         );
     }
 
-    /// Only the OpenDocument office namespace routes a section, where Tika's path takes any
+    /// Only the OpenDocument office namespace routes a section, where Tika takes any
     /// element of the local name (#91).
     #[test]
     fn routes_sections_by_namespace() {
@@ -421,7 +421,7 @@ mod tests {
         assert!(!metadata.contains_key("dc:title"));
     }
 
-    /// A malformed font weight or outline level, on which Tika's path fails without ending the
+    /// A malformed font weight or outline level, on which Tika fails without ending the
     /// open elements, is ignored (#69, #90).
     #[test]
     fn ignores_malformed_style_values() {
@@ -432,7 +432,7 @@ mod tests {
         assert!(xml.contains("<p>before</p>\n<h1>h t</h1>\n"), "{xml}");
     }
 
-    /// Binary data in the styles, which Tika's path never reads, is parsed as in an archive,
+    /// Binary data in the styles, which Tika never reads, is parsed as in an archive,
     /// where the styles are a part the body handler reads; in the settings it is left out.
     #[test]
     fn extracts_binary_data_in_the_styles_and_not_the_settings() {

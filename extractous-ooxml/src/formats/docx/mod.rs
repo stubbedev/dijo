@@ -6,7 +6,7 @@
 //! The pictures, embedded objects and attachments of a document are parsed recursively, each
 //! named as the document describes it: an OLE object by the file name the EMF picture of its
 //! icon shows. A package POI would read in a degraded way or refuse, and one using what this
-//! port does not read, is left to Tika: see [`DocxParser::prepare`].
+//! port does not read, is not read: see [`DocxParser::prepare`].
 
 pub(crate) mod body;
 pub mod flat;
@@ -123,9 +123,9 @@ impl Parser for DocxParser {
         ]
     }
 
-    /// Defers documents with macros Tika extracts when asked to, an OLE object it fails to read,
-    /// an EMF picture that embeds documents, parts read whole whose XML Tika reports failing on,
-    /// parts declaring a document type, and packages POI does not open as this port does.
+    /// Leaves unread documents with macros Tika extracts when asked to, an OLE object it fails to
+    /// read, an EMF picture that embeds documents, parts read whole whose XML Tika reports failing
+    /// on, parts declaring a document type, and packages POI does not open as this port does.
     fn prepare<'a>(
         &self,
         input: &'a [u8],
@@ -232,7 +232,7 @@ impl<'a> Document<'a> {
         parts
     }
 
-    /// Finds what this port leaves to Tika in a package it could open (embedded documents,
+    /// Finds what this port does not read in a package it could open (embedded documents,
     /// macros to extract, parts read whole whose XML Tika fails on, document types, properties
     /// it does not read), and reads what Tika reads whole before it writes anything of a main
     /// document: the properties, each story's numbering, styles, notes and comments, and the
@@ -262,7 +262,7 @@ impl<'a> Document<'a> {
     /// the file it shows when it is the icon of an OLE object, as `resolveEmfNames` reads that
     /// with Tika's `EMFParser` and swallows its failures: none where it names none, cannot be
     /// read or fails. A picture whose comments embed documents, which Tika would parse there, is
-    /// left to Tika.
+    /// not read.
     fn icon_names(&self) -> Result<IconNames, Unported> {
         let mut names = IconNames::new();
         let stories = self.stories.iter().chain(&self.glossaries);
@@ -379,8 +379,8 @@ impl<'a> Document<'a> {
         })
     }
 
-    /// Reads `part` into `handler`, as a part whose failure Tika records, which this port leaves
-    /// to Tika.
+    /// Reads `part` into `handler`, as a part whose failure Tika records, which this port does
+    /// not read.
     fn read_whole<H: SaxHandler>(&self, part: usize, handler: H) -> Result<H, Unported> {
         ooxml::read_quietly(&self.package, part, handler)?.ok_or_else(|| {
             Unported(format!(

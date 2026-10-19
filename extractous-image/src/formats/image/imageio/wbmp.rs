@@ -1,6 +1,6 @@
 //! The JDK's `WBMPImageReader` as far as its header, and `WBMPMetadata`'s standard tree: its
 //! native tree keeps values in its nodes rather than in attributes, so Tika takes nothing from
-//! it. Every WBMP is read so, where Tika's path may take jai-imageio's reader instead (#114).
+//! it. Every WBMP is read so, where Tika may take jai-imageio's reader instead (#114).
 
 use super::{standard_tree, Eof, Node, Read, Stream};
 

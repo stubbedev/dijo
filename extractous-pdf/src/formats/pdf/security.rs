@@ -758,8 +758,8 @@ mod tests {
         wrapped("TIKA-198: Illegal IOException", cause)
     }
 
-    /// Documents PDFBox fails to open, with the error Tika's path on the JVM fails each with,
-    /// and whether Tika's native image fails with the same.
+    /// Documents PDFBox fails to open, with the error Tika on the JVM fails each with, and
+    /// whether Tika built as a native image fails with the same.
     fn unopenable_encryptions() -> Vec<(&'static str, Vec<u8>, String, bool)> {
         let id = format!("/ID [<{}> <{}>]", hex(ID), hex(ID));
         let standard = |entries: &str| format!("<< /Filter /Standard {entries} >>");

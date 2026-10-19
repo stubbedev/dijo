@@ -89,7 +89,7 @@ pub(super) fn decode(bytes: &[u8], codepage: i32) -> Result<String, Fault> {
 }
 
 /// `CodePageUtil.getStringFromCodePage` for a reader outside the property sets: the text, or
-/// why it is not read as Tika's path reads it: POI throws on the code page, or this port does
+/// why it is not read as Tika reads it: POI throws on the code page, or this port does
 /// not decode it as Java does.
 pub(crate) fn decode_text(bytes: &[u8], codepage: i32) -> Result<String, Unread> {
     decode(bytes, codepage).map_err(|fault| match fault {

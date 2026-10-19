@@ -1,7 +1,7 @@
 //! Images, as Tika's image parsers read them for their metadata, under the OCR enricher
-//! (`PreparingOcrParser`) `TikaNativeMain` injects when tesseract runs: `AbstractImageParser`'s
-//! flow, the XMP `ImageXmp` reads first, metadata-extractor's directories copied by
-//! `ImageMetadataExtractor`, and the video of a motion photo as an embedded document.
+//! (`PreparingOcrParser`) extractous's former Java implementation injected when tesseract ran:
+//! `AbstractImageParser`'s flow, the XMP `ImageXmp` reads first, metadata-extractor's directories
+//! copied by `ImageMetadataExtractor`, and the video of a motion photo as an embedded document.
 //!
 //! The enricher reads the image with tesseract, natively too; with OCR skipped it records itself
 //! but reads nothing.
@@ -22,10 +22,10 @@ mod raw;
 #[cfg(test)]
 mod tests;
 
-/// For the parity tests: the BMP image of Tika's tests, which Tika's path reads with the JDK's
+/// For the tests: the BMP image of Tika's tests, which Tika reads with the JDK's
 /// reader or jai-imageio's, whichever its registry lists first in an order nothing defines
-/// (#114). It is compared with what the JDK's reader reads, as `just bmp-reference` records it,
-/// instead of with Tika's path.
+/// (#114). It is compared with what the JDK's reader reads, as the reference recorded from it
+/// holds, instead of with Tika's.
 #[cfg(any(test, feature = "testing"))]
 pub const TIKAS_TEST_BMP: &str = "testBMP.bmp";
 

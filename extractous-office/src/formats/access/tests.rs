@@ -296,7 +296,7 @@ fn fails_on_damaged_databases_as_jackcess_throws() {
 }
 
 /// Where the native parser's reading of the database at `path` may differ from Tika's, a
-/// damaged database's, and the error the reading fails with, which a build without Tika takes.
+/// damaged database's, and the error the reading fails with, which the extraction takes.
 fn failing_reading(path: &Path) -> (Difference, String) {
     let input = std::fs::read(path).unwrap();
     let configs = ParserConfigs::default();

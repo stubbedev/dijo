@@ -2,7 +2,7 @@
 //! the hidden text layer each page carries (TXTa, or TXTz compressed with BZZ): a page of the
 //! output per page of the document, its text split into paragraphs where the layer ends a
 //! column, region or paragraph. A page without a text layer is rendered and read by OCR, as
-//! Tika's path hands its rendering to the OCR enricher. Tika detects DjVu but has no parser for
+//! Tika hands its rendering to the OCR enricher. Tika detects DjVu but has no parser for
 //! it.
 
 mod bzz;
@@ -115,7 +115,7 @@ impl Parser for DjvuParser {
     }
 }
 
-/// `readByOcr`: the page, counted from 1, rendered and read as Tika's path reads its rendering,
+/// `readByOcr`: the page, counted from 1, rendered and read as Tika reads its rendering,
 /// which records the OCR parser among those the extraction ran. The OCR limits on the size of
 /// an image's file are held to the rendering's grey pixels, as for a PDF page; our Java held
 /// them to the PGM file it wrote, header included (#120).

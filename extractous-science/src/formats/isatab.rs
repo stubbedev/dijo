@@ -2,8 +2,8 @@
 //! `ISArchiveParser` reads it: where the file lies in a directory with exactly one investigation
 //! file, the investigation's fields and the study's own as metadata under `isatab:`, a heading
 //! of the investigation, then the study's table, then the table of each of its assays, read from
-//! the same directory. Tika's path leaves them empty, as its native image lacks the scientific
-//! module (#172). Investigation and assay files, which Tika reads with no parser even with the
+//! the same directory. Tika without its scientific module leaves them empty
+//! (#172). Investigation and assay files, which Tika reads with no parser even with the
 //! module, are read on their own: an investigation's fields as metadata and its records as a
 //! table, an assay's table as `ISArchiveParser` writes it.
 //!

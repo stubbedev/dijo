@@ -44,8 +44,8 @@ fn document(body: &str, relationships: &str, parts: &[(&str, &str, &[u8])]) -> V
     package(&all)
 }
 
-fn defers(input: &[u8]) -> Option<String> {
-    DocxParser.defers(input, &TikaMetadata::new(), &ParserConfigs::default())
+fn shortfall(input: &[u8]) -> Option<String> {
+    DocxParser.shortfall(input, &TikaMetadata::new(), &ParserConfigs::default())
 }
 
 fn text_of(input: &[u8], configs: &ParserConfigs) -> String {
@@ -74,12 +74,12 @@ fn text_of(input: &[u8], configs: &ParserConfigs) -> String {
 #[test]
 fn reads_a_plain_document() {
     let input = document("<w:p><w:r><w:t>Hej verden</w:t></w:r></w:p>", "", &[]);
-    assert_eq!(defers(&input), None);
+    assert_eq!(shortfall(&input), None);
     assert!(text_of(&input, &ParserConfigs::default()).contains("<p>Hej verden</p>"));
 }
 
 #[test]
-fn defers_ole_objects_tika_opens_only() {
+fn falls_short_on_ole_objects_tika_opens_only() {
     let ole = |size: usize| {
         let content = vec![0u8; size];
         document(
@@ -88,12 +88,12 @@ fn defers_ole_objects_tika_opens_only() {
             &[("word/embeddings/oleObject1.bin", OLE_OBJECT_TYPE, &content)],
         )
     };
-    assert_eq!(defers(&ole(1535)), None);
-    assert!(defers(&ole(1536)).is_some());
+    assert_eq!(shortfall(&ole(1535)), None);
+    assert!(shortfall(&ole(1536)).is_some());
 }
 
 #[test]
-fn defers_macros_only_when_they_are_extracted() {
+fn falls_short_on_macros_only_when_they_are_extracted() {
     let input = document(
         "<w:p/>",
         &relationship("rId9", kind::VBA_PROJECT, "vbaProject.bin"),
@@ -103,10 +103,10 @@ fn defers_macros_only_when_they_are_extracted() {
             b"x",
         )],
     );
-    assert_eq!(defers(&input), None);
+    assert_eq!(shortfall(&input), None);
     let macros = office(OfficeParserConfig::new().set_extract_macros(true));
     assert!(DocxParser
-        .defers(&input, &TikaMetadata::new(), &macros)
+        .shortfall(&input, &TikaMetadata::new(), &macros)
         .is_some());
 }
 
@@ -126,7 +126,7 @@ fn failing_main_part(header: &[u8]) -> Vec<u8> {
 #[test]
 fn records_parts_whose_xml_fails_and_goes_on() {
     let input = failing_main_part(b"<w:hdr><w:p><w:r><w:t>head</w:t></w:p>");
-    assert_eq!(defers(&input), None);
+    assert_eq!(shortfall(&input), None);
     let (xml, metadata) = crate::Extractor::new()
         .set_xml_output(true)
         .extract_bytes_to_string(&input)
@@ -145,7 +145,7 @@ fn records_parts_whose_xml_fails_and_goes_on() {
 }
 
 #[test]
-fn defers_parts_declaring_a_document_type() {
+fn falls_short_on_parts_declaring_a_document_type() {
     let header = document(
         "<w:p/>",
         &relationship("rId9", kind::HEADER, "header1.xml"),
@@ -155,7 +155,7 @@ fn defers_parts_declaring_a_document_type() {
             b"<!DOCTYPE w:hdr><w:hdr><w:p/></w:hdr>",
         )],
     );
-    assert!(defers(&header).is_some_and(|reason| reason.contains("header1.xml declares")));
+    assert!(shortfall(&header).is_some_and(|reason| reason.contains("header1.xml declares")));
     let quietly_read = document(
         "<w:p/>",
         &relationship("rId9", kind::SETTINGS, "settings.xml"),
@@ -165,12 +165,12 @@ fn defers_parts_declaring_a_document_type() {
             b"<!DOCTYPE n><n/>",
         )],
     );
-    assert!(defers(&quietly_read).is_some_and(|reason| reason.contains("document type")));
+    assert!(shortfall(&quietly_read).is_some_and(|reason| reason.contains("document type")));
 }
 
 #[test]
-fn defers_packages_poi_refuses_or_reads_otherwise() {
-    assert!(defers(b"PK\x03\x04 not really").is_some());
+fn falls_short_on_packages_poi_refuses_or_reads_otherwise() {
+    assert!(shortfall(b"PK\x03\x04 not really").is_some());
     let no_types = {
         let mut writer = ZipWriter::new(std::io::Cursor::new(Vec::new()));
         writer
@@ -178,21 +178,21 @@ fn defers_packages_poi_refuses_or_reads_otherwise() {
             .unwrap();
         writer.finish().unwrap().into_inner()
     };
-    assert!(defers(&no_types).is_some_and(|reason| reason.contains("[Content_Types].xml")));
+    assert!(shortfall(&no_types).is_some_and(|reason| reason.contains("[Content_Types].xml")));
     let odd_name = document("<w:p/>", "", &[("word/media/a b.png", "image/png", b"x")]);
-    assert!(defers(&odd_name).is_some_and(|reason| reason.contains("a b.png")));
+    assert!(shortfall(&odd_name).is_some_and(|reason| reason.contains("a b.png")));
     let absolute = document(
         "<w:p/>",
         &relationship("rId9", kind::STYLES, "http://example.com/styles.xml"),
         &[],
     );
-    assert!(defers(&absolute).is_some_and(|reason| reason.contains("does not resolve")));
+    assert!(shortfall(&absolute).is_some_and(|reason| reason.contains("does not resolve")));
     let not_word = package(&[(
         "word/document.xml",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml",
         b"<p/>",
     )]);
-    assert!(defers(&not_word).is_some_and(|reason| reason.contains("main part")));
+    assert!(shortfall(&not_word).is_some_and(|reason| reason.contains("main part")));
 }
 
 /// `input` without its central directory, as an archive cut short there is.
@@ -208,7 +208,7 @@ fn without_central_directory(input: &[u8]) -> Vec<u8> {
 fn reads_packages_without_a_central_directory_by_their_local_headers() {
     let input = document("<w:p><w:r><w:t>Hej verden</w:t></w:r></w:p>", "", &[]);
     let cut = without_central_directory(&input);
-    assert_eq!(defers(&cut), None);
+    assert_eq!(shortfall(&cut), None);
     let defaults = ParserConfigs::default();
     assert_eq!(text_of(&cut, &defaults), text_of(&input, &defaults));
 }
@@ -232,7 +232,7 @@ fn fails_packages_cut_short_in_an_entry_as_poi_does() {
 }
 
 #[test]
-fn defers_archives_listing_a_name_twice() {
+fn falls_short_on_archives_listing_a_name_twice() {
     let mut input = document(
         "<w:p/>",
         "",
@@ -251,11 +251,11 @@ fn defers_archives_listing_a_name_twice() {
     for index in renamed {
         input[index + 5] = b'a';
     }
-    assert!(defers(&input).is_some_and(|reason| reason.contains("same name")));
+    assert!(shortfall(&input).is_some_and(|reason| reason.contains("same name")));
 }
 
 #[test]
-fn defers_core_properties_poi_refuses() {
+fn falls_short_on_core_properties_poi_refuses() {
     let core = |content: &str| {
         let content = content.to_owned();
         package(&[
@@ -278,16 +278,16 @@ fn defers_core_properties_poi_refuses() {
         )
     };
     assert_eq!(
-        defers(&core(&properties(
+        shortfall(&core(&properties(
             "<dcterms:created xsi:type=\"dcterms:W3CDTF\">2020-01-02T03:04:05Z</dcterms:created>"
         ))),
         None
     );
     assert!(
-        defers(&core(&properties("<dcterms:title>x</dcterms:title>")))
+        shortfall(&core(&properties("<dcterms:title>x</dcterms:title>")))
             .is_some_and(|reason| reason.contains("M4.3"))
     );
-    assert!(defers(&core(&properties(
+    assert!(shortfall(&core(&properties(
         "<dcterms:created xsi:type=\"dcterms:W3CDTF\">yesterday</dcterms:created>"
     )))
     .is_some_and(|reason| reason.contains("yesterday")));
@@ -324,7 +324,7 @@ fn writes_notes_where_they_are_referenced_and_comments_after_their_paragraph() {
             ),
         ],
     );
-    assert_eq!(defers(&input), None);
+    assert_eq!(shortfall(&input), None);
     let text = text_of(&input, &ParserConfigs::default());
     assert!(
         text.contains(

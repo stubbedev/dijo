@@ -116,7 +116,7 @@ impl<'a> Word<'a> {
     /// `new HWPFDocument(directory)`: the document's streams, decrypted with the password where
     /// it is encrypted, or, for one before Word 97, on which it throws
     /// `OldWordFileFormatException`, `new HWPFOldDocument(directory)`; or why it is left to
-    /// Tika, or fails as Tika's path does where the password does not open it.
+    /// Tika, or fails as Tika does where the password does not open it.
     pub(super) fn read(
         file: &Ole2<'a>,
         root: EntryId,
@@ -352,7 +352,7 @@ impl DocumentKey {
 }
 
 /// `getEncryptionInfo` and its password check: the key of an encrypted document, `None` for one
-/// that is not, failing as Tika's path does where the password does not open it.
+/// that is not, failing as Tika does where the password does not open it.
 ///
 /// An obfuscated document holds its XOR key and verifier in `lKey` ([MS-DOC] 2.2.6.1). POI reads
 /// them from the table stream's first bytes instead, and so opens no such document (#164); this

@@ -1,6 +1,6 @@
-//! Parity with Tika's own detection, as `just mime-reference` records it in
-//! `tests/fixtures/mime/mime-reference.tsv`: for every document of the parity corpora, the media
-//! type and the metadata the detection sets, for the file and for its bytes alone.
+//! Agreement with Tika's own detection, as recorded in `tests/fixtures/mime/mime-reference.tsv`:
+//! for every document of the reference corpora, the media type and the metadata the detection
+//! sets, for the file and for its bytes alone.
 
 use std::path::{Path, PathBuf};
 

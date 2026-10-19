@@ -597,7 +597,7 @@ mod tests {
     }
 
     /// Links are resolved as the WHATWG URL standard resolves them, where `java.net.URL`, and so
-    /// Tika's path, departs from it (#162).
+    /// Tika, departs from it (#162).
     #[test]
     fn resolves_links_by_the_url_standard() {
         let page = |base: &str, links: &[&str]| {

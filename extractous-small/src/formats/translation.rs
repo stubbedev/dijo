@@ -238,7 +238,7 @@ impl Parser for Xliff12Parser {
         let mut finder = NamespacedUnitAttribute(false);
         let _ = xml::parse_paged(input, pages, "the XLIFF document", &mut finder);
         if finder.0 {
-            return Err(Decline::Deferred(
+            return Err(Decline::Unread(
                 "a trans-unit attribute in a namespace, which Tika copies onto the XHTML, whose \
                  writer fails on a namespace no element declares"
                     .to_owned(),
@@ -425,16 +425,16 @@ impl Parser for XlzParser {
             .filter(|entry| entry.name.contains(".xlf"))
         {
             let document = archive.spool(entry)?;
-            if let Err(Decline::Deferred(reason)) =
+            if let Err(Decline::Unread(reason)) =
                 Xliff12Parser.prepare_paged(&document, document.pages(), metadata, configs)
             {
-                return Err(Decline::Deferred(format!("{}: {reason}", entry.name)));
+                return Err(Decline::Unread(format!("{}: {reason}", entry.name)));
             }
             documents.push(Archive::keep(entry, document));
         }
         if documents.is_empty() {
-            return Err(Decline::Deferred(
-                "no XLIFF entry, of which Tika's path starts no document".to_owned(),
+            return Err(Decline::Unread(
+                "no XLIFF entry, of which Tika starts no document".to_owned(),
             ));
         }
         let start = metadata.clone();

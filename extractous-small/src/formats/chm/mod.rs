@@ -74,8 +74,8 @@ impl Parser for ChmParser {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
-    /// Extracts and prepares every page before writing any, so a page the HTML parser leaves to
-    /// Tika defers the file; a page that cannot be extracted fails the parse after the pages
+    /// Extracts and prepares every page before writing any, so a page the HTML parser does not
+    /// read leaves the file unread; a page that cannot be extracted fails the parse after the pages
     /// before it, as Tika's extraction of it throws there. Each page is prepared again as it is
     /// written: holding every page's document at once would hold a help file's whole content
     /// parsed, where writing holds one page at a time.
@@ -94,7 +94,9 @@ impl Parser for ChmParser {
                 break;
             };
             let read_otherwise = decision(html::prepare(&data, &TikaMetadata::new()))
-                .map_err(|reason| Decline::Deferred(format!("the page {name} defers: {reason}")))?
+                .map_err(|reason| {
+                    Decline::Unread(format!("the page {name} is not read: {reason}"))
+                })?
                 .map(|Difference(reason)| Difference(format!("the page {name}: {reason}")));
             difference = difference.or(read_otherwise);
         }
@@ -108,7 +110,7 @@ impl Parser for ChmParser {
                     let prepared =
                         reading(html::prepare(&data, &TikaMetadata::new())).map_err(|reason| {
                             Failure::Malformed(format!(
-                                "the page {name} defers, which it did not as it was prepared: \
+                                "the page {name} is not read, which it was as it was prepared: \
                                  {reason}"
                             ))
                         })?;

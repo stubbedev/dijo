@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(useful_runs(&data), [run]);
     }
 
-    /// A OneNote section whose root file node list lies past its end, so that Tika's path dumps
+    /// A OneNote section whose root file node list lies past its end, so that Tika dumps
     /// its runs, followed by runs past what is read whole: the dump scans them in bounded
     /// memory, each written as it ends, to the last.
     #[test]

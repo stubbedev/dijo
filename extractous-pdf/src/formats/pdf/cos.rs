@@ -103,7 +103,7 @@ pub(super) struct Document<'d> {
     unread: RefCell<Option<(ObjectId, Unported)>>,
     /// The objects the extraction asked for that the table does not list.
     unlisted_needed: RefCell<BTreeSet<ObjectId>>,
-    /// The first detail in which the extraction read the document otherwise than Tika's path.
+    /// The first detail in which the extraction read the document otherwise than Tika.
     difference: RefCell<Option<Difference>>,
     /// The pages, in tree order, once the page tree has been walked.
     pub(super) pages: OnceCell<Vec<PageRef>>,
@@ -209,13 +209,13 @@ impl<'d> Document<'d> {
         self.unread.borrow().clone()
     }
 
-    /// Notes that the extraction reads the document otherwise than Tika's path, in
+    /// Notes that the extraction reads the document otherwise than Tika, in
     /// `difference`, the first one noted kept.
     pub(super) fn differ(&self, difference: Difference) {
         self.difference.borrow_mut().get_or_insert(difference);
     }
 
-    /// The first detail in which the extraction read the document otherwise than Tika's path.
+    /// The first detail in which the extraction read the document otherwise than Tika.
     pub(super) fn difference(&self) -> Option<Difference> {
         self.difference.borrow().clone()
     }
