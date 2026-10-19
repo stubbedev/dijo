@@ -231,16 +231,17 @@ pub fn package(out: &mut dyn io::Write, entries: Vec<(&str, EntryData<'_>)>) -> 
 }
 
 /// Writes to `out` a ZIP archive of `entries`, each with its name, how it is compressed and
-/// what writes its data, as a stream.
+/// what writes its data, as a stream, deflating at the fastest level.
 pub fn zip_archive(
     out: &mut dyn io::Write,
     entries: Vec<(&str, CompressionMethod, EntryData<'_>)>,
 ) -> io::Result<()> {
     let mut zip = ZipWriter::new_stream(out);
     for (name, method, data) in entries {
+        let level = (method == CompressionMethod::Deflated).then_some(1);
         let options = SimpleFileOptions::default()
             .compression_method(method)
-            .compression_level(Some(1));
+            .compression_level(level);
         zip.start_file(name, options).map_err(io::Error::other)?;
         data(&mut zip)?;
     }
