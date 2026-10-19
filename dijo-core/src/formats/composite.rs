@@ -92,7 +92,11 @@ mod tests {
             formats::parser_for("text/x-matlab").unwrap().name(),
             formats::parser_for("text/plain").unwrap().name()
         );
-        assert!(formats::parser_for("application/x-hwp-v5").is_err());
+        assert!(formats::parser_for("application/x-activemime").is_err());
+        assert_eq!(
+            formats::parser_for("application/x-hwp-v5").unwrap().name(),
+            "dijo::HwpV5Parser"
+        );
         assert!(TIKA_PARSERS.is_sorted());
     }
 }

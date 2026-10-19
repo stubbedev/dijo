@@ -355,6 +355,92 @@ pub(crate) fn inflate(data: &[u8], limit: Option<usize>) -> Read<Vec<u8>> {
     }
 }
 
+/// `InflaterInputStream` with `new Inflater(true)`: raw deflate data read from `input` as it is
+/// inflated, to the end of the deflate stream, what follows it unread. What Java's stream
+/// throws, the deflate stream broken or ending early, is the error's [`Thrown`], which
+/// [`Thrown::of`] takes back.
+pub(crate) struct RawInflater<R> {
+    input: R,
+    inflater: flate2::Decompress,
+    buffer: Box<[u8; INFLATER_BUFFER]>,
+    start: usize,
+    end: usize,
+    input_ended: bool,
+    stream_ended: bool,
+}
+
+/// How many bytes of its input [`RawInflater`] reads at a time.
+const INFLATER_BUFFER: usize = 8192;
+
+impl<R: std::io::Read> RawInflater<R> {
+    pub(crate) fn new(input: R) -> Self {
+        Self {
+            input,
+            inflater: flate2::Decompress::new(false),
+            buffer: Box::new([0; INFLATER_BUFFER]),
+            start: 0,
+            end: 0,
+            input_ended: false,
+            stream_ended: false,
+        }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for RawInflater<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.stream_ended || out.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.start == self.end && !self.input_ended {
+                self.end = self.input.read(&mut self.buffer[..])?;
+                self.start = 0;
+                self.input_ended = self.end == 0;
+            }
+            let (read_before, written_before) =
+                (self.inflater.total_in(), self.inflater.total_out());
+            let status = self
+                .inflater
+                .decompress(
+                    &self.buffer[self.start..self.end],
+                    out,
+                    flate2::FlushDecompress::None,
+                )
+                .map_err(|error| {
+                    std::io::Error::other(Thrown::io(
+                        ZIP_EXCEPTION,
+                        error.message().unwrap_or("Invalid ZLIB data format"),
+                    ))
+                })?;
+            self.start += (self.inflater.total_in() - read_before) as usize;
+            let produced = (self.inflater.total_out() - written_before) as usize;
+            if status == flate2::Status::StreamEnd {
+                self.stream_ended = true;
+                return Ok(produced);
+            }
+            if produced > 0 {
+                return Ok(produced);
+            }
+            if self.input_ended && self.start == self.end {
+                return Err(std::io::Error::other(Thrown::io(EOF, UNEXPECTED_ZLIB_END)));
+            }
+        }
+    }
+}
+
+impl std::error::Error for Thrown {}
+
+impl Thrown {
+    /// The exception a reader's error is: the [`Thrown`] it carries, else an `IOException` with
+    /// its message.
+    pub(crate) fn of(error: std::io::Error) -> Self {
+        match error.downcast::<Thrown>() {
+            Ok(thrown) => thrown,
+            Err(error) => Thrown::io("java.io.IOException", error.to_string()),
+        }
+    }
+}
+
 /// How a subclass of POI's `LZWDecompresser` reads its data.
 pub(crate) struct Lzw {
     /// Whether a set flag bit marks a dictionary reference, not a byte.
@@ -501,5 +587,31 @@ mod tests {
         );
         assert_eq!(inflate(&bad_check, Some(4)), Ok(b"meta".to_vec()));
         assert_eq!(inflate(&compressed, Some(20)), Ok(b"metafile".to_vec()));
+    }
+
+    #[test]
+    fn inflates_raw_deflate_as_read_to_its_end_leaving_what_follows() {
+        use std::io::{Read as _, Write as _};
+        let inflated = |data: &[u8]| {
+            let mut out = Vec::new();
+            RawInflater::new(data)
+                .read_to_end(&mut out)
+                .map(|_| out)
+                .map_err(Thrown::of)
+        };
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&b"section".repeat(5000)).unwrap();
+        let mut compressed = encoder.finish().unwrap();
+        assert_eq!(
+            inflated(&compressed[..compressed.len() - 2]),
+            Err(Thrown::io(EOF, UNEXPECTED_ZLIB_END))
+        );
+        compressed.extend(b"padding");
+        assert_eq!(inflated(&compressed), Ok(b"section".repeat(5000)));
+        assert!(matches!(
+            inflated(&[0xFF; 16]),
+            Err(Thrown::Java(thrown)) if thrown.to_string().starts_with(ZIP_EXCEPTION)
+        ));
     }
 }
