@@ -1,4 +1,4 @@
-# Unreleased
+# 0.2.2 (2026-10-20)
 
 ### Renamed to dijo
 
@@ -13,6 +13,22 @@ Migration from extractous:
 ### Removed
 
 * Apache Tika, GraalVM and JNI: every format is read natively, and neither building nor running needs Java.
+
+### Added
+
+* HWP 5 (Hancom Office) documents, including distribution documents.
+* VBA macros from DOCX, XLSX, XLSB and PPTX with `extract_macros`.
+* Multi-valued MSG properties; MSG streams that end early are read as far as they go.
+* Access databases where one OLE object or system catalog is damaged are read around it.
+* Excel number formats as Excel displays them: quoted text in dates, elapsed times, `?` placeholders,
+  thousands scaling, engineering notation, accounting zero sections.
+
+### Fixed
+
+* Ports no longer reproduce JVM accidents: entries come out in document order instead of Java
+  hash-map order (PDF CMaps and encodings, PowerPoint, mail, media, EPUB, ...), malformed text decodes
+  as WHATWG specifies, and a FLAC duration overflow, a lost UTF-16 BOM character and wrapping XLSX
+  cell references are fixed.
 
 
 # [](https://github.com/yobix-ai/extractous/compare/v0.1.5...v) (2024-10-30)

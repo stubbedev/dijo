@@ -4,7 +4,7 @@ Extract text and metadata from documents. One native binary, no JVM.
 
 - **Every format Apache Tika supports**: PDF, Office (DOC, DOCX, XLS, XLSX, PPT, PPTX, MSG), OpenDocument, HTML, email
   (EML, MBOX, PST), archives (ZIP, TAR, 7Z, RAR), ebooks, images with OCR and the rest of Tika's list. On Tika's own
-  1094 test documents, `just conformance` matches Tika's text for 1048 (or both are empty), and most of the others are Tika bugs dijo
+  1094 test documents, `just conformance` matches Tika's text for 1051 (or both are empty), and most of the others are Tika bugs dijo
   fixes on purpose.
 - **Automatic language detection** of the text, for OCR and in the output, covering every national language of Europe:
   86.7% of single sentences right, where Tika's detector gets 80.5%.
