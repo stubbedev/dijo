@@ -782,7 +782,7 @@ fn writes_an_entry_up_to_the_most_the_native_path_decodes_and_stops_there() {
     assert!(!text.contains("After the large entry."), "{text}");
     match ended {
         Err(Error::LimitExceeded(message)) => {
-            assert!(message.starts_with("the entry large.txt: "), "{message}");
+            assert!(message.starts_with("the entry large.bin: "), "{message}");
             assert!(
                 message.contains("the most the native parser decodes"),
                 "{message}"

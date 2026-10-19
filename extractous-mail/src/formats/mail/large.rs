@@ -52,8 +52,9 @@ fn decodes_an_attachment_too_large_to_read_whole_to_a_spool() {
 }
 
 /// A message whose HTML body is too large to read whole is written as its DOM is built, from a
-/// spool, rather than built whole: the comments that fill it write nothing, and the paragraph
-/// after them is written.
+/// spool, rather than built whole: the comments that fill it write nothing but the line breaks
+/// between them, more than a string extraction takes by default, and the paragraph after them
+/// is written.
 #[test]
 fn writes_an_html_part_too_large_to_read_whole_as_it_is_built() {
     let file = LargeFile::written("large-html.eml", |out| {
@@ -67,8 +68,13 @@ fn writes_an_html_part_too_large_to_read_whole_as_it_is_built() {
         }
         write!(out, "<p>{END}</p></body></html>\r\n")
     });
-    let (text, _) = file.extract_with(&Extractor::new(), BUDGET, "extractous::RFC822Parser");
-    assert!(text.contains(END), "{text}");
+    let whole = Extractor::new().set_extract_string_max_length(i32::MAX);
+    let (text, _) = file.extract_with(&whole, BUDGET, "extractous::RFC822Parser");
+    assert!(
+        text.contains(END),
+        "{}",
+        &text[text.len().saturating_sub(200)..]
+    );
 }
 
 /// A mailbox of messages of a mebibyte's attachment each, too large to read whole, is read a

@@ -45,9 +45,13 @@ fn decodes_a_gzipped_entry_past_the_memory_limit_to_a_spool() {
         gzip.finish()?.flush()
     });
     let extractor = extractous_core::Extractor::new();
-    let (text, metadata) = file.extract_with(&extractor, BUDGET, "extractous::CompressorParser");
+    let (text, metadata) = file.extract_with(
+        &extractor,
+        file.read_whole_budget(),
+        "extractous::CompressorParser",
+    );
     assert!(text.contains(END), "{text}");
-    assert!(metadata["tk:parsed-by"]
+    assert!(metadata["tk:parsed-by-full-set"]
         .iter()
         .any(|parser| parser == "extractous::PackageParser"));
 }
@@ -91,20 +95,30 @@ fn spools_a_deflated_zip_entry_past_the_memory_limit() {
         zip_of_large_entry(out, LARGE, zip::CompressionMethod::Deflated)
     });
     let extractor = extractous_core::Extractor::new();
-    let (text, _) = file.extract_with(&extractor, BUDGET, "extractous::ZipParser");
+    let (text, _) = file.extract_with(
+        &extractor,
+        file.read_whole_budget(),
+        "extractous::ZipParser",
+    );
     assert!(text.contains(END), "{text}");
 }
 
+/// A 7z entry too large to hold in memory, though within what the native path decodes of so
+/// small an archive, is spooled to a file, and the entry after it read.
 #[test]
 fn spools_a_7z_entry_past_the_memory_limit_one_entry_at_a_time() {
     let file = LargeFile::written("large.7z", |out| {
         let archive = crate::compress::seven_z::tests::seven_z_streamed(&mut [
-            ("large.bin", &mut Binary::new(LARGE)),
+            ("large.bin", &mut Binary::new(MAX_READ_WHOLE + (16 << 20))),
             ("end.txt", &mut END.as_bytes()),
         ]);
         out.write_all(&archive)
     });
     let extractor = extractous_core::Extractor::new();
-    let (text, _) = file.extract_with(&extractor, BUDGET, "extractous::SevenZParser");
+    let (text, _) = file.extract_with(
+        &extractor,
+        file.read_whole_budget(),
+        "extractous::SevenZParser",
+    );
     assert!(text.contains(END), "{text}");
 }

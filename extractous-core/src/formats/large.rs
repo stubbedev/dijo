@@ -317,6 +317,15 @@ impl LargeFile {
         self.path.to_str().unwrap()
     }
 
+    /// The budget of the extraction of the file, which must be small enough to read whole, as a
+    /// file that decodes into too much to hold may be: the file itself, held whole, and
+    /// [`BUDGET`] besides.
+    pub fn read_whole_budget(&self) -> u64 {
+        let length = std::fs::metadata(&self.path).unwrap().len();
+        assert!(length <= MAX_READ_WHOLE, "{} is read mapped", self.path());
+        length + BUDGET
+    }
+
     /// The file's text and metadata, extracted under [`BUDGET`] and never holding more, which
     /// `parser` must have read.
     pub fn extract(&self, parser: &str) -> (String, Metadata) {
