@@ -1667,7 +1667,7 @@ impl Font {
                 Some(cid) => cid,
                 None => {
                     if let Some(to_unicode) = &self.to_unicode {
-                        if let Some(codes) = to_unicode.codes_from_unicode(" ")? {
+                        if let Some(codes) = to_unicode.codes_from_unicode(" ") {
                             return Ok(Some(codes.to_vec()));
                         }
                     }
