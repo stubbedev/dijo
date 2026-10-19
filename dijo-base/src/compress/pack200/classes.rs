@@ -142,14 +142,20 @@ pub(super) fn read_classes(
         .iter()
         .map(|&descr| pool.descr(descr).1)
         .collect();
-    let fields =
-        definitions.read_context(bands, pool, Context::Field, field_descrs.len(), &field_types)?;
+    let fields = definitions.read_context(
+        bands,
+        pool,
+        Context::Field,
+        field_descrs.len(),
+        &field_types,
+    )?;
     let method_descrs = references(
         bands.band(MDELTA5, sum(&method_counts)?)?,
         pool.descrs.len(),
         "cp_Descr",
     )?;
-    let methods = definitions.read_context(bands, pool, Context::Method, method_descrs.len(), &[])?;
+    let methods =
+        definitions.read_context(bands, pool, Context::Method, method_descrs.len(), &[])?;
     let class_entities = definitions.read_context(bands, pool, Context::Class, count, &[])?;
     let mut codes = read_codes(bands, header, pool, definitions, &methods)?.into_iter();
 
@@ -192,9 +198,11 @@ pub(super) fn read_classes(
                     version = (values.next().unwrap_or(0), values.next().unwrap_or(0));
                 }
                 Special::InnerClasses => {
-                    local
-                        .get_or_insert_with(Vec::new)
-                        .extend(local_tuples(&attribute.pieces, pool, tuples)?);
+                    local.get_or_insert_with(Vec::new).extend(local_tuples(
+                        &attribute.pieces,
+                        pool,
+                        tuples,
+                    )?);
                 }
                 _ => attributes.push(attribute),
             }
@@ -247,8 +255,12 @@ fn read_codes(
         shapes.push(match header {
             0 => (
                 max_stacks.next().expect("a stack size per special header"),
-                max_na_locals.next().expect("a locals size per special header"),
-                handler_counts.next().expect("a handler count per special header"),
+                max_na_locals
+                    .next()
+                    .expect("a locals size per special header"),
+                handler_counts
+                    .next()
+                    .expect("a handler count per special header"),
             ),
             1..=144 => ((header - 1) % 12, (header - 1) / 12, 0),
             145..=208 => ((header - 145) % 8, (header - 145) / 8, 1),
@@ -264,7 +276,12 @@ fn read_codes(
     let catches = bands.band(BRANCH5, handler_total)?;
     let handler_classes = bands.band(UNSIGNED5, handler_total)?;
     let mut handlers = Vec::with_capacity(handler_total);
-    for (((start, end), catch), class) in starts.into_iter().zip(ends).zip(catches).zip(handler_classes) {
+    for (((start, end), catch), class) in starts
+        .into_iter()
+        .zip(ends)
+        .zip(catches)
+        .zip(handler_classes)
+    {
         let end = start.wrapping_add(end);
         handlers.push(Handler {
             start,

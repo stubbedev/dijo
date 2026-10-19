@@ -146,8 +146,7 @@ impl<'a> Segment<'a> {
                 .ok_or(Undecoded::TooLarge)?;
             entries.push(JarEntry {
                 name,
-                modified_seconds: i64::from(self.header.modtime as i32)
-                    + i64::from(file.modtime),
+                modified_seconds: i64::from(self.header.modtime as i32) + i64::from(file.modtime),
                 bytes,
             });
         }

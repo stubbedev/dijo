@@ -50,9 +50,7 @@ impl Header {
         }
         let major = scalar(input)?;
         if major != 150 {
-            return Err(malformed(format!(
-                "Invalid segment major version: {major}"
-            )));
+            return Err(malformed(format!("Invalid segment major version: {major}")));
         }
         let options = scalar(input)?;
         if options & UNUSED != 0 {

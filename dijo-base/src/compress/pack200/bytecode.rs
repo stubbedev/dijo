@@ -51,7 +51,10 @@ pub(super) enum Operand {
     Local(i32),
     /// The local and the constant of `iinc`, the constant a `bc_byte`, or a `bc_short` where
     /// `wide` precedes it.
-    Iinc { local: i32, constant: i32 },
+    Iinc {
+        local: i32,
+        constant: i32,
+    },
     /// The target of a jump.
     Label(i32),
     /// `tableswitch`: the default target, the lowest case and the target of each case.
@@ -61,13 +64,22 @@ pub(super) enum Operand {
         labels: Vec<i32>,
     },
     /// `lookupswitch`: the default target and each case with its target.
-    LookupSwitch { default: i32, cases: Vec<(i32, i32)> },
+    LookupSwitch {
+        default: i32,
+        cases: Vec<(i32, i32)>,
+    },
     /// The constant a reference names, the class itself for a `bc_classref` of zero.
     Ref(Key),
     /// `multianewarray`: the class and the dimensions.
-    MultiArray { class: Key, dimensions: i32 },
+    MultiArray {
+        class: Key,
+        dimensions: i32,
+    },
     /// A reference escape: the constant, written in `size` bytes.
-    RefEscape { key: Key, size: i32 },
+    RefEscape {
+        key: Key,
+        size: i32,
+    },
     /// A byte escape: the bytes, written as they are.
     ByteEscape(Vec<u8>),
 }
@@ -398,10 +410,18 @@ impl<'p> Members<'p> {
             inits: HashMap::new(),
         };
         for (at, &(class, _)) in pool.fields.iter().enumerate() {
-            members.fields.entry(class_name(class)).or_default().push(at);
+            members
+                .fields
+                .entry(class_name(class))
+                .or_default()
+                .push(at);
         }
         for (at, &(class, descr)) in pool.methods.iter().enumerate() {
-            members.methods.entry(class_name(class)).or_default().push(at);
+            members
+                .methods
+                .entry(class_name(class))
+                .or_default()
+                .push(at);
             if pool.utf8[pool.descr(descr).0] == init {
                 members.inits.entry(class_name(class)).or_default().push(at);
             }
@@ -410,7 +430,12 @@ impl<'p> Members<'p> {
     }
 
     /// The member at `value` among those of `map` of the class `class`.
-    fn nth(map: &HashMap<&[u16], Vec<usize>>, class: &[u16], value: i32, what: &str) -> Result<usize> {
+    fn nth(
+        map: &HashMap<&[u16], Vec<usize>>,
+        class: &[u16],
+        value: i32,
+        what: &str,
+    ) -> Result<usize> {
         let members = map.get(class).map_or(&[][..], Vec::as_slice);
         Ok(members[index(value, members.len(), what)?])
     }
@@ -433,7 +458,11 @@ pub(super) fn read_bytecodes(bands: &mut Bands, pool: &Pool, classes: &mut [Clas
         let this = class.this;
         let super_class = class.super_class.unwrap_or(this);
         let name = |class: usize| pool.utf8[pool.classes[class]].as_slice();
-        for code in class.methods.iter_mut().filter_map(|method| method.code.as_mut()) {
+        for code in class
+            .methods
+            .iter_mut()
+            .filter_map(|method| method.code.as_mut())
+        {
             let packed = codes.next().expect("packed bytecodes per code");
             let mut instructions = Vec::with_capacity(packed.len());
             for Packed {
@@ -484,9 +513,11 @@ pub(super) fn read_bytecodes(bands: &mut Bands, pool: &Pool, classes: &mut [Clas
                             .collect();
                         Operand::LookupSwitch { default, cases }
                     }
-                    Shape::IntRef => {
-                        Operand::Ref(Key::Int(index(ops.intref.next(), pool.ints.len(), "cp_Int")?))
-                    }
+                    Shape::IntRef => Operand::Ref(Key::Int(index(
+                        ops.intref.next(),
+                        pool.ints.len(),
+                        "cp_Int",
+                    )?)),
                     Shape::FloatRef => Operand::Ref(Key::Float(index(
                         ops.floatref.next(),
                         pool.floats.len(),
@@ -562,8 +593,9 @@ pub(super) fn read_bytecodes(bands: &mut Bands, pool: &Pool, classes: &mut [Clas
                         let owner = match shape {
                             Shape::ThisInit => this,
                             Shape::SuperInit => super_class,
-                            _ => new_class
-                                .ok_or_else(|| malformed("an invokespecial_new_init before any new"))?,
+                            _ => new_class.ok_or_else(|| {
+                                malformed("an invokespecial_new_init before any new")
+                            })?,
                         };
                         Operand::Ref(Key::Method(Members::nth(
                             &members.inits,

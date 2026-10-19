@@ -114,7 +114,11 @@ pub(super) fn index(value: i32, len: usize, pool: &str) -> Result<usize> {
     usize::try_from(value)
         .ok()
         .filter(|&index| index < len)
-        .ok_or_else(|| malformed(format!("a reference {value} past the {len} {pool} constants")))
+        .ok_or_else(|| {
+            malformed(format!(
+                "a reference {value} past the {len} {pool} constants"
+            ))
+        })
 }
 
 impl Pool {
@@ -140,10 +144,18 @@ impl Pool {
         let forms = references(bands.band(DELTA5, counts[7])?, utf8, "cp_Utf8")?;
         let class_count: usize = forms
             .iter()
-            .map(|&form| pool.utf8[form].iter().filter(|&&c| c == u16::from(b'L')).count())
+            .map(|&form| {
+                pool.utf8[form]
+                    .iter()
+                    .filter(|&&c| c == u16::from(b'L'))
+                    .count()
+            })
             .sum();
-        let signature_classes =
-            references(bands.band(UDELTA5, class_count)?, pool.classes.len(), "cp_Class")?;
+        let signature_classes = references(
+            bands.band(UDELTA5, class_count)?,
+            pool.classes.len(),
+            "cp_Class",
+        )?;
         let mut named = signature_classes.into_iter();
         for form in forms {
             let mut signature = Vec::new();
@@ -215,7 +227,10 @@ impl Pool {
         self.utf8_named
             .get(name)
             .and_then(|utf8| self.class_named.get(utf8))
-            .map_or_else(|| ClassRef::Extra(name.to_vec()), |&index| ClassRef::Pool(index))
+            .map_or_else(
+                || ClassRef::Extra(name.to_vec()),
+                |&index| ClassRef::Pool(index),
+            )
     }
 
     /// The spelling of a string constant.

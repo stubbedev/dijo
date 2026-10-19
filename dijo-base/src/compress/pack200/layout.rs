@@ -108,11 +108,7 @@ pub(super) enum Piece {
     /// A reference to a constant, or to none, in `size` bytes.
     Ref { size: u8, key: Option<Key> },
     /// A bytecode index or offset of the given kind, as transmitted, in `size` bytes.
-    Bci {
-        size: u8,
-        kind: IntKind,
-        value: i32,
-    },
+    Bci { size: u8, kind: IntKind, value: i32 },
 }
 
 /// A parsed attribute layout.
@@ -310,7 +306,11 @@ impl Parser<'_> {
             return Err(self.error());
         }
         let value = value as i32;
-        Ok(if negative { value.wrapping_neg() } else { value })
+        Ok(if negative {
+            value.wrapping_neg()
+        } else {
+            value
+        })
     }
 
     fn element(&mut self, callable: usize) -> Result<Element> {
@@ -468,7 +468,11 @@ impl Sizing<'_, '_> {
                 Element::Ref { band, .. } => {
                     self.values[*band] = self.bands.band(UNSIGNED5, count)?;
                 }
-                Element::Replication { band, count: int, body } => {
+                Element::Replication {
+                    band,
+                    count: int,
+                    body,
+                } => {
                     let counts = self.bands.band(int.coding(), count)?;
                     let mut total = 0usize;
                     for &replicated in &counts {
@@ -524,7 +528,9 @@ impl Sizing<'_, '_> {
 
 /// Whether `tag` is among the inclusive ranges `labels`.
 fn matches(labels: &[(i32, i32)], tag: i32) -> bool {
-    labels.iter().any(|&(low, high)| (low..=high).contains(&tag))
+    labels
+        .iter()
+        .any(|&(low, high)| (low..=high).contains(&tag))
 }
 
 /// The bands of a layout, read, and how far each has been taken.
@@ -663,10 +669,18 @@ fn reference(pool: &Pool, kind: RefKind, value: i32, field_type: Option<&[u16]>)
                 [c] if *c == u16::from(b'J') => RefKind::Long,
                 [c] if *c == u16::from(b'F') => RefKind::Float,
                 [c] if *c == u16::from(b'D') => RefKind::Double,
-                _ if field_type.iter().copied().eq("Ljava/lang/String;".encode_utf16()) => {
+                _ if field_type
+                    .iter()
+                    .copied()
+                    .eq("Ljava/lang/String;".encode_utf16()) =>
+                {
                     RefKind::String
                 }
-                _ if field_type.iter().copied().eq("Ljava/lang/Class;".encode_utf16()) => {
+                _ if field_type
+                    .iter()
+                    .copied()
+                    .eq("Ljava/lang/Class;".encode_utf16()) =>
+                {
                     RefKind::Class
                 }
                 _ => {
@@ -683,11 +697,9 @@ fn reference(pool: &Pool, kind: RefKind, value: i32, field_type: Option<&[u16]>)
             pool.classes.len(),
             "cp_Class",
         )?)),
-        RefKind::Signature => Key::Utf8(pool.signature_text(index(
-            value,
-            pool.signatures.len(),
-            "cp_Signature",
-        )?)),
+        RefKind::Signature => {
+            Key::Utf8(pool.signature_text(index(value, pool.signatures.len(), "cp_Signature")?))
+        }
         RefKind::Descr => Key::Descr(index(value, pool.descrs.len(), "cp_Descr")?),
         RefKind::Field => Key::Field(index(value, pool.fields.len(), "cp_Field")?),
         RefKind::Method => Key::Method(index(value, pool.methods.len(), "cp_Method")?),
