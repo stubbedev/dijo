@@ -9,9 +9,10 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::input::{Pages, Paging};
+use crate::java;
 use crate::java::dtoa::java_double_to_string;
 use crate::java::time;
-use crate::java::{self, JavaHashMap};
+use crate::ordered_map::OrderedMap;
 
 const TYPE_METADATA: u8 = 0x12;
 const MASK_AUDIO: u8 = 1;
@@ -26,7 +27,7 @@ enum Amf {
     Number(f64),
     Boolean(bool),
     String(String),
-    Map(JavaHashMap<Option<Amf>>),
+    Map(OrderedMap<Option<Amf>>),
     List(Vec<Option<Amf>>),
     /// A `Date`, in milliseconds since 1970.
     Date(i64),
@@ -173,7 +174,7 @@ impl<'a> Input<'a> {
     /// `readAMFObject`: entries up to the end marker, the marker's type read as `read()`
     /// reads it, the end of the data as `-1`.
     fn object(&mut self, depth: usize) -> Result<Amf, Stop> {
-        let mut map = JavaHashMap::default();
+        let mut map = OrderedMap::default();
         let mut index: u64 = 0;
         loop {
             let key = self.string()?;
@@ -201,7 +202,7 @@ impl<'a> Input<'a> {
                 "IOException: AMF array size {size} exceeds the maximum of {MAX_AMF_ELEMENTS}"
             )));
         }
-        let mut map = JavaHashMap::default();
+        let mut map = OrderedMap::default();
         for _ in 0..size {
             let key = self.string()?;
             let kind = self.read();

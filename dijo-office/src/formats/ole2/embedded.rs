@@ -300,24 +300,12 @@ fn message_title(file: &Ole2<'_>, directory: EntryId) -> Option<String> {
         if file.kind(entry) != EntryKind::Document {
             return None;
         }
-        let mut title = utf16_le(&file.read(entry).ok()?);
+        let mut title = crate::java::utf16le(&file.read(entry).ok()?);
         if let Some(end) = title.find('\0') {
             title.truncate(end);
         }
         Some(title)
     })
-}
-
-/// Bytes decoded as Java's UTF-16LE decoder replaces what it cannot decode: each surrogate
-/// without its pair, and a last odd byte, as U+FFFD.
-fn utf16_le(bytes: &[u8]) -> String {
-    let (pairs, rest) = bytes.as_chunks::<2>();
-    let units: Vec<u16> = pairs.iter().map(|pair| u16::from_le_bytes(*pair)).collect();
-    let mut text = String::from_utf16_lossy(&units);
-    if !rest.is_empty() {
-        text.push(char::REPLACEMENT_CHARACTER);
-    }
-    text
 }
 
 fn unreadable(Unreadable(reason): Unreadable) -> Unported {
@@ -639,7 +627,10 @@ mod tests {
 
     #[test]
     fn decodes_a_title_as_java_decodes_utf_16() {
-        assert_eq!(utf16_le(&[0x00, 0xD8, b'a', 0, 1]), "\u{fffd}a\u{fffd}");
+        assert_eq!(
+            crate::java::utf16le(&[0x00, 0xD8, b'a', 0, 1]),
+            "\u{fffd}a\u{fffd}"
+        );
     }
 
     #[test]

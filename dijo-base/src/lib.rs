@@ -17,6 +17,7 @@ pub mod input;
 pub mod java;
 pub mod memory;
 pub mod ole2;
+pub mod ordered_map;
 pub mod process;
 pub mod text;
 pub mod unicode;

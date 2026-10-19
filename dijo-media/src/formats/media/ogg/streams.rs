@@ -10,7 +10,8 @@
 
 use super::packets::{Packet, Reader, Thrown, HEAD};
 use crate::input::Pages;
-use crate::java::{self, JavaHashMap};
+use crate::java;
+use crate::ordered_map::OrderedMap;
 
 /// A little-endian `int` at `offset`, `IOUtils.getInt4` cast to `int`; past the data an
 /// `ArrayIndexOutOfBoundsException`.
@@ -39,12 +40,13 @@ fn utf8(data: &[u8], offset: i64, length: i32) -> Result<String, Thrown> {
 }
 
 /// A stream's Vorbis-style comments, `VorbisStyleComments`: the packet they were read from, the
-/// vendor, and the comments by their normalised tags in a `HashMap`.
+/// vendor, and the comments by their normalised tags, in the order the tags first come, where
+/// vorbis-java holds them in a `java.util.HashMap` (#186).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Comments {
     pub(super) data: Vec<u8>,
     pub(super) vendor: String,
-    pub(super) all: JavaHashMap<Vec<String>>,
+    pub(super) all: OrderedMap<Vec<String>>,
 }
 
 /// `normaliseTag`: lower-cased, with only the characters from U+0020 to U+007D but `=`.
@@ -64,7 +66,7 @@ impl Comments {
         let mut offset = begins_at + 4 + i64::from(vendor_length);
         let count = int4(&data, offset)?;
         offset += 4;
-        let mut all = JavaHashMap::default();
+        let mut all = OrderedMap::default();
         for _ in 0..count.max(0) {
             let length = int4(&data, offset)?;
             offset += 4;
@@ -381,7 +383,9 @@ pub(super) fn opus<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Opus, Thrown
     })
 }
 
-/// The FLAC stream info Tika reads, `FlacInfo`, its sample count in Java's `int` arithmetic.
+/// The FLAC stream info Tika reads, `FlacInfo`, its sample count all 36 bits of it. vorbis-java
+/// shifts the top four bits by 30 rather than 32 in an `int`, which overflows, so that long
+/// streams get a wrong duration (#186).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct FlacInfo {
     pub(super) sample_rate: i32,
@@ -398,15 +402,15 @@ fn flac_info(data: &[u8], offset: usize) -> Result<FlacInfo, Thrown> {
         .iter()
         .map(|&b| i32::from(b))
         .collect();
-    let samples = ((next[3] & 0x0f) << 30)
-        .wrapping_add(next[4] << 24)
-        .wrapping_add(next[5] << 16)
-        .wrapping_add(next[6] << 8)
-        .wrapping_add(next[7]);
+    let samples = next[4..]
+        .iter()
+        .fold(i64::from(next[3] & 0x0f), |samples, &byte| {
+            (samples << 8) | i64::from(byte)
+        });
     Ok(FlacInfo {
         sample_rate: (next[0] << 12) + (next[1] << 4) + ((next[2] & 0xf0) >> 4),
         channels: ((next[2] & 0x0e) >> 1) + 1,
-        samples: i64::from(samples),
+        samples,
     })
 }
 
@@ -621,5 +625,14 @@ mod tests {
         assert_eq!(read.sample_rate, 44100);
         assert_eq!(read.channels, 2);
         assert_eq!(read.samples, 88200);
+    }
+
+    /// The sample count takes all 36 bits, where vorbis-java's `int` arithmetic shifts the top
+    /// four by 30 and overflows (#186).
+    #[test]
+    fn reads_a_sample_count_past_32_bits() {
+        let mut info = vec![0u8; 34];
+        info[10..18].copy_from_slice(&[0x0A, 0xC4, 0x42, 0xF3, 0x00, 0x00, 0x00, 0x05]);
+        assert_eq!(flac_info(&info, 0).unwrap().samples, (3 << 32) + 5);
     }
 }

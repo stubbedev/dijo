@@ -688,7 +688,7 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
             let length = stream.read_i32()?;
             safely_allocate_check(i64::from(length), super::stream::MAX_RECORD_LENGTH)?;
             let bytes = stream.read_fully(length as usize)?;
-            address = Some(utf8(&bytes));
+            address = Some(crate::java::utf8(&bytes));
         }
     }
     if options & LINK_PLACE != 0 {
@@ -719,13 +719,6 @@ fn utf16_le(raw: &[u8]) -> Vec<u16> {
         .iter()
         .map(|pair| u16::from_le_bytes(*pair))
         .collect()
-}
-
-/// Java's UTF-8 decoding, malformed input replaced.
-fn utf8(bytes: &[u8]) -> String {
-    crate::text::charset::Charset::named("UTF-8")
-        .decode(bytes)
-        .expect("the JDK's UTF-8 decodes")
 }
 
 /// `HyperlinkRecord.cleanString`: the text up to its first NUL.

@@ -81,16 +81,15 @@ pub(super) fn charset(codepage: i32) -> Result<Charset, Fault> {
 /// `CodePageUtil.getStringFromCodePage`.
 pub(super) fn decode(bytes: &[u8], codepage: i32) -> Result<String, Fault> {
     let charset = charset(codepage)?;
-    charset.decode_exactly(bytes).ok_or_else(|| {
+    charset.decode(bytes).ok_or_else(|| {
         Fault::Unported(format!(
-            "text in code page {codepage}, which this port does not decode as Java does"
+            "text in code page {codepage}, which the native decoders do not decode"
         ))
     })
 }
 
 /// `CodePageUtil.getStringFromCodePage` for a reader outside the property sets: the text, or
-/// why it is not read as Tika reads it: POI throws on the code page, or this port does
-/// not decode it as Java does.
+/// why it is not read: POI throws on the code page, or the native decoders do not decode it.
 pub(crate) fn decode_text(bytes: &[u8], codepage: i32) -> Result<String, Unread> {
     decode(bytes, codepage).map_err(|fault| match fault {
         Fault::Unported(reason) => Unported(reason).into(),

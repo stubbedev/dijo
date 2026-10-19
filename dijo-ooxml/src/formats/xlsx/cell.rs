@@ -16,8 +16,10 @@ fn invalid(what: &str, reference: &str) -> Failure {
 }
 
 /// `CellReference.convertColStringToIndex`: letters as a base-26 number from `A` = 0, a `$` only
-/// at the start. Java's `int` arithmetic wraps, and so does this.
+/// at the start. A column past what an `int` holds is invalid, where POI's arithmetic wraps
+/// around to another column (#186).
 fn column_index(text: &str, reference: &str) -> Result<i32, Failure> {
+    let overflow = || invalid("its column is past what an int holds", reference);
     let mut index: i32 = 0;
     for (k, c) in text.to_uppercase().chars().enumerate() {
         if c == '$' {
@@ -27,9 +29,12 @@ fn column_index(text: &str, reference: &str) -> Result<i32, Failure> {
             continue;
         }
         let digit = i32::try_from(u32::from(c)).unwrap_or(i32::MAX) - i32::from(b'A') + 1;
-        index = index.wrapping_mul(26).wrapping_add(digit);
+        index = index
+            .checked_mul(26)
+            .and_then(|index| index.checked_add(digit))
+            .ok_or_else(overflow)?;
     }
-    Ok(index.wrapping_sub(1))
+    index.checked_sub(1).ok_or_else(overflow)
 }
 
 /// The column `new CellReference(text).getCol()` gives, -1 for a reference without one.
@@ -122,7 +127,9 @@ impl CellAddress {
         let row =
             parse_int(&text[split..]).ok_or_else(|| invalid("its row is not an int", text))?;
         Ok(Self {
-            row: row.wrapping_sub(1),
+            row: row
+                .checked_sub(1)
+                .ok_or_else(|| invalid("its row is before the first", text))?,
             column: column_index(&text[..split], text)?,
         })
     }
@@ -156,6 +163,16 @@ fn column_letters(column: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A column past what an `int` holds is invalid, where POI's arithmetic wraps it around to
+    /// a column of the sheet (#186).
+    #[test]
+    fn refuses_a_column_past_an_int() {
+        assert_eq!(reference_column("XFD1").unwrap(), 16383);
+        let wrapped = "BAAAAAAAAAAAAAAAAAAAAA1";
+        assert!(reference_column(wrapped).is_err());
+        assert!(CellAddress::parse(wrapped).is_err());
+    }
 
     #[test]
     fn reads_columns_as_poi_does() {

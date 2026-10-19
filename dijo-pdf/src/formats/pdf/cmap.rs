@@ -133,14 +133,11 @@ pub(super) struct CMap {
     min_cid_length: usize,
     max_cid_length: usize,
     codespace_ranges: Vec<CodespaceRange>,
-    one_byte: IntegerHashMap<String>,
-    two_bytes: IntegerHashMap<String>,
-    more_bytes: IntegerHashMap<String>,
+    one_byte: FastMap<u32, String>,
+    two_bytes: FastMap<u32, String>,
+    more_bytes: FastMap<u32, String>,
     /// `unicodeToByteCodes`: the code of each text, the last mapped to it.
     unicode_to_codes: FastMap<String, Vec<u8>>,
-    /// Whether a map this one uses gave texts codes in an order Java's hash maps hold but the
-    /// port does not know: that of a bucket turned into a tree.
-    codes_unordered: bool,
     code_to_cid: FastMap<usize, FastMap<u32, u32>>,
     cid_ranges: Vec<CidRange>,
     space_mapping: i64,
@@ -159,11 +156,10 @@ impl CMap {
             min_cid_length: 4,
             max_cid_length: 0,
             codespace_ranges: Vec::new(),
-            one_byte: IntegerHashMap::default(),
-            two_bytes: IntegerHashMap::default(),
-            more_bytes: IntegerHashMap::default(),
+            one_byte: FastMap::default(),
+            two_bytes: FastMap::default(),
+            more_bytes: FastMap::default(),
             unicode_to_codes: FastMap::default(),
-            codes_unordered: false,
             code_to_cid: FastMap::default(),
             cid_ranges: Vec::new(),
             space_mapping: -1,
@@ -203,25 +199,16 @@ impl CMap {
     /// `CMap.toUnicode(int, int)`.
     pub(super) fn to_unicode_length(&self, code: u32, length: usize) -> Option<&str> {
         match length {
-            1 => self.one_byte.get(code),
-            2 => self.two_bytes.get(code),
-            _ => self.more_bytes.get(code),
+            1 => self.one_byte.get(&code),
+            2 => self.two_bytes.get(&code),
+            _ => self.more_bytes.get(&code),
         }
         .map(String::as_str)
     }
 
-    /// `CMap.getCodesFromUnicode`: the code `unicode` was last mapped from, or why the port
-    /// does not know it: a map that uses another whose codes FontBox adds in the order of a
-    /// hash map's bucket turned into a tree.
-    pub(super) fn codes_from_unicode(&self, unicode: &str) -> Result<Option<&[u8]>, Unported> {
-        if self.codes_unordered {
-            return Err(Unported(
-                "a CMap using another whose Unicode mappings a Java hash map holds in a bucket \
-                 turned into a tree, whose order the port does not follow"
-                    .to_owned(),
-            ));
-        }
-        Ok(self.unicode_to_codes.get(unicode).map(Vec::as_slice))
+    /// `CMap.getCodesFromUnicode`: the code `unicode` was last mapped from.
+    pub(super) fn codes_from_unicode(&self, unicode: &str) -> Option<&[u8]> {
+        self.unicode_to_codes.get(unicode).map(Vec::as_slice)
     }
 
     /// `CMap.readCode`: the code at the start of `bytes`, and how many bytes it takes, as
@@ -296,7 +283,7 @@ impl CMap {
             3 | 4 => &mut self.more_bytes,
             _ => return,
         };
-        map.put(to_int(codes), unicode.clone());
+        map.insert(to_int(codes), unicode.clone());
         self.unicode_to_codes.insert(unicode, codes.to_vec());
     }
 
@@ -335,35 +322,26 @@ impl CMap {
         self.codespace_ranges.push(range);
     }
 
-    /// `CMap.useCmap`: the other map's ranges and mappings added to this one's, its Unicode
-    /// mappings each giving its text its code in the order Java's hash maps hold them, so that
-    /// the last of the codes of a text in that order is the one kept. FontBox writes a one-byte
-    /// code `k` as `k % 0xFF`, which takes 255 for 0 (#125).
+    /// `CMap.useCmap`: the other map's ranges and mappings added to this one's, each text
+    /// keeping the code the other map last mapped to it. FontBox instead gives each text the
+    /// last of its codes in the order of a Java hash map, and writes a one-byte code `k` as
+    /// `k % 0xFF`, which turns 255 into 0; the port keeps the other map's own codes (#186).
     fn use_cmap(&mut self, other: &CMap) {
         for range in &other.codespace_ranges {
             self.add_codespace_range(range.clone());
         }
-        self.one_byte.put_all(&other.one_byte);
-        self.two_bytes.put_all(&other.two_bytes);
-        self.more_bytes.put_all(&other.more_bytes);
-        let maps = [&other.one_byte, &other.two_bytes, &other.more_bytes];
-        self.codes_unordered |= maps.iter().any(|map| !map.ordered());
-        for (code, unicode) in other.one_byte.in_java_order() {
-            self.unicode_to_codes
-                .insert(unicode.clone(), vec![(code % 0xFF) as u8]);
-        }
-        for (code, unicode) in other.two_bytes.in_java_order() {
-            self.unicode_to_codes
-                .insert(unicode.clone(), (code as u16).to_be_bytes().to_vec());
-        }
-        for (code, unicode) in other.more_bytes.in_java_order() {
-            let bytes = code.to_be_bytes();
-            let codes = match code <= 0xFF_FFFF {
-                true => bytes[1..].to_vec(),
-                false => bytes.to_vec(),
-            };
-            self.unicode_to_codes.insert(unicode.clone(), codes);
-        }
+        let copy = |to: &mut FastMap<u32, String>, from: &FastMap<u32, String>| {
+            to.extend(from.iter().map(|(&code, unicode)| (code, unicode.clone())));
+        };
+        copy(&mut self.one_byte, &other.one_byte);
+        copy(&mut self.two_bytes, &other.two_bytes);
+        copy(&mut self.more_bytes, &other.more_bytes);
+        self.unicode_to_codes.extend(
+            other
+                .unicode_to_codes
+                .iter()
+                .map(|(unicode, codes)| (unicode.clone(), codes.clone())),
+        );
         for (&length, map) in &other.code_to_cid {
             self.code_to_cid
                 .entry(length)
@@ -375,150 +353,6 @@ impl CMap {
         self.min_code_length = self.min_code_length.min(other.min_code_length);
         self.max_cid_length = self.max_cid_length.max(other.max_cid_length);
         self.min_cid_length = self.min_cid_length.min(other.min_cid_length);
-    }
-}
-
-/// `HashMap.DEFAULT_INITIAL_CAPACITY`.
-const DEFAULT_CAPACITY: usize = 16;
-/// `HashMap.TREEIFY_THRESHOLD`: the entries a bucket holds before one more turns it into a tree.
-const TREEIFY_THRESHOLD: u32 = 8;
-/// `HashMap.MIN_TREEIFY_CAPACITY`: the table a bucket turns into a tree in, at least; a smaller
-/// one doubles instead.
-const MIN_TREEIFY_CAPACITY: usize = 64;
-
-/// A `java.util.HashMap<Integer, V>` as it fills, iterated in Java's order: by bucket of its
-/// table, then in the order the entries came within a bucket. A bucket of more entries than
-/// [`TREEIFY_THRESHOLD`] turns into a tree, whose order is not followed: the map is then no
-/// longer [`IntegerHashMap::ordered`].
-#[derive(Debug, Clone)]
-struct IntegerHashMap<V> {
-    /// The entries in the order they came.
-    entries: Vec<(u32, V)>,
-    /// Where each key's entry stands.
-    index: FastMap<u32, usize>,
-    /// The table's length, 0 before the first entry allocates it.
-    capacity: usize,
-    /// `threshold`: the size past which the table doubles, or, before the table is allocated,
-    /// the length it is allocated at, if a `putAll` set it.
-    threshold: usize,
-    /// How many entries each bucket of the table holds.
-    buckets: Vec<u32>,
-    /// Whether no bucket turned into a tree.
-    ordered: bool,
-}
-
-impl<V> Default for IntegerHashMap<V> {
-    fn default() -> Self {
-        Self {
-            entries: Vec::new(),
-            index: FastMap::default(),
-            capacity: 0,
-            threshold: 0,
-            buckets: Vec::new(),
-            ordered: true,
-        }
-    }
-}
-
-impl<V: Clone> IntegerHashMap<V> {
-    fn get(&self, key: u32) -> Option<&V> {
-        self.index.get(&key).map(|&at| &self.entries[at].1)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Whether the map iterates in [`IntegerHashMap::in_java_order`].
-    fn ordered(&self) -> bool {
-        self.ordered
-    }
-
-    /// `Integer.hashCode` spread as `HashMap.hash` spreads it.
-    fn hash(key: u32) -> usize {
-        (key ^ (key >> 16)) as usize
-    }
-
-    fn bucket(&self, key: u32) -> usize {
-        Self::hash(key) & (self.capacity - 1)
-    }
-
-    /// `put`: a key already present keeps its place with the new value.
-    fn put(&mut self, key: u32, value: V) {
-        if let Some(&at) = self.index.get(&key) {
-            self.entries[at].1 = value;
-            return;
-        }
-        if self.capacity == 0 {
-            self.resize();
-        }
-        let bucket = self.bucket(key);
-        self.buckets[bucket] += 1;
-        self.index.insert(key, self.entries.len());
-        self.entries.push((key, value));
-        if self.buckets[bucket] > TREEIFY_THRESHOLD {
-            match self.capacity < MIN_TREEIFY_CAPACITY {
-                true => self.resize(),
-                false => self.ordered = false,
-            }
-        }
-        if self.entries.len() > self.threshold {
-            self.resize();
-        }
-    }
-
-    /// `putAll`, as `putMapEntries` sizes the table first.
-    fn put_all(&mut self, other: &Self) {
-        let size = other.entries.len();
-        if size == 0 {
-            return;
-        }
-        if self.capacity == 0 {
-            let wanted = (size * 4).div_ceil(3);
-            if wanted > self.threshold {
-                self.threshold = wanted.next_power_of_two();
-            }
-        } else {
-            while size > self.threshold {
-                self.resize();
-            }
-        }
-        self.ordered &= other.ordered;
-        for (key, value) in other.in_java_order() {
-            self.put(key, value.clone());
-        }
-    }
-
-    /// `resize`: the table allocated, at the length a `putAll` set or the default one, or
-    /// doubled.
-    fn resize(&mut self) {
-        self.capacity = match (self.capacity, self.threshold) {
-            (0, 0) => DEFAULT_CAPACITY,
-            (0, presized) => presized,
-            (capacity, _) => capacity * 2,
-        };
-        self.threshold = self.capacity * 3 / 4;
-        self.buckets = vec![0; self.capacity];
-        for at in 0..self.entries.len() {
-            let bucket = self.bucket(self.entries[at].0);
-            self.buckets[bucket] += 1;
-        }
-    }
-
-    /// The entries in the order Java iterates them, if the map is
-    /// [`IntegerHashMap::ordered`]; otherwise in an order Java's may differ from.
-    fn in_java_order(&self) -> impl Iterator<Item = (u32, &V)> {
-        let mut order: Vec<(usize, usize)> = self
-            .entries
-            .iter()
-            .enumerate()
-            .map(|(at, (key, _))| (self.bucket(*key), at))
-            .collect();
-        order.sort_unstable();
-        order.into_iter().map(|(_, at)| {
-            let (key, value) = &self.entries[at];
-            (*key, value)
-        })
     }
 }
 
@@ -1091,7 +925,8 @@ endcmap CMapName currentdict /CMap defineresource pop end end";
     }
 
     /// What FontBox's `getCodesFromUnicode` gives each text that a bundled map maps more than
-    /// one code to, in a map using the bundled one, as `UsedCMapCodes.java` writes it.
+    /// one code to, in a map using the bundled one, as `UsedCMapCodes.java` writes it: the last
+    /// of the text's codes in the order of a Java hash map.
     const USED_CMAP_CODES: &str = include_str!("../../../tests/fixtures/pdf/used-cmap-codes.tsv");
 
     fn hex(text: &str) -> Vec<u8> {
@@ -1101,15 +936,18 @@ endcmap CMapName currentdict /CMap defineresource pop end end";
             .collect()
     }
 
+    /// A map using a bundled one gives each text the code the bundled map last mapped to it,
+    /// which maps back to the text, not the code FontBox's hash order leaves (#186).
     #[test]
-    fn gives_texts_the_codes_of_a_used_map_in_javas_hash_order() {
+    fn gives_texts_the_codes_a_used_map_last_mapped_to_them() {
         let mut checked = 0;
+        let mut unlike_java = 0;
         let mut using: Option<(&str, CMap)> = None;
         for line in USED_CMAP_CODES
             .lines()
             .filter(|line| !line.starts_with('#'))
         {
-            let [name, unicode, codes] = line.split('\t').collect::<Vec<_>>()[..] else {
+            let [name, unicode, java] = line.split('\t').collect::<Vec<_>>()[..] else {
                 panic!("{line}");
             };
             if using.as_ref().is_none_or(|(used, _)| *used != name) {
@@ -1119,43 +957,29 @@ endcmap CMapName currentdict /CMap defineresource pop end end";
             let (_, using) = using.as_ref().unwrap();
             let unicode = decode_java("UTF-16BE", &hex(unicode));
             let found = using.codes_from_unicode(&unicode).unwrap();
-            assert_eq!(found, Some(hex(codes).as_slice()), "{line}");
+            let used = predefined(name).unwrap();
+            assert_eq!(Some(found), used.codes_from_unicode(&unicode), "{line}");
+            assert_eq!(
+                used.to_unicode_length(to_int(found), found.len()),
+                Some(unicode.as_str()),
+                "{line}"
+            );
+            unlike_java += usize::from(found != hex(java).as_slice());
             checked += 1;
         }
         assert_eq!(checked, 3104);
-        for name in BUNDLED.keys() {
-            let cmap = predefined(name).unwrap();
-            assert!(cmap.more_bytes.is_empty(), "{name}");
-            let maps = [&cmap.one_byte, &cmap.two_bytes];
-            assert!(maps.iter().all(|map| map.ordered()), "{name}");
-        }
+        assert!(unlike_java > 0);
     }
 
+    /// A one-byte code 255 of a used map stays 255, where FontBox writes it as `255 % 0xFF`, 0.
     #[test]
-    fn iterates_integer_keys_by_bucket_then_as_they_came() {
-        let mut map = IntegerHashMap::default();
-        for key in [33, 1, 17, 2] {
-            map.put(key, ());
-        }
-        let keys = |map: &IntegerHashMap<()>| map.in_java_order().map(|(key, _)| key).collect();
-        let order: Vec<u32> = keys(&map);
-        assert_eq!(order, [33, 1, 17, 2]);
-        for key in 100..109 {
-            map.put(key, ());
-        }
-        assert_eq!(map.capacity, 32);
-        assert_eq!(&keys(&map)[..4], [33, 1, 2, 100]);
-        let mut presized = IntegerHashMap::default();
-        presized.put_all(&map);
-        assert_eq!(presized.capacity, 32);
-        let mut crowded = IntegerHashMap::default();
-        for key in 0..10 {
-            crowded.put(key * 64, ());
-        }
-        assert_eq!(crowded.capacity, 64);
-        assert!(crowded.ordered());
-        crowded.put(640, ());
-        assert!(!crowded.ordered());
+    fn keeps_a_used_one_byte_code_255() {
+        let mut used = CMap::new();
+        used.add_char_mapping(&[0xFF], "y".to_owned());
+        let mut using = CMap::new();
+        using.use_cmap(&used);
+        assert_eq!(using.codes_from_unicode("y"), Some(&[0xFF][..]));
+        assert_eq!(using.to_unicode_length(0xFF, 1), Some("y"));
     }
 
     #[test]

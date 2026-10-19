@@ -381,7 +381,6 @@ struct SimpleFont {
 struct CidFont {
     descriptor: Option<Descriptor>,
     widths: FastMap<i32, f32>,
-    width_order: Vec<(i32, f32)>,
     default_width: f32,
     dw2: [f32; 2],
     vertical: FastMap<i32, (f32, f32, f32)>,
@@ -846,13 +845,7 @@ impl Font {
                 Some(BuiltIn::Standard) => Ok(Encoding::from_font_box(
                     &Builtin::Standard.encoding().entries(),
                 )),
-                Some(BuiltIn::Custom(entries)) => {
-                    let parsed: Vec<(i32, String)> = encoding::java_integer_map_order(entries)
-                        .into_iter()
-                        .map(|(code, name)| (code, name.clone()))
-                        .collect();
-                    Ok(Encoding::from_font_box(&parsed))
-                }
+                Some(BuiltIn::Custom(entries)) => Ok(Encoding::from_font_box(entries)),
             },
             SimpleKind::TrueType(program) => {
                 if self.descriptor.as_ref().map(Descriptor::is_symbolic) == Some(false) {
@@ -1613,7 +1606,7 @@ impl Font {
                                 return Ok(None);
                             }
                         }
-                        Ok(encoding.first_code(name)?.map(|code| vec![code as u8]))
+                        Ok(encoding.first_code(name).map(|code| vec![code as u8]))
                     }
                     SimpleKind::TrueType(program) => {
                         let ttf = program.font()?;
@@ -1667,7 +1660,7 @@ impl Font {
                 Some(cid) => cid,
                 None => {
                     if let Some(to_unicode) = &self.to_unicode {
-                        if let Some(codes) = to_unicode.codes_from_unicode(" ")? {
+                        if let Some(codes) = to_unicode.codes_from_unicode(" ") {
                             return Ok(Some(codes.to_vec()));
                         }
                     }
@@ -2025,7 +2018,6 @@ impl CidFont {
                 .dict(dict, b"FontDescriptor")
                 .map(|fd| Descriptor::read(pdf, fd)),
             widths: FastMap::default(),
-            width_order: Vec::new(),
             default_width: pdf.get(dict, b"DW").and_then(float_value).unwrap_or(1000.0),
             dw2: [880.0, -1000.0],
             vertical: FastMap::default(),
@@ -2067,7 +2059,6 @@ impl CidFont {
 
     fn put_width(&mut self, cid: i32, width: f32) {
         self.widths.insert(cid, width);
-        self.width_order.push((cid, width));
     }
 
     /// `PDCIDFont.readWidths`.
@@ -2173,13 +2164,16 @@ impl CidFont {
         self.widths.get(&cid).copied().unwrap_or(self.default_width)
     }
 
-    /// `PDCIDFont.getAverageFontWidth`: the positive widths averaged in the order a Java
-    /// `HashMap<Integer, Float>` iterates them. PDFBox's `PDCIDFontType0` takes 500 whatever
-    /// its widths (#109); the port averages them as for other CID fonts.
+    /// `PDCIDFont.getAverageFontWidth`: the positive widths averaged in the order of their
+    /// CIDs, where PDFBox sums them in the order a Java `HashMap<Integer, Float>` iterates
+    /// them, whose rounding follows the table's layout (#186). PDFBox's `PDCIDFontType0` takes
+    /// 500 whatever its widths (#109); the port averages them as for other CID fonts.
     fn average_width(&self) -> f32 {
+        let mut widths: Vec<(i32, f32)> = self.widths.iter().map(|(&cid, &w)| (cid, w)).collect();
+        widths.sort_unstable_by_key(|&(cid, _)| cid);
         let mut total = 0.0f32;
         let mut count = 0;
-        for (_, width) in encoding::java_integer_map_order(&self.width_order) {
+        for (_, width) in &widths {
             if *width > 0.0 {
                 total += width;
                 count += 1;

@@ -8,7 +8,6 @@ use lopdf::{Dictionary, Object};
 
 use super::cos::{name_string, Pdf};
 use super::position::GlyphText;
-use super::Unported;
 use crate::hash::FastMap;
 
 const ENCODINGS: &str = include_str!("../../../models/pdf/encodings.tsv");
@@ -162,56 +161,29 @@ impl Encoding {
     }
 
     /// A font program's built-in encoding from its codes and names, as `BuiltInEncoding` and
-    /// `Type1Encoding` add them: in the iteration order of the Java `HashMap<Integer, String>`
-    /// they come in, a name keeping the first code it is added with.
+    /// `Type1Encoding` add them: in the font's order, a name keeping the first code it is added
+    /// with. PDFBox adds them in the iteration order of a Java `HashMap`, so that which code a
+    /// name keeps depends on the hash table's layout (#186).
     pub(super) fn font_program(entries: &[(i32, String)]) -> Encoding {
-        let mut encoding = Encoding {
-            kind: Kind::FontProgram,
-            code_to_name: FastMap::default(),
-            name_to_code: FastMap::default(),
-        };
-        for (code, name) in java_integer_map_order(entries) {
-            encoding.add(code, name.clone());
-        }
-        encoding
+        Self::in_order(entries)
     }
 
-    /// `Type1Encoding.fromFontBox` of a FontBox encoding filled with `entries` in their order:
-    /// in the iteration order of FontBox's `HashMap<Integer, String>(250)`.
+    /// `Type1Encoding.fromFontBox` of a FontBox encoding filled with `entries`: in their order,
+    /// where PDFBox copies them in the iteration order of FontBox's `HashMap<Integer, String>`
+    /// (#186).
     pub(super) fn from_font_box(entries: &[(i32, String)]) -> Encoding {
-        let ordered: Vec<(i32, String)> = java_integer_map_order_from(entries, 256)
-            .into_iter()
-            .map(|(code, name)| (code, name.clone()))
-            .collect();
-        Self::in_order(&ordered)
+        Self::in_order(entries)
     }
 
-    /// The code `PDType1Font.getInvertedEncoding` gives a name: the first that has it in the
-    /// iteration order of the codes in `Encoding`'s `HashMap<Integer, String>(250)`, of 256
-    /// buckets or more: the codes of a byte each in the bucket of its value, and -1, which an
-    /// AFM file gives the glyphs it does not encode, in the first bucket with 0.
-    pub(super) fn first_code(&self, name: &str) -> Result<Option<i32>, Unported> {
-        if self
-            .code_to_name
-            .keys()
-            .any(|code| !(-1..=255).contains(code))
-        {
-            return Err(Unported(
-                "an encoding with codes past a byte, whose inverse PDFBox takes in hash order"
-                    .to_owned(),
-            ));
-        }
-        let named = |code: i32| self.code_to_name.get(&code).is_some_and(|it| it == name);
-        match (named(0), named(-1)) {
-            (true, true) => Err(Unported(
-                "codes 0 and -1 of an encoding naming the same glyph, whose inverse PDFBox takes \
-                 in the order they were added"
-                    .to_owned(),
-            )),
-            (true, false) => Ok(Some(0)),
-            (false, true) => Ok(Some(-1)),
-            (false, false) => Ok((1..=255).find(|&code| named(code))),
-        }
+    /// The code `PDType1Font.getInvertedEncoding` gives a name: the lowest code that names it,
+    /// and -1, which an AFM file gives the glyphs it does not encode, only where no code does.
+    /// PDFBox takes the first in the iteration order of a Java `HashMap` instead (#186).
+    pub(super) fn first_code(&self, name: &str) -> Option<i32> {
+        self.code_to_name
+            .iter()
+            .filter(|(_, named)| *named == name)
+            .map(|(&code, _)| code)
+            .min_by_key(|&code| (code < 0, code))
     }
 
     /// The codes and names of the encoding, by code.
@@ -326,33 +298,6 @@ impl Encoding {
         }
         encoding
     }
-}
-
-/// The entries of a Java `HashMap<Integer, V>` filled in the given order, in the order it
-/// iterates them: by bucket, the table grown as `HashMap` grows it, and within a bucket in
-/// insertion order.
-pub(super) fn java_integer_map_order<V>(entries: &[(i32, V)]) -> Vec<(i32, &V)> {
-    java_integer_map_order_from(entries, 16)
-}
-
-/// [`java_integer_map_order`] of a map whose table starts at `table` buckets, a power of two.
-pub(super) fn java_integer_map_order_from<V>(entries: &[(i32, V)], table: usize) -> Vec<(i32, &V)> {
-    let mut unique: Vec<(i32, &V)> = Vec::with_capacity(entries.len());
-    let mut positions: FastMap<i32, usize> = FastMap::default();
-    for (key, value) in entries {
-        match positions.get(key) {
-            Some(&position) => unique[position].1 = value,
-            None => {
-                positions.insert(*key, unique.len());
-                unique.push((*key, value));
-            }
-        }
-    }
-    let hashes: Vec<u32> = unique.iter().map(|&(key, _)| key as u32).collect();
-    crate::java::hash_map_order(&hashes, table)
-        .into_iter()
-        .map(|index| unique[index])
-        .collect()
 }
 
 /// PDFBox's `GlyphList`: glyph names to Unicode, and Unicode back to names.
@@ -492,15 +437,34 @@ mod tests {
         assert!(TEXT_EXTRACTION.to_unicode("angbracketleft").is_some());
     }
 
+    /// A font program's encoding gives a name its first code in the font's order, where
+    /// PDFBox's hash order would give "a" code 3 (#186).
     #[test]
-    fn orders_integer_keys_as_java_hash_map_does() {
-        let entries: Vec<(i32, &str)> = vec![(40, "a"), (3, "b"), (17, "c"), (3, "d")];
-        let order: Vec<i32> = java_integer_map_order(&entries)
-            .iter()
-            .map(|(key, _)| *key)
-            .collect();
-        assert_eq!(order, vec![17, 3, 40]);
-        let replaced = java_integer_map_order(&entries);
-        assert_eq!(*replaced[1].1, "d");
+    fn gives_a_name_its_first_code_in_the_fonts_order() {
+        let entries = [
+            (40, "a".to_owned()),
+            (3, "a".to_owned()),
+            (17, "b".to_owned()),
+        ];
+        let encoding = Encoding::font_program(&entries);
+        assert_eq!(encoding.code("a"), Some(40));
+        assert_eq!(encoding.name(3), "a");
+    }
+
+    /// The inverse takes the lowest code of a name, past a byte too, and -1 only where no other
+    /// code names it, where PDFBox's hash order gave up on codes past a byte (#186).
+    #[test]
+    fn inverts_a_name_to_its_lowest_code() {
+        let entries = [
+            (-1, "a".to_owned()),
+            (300, "a".to_owned()),
+            (7, "b".to_owned()),
+        ];
+        let encoding = Encoding::in_order(&entries);
+        assert_eq!(encoding.first_code("a"), Some(300));
+        assert_eq!(encoding.first_code("b"), Some(7));
+        assert_eq!(encoding.first_code("c"), None);
+        let unencoded = Encoding::in_order(&[(-1, "a".to_owned())]);
+        assert_eq!(unencoded.first_code("a"), Some(-1));
     }
 }

@@ -236,14 +236,18 @@ impl<'p> Book<'p> {
     }
 }
 
-/// `maybeThrowEncryptedException`: the `EncryptedDocumentException` naming `items`, in the order
-/// of the `HashSet` Tika collects them in, as many as fit in about 500 characters.
+/// `maybeThrowEncryptedException`: the `EncryptedDocumentException` naming `items`, each once in
+/// the order `encryption.xml` names them, where Tika lists them in the order of a `HashSet`
+/// (#186), as many as fit in about 500 characters.
 fn encrypted(items: &[String]) -> Failure {
     let mut message = String::from("EPUB contains encrypted items: ");
-    for (added, item) in java::hash_set_order(items.iter().map(String::as_str))
-        .into_iter()
-        .enumerate()
-    {
+    let mut unique: Vec<&str> = Vec::new();
+    for item in items {
+        if !unique.contains(&item.as_str()) {
+            unique.push(item);
+        }
+    }
+    for (added, item) in unique.into_iter().enumerate() {
         if message.encode_utf16().count() > 500 {
             message.push_str(" and others...");
             break;

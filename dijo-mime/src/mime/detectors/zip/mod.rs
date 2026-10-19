@@ -152,7 +152,7 @@ fn root_element(content: &[u8]) -> Option<(String, String)> {
     root
 }
 
-/// `IWorkPackageParser.IWORK_CONTENT_ENTRIES`, a `HashSet`.
+/// `IWorkPackageParser.IWORK_CONTENT_ENTRIES`, in the order they are looked for.
 pub const IWORK_CONTENT_ENTRIES: [&str; 3] = ["index.apxl", "index.xml", "presentation.apxl"];
 
 /// An iWork 2008 document, as `IWORKDocumentType` names the ones its content entry's root
@@ -253,7 +253,7 @@ fn iwork_file(zip: &ZipFile<'_>) -> Option<MediaType> {
         );
     }
     zip.entry("buildVersionHistory.plist")?;
-    for name in crate::java::hash_set_order(IWORK_CONTENT_ENTRIES) {
+    for name in IWORK_CONTENT_ENTRIES {
         let found = zip
             .entry(name)
             .and_then(|entry| iwork_type(|window| zip.read_head(entry, window)));

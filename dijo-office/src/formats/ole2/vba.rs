@@ -10,9 +10,8 @@
 //! reading names the difference: modules in the order the projects name them, where Tika writes
 //! them in the order of a `java.util.HashMap`; a stream of a `VBA` storage no project names as a
 //! module, which POI hands on undecompressed as if it were a module's source; a project in code
-//! page 1256, which POI reads in code page 1255; text whose malformed bytes the native decoders
-//! may replace otherwise than Java's; and macros POI fails to read, which Tika records in an
-//! entry of no content (#186).
+//! page 1256, which POI reads in code page 1255; and macros POI fails to read, which Tika records
+//! in an entry of no content (#186).
 //!
 //! Where POI is wrong, the reading departs from it (#186): a module's stream is looked up by the
 //! Unicode name the `dir` stream gives it (`MODULESTREAMNAMEUNICODE`), which is the name of the
@@ -28,7 +27,7 @@ use crate::formats::embedded::{ResourceType, Wrapping, EXCEPTION_WARNING, RESOUR
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{noted, unless_different, Decline, Difference, Failure, Prepared};
-use crate::java::{equals_ignore_case, is_blank, split, JavaHashMap};
+use crate::java::{equals_ignore_case, is_blank, split};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 use crate::text::charset::Charset;
 
@@ -516,8 +515,6 @@ struct ModuleMap {
     charset: Charset,
     /// The code page the last project names.
     code_page: Option<i32>,
-    /// What of the projects' text the native decoders may decode otherwise than Java's.
-    inexact: bool,
     /// The modules whose streams POI looks up by another name than the port, each told.
     renamed: Vec<String>,
 }
@@ -534,17 +531,14 @@ impl ModuleMap {
         self.modules.push((name, module));
     }
 
-    /// `new String(bytes, charset)`, noting where the native decoder may differ from Java's.
-    fn decode(&mut self, bytes: &[u8]) -> Read<String> {
-        let exact = self.charset.decode_exactly(bytes);
-        self.inexact |= exact.is_none();
-        match exact.or_else(|| self.charset.decode(bytes)) {
-            Some(text) => Ok(text),
-            None => Err(Thrown::Runtime(format!(
+    /// `new String(bytes, charset)`.
+    fn decode(&self, bytes: &[u8]) -> Read<String> {
+        self.charset.decode(bytes).ok_or_else(|| {
+            Thrown::Runtime(format!(
                 "text in {}, which the native decoders do not decode",
                 self.charset.name()
-            ))),
-        }
+            ))
+        })
     }
 }
 
@@ -556,7 +550,6 @@ fn read_macros(file: &Ole2<'_>) -> Read<(Vec<Module>, Vec<String>)> {
         index: HashMap::new(),
         charset: Charset::named("windows-1252"),
         code_page: None,
-        inexact: false,
         renamed: Vec::new(),
     };
     find_macros(file, file.root(), &mut modules)?;
@@ -573,7 +566,6 @@ fn read_macros(file: &Ole2<'_>) -> Read<(Vec<Module>, Vec<String>)> {
     })?;
     let mut differences = std::mem::take(&mut modules.renamed);
     let mut read = Vec::with_capacity(modules.modules.len());
-    let mut names = JavaHashMap::default();
     let named: Vec<(String, ModuleImpl)> = std::mem::take(&mut modules.modules);
     for (name, module) in named {
         let Some(buf) = module.buf else {
@@ -581,7 +573,6 @@ fn read_macros(file: &Ole2<'_>) -> Read<(Vec<Module>, Vec<String>)> {
                 "java.lang.NullPointerException: the module {name} has no stream"
             )));
         };
-        names.insert(&name, ());
         if module.offset.is_none() {
             differences.push(format!(
                 "the stream {name}, which no project names as a module, which POI hands on \
@@ -595,38 +586,7 @@ fn read_macros(file: &Ole2<'_>) -> Read<(Vec<Module>, Vec<String>)> {
     if modules.code_page == Some(ARABIC) {
         differences.push("a project in code page 1256, which POI reads in code page 1255".into());
     }
-    if modules.inexact {
-        differences.push(format!(
-            "text in {} with malformed bytes, which the native decoders may replace otherwise \
-             than Java's",
-            modules.charset.name()
-        ));
-    }
-    if !in_java_order(&names, &read) {
-        differences.push(
-            "modules in the order of a java.util.HashMap, which the port hands on in the order \
-             the projects name them"
-                .into(),
-        );
-    }
     Ok((read, differences))
-}
-
-/// Whether Tika hands on the modules `read` in their order: as it iterates the `HashMap` that
-/// `readMacros` fills from the one `readMacroModules` fills from the `ModuleMap` of `names`.
-fn in_java_order(names: &JavaHashMap<()>, read: &[Module]) -> bool {
-    let put_one_by_one = |map: &JavaHashMap<()>| {
-        let mut copy = JavaHashMap::default();
-        for (name, ()) in map.iter() {
-            copy.insert(name, ());
-        }
-        copy
-    };
-    put_one_by_one(&put_one_by_one(names))
-        .iter()
-        .map(|(name, _)| name)
-        .filter(|name| read.iter().any(|module| module.name == *name))
-        .eq(read.iter().map(|module| module.name.as_str()))
 }
 
 /// `findMacros`: each `VBA` storage below `directory`, the directory itself first.

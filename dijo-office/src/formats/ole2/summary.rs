@@ -144,34 +144,34 @@ fn parse_summary_information(section: &Section, metadata: &mut TikaMetadata) -> 
         None | Some(Value::Bytes(_)) => {}
         Some(_) => return Err(Fault::Runtime),
     }
-    set(metadata, "dc:title", string(section, pid::TITLE)?);
-    if let Some(author) = string(section, pid::AUTHOR)? {
+    set(metadata, "dc:title", string(section, pid::TITLE));
+    if let Some(author) = string(section, pid::AUTHOR) {
         add_multi(metadata, "dc:creator", &author);
     }
-    if let Some(keywords) = string(section, pid::KEYWORDS)?.filter(|k| !is_blank(k)) {
+    if let Some(keywords) = string(section, pid::KEYWORDS).filter(|k| !is_blank(k)) {
         metadata.add("meta:keyword", keywords.clone());
         metadata.add("dc:subject", keywords);
     }
-    if let Some(subject) = string(section, pid::SUBJECT)?.filter(|s| !is_blank(s)) {
+    if let Some(subject) = string(section, pid::SUBJECT).filter(|s| !is_blank(s)) {
         metadata.add("dc:subject", subject);
     }
     set(
         metadata,
         "meta:last-author",
-        string(section, pid::LAST_AUTHOR)?,
+        string(section, pid::LAST_AUTHOR),
     );
-    set(metadata, "w:Comments", string(section, pid::COMMENTS)?);
+    set(metadata, "w:Comments", string(section, pid::COMMENTS));
     set(
         metadata,
         "extended-properties:Template",
-        string(section, pid::TEMPLATE)?,
+        string(section, pid::TEMPLATE),
     );
     set(
         metadata,
         "extended-properties:Application",
-        string(section, pid::APPLICATION)?,
+        string(section, pid::APPLICATION),
     );
-    set(metadata, "cp:revision", string(section, pid::REVISION)?);
+    set(metadata, "cp:revision", string(section, pid::REVISION));
     set_date(metadata, "dcterms:created", date(section, pid::CREATED)?);
     set_date(
         metadata,
@@ -212,9 +212,9 @@ fn parse_document_summary_information(
     set(
         metadata,
         "extended-properties:Company",
-        string(section, pid::COMPANY)?,
+        string(section, pid::COMPANY),
     );
-    if let Some(manager) = string(section, pid::MANAGER)? {
+    if let Some(manager) = string(section, pid::MANAGER) {
         add_multi(metadata, "extended-properties:Manager", &manager);
     }
     let language = custom_properties(set_)?.and_then(|custom| match custom.get("Language") {
@@ -222,7 +222,7 @@ fn parse_document_summary_information(
         _ => None,
     });
     set(metadata, "dc:language", language);
-    set(metadata, "cp:category", string(section, pid::CATEGORY)?);
+    set(metadata, "cp:category", string(section, pid::CATEGORY));
     let slides = int(section, pid::SLIDE_COUNT)?;
     set_positive(metadata, "meta:slide-count", slides);
     set_positive(metadata, "xmpTPg:NPages", slides);
@@ -239,16 +239,14 @@ fn edit_minutes(section: &Section) -> Result<Option<i64>, Fault> {
     Ok(date(section, pid::EDIT_TIME)?.map(|millis| (millis + FILETIME_EPOCH_MILLIS) / 60_000))
 }
 
-/// `PropertySet.getPropertyStringValue`: text as it is, and any other value as Java writes it.
-/// A value POI keeps as bytes, of a type it does not convert, is passed over; Tika writes it
-/// by its length as a number or as text in code page 1252 (#106).
-fn string(section: &Section, id: u32) -> Result<Option<String>, Fault> {
-    let Some(value) = section.get(id) else {
-        return Ok(None);
-    };
-    Ok(Some(match value {
+/// `PropertySet.getPropertyStringValue`: text as it is, a date as an instant in UTC, and any
+/// other value as Java writes it; POI writes a date with `Date.toString`, in the machine's time
+/// zone (#186). A value POI keeps as bytes, of a type it does not convert, is passed over; Tika
+/// writes it by its length as a number or as text in code page 1252 (#106).
+fn string(section: &Section, id: u32) -> Option<String> {
+    Some(match section.get(id)? {
         Value::String(text) => text.clone(),
-        Value::Bytes(_) => return Ok(None),
+        Value::Bytes(_) => return None,
         Value::Byte(byte) => byte.to_string(),
         Value::Integer(int) => int.to_string(),
         Value::Long(long) => long.to_string(),
@@ -256,13 +254,8 @@ fn string(section: &Section, id: u32) -> Result<Option<String>, Fault> {
         Value::Boolean(boolean) => boolean.to_string(),
         Value::Double(double) => java_double_to_string(*double),
         Value::Float(float) => java_float_to_string(*float),
-        Value::Date(_) => {
-            return Err(Fault::Unported(format!(
-                "property {id} is a date, which Java writes with Date.toString in the machine's \
-                 time zone"
-            )))
-        }
-    }))
+        Value::Date(millis) => format_instant(*millis),
+    })
 }
 
 /// A date property, as the `(Date)` cast of POI's getters takes it.
@@ -447,6 +440,17 @@ mod tests {
         assert_eq!(metadata.values("dc:title"), ["Kept"]);
         assert!(metadata.values("extended-properties:TotalTime").is_empty());
         assert!(metadata.values("meta:page-count").is_empty());
+    }
+
+    /// A text property holding a date is written as an instant in UTC, where POI writes it with
+    /// `Date.toString` in the machine's time zone (#186).
+    #[test]
+    fn writes_a_date_in_a_text_property_as_an_instant() {
+        let metadata = summary(&property_set(
+            SI,
+            &[(2, typed(64, &FILETIME_2020.to_le_bytes()))],
+        ));
+        assert_eq!(metadata.values("dc:title"), ["2020-01-01T00:00:00Z"]);
     }
 
     #[test]

@@ -573,24 +573,16 @@ fn entry_name(entry: &ZipEntry) -> (String, Option<Difference>) {
         _ => charset::detect(&entry.raw_name, None),
     };
     let charset = detection.decode_as;
-    if let Some(name) = charset.decode_exactly(&entry.raw_name) {
-        return (name, None);
-    }
-    let differs = |how: &str| {
-        Some(Difference::new(format!(
-            "the name of the entry {} is detected in {}, {how}",
-            entry.name,
-            charset.name()
-        )))
-    };
     match charset.decode(&entry.raw_name) {
-        Some(name) => (
-            name,
-            differs("in which its malformed bytes are replaced as the WHATWG decoder replaces them"),
-        ),
+        Some(name) => (name, None),
         None => (
             entry.name.clone(),
-            differs("which the native decoders do not decode, so it is read as commons-compress reads it"),
+            Some(Difference::new(format!(
+                "the name of the entry {} is detected in {}, which the native decoders do not \
+                 decode, so it is read as commons-compress reads it",
+                entry.name,
+                charset.name()
+            ))),
         ),
     }
 }
