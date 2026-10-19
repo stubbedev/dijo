@@ -24,5 +24,10 @@ pkgs.dockerTools.buildLayeredImage {
       "DIJO_LISTEN=0.0.0.0:9998"
     ];
     ExposedPorts."9998/tcp" = { };
+    Labels = {
+      "org.opencontainers.image.source" = "https://github.com/stubbedev/dijo";
+      "org.opencontainers.image.description" = "Extract text and metadata from documents";
+      "org.opencontainers.image.licenses" = "Apache-2.0";
+    };
   };
 }
