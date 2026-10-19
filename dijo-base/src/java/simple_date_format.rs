@@ -229,7 +229,18 @@ fn format_field(letter: char, count: usize, local: &LocalFields) -> Result<Strin
                 }
             }
         }
-        _ => return Err(Unported("a time zone's name, pattern letter z")),
+        'z' if local.offset == 0 => {
+            if count >= 4 {
+                "Coordinated Universal Time".to_owned()
+            } else {
+                "UTC".to_owned()
+            }
+        }
+        _ => {
+            return Err(Unported(
+                "a time zone's name, pattern letter z, outside UTC",
+            ))
+        }
     };
     Ok(piece)
 }

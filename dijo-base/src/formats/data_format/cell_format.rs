@@ -4,6 +4,11 @@
 //! `CellNumberFormatter`, `CellDateFormatter`, `CellElapsedFormatter`, `CellTextFormatter` and
 //! `CellGeneralFormatter`, each ported with its quirks. Where Java throws, the error carries
 //! why, and `DataFormatter` falls back as Java's catch does.
+//!
+//! Where POI is wrong, a section departs from it as Excel displays it (#186): a section whose
+//! integer has no `0` digit leaves out a zero that is all its integer holds, a space for each
+//! `?` and nothing for each `#`, so that the zero section of Excel's accounting formats,
+//! `"-"??`, gives a dash, where POI writes the zero.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::LazyLock;
@@ -1413,8 +1418,9 @@ impl NumberFormatter {
         };
         let zero = u16::from(b'0');
         let comma = u16::from(b',');
+        let zero_shown = self.digits(digits).iter().any(|&id| self.all[id].ch == '0');
         let mut strip: isize = 0;
-        while strip < pos {
+        while strip < pos || (strip == pos && !zero_shown) {
             let unit = char_at(strip)?;
             if unit != zero && unit != comma {
                 break;

@@ -9,6 +9,15 @@
 //! with ten digits after the point, writes dates in Java's default time zone and in the 1900
 //! date system whatever the document's, and caches one format per format string, made for the
 //! first value it formats, its date formats keeping the last value they were given.
+//!
+//! Where POI writes a number otherwise than Excel displays it, the formatter writes it as Excel
+//! does (#186): a `?` is a digit, shown as a space where it is an insignificant zero, where POI
+//! writes the `?` itself; commas after the last digit divide by a thousand each before a
+//! literal suffix too, as in `0.0,,"M"`, where POI divides only by commas that end the format,
+//! and exactly, where POI rounds the quotient to the decimals of the value it divides;
+//! and an engineering format such as `##0.0E+0` writes its exponent in steps of its integer
+//! digits and its mantissa with the digits the format gives it, where Java's `DecimalFormat`
+//! writes more of them. See `date_format` for the dates.
 
 mod cell_format;
 mod date_format;
@@ -30,7 +39,7 @@ use crate::java::{self, trim};
 use crate::unicode::{is_letter, is_whitespace};
 use cell_format::{CellFormat, CellValue};
 pub(crate) use date_format::is_a_date_format;
-use date_format::{is_valid_excel_date, java_date, ExcelStyleDateFormatter};
+use date_format::{is_valid_excel_date, java_date, ExcelStyleDateFormatter, Literals};
 use fraction::FractionFormat;
 
 /// Java's `.` in a pattern: any character but a line terminator.
@@ -270,28 +279,193 @@ fn trailing_commas(pattern: &str) -> Option<std::ops::Range<usize>> {
     .min_by_key(|range| range.start)
 }
 
+/// The commas that scale a number pattern by thousands: those that end it, as POI finds them,
+/// else the run right after its last digit, before a literal suffix, as Excel reads it too.
+fn scaling_commas(pattern: &str) -> Option<std::ops::Range<usize>> {
+    trailing_commas(pattern).or_else(|| {
+        let start = pattern.rfind(['0', '#', '?'])? + 1;
+        let length = pattern[start..].bytes().take_while(|&b| b == b',').count();
+        (length > 0).then_some(start..start + length)
+    })
+}
+
+/// The digit placeholders of a number pattern with a `?`, `0`, `#` or `?` each, of its integer
+/// and its fraction, which Excel shows a space for where a `?` stands for an insignificant zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QuestionMarks {
+    integer: Vec<char>,
+    fraction: Vec<char>,
+}
+
+impl QuestionMarks {
+    /// The placeholders of `pattern`, if it has a `?`.
+    fn of(pattern: &str) -> Option<Self> {
+        if !pattern.contains('?') {
+            return None;
+        }
+        let digits = |part: &str| -> Vec<char> {
+            part.chars()
+                .take_while(|&c| c != 'E')
+                .filter(|c| matches!(c, '0' | '#' | '?'))
+                .collect()
+        };
+        let (integer, fraction) = pattern.split_once('.').unwrap_or((pattern, ""));
+        Some(Self {
+            integer: digits(integer),
+            fraction: digits(fraction),
+        })
+    }
+
+    /// `text`, formatted with each `?` taken for a `#`, with a space for each `?` whose digit it
+    /// leaves out: before the integer's digits and after the fraction's, which keeps its point.
+    fn pad(&self, text: &str) -> String {
+        let Some(first) = text.find(|c: char| c.is_ascii_digit()) else {
+            return text.to_owned();
+        };
+        let integer_end = first
+            + text[first..]
+                .find(|c: char| !c.is_ascii_digit() && c != ',')
+                .unwrap_or(text.len() - first);
+        let shown = text[first..integer_end]
+            .chars()
+            .filter(char::is_ascii_digit)
+            .count();
+        let leading = self
+            .integer
+            .iter()
+            .take(self.integer.len().saturating_sub(shown))
+            .filter(|&&c| c == '?')
+            .count();
+        let mut padded = String::with_capacity(text.len() + leading + self.fraction.len());
+        padded.push_str(&text[..first]);
+        padded.extend(std::iter::repeat_n(' ', leading));
+        padded.push_str(&text[first..integer_end]);
+        let mut rest = &text[integer_end..];
+        if self.fraction.contains(&'?') {
+            let (fraction, after) = match rest.strip_prefix('.') {
+                Some(after_point) => {
+                    let end = after_point
+                        .find(|c: char| !c.is_ascii_digit())
+                        .unwrap_or(after_point.len());
+                    after_point.split_at(end)
+                }
+                None => ("", rest),
+            };
+            let trailing = self
+                .fraction
+                .iter()
+                .skip(fraction.len())
+                .filter(|&&c| c == '?')
+                .count();
+            padded.push('.');
+            padded.push_str(fraction);
+            padded.extend(std::iter::repeat_n(' ', trailing));
+            rest = after;
+        }
+        padded.push_str(rest);
+        padded
+    }
+}
+
+/// An engineering format, `##0.0E+0` and the like: the exponent a multiple of the integer's
+/// digits, the mantissa written with the format's own digits after the point.
+#[derive(Debug, Clone, PartialEq)]
+struct Engineering {
+    /// How many integer digits the format has, the step of its exponent.
+    step: i32,
+    mantissa: DecimalFormat,
+    /// The fewest digits of the exponent.
+    exponent_digits: usize,
+}
+
+static ENGINEERING: LazyLock<Regex> = LazyLock::new(|| regex(r"\A([#0]*#[#0]*)(\.[#0]*)?E(0+)\z"));
+
+impl Engineering {
+    /// The engineering format of `pattern`, as `cleanFormatForNumber` leaves it, if it is one:
+    /// an exponent after more integer digits than one, not all of them `0`.
+    fn of(pattern: &str) -> Option<Self> {
+        let found = ENGINEERING.captures(pattern)?;
+        let integer = found.get(1)?.as_str();
+        let step = i32::try_from(integer.len()).ok().filter(|&step| step > 1)?;
+        let fraction = found.get(2).map_or("", |m| m.as_str());
+        let mantissa = DecimalFormat::new(&format!("0{fraction}"), Rounding::HalfUp).ok()?;
+        Some(Self {
+            step,
+            mantissa,
+            exponent_digits: found.get(3)?.as_str().len(),
+        })
+    }
+
+    /// `value` with its exponent the multiple of the step at or below its own, its mantissa
+    /// rounded and, where that rounds it up to the next step, taken a step on.
+    fn format(&self, value: f64) -> String {
+        if value == 0.0 || !value.is_finite() {
+            return format!(
+                "{}E{:0>width$}",
+                self.mantissa.format_f64(value),
+                0,
+                width = self.exponent_digits
+            );
+        }
+        let exponent = value.abs().log10().floor() as i32;
+        let mut exponent = exponent.div_euclid(self.step) * self.step;
+        let mut mantissa = self.mantissa.format_f64(value / 10f64.powi(exponent));
+        let limit = 10f64.powi(self.step);
+        if mantissa
+            .trim_start_matches('-')
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            >= limit
+        {
+            exponent += self.step;
+            mantissa = self.mantissa.format_f64(value / 10f64.powi(exponent));
+        }
+        let sign = if exponent < 0 { "-" } else { "" };
+        format!(
+            "{mantissa}E{sign}{:0>width$}",
+            exponent.unsigned_abs(),
+            width = self.exponent_digits
+        )
+    }
+}
+
 /// A `DecimalFormat` with `DataFormatter`'s scaling by thousands for trailing commas,
-/// `InternalDecimalFormatWithScale`.
+/// `InternalDecimalFormatWithScale`, and what Excel writes otherwise than it: spaces for the
+/// insignificant zeros of `?` digits, and engineering exponents.
 #[derive(Debug, Clone, PartialEq)]
 struct ScaledDecimalFormat {
     format: DecimalFormat,
     /// The power of ten the trailing commas divide by.
     divider: Option<usize>,
+    question_marks: Option<Box<QuestionMarks>>,
+    engineering: Option<Box<Engineering>>,
 }
 
 impl ScaledDecimalFormat {
     fn new(pattern: &str, grouping: char) -> Result<Self, String> {
-        let commas = trailing_commas(pattern);
+        let commas = scaling_commas(pattern);
         let trimmed = match &commas {
             Some(range) => format!("{}{}", &pattern[..range.start], &pattern[range.end..]),
             None => pattern.to_owned(),
         };
+        let question_marks = QuestionMarks::of(&trimmed).map(Box::new);
+        let trimmed = trimmed.replace('?', "#");
         let format =
             DecimalFormat::new(&trimmed, Rounding::HalfUp)?.with_grouping_separator(grouping);
         Ok(Self {
             format,
             divider: commas.map(|range| 3 * range.len()),
+            question_marks,
+            engineering: Engineering::of(&trimmed).map(Box::new),
         })
+    }
+
+    /// The text the format gives, `formatted`, padded for its `?` digits.
+    fn padded(&self, formatted: String) -> String {
+        match &self.question_marks {
+            Some(question_marks) => question_marks.pad(&formatted),
+            None => formatted,
+        }
     }
 }
 
@@ -443,21 +617,27 @@ impl Format {
             Format::Phone => phone(&input.format_with(&TEN_DIGITS)?),
             Format::Date(formatter) => formatter.format(value, input.long_value(), zone),
             Format::Fraction(fraction) => fraction.format(input.double_value()?),
-            Format::Decimal(scaled) => match (input, scaled.divider) {
-                (Input::Date(_), Some(_)) => Err(FormatError::Thrown(
-                    "cannot scaleInput of type java.util.Date".to_owned(),
-                )),
-                (Input::Double(value), Some(power)) => {
-                    let divider: f64 = format!("1e{power}")
-                        .parse()
-                        .expect("a power of ten is a double");
-                    Ok(scaled.format.format_f64(value / divider))
-                }
-                (Input::Decimal(value), Some(power)) => Ok(scaled
-                    .format
-                    .format_decimal(&value.divide_by_power_of_ten(power, Rounding::HalfUp))),
-                (input, None) => input.format_with(&scaled.format),
-            },
+            Format::Decimal(scaled) => {
+                let formatted = match (input, scaled.divider, &scaled.engineering) {
+                    (Input::Date(_), Some(_), _) => Err(FormatError::Thrown(
+                        "cannot scaleInput of type java.util.Date".to_owned(),
+                    )),
+                    (Input::Double(value), Some(power), _) => {
+                        let divider: f64 = format!("1e{power}")
+                            .parse()
+                            .expect("a power of ten is a double");
+                        Ok(scaled.format.format_f64(value / divider))
+                    }
+                    (Input::Decimal(value), Some(power), _) => {
+                        Ok(scaled.format.format_decimal(&value.move_point_left(power)))
+                    }
+                    (input, None, Some(engineering)) => {
+                        Ok(engineering.format(input.double_value()?))
+                    }
+                    (input, None, None) => input.format_with(&scaled.format),
+                }?;
+                Ok(scaled.padded(formatted))
+            }
         }
     }
 }
@@ -713,18 +893,12 @@ enum Created {
     None,
 }
 
-/// `createDateFormat`, the general format where the date format does not compile.
+/// `createDateFormat`, the general format where the date format does not compile. The texts the
+/// format quotes and the characters it escapes are written as they are, where POI unescapes a
+/// few characters and hands the rest, and the quotes, on to `SimpleDateFormat` (#186).
 fn create_date_format(format: &str) -> Created {
-    let mut format = format
-        .replace("\\-", "-")
-        .replace("\\,", ",")
-        .replace("\\.", ".")
-        .replace("\\ ", " ")
-        .replace("\\/", "/")
-        .replace(";@", "")
-        .replace("\"/\"", "/")
-        .replace("\"\"", "'")
-        .replace("\\T", "'T'");
+    let literals = Literals::of(&format.replace(";@", ""));
+    let mut format = literals.format.clone();
     let has_am_pm = AM_PM.is_match(&format);
     if has_am_pm {
         format = AM_PM.replace_all(&format, "@").into_owned();
@@ -805,7 +979,7 @@ fn create_date_format(format: &str) -> Created {
         j += 1;
     }
     let pattern: String = pattern.into_iter().collect();
-    match ExcelStyleDateFormatter::new(&pattern) {
+    match ExcelStyleDateFormatter::with_literals(&pattern, literals) {
         Ok(formatter) => Created::Format(Format::Date(formatter)),
         Err(_) => Created::General,
     }
@@ -929,14 +1103,37 @@ mod tests {
     }
 
     /// Whether the text of `value` departs from Java's `expected` as the port means it to
-    /// (#92): a negative number in a date format, which Java formats with the date format it
-    /// cached for a value before, and which is no date, so the port formats it as a number; or
+    /// (#92, #186): a negative number in a date format, which Java formats with the date format
+    /// it cached for a value before, and which is no date, so the port formats it as a number; a
+    /// date format with literal texts, which the port writes as they are; an elapsed time Java
+    /// fails, or counts in floats that cannot hold its seconds; an engineering format, one of
+    /// `?` digits, or one that scales by commas, which the port divides by exactly; a zero that a
+    /// format of sections without a `0` digit leaves out; or
     /// a number in the general format, which the port writes to 15 significant digits where
     /// Java writes it to fewer, ten after the point or, in spellings of `General` other than
     /// `General` and `general`, in `@` and in formats that do not compile, POI's of ten
     /// significant digits, six in scientific notation.
     fn departs(value: f64, index: i32, format: &str, actual: &str, expected: &str) -> bool {
         if value < 0.0 && is_a_date_format(index, format) {
+            return true;
+        }
+        if is_a_date_format(index, format) && !Literals::of(format).texts.is_empty() {
+            return true;
+        }
+        if !format.contains('0') && format.contains(';') && expected.replacen('0', "", 1) == actual
+        {
+            return true;
+        }
+        let cleaned = clean_format_for_number(format);
+        if Engineering::of(&cleaned).is_some()
+            || (QuestionMarks::of(&cleaned).is_some() && !format.contains('/'))
+            || scaling_commas(&cleaned).is_some()
+        {
+            return true;
+        }
+        let lower = format.to_lowercase();
+        let elapsed = ["[h", "[m", "[s"].iter().any(|start| lower.contains(start));
+        if elapsed && (expected.contains('[') || value.abs() * 86_400.0 >= f64::from(1 << 24)) {
             return true;
         }
         let general = DataFormatter::new(false)
@@ -996,7 +1193,7 @@ mod tests {
             ));
         }
         assert!(count > 9000, "formats.tsv has only {count} cases");
-        assert!(departed < 500, "{departed} cases depart from Java's");
+        assert!(departed < 1000, "{departed} cases depart from Java's");
         assert!(
             differences.is_empty(),
             "{} of {count} differ:\n{}",
@@ -1074,6 +1271,67 @@ mod tests {
                 .unwrap(),
             "1\u{1F600}234\u{1F600}567"
         );
+    }
+
+    /// Formats POI writes otherwise than Excel displays them are written as Excel does (#186):
+    /// literal texts of dates, elapsed times with them, `?` digits, scaling by commas before a
+    /// suffix, engineering exponents and the zero section of accounting formats.
+    #[test]
+    fn formats_as_excel_displays_where_poi_does_not() {
+        let mut formatter = DataFormatter::new(false);
+        for (value, format, excel) in [
+            (45000.0, "d\".\"m\".\"yyyy", "15.3.2023"),
+            (45000.0, "yyyy\"年\"m\"月\"d\"日\"", "2023年3月15日"),
+            (0.5, "h \"hours\"", "12 hours"),
+            (0.5, "[h]\"h\" mm\"m\"", "12h 00m"),
+            (0.001, "[ss].00", "86.40"),
+            (1_234_567.891, "[h]:mm:ss", "29629629:23:02"),
+            (1234.5678, "0.0??", "1234.568"),
+            (5.0, "??0", "  5"),
+            (1234.5, "#,##0.0?", "1,234.5 "),
+            (1_234_567.0, "0.0,,\"M\"", "1.2M"),
+            (1_234_567.0, "#,##0,\"K\"", "1,235K"),
+            (12345.678, "##0.0E+0", "12.3E+3"),
+            (0.5, "##0.0E+0", "500.0E-3"),
+            (999_960.0, "##0.0E+0", "1.0E+6"),
+            (
+                0.0,
+                "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)",
+                "-",
+            ),
+        ] {
+            assert_eq!(
+                formatter.format_raw(value, 200, format).unwrap(),
+                excel,
+                "{format}"
+            );
+        }
+    }
+
+    /// Formats POI writes as Excel displays them are written as before.
+    #[test]
+    fn keeps_what_poi_writes_as_excel_does() {
+        let mut formatter = DataFormatter::new(false);
+        for (value, format, excel) in [
+            (1234.5, "0.00", "1234.50"),
+            (1_234_567.0, "#,##0,", "1,235"),
+            (12345.678, "0.00E+00", "1.23E+04"),
+            (45000.0, "yyyy\\-mm\\-dd", "2023-03-15"),
+            (1.5, "[h]:mm", "36:00"),
+            (0.5, "# ??/??", "1/2"),
+            (
+                1234.5,
+                "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)",
+                "1,234.50",
+            ),
+            (0.0, "0;-0;0", "0"),
+        ] {
+            assert_eq!(
+                formatter.format_raw(value, 200, format).unwrap(),
+                excel,
+                "{format}"
+            );
+        }
     }
 
     #[test]
