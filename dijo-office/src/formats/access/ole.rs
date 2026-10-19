@@ -75,15 +75,19 @@ fn read_zero_terminated(buffer: &mut Buffer<'_>) -> Result<String, Thrown> {
 }
 
 /// `new ByteArrayInputStream(bytes, position, length)` read whole: from `position` to its
-/// length's end or the array's, whichever comes first. A stream that starts before the array or
-/// ends before it starts throws as Tika reads it.
-fn stream(bytes: &[u8], position: i32, length: i32) -> Result<Vec<u8>, Thrown> {
+/// length's end or the array's, whichever comes first, and empty where that end comes before
+/// `position`. One that starts before the array throws as Tika reads it.
+pub(super) fn stream(bytes: &[u8], position: i32, length: i32) -> Result<Vec<u8>, Thrown> {
     let count = i64::from(position.wrapping_add(length)).min(bytes.len() as i64);
-    match (usize::try_from(position), usize::try_from(count)) {
-        (Ok(start), Ok(end)) if start <= end => Ok(bytes[start..end].to_vec()),
-        _ => Err(Thrown::unported(format!(
-            "an OLE object's stream from {position} to {count}, which throws as Tika reads it"
-        ))),
+    let Ok(start) = usize::try_from(position) else {
+        return Err(Thrown::index_out_of_bounds(
+            "java.lang.ArrayIndexOutOfBoundsException",
+            Some(format!("an OLE object's stream from {position} to {count}")),
+        ));
+    };
+    match usize::try_from(count) {
+        Ok(end) if start < end => Ok(bytes[start..end].to_vec()),
+        _ => Ok(Vec::new()),
     }
 }
 

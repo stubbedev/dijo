@@ -18,6 +18,12 @@
 //! the metadata, decodes Jet 3 text in the database's code page, writes every table with each
 //! column's own values, currency amounts, numerics and dates as they are kept, and rich text
 //! whole, and reads no usage map but those that hold a table's rows.
+//!
+//! Where Jackcess fails the whole database on a part of it, the port reads the rest (#186): an
+//! OLE object Jackcess throws on is left out of its cell; rich text the HTML parser does not
+//! read is written as it is, as Tika writes rich text its HTML parser fails on; and a system
+//! catalog without the indexes Jackcess looks objects up in is scanned, as the port always
+//! scans it. Each is recorded as a reading that differs from Tika's.
 
 mod buffer;
 mod column;
@@ -459,7 +465,7 @@ fn extract<E>(
         sink,
     )?;
     summary(&database.summary_properties()?.default_map(), sink)?;
-    let mut difference = None;
+    let mut difference = database.read_otherwise();
     for info in database.tables()? {
         let table = database.load_table(&info)?;
         let read_otherwise = table_rows(database, &table, info.page, configs, sink)?;
@@ -546,14 +552,26 @@ fn table_rows<E>(
             cells.push(match column.data_type {
                 DataType::Ole => match value {
                     None => Cell::Text(String::new()),
-                    Some(Value::Binary(bytes)) => match ole::read(bytes, configs)? {
-                        Ole::Nothing => Cell::Text(String::new()),
-                        Ole::Link(path) => Cell::Text(path),
-                        Ole::Resource(document) => Cell::Resource(document),
-                        Ole::Storage(document) => {
+                    Some(Value::Binary(bytes)) => match ole::read(bytes, configs) {
+                        Ok(Ole::Nothing) => Cell::Text(String::new()),
+                        Ok(Ole::Link(path)) => Cell::Text(path),
+                        Ok(Ole::Resource(document)) => Cell::Resource(document),
+                        Ok(Ole::Storage(document)) => {
                             difference = difference.or_else(|| document.difference());
                             Cell::Storage(document)
                         }
+                        Err(Thrown::Exception(exception)) => {
+                            difference = difference.or_else(|| {
+                                Some(Difference(format!(
+                                    "an OLE object of the table {} Jackcess throws on, which \
+                                     fails Tika's parse, left out of its cell: {}",
+                                    table.name,
+                                    exception.java(UNKNOWN_DATABASE)
+                                )))
+                            });
+                            Cell::Text(String::new())
+                        }
+                        Err(thrown) => return Err(thrown.into()),
                     },
                     Some(other) => {
                         return Err(
@@ -575,7 +593,7 @@ fn table_rows<E>(
                 data_type => {
                     let text = text(value, data_type)?;
                     if rich[index] {
-                        let (text, read_otherwise) = rich_text(&text, configs)?;
+                        let (text, read_otherwise) = rich_text(&text, configs);
                         difference = difference.or(read_otherwise);
                         Cell::Text(text)
                     } else {
@@ -628,22 +646,32 @@ fn rich_text_columns(
 
 /// What `JSoupParser` writes of rich text, as text, all of it: Tika writes it through a
 /// `BodyContentHandler` whose write limit of 100,000 characters fails the parse (#122). Where
-/// the HTML parser reads the rich text differently from Tika's, it says how.
-fn rich_text(html: &str, configs: &ParserConfigs) -> Result<(String, Option<Difference>), Thrown> {
+/// the HTML parser reads the rich text differently from Tika's, it says how. Rich text the HTML
+/// parser does not read, or fails on, is written as it is, as Tika writes rich text its HTML
+/// parser throws on, and differs from Tika's reading (#186).
+fn rich_text(html: &str, configs: &ParserConfigs) -> (String, Option<Difference>) {
+    let as_it_is = |why: String| {
+        (
+            html.to_owned(),
+            Some(Difference(format!(
+                "rich text in an Access table {why}, written as it is"
+            ))),
+        )
+    };
     let mut metadata = TikaMetadata::new();
     metadata.set("Content-Type", "text/html; charset=UTF-8");
-    let (prepared, difference) =
-        noted(html::prepare(html.as_bytes(), &metadata)).map_err(|reason| {
-            Thrown::unported(format!("rich text the HTML parser does not read: {reason}"))
-        })?;
+    let (prepared, difference) = match noted(html::prepare(html.as_bytes(), &metadata)) {
+        Ok(noted) => noted,
+        Err(reason) => return as_it_is(format!("the HTML parser does not read: {reason}")),
+    };
     let context = ParseContext::new(configs);
     let mut out = StringOut::default();
     let mut handler = Body::new(ToText::new(&mut out));
     let (_, _, result) = Xhtml::write(&mut handler, metadata, &context, prepared);
-    result.map_err(|failure| {
-        Thrown::unported(format!("rich text the HTML parser fails on: {failure:?}"))
-    })?;
+    if let Err(failure) = result {
+        return as_it_is(format!("the HTML parser fails on: {failure:?}"));
+    }
     let difference = difference
         .map(|Difference(reason)| Difference(format!("rich text in an Access table: {reason}")));
-    Ok((out.0, difference))
+    (out.0, difference)
 }
