@@ -151,7 +151,7 @@ fn reads_tikas_test_files_which_tikas_path_leaves_empty() {
 #[test]
 fn reads_an_assay_too_large_to_read_whole() {
     let row = |index: u64| format!("\"C-{index}-aliquot1\"\t\"JC_A{index}\"\n").into_bytes();
-    let count = extractous_core::large::bodies_past_limit(row(1_000_000).len());
+    let count = extractous_core::large::bodies_past_limit(row(0).len());
     let file = extractous_core::large::LargeFile::new(
         "a_large.txt",
         b"\"Sample Name\"\t\"Assay Name\"\n",
