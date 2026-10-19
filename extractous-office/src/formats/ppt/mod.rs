@@ -144,7 +144,9 @@ fn read<E>(
         &mut decrypted,
     )?;
     let objects = pictures::objects(&records);
+    let read_otherwise = records.difference.clone();
     extract(&show, &records, &objects, &pictures, configs, flush)
+        .map(|difference| read_otherwise.or(difference))
 }
 
 /// Writes events of the presentation as Tika's extractor does while it reads it. Where the

@@ -13,7 +13,7 @@ use std::ops::Range;
 
 use crate::config::ParserConfigs;
 use crate::formats::poi::{Thrown, Unread};
-use crate::formats::{Decline, Unported};
+use crate::formats::{Decline, Difference, Unported};
 use crate::ole2::{EntryId, EntryKind, Ole2, Unreadable};
 
 use super::drawing::{textbox_records, Drawing, Wrapper};
@@ -133,7 +133,16 @@ pub(super) struct Records {
     /// `tops`.
     core: BTreeMap<i32, Option<usize>>,
     pub(super) encryption: Option<Encryption>,
+    /// Where Tika's path reads the records otherwise, if it does: persist pointers that give two
+    /// persist ids one offset, of which POI keeps the one a `java.util.HashMap` iterates last,
+    /// where the native reading keeps the greatest id (#186).
+    pub(super) difference: Option<Difference>,
 }
+
+/// Why Tika's path reads persist pointers that give two persist ids one offset otherwise.
+const SHARED_OFFSET: &str = "persist pointers that give two persist ids one offset, of which \
+                             POI keeps the one a java.util.HashMap iterates last, and the port \
+                             the greatest";
 
 /// `HSLFSlideShowImpl`'s records: the document stream's records found and built once, the
 /// stream decrypted in place with the password where the presentation is encrypted, then the
@@ -143,7 +152,7 @@ pub(super) fn read_records(
     edit: i32,
     configs: &ParserConfigs,
 ) -> Result<Records, Decline<'static>> {
-    let (mut map, persist_ids) = chain(document, edit)?;
+    let (mut map, persist_ids, shared) = chain(document, edit)?;
     let encryption = encryption(document, &mut map, configs)?;
     let mut tops = Vec::with_capacity(map.len());
     let mut decrypted = Vec::with_capacity(map.len());
@@ -179,11 +188,12 @@ pub(super) fn read_records(
         });
     }
     check_decrypted_apart(document, &tops, &decrypted)?;
-    let core = most_recent(&tops)?;
+    let (core, shared_most_recent) = most_recent(&tops);
     Ok(Records {
         tops,
         core,
         encryption,
+        difference: (shared || shared_most_recent).then(|| Difference(SHARED_OFFSET.to_owned())),
     })
 }
 
@@ -235,13 +245,15 @@ enum Chained {
 }
 
 /// The records `initRecordOffsets` maps by offset: the user edits from `edit` back with their
-/// persist pointers, and a slot for each record the pointers give; and each slot's persist id.
-type Chain = (BTreeMap<i32, Chained>, HashMap<i32, i32>);
+/// persist pointers, and a slot for each record the pointers give; each slot's persist id, the
+/// greatest of the ids a holder gives it; and whether a holder gives one slot several ids.
+type Chain = (BTreeMap<i32, Chained>, HashMap<i32, i32>, bool);
 
 /// `initRecordOffsets`.
 fn chain(document: &[u8], edit: i32) -> Result<Chain, Unread> {
     let mut map: BTreeMap<i32, Chained> = BTreeMap::new();
     let mut persist_ids: HashMap<i32, i32> = HashMap::new();
+    let mut shared = false;
     let mut offset = edit;
     let mut followed = 0usize;
     while offset != 0 {
@@ -275,12 +287,7 @@ fn chain(document: &[u8], edit: i32) -> Result<Chain, Unread> {
         let lookup = slide_locations(&pointers)?;
         let mut offsets = HashSet::new();
         for &location in lookup.values() {
-            if !offsets.insert(location) {
-                return Err(unported(
-                    "persist pointers that give two ids one offset, of which POI keeps one in \
-                     hash order",
-                ));
-            }
+            shared |= !offsets.insert(location);
         }
         map.insert(
             pointers_offset,
@@ -323,7 +330,7 @@ fn chain(document: &[u8], edit: i32) -> Result<Chain, Unread> {
         }
         offset = previous;
     }
-    Ok((map, persist_ids))
+    Ok((map, persist_ids, shared))
 }
 
 /// `PersistPtrHolder.getSlideLocationsLookup`: each persist id's offset, the last a holder gives.
@@ -1026,21 +1033,19 @@ pub(super) fn atom_sets(list: &Record) -> Vec<Range<usize>> {
 
 /// `findMostRecentCoreRecords`: for each persist id, the record at the offset the last persist
 /// pointer holder by offset gives it, where one of the records that know their offset is there,
-/// by its index among the tops.
-fn most_recent(tops: &[Top]) -> Result<BTreeMap<i32, Option<usize>>, Unread> {
-    let mut latest: HashMap<i32, i32> = HashMap::new();
+/// by its index among the tops; an offset several ids share the greatest's; and whether any
+/// share one.
+fn most_recent(tops: &[Top]) -> (BTreeMap<i32, Option<usize>>, bool) {
+    let mut latest: BTreeMap<i32, i32> = BTreeMap::new();
     for top in tops {
         if let Some(pointers) = &top.pointers {
             latest.extend(pointers);
         }
     }
     let mut by_offset: HashMap<i32, i32> = HashMap::new();
+    let mut shared = false;
     for (&id, &offset) in &latest {
-        if by_offset.insert(offset, id).is_some() {
-            return Err(unported(
-                "persist ids that share an offset, of which POI keeps one in hash order",
-            ));
-        }
+        shared |= by_offset.insert(offset, id).is_some();
     }
     let mut core: BTreeMap<i32, Option<usize>> = latest.keys().map(|&id| (id, None)).collect();
     for (index, top) in tops.iter().enumerate() {
@@ -1054,7 +1059,7 @@ fn most_recent(tops: &[Top]) -> Result<BTreeMap<i32, Option<usize>>, Unread> {
             core.insert(*id, Some(index));
         }
     }
-    Ok(core)
+    (core, shared)
 }
 
 /// Whether records of a type know their offset (`PositionDependentRecord`).
@@ -1076,4 +1081,38 @@ fn is_position_dependent(record_kind: u16) -> bool {
             | kind::PERSIST_PTR_INCREMENTAL_BLOCK
             | kind::USER_EDIT_ATOM
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Persist ids that share an offset give its record to the greatest of them, where POI gives
+    /// it to the one a `java.util.HashMap` iterates last, and the reading says so (#186).
+    #[test]
+    fn gives_a_shared_offset_to_the_greatest_persist_id() {
+        let top = |offset, kind, pointers: Option<&[(i32, i32)]>| Top {
+            offset,
+            kind: Some(kind),
+            persist_id: None,
+            pointers: pointers.map(|pointers| pointers.iter().copied().collect()),
+        };
+        let tops = [
+            top(0, kind::SLIDE, None),
+            top(40, kind::SLIDE, None),
+            top(
+                80,
+                kind::PERSIST_PTR_INCREMENTAL_BLOCK,
+                Some(&[(17, 0), (3, 40), (2, 40)]),
+            ),
+        ];
+        let (core, shared) = most_recent(&tops);
+        assert!(shared);
+        assert_eq!(
+            core.into_iter().collect::<Vec<_>>(),
+            [(2, None), (3, Some(1)), (17, Some(0))]
+        );
+        let (_, shared) = most_recent(&tops[..2]);
+        assert!(!shared);
+    }
 }
