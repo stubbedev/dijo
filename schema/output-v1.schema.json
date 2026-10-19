@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/stubbedev/extractous/schema/output-v1.schema.json",
-  "title": "extractous output, schema version 1",
-  "description": "Each line written by `extractous --format json|pages|elements` is one of these records.",
+  "$id": "https://github.com/stubbedev/dijo/schema/output-v1.schema.json",
+  "title": "dijo output, schema version 1",
+  "description": "Each line written by `dijo --format json|pages|elements` is one of these records.",
   "oneOf": [
     {
       "$ref": "#/$defs/document"

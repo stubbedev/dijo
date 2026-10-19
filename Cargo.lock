@@ -671,6 +671,285 @@ dependencies = [
 ]
 
 [[package]]
+name = "dijo"
+version = "0.2.1"
+dependencies = [
+ "blake3",
+ "bytes",
+ "clap",
+ "crc32fast",
+ "dijo-core",
+ "flate2",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jiff",
+ "jsonschema",
+ "libc",
+ "mimalloc",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tokio",
+ "unicode-general-category",
+ "unicode-normalization",
+ "unicode-script",
+ "walkdir",
+]
+
+[[package]]
+name = "dijo-base"
+version = "0.2.1"
+dependencies = [
+ "aes",
+ "ar",
+ "brotli",
+ "brotli-decompressor",
+ "bzip2",
+ "cpio",
+ "deflate64",
+ "encoding_rs",
+ "flate2",
+ "jiff",
+ "jiff-tzdb",
+ "libc",
+ "lz4_flex",
+ "lzma-rust2",
+ "md-5",
+ "md2",
+ "md4",
+ "memchr",
+ "memmap2",
+ "rc4",
+ "regex",
+ "ripemd",
+ "ruzstd",
+ "sevenz-rust2",
+ "sha1",
+ "sha2",
+ "snap",
+ "strum 0.28.0",
+ "strum_macros 0.28.0",
+ "thiserror",
+ "unicode-general-category",
+ "unicode-normalization",
+ "unicode-script",
+ "whirlpool",
+ "zip",
+]
+
+[[package]]
+name = "dijo-core"
+version = "0.2.1"
+dependencies = [
+ "criterion",
+ "dijo-base",
+ "dijo-html",
+ "dijo-image",
+ "dijo-mail",
+ "dijo-media",
+ "dijo-mime",
+ "dijo-native",
+ "dijo-odf",
+ "dijo-office",
+ "dijo-ooxml",
+ "dijo-pdf",
+ "dijo-science",
+ "dijo-small",
+ "png",
+ "quick-xml",
+ "regex",
+ "serde",
+ "serde_json",
+ "test-case",
+ "textdistance",
+ "ureq",
+ "zip",
+]
+
+[[package]]
+name = "dijo-html"
+version = "0.2.1"
+dependencies = [
+ "dijo-base",
+ "dijo-core",
+ "dijo-mime",
+ "flate2",
+ "html5ever",
+ "regex",
+ "url",
+]
+
+[[package]]
+name = "dijo-image"
+version = "0.2.1"
+dependencies = [
+ "dijo-base",
+ "dijo-core",
+ "dijo-mime",
+ "dijo-native",
+ "flate2",
+ "hayro",
+ "hayro-jbig2",
+ "hayro-jpeg2000",
+ "image",
+ "jxl-bitstream",
+ "jxl-oxide",
+ "jxl-oxide-common",
+ "lcms2-sys",
+ "libloading",
+ "rav1d",
+ "regex",
+ "sha2",
+ "tiff",
+ "unicode-script",
+ "zip",
+]
+
+[[package]]
+name = "dijo-mail"
+version = "0.2.1"
+dependencies = [
+ "ar",
+ "cpio",
+ "dijo-base",
+ "dijo-core",
+ "dijo-html",
+ "dijo-mime",
+ "dijo-small",
+ "flate2",
+ "memchr",
+ "regex",
+ "rusqlite",
+ "tar",
+ "zip",
+]
+
+[[package]]
+name = "dijo-media"
+version = "0.2.1"
+dependencies = [
+ "dijo-base",
+ "dijo-core",
+]
+
+[[package]]
+name = "dijo-mime"
+version = "0.2.1"
+dependencies = [
+ "dijo-base",
+ "fancy-regex",
+ "flate2",
+ "memchr",
+ "thiserror",
+ "unicode-general-category",
+ "unicode-normalization",
+ "zip",
+]
+
+[[package]]
+name = "dijo-native"
+version = "0.2.1"
+dependencies = [
+ "flate2",
+ "libloading",
+]
+
+[[package]]
+name = "dijo-odf"
+version = "0.2.1"
+dependencies = [
+ "dijo-base",
+ "dijo-core",
+ "dijo-mime",
+ "zip",
+]
+
+[[package]]
+name = "dijo-office"
+version = "0.2.1"
+dependencies = [
+ "aes",
+ "des",
+ "dijo-base",
+ "dijo-core",
+ "dijo-html",
+ "dijo-mail",
+ "dijo-mime",
+ "flate2",
+ "rc2",
+ "rc4",
+ "regex",
+]
+
+[[package]]
+name = "dijo-ooxml"
+version = "0.2.1"
+dependencies = [
+ "dijo-base",
+ "dijo-core",
+ "dijo-image",
+ "dijo-mime",
+ "dijo-office",
+ "zip",
+]
+
+[[package]]
+name = "dijo-pdf"
+version = "0.2.1"
+dependencies = [
+ "arrayvec",
+ "dijo-base",
+ "dijo-core",
+ "dijo-image",
+ "flate2",
+ "hayro-ccitt",
+ "hayro-jbig2",
+ "image",
+ "lopdf",
+ "lzma-rust2",
+ "md-5",
+ "memchr",
+ "png",
+ "rc4",
+ "tar",
+ "unicode-bidi",
+ "unicode-general-category",
+ "unicode-normalization",
+ "unicode-script",
+]
+
+[[package]]
+name = "dijo-science"
+version = "0.2.1"
+dependencies = [
+ "dijo-base",
+ "dijo-core",
+ "dijo-html",
+ "memchr",
+]
+
+[[package]]
+name = "dijo-small"
+version = "0.2.1"
+dependencies = [
+ "dijo-base",
+ "dijo-core",
+ "dijo-html",
+ "dijo-mime",
+ "flate2",
+ "lzxd",
+ "md-5",
+ "memchr",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
+ "snap",
+ "zip",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -748,285 +1027,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "extractous"
-version = "0.2.1"
-dependencies = [
- "blake3",
- "bytes",
- "clap",
- "crc32fast",
- "extractous-core",
- "flate2",
- "http-body-util",
- "hyper",
- "hyper-util",
- "jiff",
- "jsonschema",
- "libc",
- "mimalloc",
- "quick-xml",
- "serde",
- "serde_json",
- "tokio",
- "unicode-general-category",
- "unicode-normalization",
- "unicode-script",
- "walkdir",
-]
-
-[[package]]
-name = "extractous-base"
-version = "0.2.1"
-dependencies = [
- "aes",
- "ar",
- "brotli",
- "brotli-decompressor",
- "bzip2",
- "cpio",
- "deflate64",
- "encoding_rs",
- "flate2",
- "jiff",
- "jiff-tzdb",
- "libc",
- "lz4_flex",
- "lzma-rust2",
- "md-5",
- "md2",
- "md4",
- "memchr",
- "memmap2",
- "rc4",
- "regex",
- "ripemd",
- "ruzstd",
- "sevenz-rust2",
- "sha1",
- "sha2",
- "snap",
- "strum 0.28.0",
- "strum_macros 0.28.0",
- "thiserror",
- "unicode-general-category",
- "unicode-normalization",
- "unicode-script",
- "whirlpool",
- "zip",
-]
-
-[[package]]
-name = "extractous-core"
-version = "0.2.1"
-dependencies = [
- "criterion",
- "extractous-base",
- "extractous-html",
- "extractous-image",
- "extractous-mail",
- "extractous-media",
- "extractous-mime",
- "extractous-native",
- "extractous-odf",
- "extractous-office",
- "extractous-ooxml",
- "extractous-pdf",
- "extractous-science",
- "extractous-small",
- "png",
- "quick-xml",
- "regex",
- "serde",
- "serde_json",
- "test-case",
- "textdistance",
- "ureq",
- "zip",
-]
-
-[[package]]
-name = "extractous-html"
-version = "0.2.1"
-dependencies = [
- "extractous-base",
- "extractous-core",
- "extractous-mime",
- "flate2",
- "html5ever",
- "regex",
- "url",
-]
-
-[[package]]
-name = "extractous-image"
-version = "0.2.1"
-dependencies = [
- "extractous-base",
- "extractous-core",
- "extractous-mime",
- "extractous-native",
- "flate2",
- "hayro",
- "hayro-jbig2",
- "hayro-jpeg2000",
- "image",
- "jxl-bitstream",
- "jxl-oxide",
- "jxl-oxide-common",
- "lcms2-sys",
- "libloading",
- "rav1d",
- "regex",
- "sha2",
- "tiff",
- "unicode-script",
- "zip",
-]
-
-[[package]]
-name = "extractous-mail"
-version = "0.2.1"
-dependencies = [
- "ar",
- "cpio",
- "extractous-base",
- "extractous-core",
- "extractous-html",
- "extractous-mime",
- "extractous-small",
- "flate2",
- "memchr",
- "regex",
- "rusqlite",
- "tar",
- "zip",
-]
-
-[[package]]
-name = "extractous-media"
-version = "0.2.1"
-dependencies = [
- "extractous-base",
- "extractous-core",
-]
-
-[[package]]
-name = "extractous-mime"
-version = "0.2.1"
-dependencies = [
- "extractous-base",
- "fancy-regex",
- "flate2",
- "memchr",
- "thiserror",
- "unicode-general-category",
- "unicode-normalization",
- "zip",
-]
-
-[[package]]
-name = "extractous-native"
-version = "0.2.1"
-dependencies = [
- "flate2",
- "libloading",
-]
-
-[[package]]
-name = "extractous-odf"
-version = "0.2.1"
-dependencies = [
- "extractous-base",
- "extractous-core",
- "extractous-mime",
- "zip",
-]
-
-[[package]]
-name = "extractous-office"
-version = "0.2.1"
-dependencies = [
- "aes",
- "des",
- "extractous-base",
- "extractous-core",
- "extractous-html",
- "extractous-mail",
- "extractous-mime",
- "flate2",
- "rc2",
- "rc4",
- "regex",
-]
-
-[[package]]
-name = "extractous-ooxml"
-version = "0.2.1"
-dependencies = [
- "extractous-base",
- "extractous-core",
- "extractous-image",
- "extractous-mime",
- "extractous-office",
- "zip",
-]
-
-[[package]]
-name = "extractous-pdf"
-version = "0.2.1"
-dependencies = [
- "arrayvec",
- "extractous-base",
- "extractous-core",
- "extractous-image",
- "flate2",
- "hayro-ccitt",
- "hayro-jbig2",
- "image",
- "lopdf",
- "lzma-rust2",
- "md-5",
- "memchr",
- "png",
- "rc4",
- "tar",
- "unicode-bidi",
- "unicode-general-category",
- "unicode-normalization",
- "unicode-script",
-]
-
-[[package]]
-name = "extractous-science"
-version = "0.2.1"
-dependencies = [
- "extractous-base",
- "extractous-core",
- "extractous-html",
- "memchr",
-]
-
-[[package]]
-name = "extractous-small"
-version = "0.2.1"
-dependencies = [
- "extractous-base",
- "extractous-core",
- "extractous-html",
- "extractous-mime",
- "flate2",
- "lzxd",
- "md-5",
- "memchr",
- "pulldown-cmark",
- "regex",
- "serde",
- "serde_json",
- "snap",
- "zip",
 ]
 
 [[package]]

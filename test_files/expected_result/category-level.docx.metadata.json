@@ -39,7 +39,7 @@
         "1558"
     ],
     "tk:parsed-by": [
-        "extractous::OOXMLParser",
+        "dijo::OOXMLParser",
         "org.apache.tika.parser.microsoft.ooxml.xwpf.XWPFEventBasedWordExtractor"
     ],
     "meta:word-count": [
@@ -55,7 +55,7 @@
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::OOXMLParser"
+        "dijo::OOXMLParser"
     ],
     "xmpTPg:NPages": [
         "1"

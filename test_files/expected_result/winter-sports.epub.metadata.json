@@ -9,7 +9,7 @@
         "E. F. Benson"
     ],
     "tk:parsed-by": [
-        "extractous::EpubParser"
+        "dijo::EpubParser"
     ],
     "dc:contributor": [
         "C. Fleming Williams",
@@ -45,6 +45,6 @@
         "2.0"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::EpubParser"
+        "dijo::EpubParser"
     ]
 }

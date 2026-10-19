@@ -30,7 +30,7 @@
         "Slide 1"
     ],
     "tk:parsed-by": [
-        "extractous::OOXMLParser",
+        "dijo::OOXMLParser",
         "org.apache.tika.parser.microsoft.ooxml.xslf.XSLFEventBasedPowerPointExtractor"
     ],
     "custom:Slides": [
@@ -43,9 +43,9 @@
         "690"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::OOXMLParser",
-        "extractous::ImageParser",
-        "extractous::PreparingOcrParser"
+        "dijo::OOXMLParser",
+        "dijo::ImageParser",
+        "dijo::PreparingOcrParser"
     ],
     "extended-properties:TotalTime": [
         "5296"

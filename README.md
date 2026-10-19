@@ -1,24 +1,24 @@
-# Extractous
+# Dijo
 
 Extract text and metadata from documents on the command line, without Java.
 
 This is a fork of [yobix-ai/extractous](https://github.com/yobix-ai/extractous), which ran
 [Apache Tika](https://tika.apache.org/) compiled to native code with GraalVM. Documents are now read by native Rust
-parsers, ports of Tika's that aim at its output. Neither building nor running extractous needs Java, GraalVM or JNI.
-Tika remains only as the reference conformance and the comparisons measure extractous against (see
+parsers, ports of Tika's that aim at its output. Neither building nor running dijo needs Java, GraalVM or JNI.
+Tika remains only as the reference conformance and the comparisons measure dijo against (see
 [Development](#development)).
 
 ## Install
 
-Each [release](https://github.com/stubbedev/extractous/releases) has archives for Linux (x86_64, aarch64, and static
+Each [release](https://github.com/stubbedev/dijo/releases) has archives for Linux (x86_64, aarch64, and static
 builds for both, `x86_64-linux-static` and `aarch64-linux-static`), macOS (aarch64) and Windows (x86_64) with the
 binary, its licence and the third-party notices, plus `SHA256SUMS`, a CycloneDX SBOM of the Rust crates, and build
-provenance you can check with `gh attestation verify <archive> --repo stubbedev/extractous`.
+provenance you can check with `gh attestation verify <archive> --repo stubbedev/dijo`.
 
 To build from source instead:
 
 ```sh
-cargo install --locked --git https://github.com/stubbedev/extractous extractous
+cargo install --locked --git https://github.com/stubbedev/dijo dijo
 ```
 
 A document no native parser reads yet fails with an `unsupported` error naming why (no native parser for its type, or
@@ -32,7 +32,7 @@ installing.
 The `x86_64-linux-static` and `aarch64-linux-static` release binaries need nothing at all, not even a C library: they
 run in a `FROM scratch` container. They are the program built for musl, with tesseract, Leptonica and libheif (with
 its HEVC and AV1 decoders) linked in and the OCR language data embedded. `just static-native` builds one on Linux into
-`target/static/extractous`: the flake's `static` output, built with Crane, whose `container` output is the image
+`target/static/dijo`: the flake's `static` output, built with Crane, whose `container` output is the image
 around it and `static-dependencies` the third-party crates alone, which a binary cache serves to CI and fresh
 machines.
 
@@ -42,7 +42,7 @@ statically (the static build's comes from nix), with the language
 data the automatic language needs (orientation and script detection, tesseract's `script/Latin`, `script/Greek` and
 `script/Cyrillic` models, which read every language of those scripts with its letters and diacritics, and a fast model
 for each other script it reads; listed in `ci/tessdata.tsv`), so they need nothing installed beyond the system's C library: a binary built with
-`EXTRACTOUS_OCR_BUNDLE` pointing at a bundle from `just ocr-bundle` does the same (about 90 MB larger, 170 MB once
+`DIJO_OCR_BUNDLE` pointing at a bundle from `just ocr-bundle` does the same (about 90 MB larger, 170 MB once
 unpacked), and `--ocr-lang` can name only the bundled models there. Reading Danish, Swedish, Norwegian, German, Polish,
 Czech or Turkish scans with the English model instead loses 3 to 13% of the characters, the diacritics.
 Other builds run `tesseract` from `PATH`, with its own language data. Without `--ocr-lang`,
@@ -77,13 +77,13 @@ despeckling, turn, deskewing, enlargement and thresholding applied to it first.
 ## Usage
 
 ```sh
-extractous report.pdf                         # plain text to standard output
-extractous -f xhtml report.docx               # Tika's XHTML
-extractous -f json -m *.pdf                   # one JSON object per file, with metadata
-extractous -r -o out/ archive/                # one output file per input, mirroring archive/
-cat scan.tiff | extractous --ocr-lang deu -   # standard input, OCR in German
-extractous -f pages manual.pdf                # one JSON line per page, for search indexing
-extractous detect mystery.bin                 # application/pdf
+dijo report.pdf                         # plain text to standard output
+dijo -f xhtml report.docx               # Tika's XHTML
+dijo -f json -m *.pdf                   # one JSON object per file, with metadata
+dijo -r -o out/ archive/                # one output file per input, mirroring archive/
+cat scan.tiff | dijo --ocr-lang deu -   # standard input, OCR in German
+dijo -f pages manual.pdf                # one JSON line per page, for search indexing
+dijo detect mystery.bin                 # application/pdf
 ```
 
 | Option | Meaning |
@@ -92,11 +92,11 @@ extractous detect mystery.bin                 # application/pdf
 | `--raw-metadata` | Add Tika's own metadata keys to json output |
 | `--no-normalize <STEP,...>` | Leave out normalisation steps: `invisible`, `ligatures`, `soft-hyphens`, `unicode`, `whitespace`, `headers`, `hyphenation`, `reading-order`, `bookmarks` |
 | `--raw` | No normalisation at all: the text exactly as Tika extracted it |
-| `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents (the file or `EXTRACTOUS_PASSWORD` keeps them out of process listings) |
+| `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents (the file or `DIJO_PASSWORD` keeps them out of process listings) |
 | `--timeout <SECONDS>` | Per-input limit; the text extracted so far is kept and the input reported as partial |
 | `--embedded inline\|separate` | Add embedded documents' text to their container's (default), or extract each as its own document, recursively |
 | `--max-depth`, `--max-embedded`, `--max-expanded-bytes` | Limits for `--embedded separate`: nesting depth, number of embedded documents, and bytes they may expand to |
-| `--cache-dir <DIR>`, `--cache-max-size <BYTES>` | Reuse the output of complete extractions while the input, the options and the extractous build are unchanged; evict least recently used entries beyond the size (also for `serve`) |
+| `--cache-dir <DIR>`, `--cache-max-size <BYTES>` | Reuse the output of complete extractions while the input, the options and the dijo build are unchanged; evict least recently used entries beyond the size (also for `serve`) |
 | `--cache-partial` | Also cache partial results (never those cut short by a timeout) |
 | `--cache-trust-mtime` | Skip rehashing inputs whose path, size and modification time match the last run |
 | `--max-heap-bytes <BYTES>` | Cap the memory an extraction may allocate; an extraction that needs more fails with `limit-exceeded` and the next one runs normally |
@@ -109,7 +109,7 @@ extractous detect mystery.bin                 # application/pdf
 | `--ocr auto\|never\|always` | OCR images, and PDF pages without text or with a garbage text layer (default); never; or every PDF page as well |
 | `--ocr-lang <LANGS>` | Tesseract languages, such as `deu` or `eng+ara`; detected per image from its script by default |
 
-Every option has an environment variable equivalent (`EXTRACTOUS_FORMAT`, `EXTRACTOUS_JOBS`, ...); `extractous --help`
+Every option has an environment variable equivalent (`DIJO_FORMAT`, `DIJO_JOBS`, ...); `dijo --help`
 lists them. Errors go to standard error with the input path and the full cause chain, and one failed input does
 not stop the others. Damage inside an input (an unreadable attachment, a broken page) does not discard the rest of it:
 everything that extracted is written and the failures are reported. The exit status is 0 when text was extracted from
@@ -134,29 +134,29 @@ Normalisation streams, so it holds
 back at most a few characters, or a word after a hyphen that ends a line. XHTML output is never normalised.
 
 With `--cache-dir`, a run over files that have not changed only hashes them and copies their stored output. An entry is
-keyed by the BLAKE3 hash of the input's content and its name, the options that shape the output, the extractous
+keyed by the BLAKE3 hash of the input's content and its name, the options that shape the output, the dijo
 executable itself (so a new build or embedded library invalidates everything) and the tesseract version.
 Only complete extractions are stored, each written to a temporary file and renamed into place, so concurrent runs and
 crashes never leave a broken entry; once the cache grows past `--cache-max-size`, the least recently used entries are
 evicted. With `--embedded separate`, every embedded document without embedded documents of its own is an entry of its
 own, keyed by its own content and file name and replayed with the provenance of wherever it turns up, so the same
 attachment in many emails is extracted once; the emails and archives around it are read again, which is cheap. The
-cache is not available with passwords, so decrypted text never lands on disk. `extractous serve` takes the same
+cache is not available with passwords, so decrypted text never lands on disk. `dijo serve` takes the same
 options: a repeated upload is answered from the cache without extracting it again, requests with passwords bypass it, and
 `/metrics` counts hits and misses.
 
 ## Server
 
 ```sh
-extractous serve --listen 0.0.0.0:9998 --workers 8
-curl --data-binary @report.pdf -H 'X-Extractous-Filename: report.pdf' localhost:9998/extract
+dijo serve --listen 0.0.0.0:9998 --workers 8
+curl --data-binary @report.pdf -H 'X-Dijo-Filename: report.pdf' localhost:9998/extract
 curl --data-binary @report.pdf 'localhost:9998/extract?format=json&metadata=true'
 curl --data-binary @mystery.bin localhost:9998/detect
 ```
 
 | Endpoint | |
 | --- | --- |
-| `POST /extract` | The request body is the document. Query: `format` (`text`, `xhtml`, `json`, `pages`, `elements`), `metadata`, `raw_metadata`, `raw`, `no_normalize` (comma-separated steps), `ocr`, `ocr_lang`, as on the command line. Passwords go in `X-Extractous-Password` headers, an optional file name hint in `X-Extractous-Filename`; without one, a `Content-Type` other than `application/octet-stream` is the hint. |
+| `POST /extract` | The request body is the document. Query: `format` (`text`, `xhtml`, `json`, `pages`, `elements`), `metadata`, `raw_metadata`, `raw`, `no_normalize` (comma-separated steps), `ocr`, `ocr_lang`, as on the command line. Passwords go in `X-Dijo-Password` headers, an optional file name hint in `X-Dijo-Filename`; without one, a `Content-Type` other than `application/octet-stream` is the hint. |
 | `POST /detect` | The detected media type, as text. |
 | `GET /healthz`, `GET /readyz` | Liveness, and whether a request would be accepted now. |
 | `GET /metrics` | Prometheus metrics: requests by endpoint and status, failures by category, extraction time per media type, bytes in and out, workers and requests in flight. |
@@ -224,11 +224,11 @@ and nothing else but a `/tmp` and a cache directory, running the server as an un
 with the models the executable bundles (`ci/tessdata.tsv`):
 
 ```sh
-docker run --rm -p 9998:9998 ghcr.io/stubbedev/extractous:latest
-docker run --rm -v "$PWD:/data:ro" ghcr.io/stubbedev/extractous:latest /data/report.pdf
+docker run --rm -p 9998:9998 ghcr.io/stubbedev/dijo:latest
+docker run --rm -v "$PWD:/data:ro" ghcr.io/stubbedev/dijo:latest /data/report.pdf
 ```
 
-`just static-native` and then `just container` build the same image locally as `extractous:local`. `--ocr-lang` can name
+`just static-native` and then `just container` build the same image locally as `dijo:local`. `--ocr-lang` can name
 only the bundled models.
 
 ## JSON output
@@ -306,9 +306,9 @@ allows, so CI holds every change to it.
 `just quality-bless` accepts new scores and `just quality-corpus` regenerates the corpus.
 [`quality/COMPARISON.md`](quality/COMPARISON.md) (`just quality-compare`) scores tika-app of the same Tika version on
 the JVM, Kreuzberg and Docling (run in Docker) alongside, each with its default options: over the documents extracted
-with default options, extractous recalls 0.996 of the truth's words, Tika 0.848, Kreuzberg 0.738 and Docling 0.744, at
+with default options, dijo recalls 0.996 of the truth's words, Tika 0.848, Kreuzberg 0.738 and Docling 0.744, at
 a token error rate of 0.006 against 0.199, 0.335 and 0.278. Tika scores better on no document of a European language;
-of all the corpus, only on the recall of a two-column PDF, where it keeps a line-end hyphen that extractous joins. A document an extractor cannot read, such as a DOC or RTF
+of all the corpus, only on the recall of a two-column PDF, where it keeps a line-end hyphen that dijo joins. A document an extractor cannot read, such as a DOC or RTF
 file or legacy-encoded text for Docling, counts as empty.
 
 What it shows today: born-digital Office, OpenDocument and PDF files and scans (clean, skewed, rotated, or
@@ -358,7 +358,7 @@ FictionBook (FB2) books with their chapters, title and authors; and Apple Mail `
 Pages, Numbers and Keynote documents from iWork 2013 on, of which Tika only lists the files, are read for their text,
 slides and table cells; Hancom Office HWPX documents, which Tika reads as a plain ZIP archive, for their paragraphs,
 tables and footnotes, without running headers and footers; DjVu documents, which Tika detects but cannot read, for
-the hidden text layer of each page, or by OCR for a page without one, rendered by extractous's own JB2 and IW44
+the hidden text layer of each page, or by OCR for a page without one, rendered by dijo's own JB2 and IW44
 decoders on every platform, with nothing installed; and Kindle books (MOBI, AZW, AZW3 without DRM), which Tika also only detects, for
 their text, title and authors.
 
@@ -371,7 +371,7 @@ anchor; in Word 97-2003 files, the anchors of comments, footnotes and pictures n
 version on the JVM, and compares the text. [`conformance/MATRIX.md`](conformance/MATRIX.md) lists every media type
 with how many of its files work, differ or fail: 1069 work or are empty on both sides. Nearly all of the rest differ
 only by the file name of a preview image Tika lists (the previews of camera raw photos, iWork and Office documents),
-which extractous does not parse, since a preview repeats its document's own front page. A nightly job fails when a file
+which dijo does not parse, since a preview repeats its document's own front page. A nightly job fails when a file
 that worked stops working.
 
 ## Development
@@ -386,9 +386,9 @@ All commands are recipes in the `justfile`; run `just` to list them.
 | --- | --- |
 | `just check` | Every gate in order: format check, lint, tests |
 | `just build` | Build the workspace |
-| `just ocr-bundle [dir]` | Assemble the tesseract library a build loads, its language data and their licences for `EXTRACTOUS_OCR_BUNDLE` (built with vcpkg, which on NixOS needs a container such as `ubuntu:22.04`) |
-| `just static-native` | Build the statically linked Linux executable as released, with tesseract and libheif linked in, into `target/static/extractous` (uses nix) |
-| `just container` | Build the container image around `target/static/extractous` and load it into Docker as `extractous:local` |
+| `just ocr-bundle [dir]` | Assemble the tesseract library a build loads, its language data and their licences for `DIJO_OCR_BUNDLE` (built with vcpkg, which on NixOS needs a container such as `ubuntu:22.04`) |
+| `just static-native` | Build the statically linked Linux executable as released, with tesseract and libheif linked in, into `target/static/dijo` (uses nix) |
+| `just container` | Build the container image around `target/static/dijo` and load it into Docker as `dijo:local` |
 | `just conformance` | Compare extraction of Tika's own test documents with Tika on the JVM and write conformance/MATRIX.md |
 | `just test` | Run the tests with cargo-nextest, then the doc tests |
 | `just test-large` | Extract generated inputs of up to 1 GiB with a release build and check peak memory stays under 512 MiB (nightly in CI) |
@@ -409,4 +409,4 @@ All commands are recipes in the `justfile`; run `just` to list them.
 Apache License 2.0, see [LICENSE](LICENSE). Originally developed by [Yobix AI](https://yobix.ai).
 
 The binary contains third-party Rust crates, C libraries and models; their licences and notices are in
-[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) and printed by `extractous --licenses`.
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) and printed by `dijo --licenses`.

@@ -1,0 +1,26 @@
+[package]
+name = "dijo-mime"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "dijo's media type detection, a port of Tika's DefaultDetector"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/dijo"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+# What the tests of the crates built on this one share with its own.
+testing = ["dijo-base/testing"]
+
+[dependencies]
+dijo-base = { path = "../dijo-base", default-features = false }
+fancy-regex = "0.19.2"
+flate2 = "1.1.5"
+memchr = "2.8.3"
+thiserror = { version = "2.0.17" }
+unicode-general-category = "1.1.0"
+unicode-normalization = "0.1.25"
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+dijo-base = { path = "../dijo-base", default-features = false, features = ["testing"] }

@@ -9,7 +9,7 @@
         "4"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::OfficeParser"
+        "dijo::OfficeParser"
     ],
     "dcterms:modified": [
         "2024-07-11T19:20:35Z"
@@ -18,7 +18,7 @@
         "Normal.dotm"
     ],
     "tk:parsed-by": [
-        "extractous::OfficeParser"
+        "dijo::OfficeParser"
     ],
     "extended-properties:TotalTime": [
         "2"

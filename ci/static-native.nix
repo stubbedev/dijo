@@ -30,12 +30,12 @@ let
           ]
           ++ map (member: root + "/${member}") members
         ))
-        (root + "/extractous-cli/fuzz");
+        (root + "/dijo-cli/fuzz");
   };
-  cargoExtraArgs = "--locked --package extractous --bin extractous --no-default-features --features static";
+  cargoExtraArgs = "--locked --package dijo --bin dijo --no-default-features --features static";
   common = {
     inherit src cargoExtraArgs;
-    inherit (craneLib.crateNameFromCargoToml { cargoToml = root + "/extractous-cli/Cargo.toml"; })
+    inherit (craneLib.crateNameFromCargoToml { cargoToml = root + "/dijo-cli/Cargo.toml"; })
       pname
       version
       ;
@@ -58,15 +58,15 @@ in
     common
     // {
       cargoArtifacts = dependencies;
-      EXTRACTOUS_OCR_BUNDLE = import ./ocr-static.nix { inherit nixpkgs system; };
-      EXTRACTOUS_STATIC_LIBS = lib.concatStringsSep ":" toolchain.staticLibs;
-      EXTRACTOUS_STATIC_LICENSES = toolchain.decoderLicenses;
+      DIJO_OCR_BUNDLE = import ./ocr-static.nix { inherit nixpkgs system; };
+      DIJO_STATIC_LIBS = lib.concatStringsSep ":" toolchain.staticLibs;
+      DIJO_STATIC_LICENSES = toolchain.decoderLicenses;
       nativeBuildInputs = [ pkgs.removeReferencesTo ];
       postInstall = ''
-        remove-references-to -t ${toolchain.tesseract} $out/bin/extractous
+        remove-references-to -t ${toolchain.tesseract} $out/bin/dijo
       '';
       allowedReferences = [ ];
-      meta.mainProgram = "extractous";
+      meta.mainProgram = "dijo";
     }
   );
 }

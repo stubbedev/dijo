@@ -64,7 +64,7 @@ jobs:
       - name: Embed the OCR bundle, whose tesseract library the tests then load
         env:
           BUNDLE: ${{ steps.ocr.outputs.dir }}
-        run: echo "EXTRACTOUS_OCR_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
+        run: echo "DIJO_OCR_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

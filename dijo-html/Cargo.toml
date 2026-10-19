@@ -1,0 +1,25 @@
+[package]
+name = "dijo-html"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "dijo's native parsers of HTML and plain text"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/dijo"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+# What the tests of the crates built on this one share with its own.
+testing = ["dijo-base/testing"]
+
+[dependencies]
+dijo-base = { path = "../dijo-base", default-features = false }
+dijo-mime = { path = "../dijo-mime", default-features = false }
+flate2 = "1.1.5"
+html5ever = "0.40.1"
+regex = "1.13.1"
+url = "2.5.8"
+
+[dev-dependencies]
+dijo-base = { path = "../dijo-base", default-features = false, features = ["testing"] }
+dijo-core = { path = "../dijo-core", default-features = false, features = ["testing"] }

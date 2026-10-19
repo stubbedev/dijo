@@ -3,9 +3,9 @@
         "false"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::OOXMLParser",
-        "extractous::ImageParser",
-        "extractous::PreparingOcrParser"
+        "dijo::OOXMLParser",
+        "dijo::ImageParser",
+        "dijo::PreparingOcrParser"
     ],
     "Content-Length": [
         "12541"
@@ -14,7 +14,7 @@
         "None"
     ],
     "tk:parsed-by": [
-        "extractous::OOXMLParser"
+        "dijo::OOXMLParser"
     ],
     "Content-Type": [
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

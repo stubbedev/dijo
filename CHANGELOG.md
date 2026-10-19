@@ -1,3 +1,20 @@
+# Unreleased
+
+### Renamed to dijo
+
+Migration from extractous:
+
+* Binary `extractous` is now `dijo`; crates `extractous-*` are `dijo-*` (`extractous` CLI crate is `dijo`).
+* Environment variables `EXTRACTOUS_*` are `DIJO_*` (`DIJO_FORMAT`, `DIJO_JOBS`, `DIJO_PASSWORD`, `DIJO_OCR_BUNDLE`, ...).
+* Server headers `X-Extractous-Password` and `X-Extractous-Filename` are `X-Dijo-Password` and `X-Dijo-Filename`.
+* Metadata keys `extractous:*` are `dijo:*`; parser names `extractous::*` and `ai.yobix.*` are `dijo::*`.
+* Prometheus metrics `extractous_*` are `dijo_*`; the container image is `ghcr.io/stubbedev/dijo`.
+
+### Removed
+
+* Apache Tika, GraalVM and JNI: every format is read natively, and neither building nor running needs Java.
+
+
 # [](https://github.com/yobix-ai/extractous/compare/v0.1.5...v) (2024-10-30)
 
 

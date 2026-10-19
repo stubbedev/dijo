@@ -5,7 +5,7 @@ set -euo pipefail
 # tesseract C API native readings call (ci/tesseract-library/c-api.txt), linked with tesseract built
 # from its pinned source, patched as the Linux builds patch it (ci/tesseract.nix), and with Leptonica
 # and the image libraries vcpkg builds statically at a pinned commit (ci/tesseract-library); on Linux
-# and Windows heif-png (extractous-native/heif-png) to decode HEIC, HEIF and AVIF, which macOS decodes with its own
+# and Windows heif-png (dijo-native/heif-png) to decode HEIC, HEIF and AVIF, which macOS decodes with its own
 # sips; and the license files of everything linked into them. On Linux it builds against the system's C library, which the glibc release binary
 # then needs, as it does.
 
@@ -27,18 +27,18 @@ case "$(uname -s)-$(uname -m)" in
             triplet=arm64-linux
             export VCPKG_FORCE_SYSTEM_BINARIES=1
         fi
-        library=libextractous_tesseract.so bootstrap=(./bootstrap-vcpkg.sh) heif=heif-png
+        library=libdijo_tesseract.so bootstrap=(./bootstrap-vcpkg.sh) heif=heif-png
         sha512=(sha512sum)
         native() { printf '%s\n' "$1"; }
         ;;
     Darwin-arm64 | Darwin-x86_64)
         if [ "$(uname -m)" = arm64 ]; then triplet=arm64-osx; else triplet=x64-osx; fi
-        library=libextractous_tesseract.dylib bootstrap=(./bootstrap-vcpkg.sh) heif=
+        library=libdijo_tesseract.dylib bootstrap=(./bootstrap-vcpkg.sh) heif=
         sha512=(shasum -a 512)
         native() { printf '%s\n' "$1"; }
         ;;
     MINGW*-x86_64 | MSYS*-x86_64)
-        triplet=x64-windows-static library=extractous_tesseract.dll
+        triplet=x64-windows-static library=dijo_tesseract.dll
         bootstrap=(cmd //c bootstrap-vcpkg.bat) heif="heif-png.exe" sha512=(sha512sum)
         native() { cygpath -m "$1"; }
         ;;
@@ -70,11 +70,11 @@ tar -xzf "$archive" -C "$root/tesseract" --strip-components 1
 patch --directory "$root/tesseract" --strip 1 --input "$here/tesseract-inline-stridemap.patch"
 cmake -S "$(native "$here/tesseract-library")" -B "$(native "$root/tesseract-library")" "${toolchain[@]}" \
     -DCMAKE_BUILD_TYPE=Release -DTESSERACT_SOURCE="$(native "$root/tesseract")"
-cmake --build "$(native "$root/tesseract-library")" --config Release --target extractous_tesseract
+cmake --build "$(native "$root/tesseract-library")" --config Release --target dijo_tesseract
 
 if [ -n "$heif" ]; then
     "$root/vcpkg" install --triplet "$triplet" --clean-after-build "libheif[core,aom]"
-    cmake -S "$(native "$here/../extractous-native/heif-png")" -B "$(native "$root/heif-png")" "${toolchain[@]}" \
+    cmake -S "$(native "$here/../dijo-native/heif-png")" -B "$(native "$root/heif-png")" "${toolchain[@]}" \
         -DCMAKE_BUILD_TYPE=Release
     cmake --build "$(native "$root/heif-png")" --config Release
 fi

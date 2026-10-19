@@ -1,0 +1,39 @@
+[package]
+name = "dijo-image"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "dijo's OCR and its native parsers of images, metafiles and DjVu"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/dijo"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+# What the tests of the crates built on this one share with its own.
+testing = ["dijo-base/testing"]
+static = ["dijo-native/static"]
+
+[dependencies]
+dijo-base = { path = "../dijo-base", default-features = false }
+dijo-mime = { path = "../dijo-mime", default-features = false }
+dijo-native = { path = "../dijo-native", default-features = false }
+flate2 = "1.1.5"
+hayro = "0.8.0"
+hayro-jbig2 = "0.3.1"
+hayro-jpeg2000 = "0.4.1"
+image = { version = "0.25.10", default-features = false, features = ["png", "tiff", "webp", "bmp", "gif", "pnm", "tga"] }
+jxl-bitstream = "1.1.0"
+jxl-oxide = { version = "0.12.6", default-features = false, features = ["image"] }
+jxl-oxide-common = "1.0.0"
+lcms2-sys = { version = "4.0.7", default-features = false, features = ["static"] }
+libloading = "0.9.0"
+rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+regex = "1.13.1"
+sha2 = "0.11.1"
+tiff = "0.11.3"
+unicode-script = "0.5.8"
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+dijo-base = { path = "../dijo-base", default-features = false, features = ["testing"] }
+dijo-core = { path = "../dijo-core", default-features = false, features = ["testing"] }

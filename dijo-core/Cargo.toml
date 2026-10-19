@@ -1,0 +1,62 @@
+[package]
+name = "dijo-core"
+publish = false
+version = "0.2.1"
+edition = "2021"
+
+description = "Text and metadata extraction for PDF, Office, email and many other formats"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/dijo"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+keywords = ["unstructured", "tika", "text", "pdf", "parser"]
+categories = ["parsing", "text-processing"]
+
+[[bench]]
+name = "extractor"
+harness = false
+required-features = []
+
+[features]
+# Link tesseract, Leptonica and libheif statically, as `DIJO_STATIC_LIBS` lists them, instead
+# of loading them: for the statically linked Linux executable that ci/static-native.nix builds.
+static = ["dijo-native/static", "dijo-image/static"]
+# What the tests of the crates of the formats share.
+testing = ["dijo-base/testing", "dijo-mime/testing", "dijo-html/testing", "dijo-image/testing", "dijo-pdf/testing", "dijo-media/testing", "dijo-odf/testing", "dijo-small/testing", "dijo-science/testing", "dijo-mail/testing", "dijo-office/testing", "dijo-ooxml/testing"]
+
+[dependencies]
+dijo-base = { path = "../dijo-base", default-features = false }
+dijo-native = { path = "../dijo-native" }
+dijo-ooxml = { path = "../dijo-ooxml", default-features = false }
+dijo-office = { path = "../dijo-office", default-features = false }
+dijo-mail = { path = "../dijo-mail", default-features = false }
+dijo-small = { path = "../dijo-small", default-features = false }
+dijo-science = { path = "../dijo-science", default-features = false }
+dijo-odf = { path = "../dijo-odf", default-features = false }
+dijo-media = { path = "../dijo-media", default-features = false }
+dijo-pdf = { path = "../dijo-pdf", default-features = false }
+dijo-image = { path = "../dijo-image", default-features = false }
+dijo-html = { path = "../dijo-html", default-features = false }
+dijo-mime = { path = "../dijo-mime", default-features = false }
+regex = "1.13.1"
+png = "0.18.1"
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+dijo-ooxml = { path = "../dijo-ooxml", default-features = false, features = ["testing"] }
+dijo-office = { path = "../dijo-office", default-features = false, features = ["testing"] }
+dijo-mail = { path = "../dijo-mail", default-features = false, features = ["testing"] }
+dijo-small = { path = "../dijo-small", default-features = false, features = ["testing"] }
+dijo-science = { path = "../dijo-science", default-features = false, features = ["testing"] }
+dijo-odf = { path = "../dijo-odf", default-features = false, features = ["testing"] }
+dijo-media = { path = "../dijo-media", default-features = false, features = ["testing"] }
+dijo-pdf = { path = "../dijo-pdf", default-features = false, features = ["testing"] }
+dijo-image = { path = "../dijo-image", default-features = false, features = ["testing"] }
+dijo-mime = { path = "../dijo-mime", default-features = false, features = ["testing"] }
+dijo-base = { path = "../dijo-base", default-features = false, features = ["testing"] }
+textdistance = "1.1.1"
+test-case = "3.3.1"
+criterion = "0.8.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+quick-xml = { version = "0.42.0", features = ["encoding"] }

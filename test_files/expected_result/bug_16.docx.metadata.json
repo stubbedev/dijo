@@ -1,6 +1,6 @@
 {
     "tk:parsed-by": [
-        "extractous::OOXMLParser",
+        "dijo::OOXMLParser",
         "org.apache.tika.parser.microsoft.ooxml.xwpf.XWPFEventBasedWordExtractor"
     ],
     "dcterms:created": [
@@ -34,7 +34,7 @@
         "1"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::OOXMLParser"
+        "dijo::OOXMLParser"
     ],
     "extended-properties:Template": [
         "Normal.dotm"

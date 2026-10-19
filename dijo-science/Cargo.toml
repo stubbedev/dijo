@@ -1,0 +1,22 @@
+[package]
+name = "dijo-science"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "dijo's native parsers of scientific data formats: NetCDF, HDF4 and HDF5, GRIB, FITS and ISA-Tab"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/dijo"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+# What the tests of the crates built on this one share with its own.
+testing = ["dijo-base/testing", "dijo-html/testing"]
+
+[dependencies]
+dijo-base = { path = "../dijo-base", default-features = false }
+dijo-html = { path = "../dijo-html", default-features = false }
+memchr = "2.8.3"
+
+[dev-dependencies]
+dijo-base = { path = "../dijo-base", default-features = false, features = ["testing"] }
+dijo-core = { path = "../dijo-core", default-features = false, features = ["testing"] }

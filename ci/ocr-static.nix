@@ -27,7 +27,7 @@ let
   tessdata = import ./tessdata.nix { inherit pkgs; };
   licenses = import ./licenses.nix "$out/licenses";
 in
-pkgs.runCommand "extractous-ocr-bundle-linked" { } (
+pkgs.runCommand "dijo-ocr-bundle-linked" { } (
   ''
     mkdir -p $out/tessdata $out/licenses/tessdata_fast
     cp -rL ${tessdata}/. $out/tessdata/

@@ -1,0 +1,44 @@
+[package]
+name = "dijo-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.12"
+dijo = { path = ".." }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "split_xhtml"
+path = "fuzz_targets/split_xhtml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "normalize"
+path = "fuzz_targets/normalize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_query"
+path = "fuzz_targets/decode_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "normalize_metadata"
+path = "fuzz_targets/normalize_metadata.rs"
+test = false
+doc = false
+bench = false

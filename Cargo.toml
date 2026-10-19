@@ -1,21 +1,21 @@
 [workspace]
 resolver = "2"
 members = [
-    "extractous-base",
-    "extractous-native",
-    "extractous-mime",
-    "extractous-html",
-    "extractous-image",
-    "extractous-pdf",
-    "extractous-media",
-    "extractous-odf",
-    "extractous-small",
-    "extractous-science",
-    "extractous-mail",
-    "extractous-office",
-    "extractous-ooxml",
-    "extractous-core",
-    "extractous-cli",
+    "dijo-base",
+    "dijo-native",
+    "dijo-mime",
+    "dijo-html",
+    "dijo-image",
+    "dijo-pdf",
+    "dijo-media",
+    "dijo-odf",
+    "dijo-small",
+    "dijo-science",
+    "dijo-mail",
+    "dijo-office",
+    "dijo-ooxml",
+    "dijo-core",
+    "dijo-cli",
 ]
 
 [profile.dev]

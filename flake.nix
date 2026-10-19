@@ -1,5 +1,5 @@
 {
-  description = "extractous's Nix-built release artifacts: the static Linux executable and its container image";
+  description = "dijo's Nix-built release artifacts: the static Linux executable and its container image";
 
   inputs.crane.url = "github:ipetkov/crane/v0.24.0";
 

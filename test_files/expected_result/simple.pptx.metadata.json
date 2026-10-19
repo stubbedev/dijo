@@ -6,7 +6,7 @@
         "34865"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::OOXMLParser"
+        "dijo::OOXMLParser"
     ],
     "extended-properties:PresentationFormat": [
         "Widescreen"
@@ -39,7 +39,7 @@
         "2024-07-22T23:31:59Z"
     ],
     "tk:parsed-by": [
-        "extractous::OOXMLParser",
+        "dijo::OOXMLParser",
         "org.apache.tika.parser.microsoft.ooxml.xslf.XSLFEventBasedPowerPointExtractor"
     ],
     "extended-properties:AppVersion": [

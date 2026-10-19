@@ -1,0 +1,30 @@
+//! dijo's native parsers of scientific data formats: NetCDF, HDF4 and HDF5, GRIB, FITS and
+//! ISA-Tab. They write what Tika's `tika-parser-scientific-module` writes of a file, its
+//! attributes, dimensions and variables, and go beyond it where the module writes little or
+//! nothing (#172). Each reads only the headers of a file, in place, never its data.
+
+use dijo_base::*;
+#[cfg(test)]
+use dijo_core::Extractor;
+
+/// The tests count allocations as the command line does, so that budgets are enforced in them,
+/// and measure the peak of what each thread holds.
+#[cfg(test)]
+#[global_allocator]
+static ALLOCATOR: memory::CountingAllocator<dijo_core::large::Peak<std::alloc::System>> =
+    memory::CountingAllocator(dijo_core::large::Peak(std::alloc::System));
+
+/// The parsers, at the paths they have in `dijo-core`.
+pub mod formats {
+    pub(crate) use dijo_base::formats::*;
+    #[cfg(test)]
+    pub(crate) use dijo_core::testing;
+
+    mod bytes;
+    mod cdm;
+    pub mod fits;
+    pub mod grib;
+    pub mod hdf;
+    pub mod isatab;
+    pub mod netcdf;
+}

@@ -48,8 +48,8 @@
         "266240"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::TextLayerCheckingPdfParser",
-        "extractous::PDFParser"
+        "dijo::TextLayerCheckingPdfParser",
+        "dijo::PDFParser"
     ],
     "Content-Type": [
         "application/pdf"
@@ -152,8 +152,8 @@
         "true"
     ],
     "tk:parsed-by": [
-        "extractous::TextLayerCheckingPdfParser",
-        "extractous::PDFParser"
+        "dijo::TextLayerCheckingPdfParser",
+        "dijo::PDFParser"
     ],
     "pdf:annotation-subtypes": [
         "Link"

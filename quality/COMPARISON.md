@@ -1,6 +1,6 @@
-# Extractous and other extractors
+# Dijo and other extractors
 
-The quality corpus extracted by extractous, Docling 2.131.0, Kreuzberg 4.10.4, Tika 4.1.0, each with its default options and without a language hint. A document an extractor could not read counts as empty text. Each cell is extractous / Docling 2.131.0 / Kreuzberg 4.10.4 / Tika 4.1.0.
+The quality corpus extracted by dijo, Docling 2.131.0, Kreuzberg 4.10.4, Tika 4.1.0, each with its default options and without a language hint. A document an extractor could not read counts as empty text. Each cell is dijo / Docling 2.131.0 / Kreuzberg 4.10.4 / Tika 4.1.0.
 
 | Document | Category | CER | Token error rate | Recall | Spurious |
 |---|---|---|---|---|---|

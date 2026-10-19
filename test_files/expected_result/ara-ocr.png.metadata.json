@@ -28,8 +28,8 @@
         "width=842, height=779, bitDepth=8, colorType=RGBAlpha, compressionMethod=deflate, filterMethod=adaptive, interlaceMethod=none"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::ImageParser",
-        "extractous::PreparingOcrParser"
+        "dijo::ImageParser",
+        "dijo::PreparingOcrParser"
     ],
     "img:Compression Lossless": [
         "true"
@@ -84,7 +84,7 @@
         "nonpremultipled"
     ],
     "tk:parsed-by": [
-        "extractous::ImageParser",
-        "extractous::PreparingOcrParser"
+        "dijo::ImageParser",
+        "dijo::PreparingOcrParser"
     ]
 }

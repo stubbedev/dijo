@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The OCR bundle a build embeds through EXTRACTOUS_OCR_BUNDLE: the language data and its licence,
+# The OCR bundle a build embeds through DIJO_OCR_BUNDLE: the language data and its licence,
 # and either tesseract as a library the process loads with heif-png beside it (ci/ocr-vcpkg.sh),
 # or, with --linked, the licences of the tesseract and libraries the static executable links
 # (ci/ocr-static.nix, which builds that whole bundle, Linux only).

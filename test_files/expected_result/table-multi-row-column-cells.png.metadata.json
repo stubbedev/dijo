@@ -30,15 +30,15 @@
         "1"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::ImageParser",
-        "extractous::PreparingOcrParser"
+        "dijo::ImageParser",
+        "dijo::PreparingOcrParser"
     ],
     "img:Data PlanarConfiguration": [
         "PixelInterleaved"
     ],
     "tk:parsed-by": [
-        "extractous::ImageParser",
-        "extractous::PreparingOcrParser"
+        "dijo::ImageParser",
+        "dijo::PreparingOcrParser"
     ],
     "img:Chroma BlackIsZero": [
         "true"

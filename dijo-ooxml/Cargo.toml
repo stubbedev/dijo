@@ -1,0 +1,25 @@
+[package]
+name = "dijo-ooxml"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "dijo's native parsers of Office Open XML and XPS"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/dijo"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+# What the tests of the crates built on this one share with its own.
+testing = ["dijo-base/testing"]
+
+[dependencies]
+dijo-base = { path = "../dijo-base", default-features = false }
+dijo-image = { path = "../dijo-image", default-features = false }
+dijo-mime = { path = "../dijo-mime", default-features = false }
+dijo-office = { path = "../dijo-office", default-features = false }
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+dijo-base = { path = "../dijo-base", default-features = false, features = ["testing"] }
+dijo-core = { path = "../dijo-core", default-features = false, features = ["testing"] }
+dijo-image = { path = "../dijo-image", default-features = false, features = ["testing"] }

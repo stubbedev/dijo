@@ -4,7 +4,7 @@ on:
   push:
     tags: ["v*"]
   pull_request:
-    paths: [.github/workflows/release.yml, .github/actions/**, flake.nix, flake.lock, ci/**, extractous-native/heif-png/**]
+    paths: [.github/workflows/release.yml, .github/actions/**, flake.nix, flake.lock, ci/**, dijo-native/heif-png/**]
   workflow_dispatch:
 
 permissions:
@@ -47,17 +47,17 @@ jobs:
       - name: Embed the OCR bundle
         env:
           BUNDLE: ${{ steps.ocr.outputs.dir }}
-        run: echo "EXTRACTOUS_OCR_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
+        run: echo "DIJO_OCR_BUNDLE=$BUNDLE" >> "$GITHUB_ENV"
       - name: Build
         if: runner.os != 'Windows'
-        run: cargo build --release --locked --package extractous
+        run: cargo build --release --locked --package dijo
       - name: Build
         if: runner.os == 'Windows'
         shell: pwsh
-        run: cargo build --release --locked --package extractous
+        run: cargo build --release --locked --package dijo
       - name: Smoke test, including OCR
         run: |
-          binary=target/release/extractous
+          binary=target/release/dijo
           "$binary" --version
           "$binary" --licenses > "$RUNNER_TEMP/licenses.txt"
           "$binary" test_files/documents/simple.odt | grep -q "These are a few of my favorite things"
@@ -65,13 +65,13 @@ jobs:
           "$binary" --ocr always test_files/documents/eng-ocr.pdf | tr -s '[:space:]' ' ' | grep -qi "the"
           "$binary" quality/corpus/arabic-scan-300dpi.png | grep -q "المنارة"
           "$binary" --metadata quality/corpus/prose-scan-150dpi.png 2>&1 >/dev/null \
-            | grep -qx "tk:parsed-by: extractous::PreparingOcrParser"
+            | grep -qx "tk:parsed-by: dijo::PreparingOcrParser"
           "$binary" test_files/documents/photo.heic | grep -q "Lighthouse"
           grep -q "## tesseract" "$RUNNER_TEMP/licenses.txt"
       - name: Check that the Windows executable carries the Visual C++ runtime it needs
         if: runner.os == 'Windows'
         run: |
-          unpacked=$(find "$(cygpath --unix "$LOCALAPPDATA")/extractous" -mindepth 1 -maxdepth 1 -type d ! -name '.*')
+          unpacked=$(find "$(cygpath --unix "$LOCALAPPDATA")/dijo" -mindepth 1 -maxdepth 1 -type d ! -name '.*')
           status=0
           while IFS= read -r -d '' file; do
             while read -r dll; do
@@ -80,16 +80,16 @@ jobs:
                 status=1
               fi
             done < <(llvm-objdump -p "$file" | tr -d '\r' | sed -n 's/^ *DLL Name: //p' | grep -iE '^(vcruntime|msvcp|vcomp|concrt)')
-          done < <(find target/release/extractous.exe "$unpacked" -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0)
+          done < <(find target/release/dijo.exe "$unpacked" -type f \( -iname '*.exe' -o -iname '*.dll' \) -print0)
           exit "$status"
       - name: Smoke test in a container with no tesseract
         if: runner.os == 'Linux'
         run: |
           image=debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
           bare() {
-            docker run --rm --volume "$PWD/target/release/extractous:/extractous:ro" \
+            docker run --rm --volume "$PWD/target/release/dijo:/dijo:ro" \
               --volume "$PWD/test_files/documents:/documents:ro" --volume "$PWD/quality/corpus:/corpus:ro" \
-              "$image" /extractous "$@"
+              "$image" /dijo "$@"
           }
           bare --ocr always /documents/eng-ocr.pdf > "$RUNNER_TEMP/english.txt"
           tr -s '[:space:]' ' ' < "$RUNNER_TEMP/english.txt" | grep -qi "the"
@@ -102,12 +102,12 @@ jobs:
       - name: Package
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="${GITHUB_SHA::7}"; fi
-          name="extractous-${version}-${{ matrix.target }}"
+          name="dijo-${version}-${{ matrix.target }}"
           mkdir -p "dist/$name"
           suffix=""
           if [ "${{ runner.os }}" = "Windows" ]; then suffix=".exe"; fi
-          cp "target/release/extractous$suffix" LICENSE README.md "dist/$name/"
-          "target/release/extractous$suffix" --licenses > "dist/$name/LICENSES.md"
+          cp "target/release/dijo$suffix" LICENSE README.md "dist/$name/"
+          "target/release/dijo$suffix" --licenses > "dist/$name/LICENSES.md"
           cd dist
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$name.zip" "$name" > /dev/null
@@ -133,7 +133,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
-      BINARY: result-static/bin/extractous
+      BINARY: result-static/bin/dijo
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -177,11 +177,11 @@ jobs:
           context="$RUNNER_TEMP/scratch"
           mkdir -p "$context"
           cp "$BINARY" "$context/"
-          printf 'FROM scratch\nCOPY extractous /extractous\nENTRYPOINT ["/extractous"]\n' > "$context/Dockerfile"
-          docker build --quiet --tag extractous-static "$context"
+          printf 'FROM scratch\nCOPY dijo /dijo\nENTRYPOINT ["/dijo"]\n' > "$context/Dockerfile"
+          docker build --quiet --tag dijo-static "$context"
           bare() {
             docker run --rm --env HOME=/ --tmpfs /tmp --volume "$PWD/test_files/documents:/documents:ro" \
-              --volume "$PWD/quality/corpus:/corpus:ro" extractous-static "$@"
+              --volume "$PWD/quality/corpus:/corpus:ro" dijo-static "$@"
           }
           bare --ocr always /documents/eng-ocr.pdf > "$RUNNER_TEMP/english.txt"
           tr -s '[:space:]' ' ' < "$RUNNER_TEMP/english.txt" | grep -qi "the"
@@ -196,7 +196,7 @@ jobs:
       - name: Package
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#v}"; else version="${GITHUB_SHA::7}"; fi
-          name="extractous-${version}-$TARGET"
+          name="dijo-${version}-$TARGET"
           mkdir -p "dist/$name"
           cp "$BINARY" LICENSE README.md "dist/$name/"
           "$BINARY" --licenses > "dist/$name/LICENSES.md"
@@ -261,20 +261,20 @@ jobs:
       - name: Build the image around the static executable
         run: |
           tar -xzf "$RUNNER_TEMP"/static/*.tar.gz -C "$RUNNER_TEMP/static"
-          docker load --input "$(ci/container.sh "$RUNNER_TEMP"/static/extractous-*/extractous)"
+          docker load --input "$(ci/container.sh "$RUNNER_TEMP"/static/dijo-*/dijo)"
       - name: Smoke test, including OCR
         run: |
-          docker run --rm extractous:local --version
-          docker run --rm --volume "$PWD/test_files/documents:/data:ro" extractous:local /data/simple.odt \
+          docker run --rm dijo:local --version
+          docker run --rm --volume "$PWD/test_files/documents:/data:ro" dijo:local /data/simple.odt \
             | grep -q "These are a few of my favorite things"
-          docker run --rm --volume "$PWD/test_files/documents:/data:ro" extractous:local --ocr always /data/eng-ocr.pdf \
+          docker run --rm --volume "$PWD/test_files/documents:/data:ro" dijo:local --ocr always /data/eng-ocr.pdf \
             | tr -s '[:space:]' ' ' | grep -qi "the"
-          docker run --rm --volume "$PWD/quality/corpus:/data:ro" extractous:local /data/danish-scan.png \
+          docker run --rm --volume "$PWD/quality/corpus:/data:ro" dijo:local /data/danish-scan.png \
             | grep -q "tusmørket"
       - name: Check that nothing is written outside the cache and temporary directories
         run: |
-          docker run --rm --read-only --tmpfs /tmp --tmpfs /var/cache/extractous:uid=10001,gid=10001 \
-            --volume "$PWD/quality/corpus:/data:ro" extractous:local --jobs 2 \
+          docker run --rm --read-only --tmpfs /tmp --tmpfs /var/cache/dijo:uid=10001,gid=10001 \
+            --volume "$PWD/quality/corpus:/data:ro" dijo:local --jobs 2 \
             /data/danish-scan.png /data/prose-scan.heic /data/report.docx > "$RUNNER_TEMP/read-only.txt"
           grep -q "tusmørket" "$RUNNER_TEMP/read-only.txt"
           grep -q "Lighthouse Keeper" "$RUNNER_TEMP/read-only.txt"
@@ -290,7 +290,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           image="ghcr.io/$GITHUB_REPOSITORY:${GITHUB_REF_NAME#v}-$ARCH"
-          docker tag extractous:local "$image"
+          docker tag dijo:local "$image"
           docker push "$image"
           digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$image")
           mkdir -p "$RUNNER_TEMP/digests"

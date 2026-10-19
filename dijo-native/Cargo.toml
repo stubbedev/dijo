@@ -1,0 +1,21 @@
+[package]
+name = "dijo-native"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "The native files dijo's build embeds and unpacks: the OCR bundle"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/dijo"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+# tesseract, Leptonica and libheif linked statically, as `DIJO_STATIC_LIBS` lists them, instead
+# of loaded: for the statically linked Linux executable that ci/static-native.nix builds.
+static = []
+
+[dependencies]
+flate2 = "1.1.5"
+libloading = "0.9.0"
+
+[build-dependencies]
+flate2 = "1.1.5"

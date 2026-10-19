@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(extractous-tesseract CXX)
+project(dijo-tesseract CXX)
 
 if(NOT TESSERACT_SOURCE)
   message(FATAL_ERROR "TESSERACT_SOURCE must name tesseract's source tree")
@@ -19,34 +19,34 @@ endforeach()
 add_subdirectory("${TESSERACT_SOURCE}" tesseract EXCLUDE_FROM_ALL)
 
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/exports.cc" CONTENT "")
-add_library(extractous_tesseract SHARED "${CMAKE_CURRENT_BINARY_DIR}/exports.cc")
-target_link_libraries(extractous_tesseract PRIVATE libtesseract)
+add_library(dijo_tesseract SHARED "${CMAKE_CURRENT_BINARY_DIR}/exports.cc")
+target_link_libraries(dijo_tesseract PRIVATE libtesseract)
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/c-api.txt" C_API)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/c-api.txt")
 if(WIN32)
   list(JOIN C_API "\n  " DEF_EXPORTS)
   file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/c-api.def" "EXPORTS\n  ${DEF_EXPORTS}\n")
-  target_sources(extractous_tesseract PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/c-api.def")
+  target_sources(dijo_tesseract PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/c-api.def")
 elseif(APPLE)
   list(TRANSFORM C_API PREPEND "_" OUTPUT_VARIABLE C_SYMBOLS)
   list(JOIN C_SYMBOLS "\n" C_LINES)
   file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/exports.txt" "${C_LINES}\n")
-  target_link_options(extractous_tesseract PRIVATE
+  target_link_options(dijo_tesseract PRIVATE
     "LINKER:-exported_symbols_list,${CMAKE_CURRENT_BINARY_DIR}/exports.txt")
   foreach(symbol IN LISTS C_SYMBOLS)
-    target_link_options(extractous_tesseract PRIVATE "LINKER:-u,${symbol}")
+    target_link_options(dijo_tesseract PRIVATE "LINKER:-u,${symbol}")
   endforeach()
 else()
   list(JOIN C_API ";\n    " GLOBALS)
   file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/exports.map"
     "{\n  global:\n    ${GLOBALS};\n  local: *;\n};\n")
-  target_link_options(extractous_tesseract PRIVATE -static-libstdc++ -static-libgcc -Wl,-Bsymbolic
+  target_link_options(dijo_tesseract PRIVATE -static-libstdc++ -static-libgcc -Wl,-Bsymbolic
     "LINKER:--version-script=${CMAKE_CURRENT_BINARY_DIR}/exports.map")
   foreach(symbol IN LISTS C_API)
-    target_link_options(extractous_tesseract PRIVATE "LINKER:--undefined=${symbol}")
+    target_link_options(dijo_tesseract PRIVATE "LINKER:--undefined=${symbol}")
   endforeach()
 endif()
-set_target_properties(extractous_tesseract PROPERTIES
+set_target_properties(dijo_tesseract PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}/out>"
   RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}/out>")

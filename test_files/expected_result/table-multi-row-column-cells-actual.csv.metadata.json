@@ -3,7 +3,7 @@
         "6"
     ],
     "tk:parsed-by-full-set": [
-        "extractous::TextAndCSVParser"
+        "dijo::TextAndCSVParser"
     ],
     "csv:num-columns": [
         "6"
@@ -21,7 +21,7 @@
         "text/csv; charset=windows-1252; delimiter=comma"
     ],
     "tk:parsed-by": [
-        "extractous::TextAndCSVParser"
+        "dijo::TextAndCSVParser"
     ],
     "tk:resource-name": [
         "table-multi-row-column-cells-actual.csv"

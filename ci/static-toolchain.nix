@@ -1,7 +1,7 @@
 # What ci/static-native.nix builds the static executable with, for the Linux of `system`: the
 # musl package set, tesseract with Leptonica and the image libraries it reads with (whose licenses
 # ci/ocr-static.nix collects), libheif (ci/image-decoders.nix), the library flag files
-# EXTRACTOUS_STATIC_LIBS lists and the licenses of the libraries linked beyond tesseract's.
+# DIJO_STATIC_LIBS lists and the licenses of the libraries linked beyond tesseract's.
 { nixpkgs, system }:
 let
   pkgs = nixpkgs.legacyPackages.${system};
@@ -21,31 +21,31 @@ let
     static.dav1d
   ];
   pkgConfigPath = lib.makeSearchPathOutput "dev" "lib/pkgconfig";
-  decoderLicenses = pkgs.runCommand "extractous-decoder-licenses" { } (
-    lib.concatMapStrings (import ./licenses.nix "$out/extractous/decoder-licenses") decoderLibraries
+  decoderLicenses = pkgs.runCommand "dijo-decoder-licenses" { } (
+    lib.concatMapStrings (import ./licenses.nix "$out/dijo/decoder-licenses") decoderLibraries
   );
   decoderFlags =
-    pkgs.runCommand "extractous-image-decoder-flags" { nativeBuildInputs = [ pkgs.pkg-config ]; }
+    pkgs.runCommand "dijo-image-decoder-flags" { nativeBuildInputs = [ pkgs.pkg-config ]; }
       ''
         export PKG_CONFIG_PATH=${pkgConfigPath decoderLibraries}
-        mkdir -p $out/extractous
+        mkdir -p $out/dijo
         pkg-config --static --libs libheif | tr -s ' ' '\n' | sed '/^$/d' \
-          > $out/extractous/images-libs
+          > $out/dijo/images-libs
       '';
   tesseractFlags =
-    pkgs.runCommand "extractous-tesseract-flags" { nativeBuildInputs = [ pkgs.pkg-config ]; }
+    pkgs.runCommand "dijo-tesseract-flags" { nativeBuildInputs = [ pkgs.pkg-config ]; }
       ''
         export PKG_CONFIG_PATH=${tesseract}/lib/pkgconfig:${static.leptonica}/lib/pkgconfig
-        mkdir -p $out/extractous
+        mkdir -p $out/dijo
         { pkg-config --static --libs tesseract; echo -L${static.giflib}/lib -lm; } \
-          | tr -s ' ' '\n' | sed '/^$/d' > $out/extractous/tesseract-libs
+          | tr -s ' ' '\n' | sed '/^$/d' > $out/dijo/tesseract-libs
       '';
 in
 {
   inherit cross tesseract;
   staticLibs = [
-    "${tesseractFlags}/extractous/tesseract-libs"
-    "${decoderFlags}/extractous/images-libs"
+    "${tesseractFlags}/dijo/tesseract-libs"
+    "${decoderFlags}/dijo/images-libs"
   ];
-  decoderLicenses = "${decoderLicenses}/extractous/decoder-licenses";
+  decoderLicenses = "${decoderLicenses}/dijo/decoder-licenses";
 }

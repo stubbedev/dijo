@@ -1,0 +1,20 @@
+[package]
+name = "dijo-media"
+publish = false
+version = "0.2.1"
+edition = "2021"
+description = "dijo's native parsers of audio and video files"
+license = "Apache-2.0"
+repository = "https://github.com/stubbedev/dijo"
+authors = ["Alexander Bugge Stage <hello@stubbe.dev>"]
+
+[features]
+# What the tests of the crates built on this one share with its own.
+testing = ["dijo-base/testing"]
+
+[dependencies]
+dijo-base = { path = "../dijo-base", default-features = false }
+
+[dev-dependencies]
+dijo-base = { path = "../dijo-base", default-features = false, features = ["testing"] }
+dijo-core = { path = "../dijo-core", default-features = false, features = ["testing"] }
