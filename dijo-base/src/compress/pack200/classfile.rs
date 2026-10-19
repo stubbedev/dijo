@@ -195,11 +195,13 @@ impl Constants {
                 }
                 Key::Long(index) => {
                     out.u1(5);
-                    out.bytes.extend_from_slice(&pool.longs[*index].to_be_bytes());
+                    out.bytes
+                        .extend_from_slice(&pool.longs[*index].to_be_bytes());
                 }
                 Key::Double(index) => {
                     out.u1(6);
-                    out.bytes.extend_from_slice(&pool.doubles[*index].to_be_bytes());
+                    out.bytes
+                        .extend_from_slice(&pool.doubles[*index].to_be_bytes());
                 }
                 Key::Class(_) => out.u1(7),
                 Key::String(_) => out.u1(8),
@@ -305,7 +307,9 @@ impl<'c> Out<'c> {
     /// Writes `value` in `size` bytes, failing where it is negative or does not fit them.
     fn unsigned(&mut self, value: i64, size: u8) -> Result<()> {
         if value < 0 {
-            return Err(malformed(format!("the negative value {value} where none is")));
+            return Err(malformed(format!(
+                "the negative value {value} where none is"
+            )));
         }
         self.sized(value, size)
     }

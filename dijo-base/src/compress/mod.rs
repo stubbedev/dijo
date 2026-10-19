@@ -19,6 +19,7 @@ pub mod dump;
 pub mod gzip;
 pub mod lz4;
 pub mod lzw;
+pub(crate) mod pack200;
 pub mod seven_z;
 pub mod snappy;
 pub mod tar;
