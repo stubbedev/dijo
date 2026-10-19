@@ -6,7 +6,7 @@ use std::borrow::Cow;
 
 use crate::formats::escher::{kind as escher_kind, Content as EscherContent, Escher};
 use crate::formats::poi::{i32_at, inflate, narrowed, Thrown, Unread, INDEX_OUT_OF_BOUNDS};
-use crate::formats::{wmf_placeable, Unported};
+use crate::formats::{wmf_placeable, Difference, Unported};
 use crate::ole2::{Content, EntryId, EntryKind, Ole2, Unreadable};
 
 use super::encryption::Encryption;
@@ -131,6 +131,10 @@ pub(super) struct Pictures<'p> {
     stream: Content<'p>,
     pub(super) pictures: Vec<Picture>,
     pub(super) store: Option<Vec<StoreEntry>>,
+    /// Where Tika's path matches the pictures otherwise, if it does: by checksum among blip
+    /// store entries of several offsets, which POI orders by a `java.util.HashMap` and the port
+    /// by the store (#186).
+    pub(super) difference: Option<Difference>,
 }
 
 impl Pictures<'_> {
@@ -139,6 +143,7 @@ impl Pictures<'_> {
             stream: Content::from(&[][..]),
             pictures: Vec::new(),
             store: None,
+            difference: None,
         }
     }
 }
@@ -367,7 +372,7 @@ pub(super) fn read<'p>(
             (Content::from(&decrypted[..]), factories)
         }
     };
-    match_records(&mut factories, &mut store)?;
+    let in_hash_order = match_records(&mut factories, &mut store);
     let mut pictures = Vec::new();
     for factory in factories {
         let Some(kind) = PictureType::of(factory.native) else {
@@ -389,6 +394,13 @@ pub(super) fn read<'p>(
         stream,
         pictures,
         store: Some(store),
+        difference: in_hash_order.then(|| {
+            Difference(
+                "pictures matched by checksum among blip store entries of several offsets, \
+                 which POI orders by a java.util.HashMap and the port by the store"
+                    .to_owned(),
+            )
+        }),
     })
 }
 
@@ -433,9 +445,10 @@ fn first_document_store(records: &Records, source: &[u8]) -> Result<Vec<StoreEnt
     Ok(store_of(group)?.unwrap_or_default())
 }
 
-/// `matchPicturesAndRecords`: each picture's blip store entry, by offset, then by checksum, else
-/// a new entry.
-fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Result<(), Unread> {
+/// `matchPicturesAndRecords`: each picture's blip store entry, by offset, then by checksum among
+/// the entries left in the order of the store, else a new entry; and whether a match by checksum
+/// chose among entries of several offsets, which POI orders by a `java.util.HashMap`.
+fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> bool {
     let mut unmatched: Vec<usize> = (0..factories.len()).collect();
     unmatched.sort_by_key(|&at| factories[at].offset);
     let mut by_offset: Vec<(i32, Vec<usize>)> = Vec::new();
@@ -484,6 +497,8 @@ fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Resu
         .into_iter()
         .flat_map(|(_, entries)| entries)
         .collect();
+    remaining.sort_unstable();
+    let mut in_hash_order = false;
     for at in unmatched {
         let uid = factories[at].uid;
         let mut matched = false;
@@ -491,14 +506,7 @@ fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Resu
         while i > 0 {
             i -= 1;
             if store[remaining[i]].uid == uid {
-                if buckets > 1 {
-                    return Err(Unported(
-                        "pictures matched by checksum among blip store entries POI orders by a \
-                         hash map"
-                            .to_owned(),
-                    )
-                    .into());
-                }
+                in_hash_order |= buckets > 1;
                 let entry = remaining.remove(i);
                 store[entry].offset = factories[at].offset;
                 factories[at].entry = Some(entry);
@@ -513,7 +521,7 @@ fn match_records(factories: &mut [Factory], store: &mut Vec<StoreEntry>) -> Resu
             factories[at].entry = Some(store.len() - 1);
         }
     }
-    Ok(())
+    in_hash_order
 }
 
 impl Picture {
@@ -720,11 +728,23 @@ mod tests {
     fn matches_pictures_by_offset_then_checksum_else_adds_an_entry() {
         let mut store = vec![entry(1, 0), entry(2, 99)];
         let mut factories = vec![factory(1, 0), factory(2, 50), factory(3, 80)];
-        match_records(&mut factories, &mut store).unwrap();
+        assert!(!match_records(&mut factories, &mut store));
         let entries: Vec<Option<usize>> = factories.iter().map(|f| f.entry).collect();
         assert_eq!(entries, [Some(0), Some(1), Some(2)]);
         assert_eq!(store[1].offset, 50);
         assert_eq!(store[2], entry(3, 80));
+    }
+
+    /// A picture matched by checksum among entries of several offsets takes the last of the
+    /// store's, where POI's order is a `java.util.HashMap`'s, and says so (#186).
+    #[test]
+    fn matches_by_checksum_among_several_offsets_in_the_order_of_the_store() {
+        let mut store = vec![entry(7, 10), entry(7, 20), entry(8, 30)];
+        let mut factories = vec![factory(7, 99)];
+        assert!(match_records(&mut factories, &mut store));
+        assert_eq!(factories[0].entry, Some(0));
+        assert_eq!(store[0].offset, 99);
+        assert_eq!(store[1].offset, 99);
     }
 
     #[test]

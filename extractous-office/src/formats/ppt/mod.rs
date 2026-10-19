@@ -144,7 +144,10 @@ fn read<E>(
         &mut decrypted,
     )?;
     let objects = pictures::objects(&records);
-    let read_otherwise = records.difference.clone();
+    let read_otherwise = records
+        .difference
+        .clone()
+        .or_else(|| pictures.difference.clone());
     extract(&show, &records, &objects, &pictures, configs, flush)
         .map(|difference| read_otherwise.or(difference))
 }
