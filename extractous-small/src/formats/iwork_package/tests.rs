@@ -160,20 +160,23 @@ fn extracts_tikas_test_packages_as_tikas_path_does() {
 
 /// A Pages '09 package whose `index.xml` decodes past what a spool holds in memory, with noise
 /// outside its text storage, which is not written, before the paragraph that ends it: the entry
-/// spools to a file as it is read, under a budget far below it.
+/// spools to a file as it is read, under a budget far below it. Its entries are deflated, as a
+/// stored one written as a stream has a data descriptor, which the package's stream refuses.
 #[test]
 fn reads_a_package_too_large_to_read_whole_spooling_its_content() {
     use extractous_core::large::{LargeFile, SPOOLING_BUDGET};
 
-    use extractous_core::large::{bytes, noise, package, END, LARGE_PART};
+    use extractous_core::large::{bytes, noise, zip_archive, END, LARGE_PART};
+    use zip::CompressionMethod::Deflated;
 
     let file = LargeFile::written("large.pages", |out| {
-        package(
+        zip_archive(
             out,
             vec![
-                (HISTORY.0, bytes(HISTORY.1)),
+                (HISTORY.0, Deflated, bytes(HISTORY.1)),
                 (
                     "index.xml",
+                    Deflated,
                     Box::new(|out| {
                         out.write_all(
                             br#"<?xml version="1.0"?>

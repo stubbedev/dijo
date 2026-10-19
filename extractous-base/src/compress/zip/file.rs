@@ -391,6 +391,15 @@ impl<'a> ZipFile<'a> {
             .map(|read| read.expect("memory takes what is decoded"))
     }
 
+    /// [`ZipFile::read`] as far as the first `length` bytes, which are
+    /// [`Decoded::Oversized`] where the entry decodes into more.
+    pub fn read_head(&self, entry: &ZipEntry, length: u64) -> Option<Content<'a>> {
+        self.read_into(entry, Pages::IN_MEMORY, |_, _| {
+            Decoding::in_memory_up_to(length)
+        })
+        .map(|read| read.expect("memory takes what is decoded"))
+    }
+
     /// [`ZipFile::read`] as a document embedded in the archive, whose pages are `pages`: stored
     /// data in place, decoded data spooled, or why it cannot be spooled.
     pub fn spool(

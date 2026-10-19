@@ -298,6 +298,13 @@ impl<'a> ZipStream<'a> {
             .map(|read| read.expect("memory takes what is decoded"))
     }
 
+    /// [`ZipStream::content`] as far as the first `length` bytes, which are
+    /// [`Decoded::Oversized`] where the entry decodes into more.
+    pub fn content_head(&self, length: u64) -> Result<Content<'a>, Failure> {
+        self.content_into(Pages::IN_MEMORY, |_, _| Decoding::in_memory_up_to(length))
+            .map(|read| read.expect("memory takes what is decoded"))
+    }
+
     /// [`ZipStream::content`] as a document embedded in the archive, whose pages are `pages`:
     /// stored data in place, decoded data spooled, or why it cannot be spooled.
     pub fn spool(&self, pages: Pages<'a>) -> Result<Result<Spooled<'a>, Undecoded>, Failure> {

@@ -12,6 +12,7 @@ use crate::compress::zip::file::{ZipEntry, ZipFile};
 use crate::compress::zip::salvage::{salvage, Unsalvaged};
 use crate::compress::zip::stream::{Failure, ZipStream};
 use crate::compress::zip::Content;
+use crate::compress::MAX_DECODED;
 use crate::mime::archive::{self, Archive};
 use crate::mime::media_type::MediaType;
 use crate::xml::{self, Event, Flow, XMLNS};
@@ -167,7 +168,12 @@ impl IworkDocument {
     /// `IWORKDocumentType.detectType`: the document a content entry's root names.
     pub fn of(content: &[u8]) -> Option<Self> {
         let (namespace, local) = root_element(content)?;
-        match (namespace.as_str(), local.as_str()) {
+        Self::named(&namespace, &local)
+    }
+
+    /// The document a root element of `namespace` and `local` name names.
+    fn named(namespace: &str, local: &str) -> Option<Self> {
+        match (namespace, local) {
             ("http://developer.apple.com/namespaces/keynote2", "presentation") => {
                 Some(Self::Keynote)
             }
@@ -186,9 +192,27 @@ impl IworkDocument {
     }
 }
 
-/// The media type of the iWork 2008 document a content entry's root names.
-fn iwork_type(content: &[u8]) -> Option<MediaType> {
-    IworkDocument::of(content).map(|document| MediaType::named(document.media_type()))
+/// The bytes of a content entry its root element is first looked for in, doubled until the
+/// root is found or the entry is read whole.
+const ROOT_WINDOW: u64 = 8192;
+
+/// The media type of the iWork 2008 document the root of a content entry names, the entry
+/// decoded by `head` only as far as its root element, as `XmlRootExtractor` reads a stream:
+/// `head` decodes as far as the bytes it is given.
+fn iwork_type<'a>(head: impl Fn(u64) -> Option<Content<'a>>) -> Option<MediaType> {
+    let mut window = ROOT_WINDOW;
+    loop {
+        let head = head(window)?;
+        let cut = matches!(head, Content::Oversized(_)) && window < MAX_DECODED as u64;
+        match root_element(head.bytes()) {
+            Some((namespace, local)) => {
+                return IworkDocument::named(&namespace, &local)
+                    .map(|document| MediaType::named(document.media_type()));
+            }
+            None if cut => window *= 2,
+            None => return None,
+        }
+    }
 }
 
 /// `IWork18DocumentType.detectIfPossible`.
@@ -232,8 +256,7 @@ fn iwork_file(zip: &ZipFile<'_>) -> Option<MediaType> {
     for name in crate::java::hash_set_order(IWORK_CONTENT_ENTRIES) {
         let found = zip
             .entry(name)
-            .and_then(|entry| zip.read(entry))
-            .and_then(|content| iwork_type(content.bytes()));
+            .and_then(|entry| iwork_type(|window| zip.read_head(entry, window)));
         if found.is_some() {
             return found;
         }
@@ -510,7 +533,7 @@ impl Streaming {
             .get_or_insert_with(HashSet::new)
             .insert(name.to_owned());
         if IWORK_CONTENT_ENTRIES.contains(&name) {
-            if let Some(kind) = stream.content().ok().and_then(|c| iwork_type(c.bytes())) {
+            if let Some(kind) = iwork_type(|window| stream.content_head(window).ok()) {
                 return Ok(Some(kind));
             }
         }

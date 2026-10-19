@@ -310,7 +310,12 @@ impl Decoding<Counted> {
 impl Decoding<Vec<u8>> {
     /// The decoding of a stream into memory, up to [`MAX_DECODED`] bytes.
     pub fn in_memory() -> Self {
-        Self::new(Vec::new(), MAX_DECODED as u64)
+        Self::in_memory_up_to(MAX_DECODED as u64)
+    }
+
+    /// The decoding of a stream into memory, up to `limit` bytes.
+    pub fn in_memory_up_to(limit: u64) -> Self {
+        Self::new(Vec::new(), limit)
     }
 }
 
