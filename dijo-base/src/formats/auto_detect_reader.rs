@@ -1,10 +1,9 @@
 //! Tika's `AutoDetectReader`, as the parsers of text formats read through it: the charset
 //! detection of [`charset::detect`], told the document's content type; the whole input decoded,
-//! a piece at a time,
-//! with the detected charset's vendor superset by the JDK's decoders; and one U+FEFF dropped from
-//! the start of the text. That drops the byte order mark of UTF-8, UTF-16LE/BE and UTF-32LE/BE,
-//! which Java's decoders for those charsets keep as a character; Java's `UTF-16` decoder, named
-//! only by a declared charset, drops a byte order mark itself, so a second one goes too. A
+//! a piece at a time, with the detected charset's vendor superset; and the byte order mark
+//! dropped from the start of the text, once: a U+FEFF the text starts with, unless the decoder
+//! already read a byte order mark to set the byte order, as `UTF-16` does. Tika drops a second
+//! U+FEFF after the byte order mark `UTF-16` drops, losing a character of the text (#186). A
 //! declared charset the port does not decode is passed over ([`AutoDetectReader::difference`]).
 
 use std::ops::Range;
@@ -50,9 +49,9 @@ impl AutoDetectReader {
         (
             detection,
             Text {
+                started: pieces.dropped_bom(),
                 pieces,
                 paging: Paging::new(pages),
-                started: false,
             },
         )
     }
@@ -71,7 +70,7 @@ impl AutoDetectReader {
     }
 }
 
-/// The text of an `AutoDetectReader`, a piece at a time, without the one U+FEFF it drops.
+/// The text of an `AutoDetectReader`, a piece at a time, without its byte order mark.
 pub struct Text<'a> {
     pieces: Pieces<'a>,
     paging: Paging<'a>,
@@ -257,5 +256,15 @@ mod tests {
             read(b"\xEF\xBB\xBF\xEF\xBB\xBFplain text"),
             "\u{FEFF}plain text"
         );
+    }
+
+    /// A declared `UTF-16` drops its byte order mark once, keeping a U+FEFF after it, which
+    /// Tika drops as a second byte order mark (#186).
+    #[test]
+    fn drops_the_byte_order_mark_utf16_reads_once() {
+        let read =
+            |input: &[u8]| AutoDetectReader::read(input, Some("text/plain; charset=UTF-16")).text;
+        assert_eq!(read(b"\xFE\xFF\x00a\x00b"), "ab");
+        assert_eq!(read(b"\xFE\xFF\xFE\xFF\x00a\x00b"), "\u{FEFF}ab");
     }
 }
