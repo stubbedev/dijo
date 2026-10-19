@@ -128,7 +128,7 @@ mod tests {
             )
             .into_bytes()
         };
-        let count = bodies_past_limit(item(1_000_000).len());
+        let count = bodies_past_limit(item(0).len());
         let file = LargeFile::new(
             "large.rss",
             b"<?xml version='1.0'?><rss version='2.0'><channel>\n",
@@ -138,8 +138,8 @@ mod tests {
         );
         let mut items = 0u64;
         let metadata = file.extract_lines(FeedParser.name(), |line| {
-            if line.starts_with("Nyhed ") {
-                assert_eq!(line, format!("Nyhed {items}"));
+            if line.starts_with("\tNyhed ") {
+                assert_eq!(line, format!("\tNyhed {items}"));
                 items += 1;
             }
         });

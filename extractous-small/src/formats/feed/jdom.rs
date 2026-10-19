@@ -143,6 +143,10 @@ pub(super) fn build(
 /// `SAXHandler`'s state: the open elements, and the character data not yet added as a node,
 /// with whether it is CDATA, which JDOM decides as Xerces' events come; how deep the open
 /// elements are into one picked to be left out, if they are, and the one that last ended.
+///
+/// The white space after an element picked out is left out with it: it stands between the
+/// entries of a feed, in the feed or channel, whose own text ROME never reads, and keeping it
+/// would make the tree grow with the entries after all.
 #[derive(Default)]
 struct Builder {
     open: Vec<Element>,
@@ -152,6 +156,8 @@ struct Builder {
     in_cdata: bool,
     picking: Option<usize>,
     picked: Option<Element>,
+    /// Whether nothing has been added to the open element since an element of it was picked.
+    after_pick: bool,
 }
 
 impl Builder {
@@ -202,6 +208,7 @@ impl Builder {
     /// Adds a node to the open element; the document's own comments and instructions, outside
     /// the root, are not kept.
     fn add(&mut self, node: Node) {
+        self.after_pick = false;
         if let Some(element) = self.open.last_mut() {
             element.content.push(node);
         }
@@ -223,7 +230,7 @@ impl Builder {
         }
         if self.previous_cdata {
             self.add(Node::CData(data));
-        } else if !data.is_empty() {
+        } else if !data.is_empty() && !(self.after_pick && is_white_space(&data)) {
             self.add(Node::Text(data));
         }
         self.previous_cdata = self.in_cdata;
@@ -261,6 +268,7 @@ impl Builder {
             })
             .collect();
         self.flush();
+        self.after_pick = false;
         self.open.push(Element {
             namespace,
             name: name.local_name().to_owned(),
@@ -278,6 +286,7 @@ impl Builder {
             Some(0) => {
                 self.picking = None;
                 self.picked = Some(element);
+                self.after_pick = true;
                 return;
             }
             Some(depth) => *depth -= 1,
@@ -288,6 +297,12 @@ impl Builder {
             None => self.root = Some(element),
         }
     }
+}
+
+/// Whether `text` is XML white space alone: spaces, tabs, line feeds and carriage returns.
+fn is_white_space(text: &str) -> bool {
+    text.bytes()
+        .all(|byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\r'))
 }
 
 /// The line separator JDOM's raw `Format` writes for a line feed in text.
