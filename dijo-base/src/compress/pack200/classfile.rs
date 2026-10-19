@@ -341,3 +341,159 @@ impl<'c> Out<'c> {
         Ok(())
     }
 }
+
+/// What a class file is rebuilt from.
+struct Builder<'s> {
+    pool: &'s Pool,
+    definitions: &'s Definitions,
+    class: &'s Class,
+}
+
+impl Builder<'_> {
+    /// Writes the class file after its constant pool, with an `InnerClasses` attribute of
+    /// `stored` last where it has one.
+    fn body(&self, out: &mut Out, stored: Option<&[Tuple]>) -> Result<()> {
+        let class = self.class;
+        out.u2(self.definitions.access(Context::Class, class.flags));
+        out.class(ClassRef::Pool(class.this))?;
+        match class.super_class {
+            Some(super_class) => out.class(ClassRef::Pool(super_class))?,
+            None => out.u2(0),
+        }
+        out.count(class.interfaces.len(), "interfaces")?;
+        for &interface in &class.interfaces {
+            out.class(ClassRef::Pool(interface))?;
+        }
+        out.count(class.fields.len(), "fields")?;
+        for field in &class.fields {
+            self.member(out, field, Context::Field)?;
+        }
+        out.count(class.methods.len(), "methods")?;
+        for method in &class.methods {
+            self.member(out, method, Context::Method)?;
+        }
+        out.count(
+            class.attributes.len() + usize::from(stored.is_some()),
+            "class attributes",
+        )?;
+        for attribute in &class.attributes {
+            self.attribute(out, attribute, None)?;
+        }
+        if let Some(stored) = stored {
+            self.inner_classes(out, stored)?;
+        }
+        Ok(())
+    }
+
+    /// Writes the field or method `member`, of `context`.
+    fn member(&self, out: &mut Out, member: &Member, context: Context) -> Result<()> {
+        let (name, signature) = self.pool.descrs[member.descr];
+        out.u2(self.definitions.access(context, member.flags));
+        out.utf8(Text::Pool(name))?;
+        out.utf8(self.pool.signature_text(signature))?;
+        out.count(member.attributes.len(), "attributes of a member")?;
+        for attribute in &member.attributes {
+            if attribute.special == Special::Code {
+                let code = member
+                    .code
+                    .as_ref()
+                    .ok_or_else(|| malformed("a Code attribute without its code bands"))?;
+                self.code(out, attribute, code, member)?;
+            } else {
+                self.attribute(out, attribute, None)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the attribute `attribute` as its layout stores it, its bytecode indexes those
+    /// of the code `bcis` renumbers, if it is an attribute of a code.
+    fn attribute(&self, out: &mut Out, attribute: &Use, bcis: Option<&Bcis>) -> Result<()> {
+        let name = self.pool.text(&attribute.name);
+        match attribute.special {
+            Special::SourceFile
+                if matches!(attribute.pieces.as_slice(), [Piece::Ref { key: None, .. }]) =>
+            {
+                let file = self.pool.text(&self.source_file());
+                out.attribute(name, |out| out.utf8(file))
+            }
+            Special::Plain | Special::SourceFile => {
+                out.attribute(name, |out| pieces(out, &attribute.pieces, bcis))
+            }
+            Special::Code | Special::InnerClasses | Special::Version => Err(malformed(format!(
+                "a {} attribute where it cannot be written",
+                String::from_utf16_lossy(&attribute.name)
+            ))),
+        }
+    }
+
+    /// The name of the source file a null `SourceFile` stands for: the simple name of the
+    /// class up to its first character no greater than `$`, followed by `.java`, as
+    /// commons-compress's `ClassBands` derives it.
+    fn source_file(&self) -> Vec<u16> {
+        let name = self.pool.class_name(&ClassRef::Pool(self.class.this));
+        let start = name
+            .iter()
+            .rposition(|&c| c == u16::from(b'/') || c == u16::from(b'.'))
+            .map_or(0, |at| at + 1);
+        let simple = &name[start..];
+        let end = simple
+            .iter()
+            .position(|&c| c <= u16::from(b'$'))
+            .unwrap_or(simple.len());
+        let mut file = simple[..end].to_vec();
+        file.extend(".java".encode_utf16());
+        file
+    }
+
+    /// Writes the `InnerClasses` attribute of the tuples `stored`.
+    fn inner_classes(&self, out: &mut Out, stored: &[Tuple]) -> Result<()> {
+        let name: Vec<u16> = "InnerClasses".encode_utf16().collect();
+        out.attribute(self.pool.text(&name), |out| {
+            out.count(stored.len(), "nested classes")?;
+            for tuple in stored {
+                let (this, outer, name) = tuple_keys(tuple, self.pool);
+                out.class(this)?;
+                out.reference(outer.map(Key::Class).as_ref(), 2)?;
+                out.reference(name.map(Key::Utf8).as_ref(), 2)?;
+                out.u2(tuple.flags);
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Writes the values `pieces` of an attribute, its bytecode indexes those of the code `bcis`
+/// renumbers (section 5.5.3): a 'P' element transmits a renumbered index, a 'PO' element the
+/// difference of its renumbered index from that of the element before it, and an 'O' element
+/// the difference of the renumbered index it reaches from that of the element before it.
+fn pieces(out: &mut Out, pieces: &[Piece], bcis: Option<&Bcis>) -> Result<()> {
+    let mut previous = 0i32;
+    for piece in pieces {
+        match piece {
+            Piece::Int { size, value } => out.sized(i64::from(*value), *size)?,
+            Piece::Ref { size, key } => out.reference(key.as_ref(), *size)?,
+            Piece::Bci { size, kind, value } => {
+                let bcis = bcis.ok_or_else(|| {
+                    malformed("a bytecode index in an attribute outside of a code")
+                })?;
+                let stored = match kind {
+                    IntKind::Plain => i64::from(*value),
+                    IntKind::Bci => {
+                        previous = *value;
+                        bcis.decode(previous)
+                    }
+                    IntKind::BciAfter => {
+                        previous = previous.wrapping_add(*value);
+                        bcis.decode(previous)
+                    }
+                    IntKind::Offset => {
+                        bcis.decode(previous.wrapping_add(*value)) - bcis.decode(previous)
+                    }
+                };
+                out.sized(stored, *size)?;
+            }
+        }
+    }
+    Ok(())
+}
