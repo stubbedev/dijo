@@ -359,11 +359,13 @@ fn reads_a_submission_id_poi_leaves_unread() {
     );
 }
 
-/// A stream that cannot be read and a directory named as a value of a multi-valued property
-/// are left out of the message, which is read without them, noting what POI reads otherwise
-/// (#186): a build with Tika hands it to Tika's path, one without warns of them.
+/// A stream that cannot be read is left out of the message, which is read without it, noting
+/// what POI reads otherwise (#186): a build with Tika hands it to Tika's path, one without
+/// warns of it. A directory of a multi-valued property is never one of its values, as its
+/// name, ending in `000D`, holds no decimal index: POI takes it for the property's length, and
+/// so does the port, leaving nothing out.
 #[test]
-fn leaves_out_unreadable_streams_and_directory_values() {
+fn leaves_out_unreadable_streams() {
     use crate::ole2::{write, Node, Storage};
     const SENDER: &str = "__substg1.0_0C1A001F";
     const KEYWORD: &str = "__substg1.0_3A54101F-0000000D";
@@ -398,22 +400,19 @@ fn leaves_out_unreadable_streams_and_directory_values() {
         left_out.contains(&format!("the stream {SENDER}, which cannot be read")),
         "{left_out}"
     );
-    assert!(
-        left_out.contains(&format!("the directory {KEYWORD}")),
-        "{left_out}"
-    );
+    assert!(!left_out.contains(KEYWORD), "{left_out}");
     let (_, difference) = extract(&file, read, &ParserConfigs::default()).unwrap();
     assert!(difference.is_some_and(|Difference(reason)| reason.contains(SENDER)));
 
     #[cfg(not(feature = "tika"))]
     {
-        let (text, metadata) = crate::Extractor::new()
+        let (_, metadata) = crate::Extractor::new()
             .extract_bytes_to_string(&data)
             .unwrap();
-        assert!(text.contains("Minutes"), "{text}");
+        assert_eq!(metadata["dc:title"], ["Minutes"]);
         let warnings = &metadata[crate::formats::embedded::EXCEPTION_WARNING];
         assert!(
-            warnings.iter().any(|warning| warning.contains(KEYWORD)),
+            warnings.iter().any(|warning| warning.contains(SENDER)),
             "{warnings:?}"
         );
     }

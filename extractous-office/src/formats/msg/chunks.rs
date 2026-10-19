@@ -159,8 +159,7 @@ pub(super) struct Group<'a> {
     /// The chunks in the order they were recorded.
     pub(super) chunks: Vec<Chunk<'a>>,
     /// What of the storage the port leaves out where POI reads it otherwise, each with why: a
-    /// stream that cannot be read, which POI may read, or log and leave out; and a directory
-    /// named as a value of a multi-valued property, which POI records as a value it never reads.
+    /// stream that cannot be read, which POI may read, or log and leave out.
     pub(super) left_out: Vec<String>,
 }
 
@@ -548,13 +547,10 @@ fn read_group<'a>(file: &Ole2<'a>, directory: EntryId, kind: GroupKind) -> Readi
                 if kind != Type::BINARY && !is_text {
                     continue;
                 }
-                if !is_document {
-                    group.left_out.push(format!(
-                        "the directory {name}, named as a value of a multi-valued property, \
-                         which POI records as a value it never reads"
-                    ));
-                    continue;
-                }
+                assert!(
+                    is_document,
+                    "a directory, named to end in 000D, has no decimal value index"
+                );
                 let Some(data) = group.read(file, entry) else {
                     continue;
                 };
