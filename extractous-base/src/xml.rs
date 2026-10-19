@@ -148,9 +148,19 @@ pub enum DocumentTypes {
 /// Parses `bytes` as one XML document, handing each start and end tag to `handler` until it
 /// asks to stop. An error is what Xerces would throw before the handler stopped it.
 pub fn parse(bytes: &[u8], handler: &mut dyn FnMut(Event<'_>) -> Flow) -> Result<()> {
+    parse_pages(bytes, Pages::IN_MEMORY, handler)
+}
+
+/// [`parse`] of `bytes` whose `pages` are released as the parse reads on: a mapped file that a
+/// parser of bounded memory reads.
+pub fn parse_pages(
+    bytes: &[u8],
+    pages: Pages<'_>,
+    handler: &mut dyn FnMut(Event<'_>) -> Flow,
+) -> Result<()> {
     parse_paged(
         bytes,
-        &Paging::new(Pages::IN_MEMORY),
+        &Paging::new(pages),
         DocumentTypes::Processed,
         handler,
     )

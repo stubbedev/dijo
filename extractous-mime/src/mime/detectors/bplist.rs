@@ -1,8 +1,9 @@
 //! Tika's `BPListDetector`: binary property lists, named by the keys of their root dictionary,
-//! the whole list parsed as dd-plist's `BinaryPropertyListParser` parses it. A list it rejects
-//! makes Tika's detection fail.
+//! the whole list checked as dd-plist's `BinaryPropertyListParser` parses it, read in place. A
+//! list it rejects makes Tika's detection fail.
 
-use crate::bplist::{self as binary, ListKind, Object};
+use crate::bplist::{self as binary, ListKind, Node};
+use crate::input::Pages;
 use crate::mime::media_type::MediaType;
 
 use super::Thrown;
@@ -13,12 +14,14 @@ pub(crate) fn detect(data: &[u8]) -> Result<Option<MediaType>, Thrown> {
     if data.len() < 6 || !data.starts_with(b"bplist") {
         return Ok(None);
     }
-    let root = binary::parse(data).map_err(|thrown| match thrown {
+    let thrown = |thrown| match thrown {
         binary::Thrown::Format(_) => Thrown::Io,
         binary::Thrown::Runtime(_) => Thrown::Runtime,
-    })?;
-    let kind = match root.as_deref() {
-        Some(Object::Dict(dict)) => dict.kind(),
+    };
+    let reader = binary::Reader::open(data, Pages::IN_MEMORY).map_err(thrown)?;
+    reader.validate().map_err(thrown)?;
+    let kind = match reader.node(reader.top()).map_err(thrown)? {
+        Node::Dict(pairs) => reader.kind(pairs).map_err(thrown)?,
         _ => ListKind::Plain,
     };
     Ok(Some(MediaType::named(kind.binary_type())))
