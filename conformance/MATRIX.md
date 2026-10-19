@@ -1,6 +1,6 @@
 # Conformance with Apache Tika
 
-Every test document of Apache Tika's parser modules, extracted natively and with the same Tika version on the JVM, OCR off on both sides. A file works when the native text and title match Tika's text with an F1 score of at least 0.95 over their tokens, or when one of our own parsers reads its format on purpose differently (subtitles, notebooks, FictionBook, Apple Mail, iWork 2013+). 1069 of 1094 files work or are empty on both sides.
+Every test document of Apache Tika's parser modules, extracted natively and with the same Tika version on the JVM, OCR off on both sides. A file works when the native text and title match Tika's text with an F1 score of at least 0.95 over their tokens, or when one of our own parsers reads its format on purpose differently (subtitles, notebooks, FictionBook, Apple Mail, iWork 2013+). 1052 of 1094 files work or are empty on both sides.
 
 | Media type | Files | Work | Differ | Fail | Files that differ or fail (F1) |
 |---|---|---|---|---|---|
@@ -20,9 +20,9 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/marc | 1 | 1 | 0 | 0 |  |
 | application/mbox | 7 | 7 | 0 | 0 |  |
 | application/msword | 41 | 41 | 0 | 0 |  |
-| application/onenote | 16 | 16 | 0 | 0 |  |
+| application/onenote | 16 | 8 | 8 | 0 | test-tika-4303-Chinese-notes.one (0.35), testOneNote.one (0.68), testOneNote1.one (0.51), testOneNote2.one (0.30), testOneNote2016.one (0.76), testOneNote3.one (0.25), testOneNote4.one (0.24), testOneNoteEmbeddedWordDoc.one (0.68) |
 | application/onix-message+xml | 2 | 2 | 0 | 0 |  |
-| application/pdf | 54 | 54 | 0 | 0 |  |
+| application/pdf | 54 | 53 | 1 | 0 | testPDF_multiFormatEmbFiles.pdf (0.60) |
 | application/pkcs7-mime | 13 | 13 | 0 | 0 |  |
 | application/pkcs7-signature | 5 | 5 | 0 | 0 |  |
 | application/rdf+xml | 8 | 7 | 1 | 0 | TIKA-4442.xmp (0.94) |
@@ -52,8 +52,9 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/vnd.java.hprof | 1 | 1 | 0 | 0 |  |
 | application/vnd.java.hprof.text | 1 | 1 | 0 | 0 |  |
 | application/vnd.lotus-1-2-3 | 5 | 5 | 0 | 0 |  |
+| application/vnd.mif | 2 | 2 | 0 | 0 |  |
 | application/vnd.ms-cab-compressed | 1 | 1 | 0 | 0 |  |
-| application/vnd.ms-excel | 28 | 28 | 0 | 0 |  |
+| application/vnd.ms-excel | 28 | 26 | 2 | 0 | testEXCEL_extra_metadata.xls (0.47), testEXCEL_hyperlinks.xls (0.79) |
 | application/vnd.ms-excel.sheet.4 | 1 | 1 | 0 | 0 |  |
 | application/vnd.ms-excel.sheet.binary.macroenabled.12 | 5 | 5 | 0 | 0 |  |
 | application/vnd.ms-excel.sheet.macroenabled.12 | 1 | 1 | 0 | 0 |  |
@@ -82,7 +83,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/vnd.ms-xpsdocument | 6 | 6 | 0 | 0 |  |
 | application/vnd.oasis.opendocument.base | 1 | 1 | 0 | 0 |  |
 | application/vnd.oasis.opendocument.flat.presentation | 1 | 1 | 0 | 0 |  |
-| application/vnd.oasis.opendocument.flat.spreadsheet | 2 | 2 | 0 | 0 |  |
+| application/vnd.oasis.opendocument.flat.spreadsheet | 2 | 1 | 1 | 0 | testFODS_embeddedChart.fods (0.75) |
 | application/vnd.oasis.opendocument.flat.text | 1 | 1 | 0 | 0 |  |
 | application/vnd.oasis.opendocument.formula | 1 | 1 | 0 | 0 |  |
 | application/vnd.oasis.opendocument.graphics | 1 | 1 | 0 | 0 |  |
@@ -92,7 +93,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/vnd.openofficeorg.autotext | 1 | 1 | 0 | 0 |  |
 | application/vnd.openofficeorg.extension | 1 | 1 | 0 | 0 |  |
 | application/vnd.openxmlformats-officedocument | 1 | 1 | 0 | 0 |  |
-| application/vnd.openxmlformats-officedocument.presentationml.presentation | 28 | 28 | 0 | 0 |  |
+| application/vnd.openxmlformats-officedocument.presentationml.presentation | 28 | 27 | 1 | 0 | testPPT_autodate.pptx (0.87) |
 | application/vnd.openxmlformats-officedocument.presentationml.slideshow | 1 | 1 | 0 | 0 |  |
 | application/vnd.openxmlformats-officedocument.spreadsheetml.sheet | 31 | 30 | 1 | 0 | testXLSX_Thumbnail.xlsx (0.51) |
 | application/vnd.openxmlformats-officedocument.spreadsheetml.template | 1 | 1 | 0 | 0 |  |
@@ -146,7 +147,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/x-isatab | 2 | 2 | 0 | 0 |  |
 | application/x-isatab-assay | 5 | 5 | 0 | 0 |  |
 | application/x-isatab-investigation | 1 | 1 | 0 | 0 |  |
-| application/x-itunes-ipa | 1 | 1 | 0 | 0 |  |
+| application/x-itunes-ipa | 1 | 0 | 1 | 0 | testIPA.ipa (0.94) |
 | application/x-java-jnilib | 1 | 1 | 0 | 0 |  |
 | application/x-java-keystore | 1 | 1 | 0 | 0 |  |
 | application/x-java-pack200 | 1 | 1 | 0 | 0 |  |
@@ -155,7 +156,6 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/x-mach-o-universal | 2 | 2 | 0 | 0 |  |
 | application/x-matlab-data | 2 | 2 | 0 | 0 |  |
 | application/x-matroska | 1 | 1 | 0 | 0 |  |
-| application/x-mif | 2 | 2 | 0 | 0 |  |
 | application/x-ms-asx | 1 | 1 | 0 | 0 |  |
 | application/x-ms-nls | 2 | 2 | 0 | 0 |  |
 | application/x-ms-owner | 1 | 1 | 0 | 0 |  |
@@ -169,7 +169,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/x-netcdf | 1 | 1 | 0 | 0 |  |
 | application/x-pkcs12 | 2 | 2 | 0 | 0 |  |
 | application/x-prt | 2 | 2 | 0 | 0 |  |
-| application/x-quattro-pro | 2 | 2 | 0 | 0 |  |
+| application/x-quattro-pro | 6 | 6 | 0 | 0 |  |
 | application/x-rar-compressed | 1 | 1 | 0 | 0 |  |
 | application/x-sas | 2 | 2 | 0 | 0 |  |
 | application/x-sas-data | 2 | 2 | 0 | 0 |  |
@@ -193,7 +193,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/x-xliff+xml | 2 | 2 | 0 | 0 |  |
 | application/xhtml+xml | 4 | 4 | 0 | 0 |  |
 | application/xml | 19 | 19 | 0 | 0 |  |
-| application/zip | 14 | 14 | 0 | 0 |  |
+| application/zip | 15 | 13 | 2 | 0 | test-documents-spanned.z01 (0.87), testZipEncrypted.zip (0.80) |
 | application/zlib | 4 | 4 | 0 | 0 |  |
 | application/zstd | 1 | 1 | 0 | 0 |  |
 | audio/ac3 | 1 | 1 | 0 | 0 |  |
@@ -245,7 +245,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | image/x-raw-pentax | 2 | 0 | 2 | 0 | testPEF.pef (0.67), testPEF.pef (0.67) |
 | image/x-raw-sony | 2 | 0 | 2 | 0 | testARW.arw (0.67), testARW.arw (0.67) |
 | message/news | 1 | 1 | 0 | 0 |  |
-| message/rfc822 | 26 | 26 | 0 | 0 |  |
+| message/rfc822 | 26 | 25 | 1 | 0 | testRFC822_encrypted_zip (0.95) |
 | message/x-emlx | 3 | 3 | 0 | 0 |  |
 | model/e57 | 1 | 1 | 0 | 0 |  |
 | model/vnd.dwf | 1 | 1 | 0 | 0 |  |
@@ -270,7 +270,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | text/x-matlab | 3 | 3 | 0 | 0 |  |
 | text/x-robots | 2 | 2 | 0 | 0 |  |
 | text/x-vcalendar | 1 | 1 | 0 | 0 |  |
-| undetected | 35 | 35 | 0 | 0 |  |
+| undetected | 30 | 30 | 0 | 0 |  |
 | video/mp4 | 7 | 7 | 0 | 0 |  |
 | video/quicktime | 2 | 2 | 0 | 0 |  |
 | video/webm | 2 | 2 | 0 | 0 |  |
