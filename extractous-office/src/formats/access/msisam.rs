@@ -203,14 +203,20 @@ mod tests {
         assert!(Msisam::encodes(14) && !Msisam::encodes(15) && !Msisam::encodes(0));
     }
 
-    /// The old encryption's key is the Jet key the salt makes, hashed with the password region
-    /// and the engine name.
+    /// The old encryption's key is the Jet key the salt makes, hashed with every other byte of
+    /// the password region, which runs on over the header's date, here the salt, whose bytes
+    /// make a date of no whole days and so no mask, then with the engine name.
     #[test]
     fn makes_the_old_key_from_the_salt() {
         let root = header(0);
+        assert_eq!(password_mask(&root), [0; 4]);
         let codec = Msisam::open(&root, "ignored").unwrap();
         let mut expected = [1, 2, 3, 4];
-        hash_salt(&mut expected, &[0; SIZE_PASSWORD]);
+        let region: Vec<u8> = (0..SIZE_PASSWORD)
+            .map(|at| root[OFFSET_PASSWORD + 2 * at])
+            .collect();
+        assert_eq!(&region[24..28], [1, 3, 5, 7]);
+        hash_salt(&mut expected, &region);
         hash_salt(&mut expected, b"MSISAM Database");
         assert_eq!(codec.key, expected);
         assert_eq!(codec.number_at, 0);
