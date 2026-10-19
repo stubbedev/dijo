@@ -328,7 +328,7 @@ pub mod tests {
             files(&encrypted, Some("wrong")),
             Err(Undecoded::BadPassword)
         );
-        assert!(!files(&encrypted, Some("dijo"))
+        assert!(!files(&encrypted, Some("extractous"))
             .and_then(Limited::whole)
             .unwrap()
             .is_empty());

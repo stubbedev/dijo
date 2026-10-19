@@ -1,7 +1,7 @@
 use dijo_core::{Error, Extractor, Password};
 use test_case::test_case;
 
-const PASSWORD: &str = "dijo";
+const PASSWORD: &str = "extractous";
 
 fn encrypted(name: &str) -> String {
     format!("../test_files/documents/encrypted/{name}")

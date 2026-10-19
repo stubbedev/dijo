@@ -61,7 +61,7 @@ fn encrypted_documents_need_the_password_header() {
 
     let unlocked = server.post_file(
         "/extract",
-        &[("X-Dijo-Password", "dijo")],
+        &[("X-Dijo-Password", "extractous")],
         "encrypted/password.docx",
     );
     assert_eq!(unlocked.status, 200);
@@ -266,7 +266,7 @@ fn the_cache_answers_repeated_uploads() {
 
     let with_password = server.post_file(
         "/extract",
-        &[("X-Dijo-Password", "dijo")],
+        &[("X-Dijo-Password", "extractous")],
         "encrypted/password.docx",
     );
     assert_eq!(with_password.status, 200);
@@ -309,7 +309,7 @@ fn worker_processes_serve_extractions() {
     assert_eq!(locked.status, 422);
     let unlocked = server.post_file(
         "/extract",
-        &[("X-Dijo-Password", "dijo")],
+        &[("X-Dijo-Password", "extractous")],
         "encrypted/password.docx",
     );
     assert!(unlocked.text().contains("Call me Ishmael"));

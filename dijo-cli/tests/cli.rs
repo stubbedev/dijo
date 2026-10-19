@@ -678,7 +678,7 @@ fn an_encrypted_archive_entry_leaves_the_rest_extracted() {
 fn password_file_decrypts_without_leaking_the_password() {
     let scratch = Scratch::new("passwords");
     let password_file = scratch.0.join("passwords");
-    fs::write(&password_file, "not-it\ndijo\n").unwrap();
+    fs::write(&password_file, "not-it\nextractous\n").unwrap();
     let output = dijo(&[
         "--format",
         "json",
