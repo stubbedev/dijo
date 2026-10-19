@@ -497,3 +497,120 @@ fn pieces(out: &mut Out, pieces: &[Piece], bcis: Option<&Bcis>) -> Result<()> {
     }
     Ok(())
 }
+
+/// The instruction boundaries of a code, by which its bytecode indexes are renumbered
+/// (section 5.5.3).
+struct Bcis {
+    /// The byte offset of each boundary: the start of each instruction, the second
+    /// instruction of each `aload_0_*` form too, and the end of the code last.
+    boundaries: Vec<usize>,
+}
+
+impl Bcis {
+    /// The bytecode index the renumbered index `renumbered` stands for: the boundaries are
+    /// numbered first, then the bytes inside instructions in their order; negative numbers and
+    /// those past the bytes stand for themselves.
+    fn decode(&self, renumbered: i32) -> i64 {
+        let number = i64::from(renumbered);
+        let count = self.boundaries.len();
+        let Ok(at) = usize::try_from(renumbered) else {
+            return number;
+        };
+        if at < count {
+            return self.boundaries[at] as i64;
+        }
+        let mut inside = at - count;
+        for pair in self.boundaries.windows(2) {
+            let bytes = pair[1] - pair[0] - 1;
+            if inside < bytes {
+                return (pair[0] + 1 + inside) as i64;
+            }
+            inside -= bytes;
+        }
+        number
+    }
+}
+
+/// The real opcode of the packed opcode `opcode`, and whether `aload_0` precedes it.
+fn expand(opcode: u8) -> (bool, u8) {
+    match opcode {
+        202..=208 => (false, opcode - 202 + 178),
+        209..=215 => (true, opcode - 209 + 178),
+        216..=222 => (false, opcode - 216 + 178),
+        223..=229 => (true, opcode - 223 + 178),
+        230..=232 => (false, 183),
+        233..=235 => (false, 18),
+        236..=238 => (false, 19),
+        239 => (false, 20),
+        _ => (false, opcode),
+    }
+}
+
+/// Whether `opcode` is an instruction of a single byte.
+fn is_simple(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        0..=15 | 26..=53 | 59..=131 | 133..=152 | 172..=177 | 190 | 191 | 194 | 195
+    )
+}
+
+/// The bytes the switch at the byte offset `at` pads its operands with.
+fn padding(at: usize) -> usize {
+    (4 - (at + 1) % 4) % 4
+}
+
+/// The length in bytes of `instruction`, at the byte offset `at`, as [`Writer::instruction`]
+/// writes it.
+fn length(instruction: &Instruction, at: usize) -> Result<usize> {
+    let (aload, opcode) = expand(instruction.opcode);
+    if instruction.wide {
+        return Ok(if opcode == 132 { 6 } else { 4 });
+    }
+    let length = match (opcode, &instruction.operand) {
+        (170, Operand::TableSwitch { labels, .. }) => 13 + padding(at) + 4 * labels.len(),
+        (171, Operand::LookupSwitch { cases, .. }) => 9 + padding(at) + 8 * cases.len(),
+        (253, Operand::RefEscape { size, .. }) => *size as usize,
+        (254, Operand::ByteEscape(bytes)) => bytes.len(),
+        (16 | 18 | 21..=25 | 54..=58 | 169 | 188, _) => 2,
+        (17 | 19 | 20 | 132 | 153..=168 | 178..=184 | 187 | 189 | 192 | 193 | 198 | 199, _) => 3,
+        (197, _) => 4,
+        (185 | 200 | 201, _) => 5,
+        _ => 1,
+    };
+    Ok(length + usize::from(aload))
+}
+
+/// The argument slots of the method descriptor `descriptor`: two for each `long` and
+/// `double`, one for each other argument.
+fn argument_slots(descriptor: &[u16]) -> Result<usize> {
+    let bad = || {
+        malformed(format!(
+            "the method descriptor {}",
+            String::from_utf16_lossy(descriptor)
+        ))
+    };
+    let mut chars = descriptor.iter().map(|&c| u8::try_from(c).unwrap_or(0));
+    if chars.next() != Some(b'(') {
+        return Err(bad());
+    }
+    let mut slots = 0;
+    loop {
+        let mut c = chars.next().ok_or_else(bad)?;
+        if c == b')' {
+            return Ok(slots);
+        }
+        let array = c == b'[';
+        while c == b'[' {
+            c = chars.next().ok_or_else(bad)?;
+        }
+        slots += match c {
+            b'J' | b'D' if !array => 2,
+            b'B' | b'C' | b'D' | b'F' | b'I' | b'J' | b'S' | b'Z' => 1,
+            b'L' => {
+                chars.by_ref().find(|&c| c == b';').ok_or_else(bad)?;
+                1
+            }
+            _ => return Err(bad()),
+        };
+    }
+}
