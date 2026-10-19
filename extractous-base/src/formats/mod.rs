@@ -14,7 +14,6 @@ pub mod jdk_zip;
 pub mod list_numbering;
 pub mod metadata;
 pub mod ole10_native;
-#[cfg(any(test, feature = "testing"))]
 pub mod secure;
 pub mod thrown;
 pub mod wmf_placeable;
