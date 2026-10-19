@@ -33,8 +33,10 @@ pub(super) struct Property {
     pub(super) id: i32,
     /// Whether POI knows the property, which it then keeps one value of.
     known: bool,
-    /// `getActualType`.
+    /// `getActualType`, without the flag of a multi-valued type.
     pub(super) kind: Type,
+    /// Whether the property is multi-valued, its values kept in chunks of their own.
+    pub(super) multi: bool,
     pub(super) value: Value,
 }
 
@@ -112,6 +114,7 @@ pub(super) fn read_properties(data: &[u8], message: Option<bool>) -> PropertySet
             id,
             known: known_type.is_some(),
             kind,
+            multi,
             value,
         };
         match set
@@ -135,7 +138,8 @@ fn take(rest: &mut &[u8], length: usize) -> Vec<u8> {
     data
 }
 
-fn value(kind: Type, data: &[u8]) -> Value {
+/// The value of a property of the fixed-length `kind`, of its bytes.
+pub(super) fn value(kind: Type, data: &[u8]) -> Value {
     let short = || i16::from_le_bytes([data[0], data[1]]);
     let int = || i32::from_le_bytes(data[..4].try_into().expect("four bytes"));
     let long = || i64::from_le_bytes(data[..8].try_into().expect("eight bytes"));

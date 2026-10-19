@@ -14,8 +14,9 @@
 //! document extractor records it. What the port does not read is left unread: strings and
 //! headers in charsets the native decoders do not decode, a body the native parsers do not
 //! read. The macros follow when asked for. A stream that cannot be read, and a directory named
-//! as a value of a multi-valued property, are left out with a warning, since POI reads them
-//! otherwise.
+//! as a value of a multi-valued property, are left out, and a stream whose chain ends before its
+//! size read as far as it goes, with a warning, since POI reads them otherwise; see `chunks`
+//! for the multi-valued properties the port reads where POI does not.
 
 mod chunks;
 pub(super) mod extractor;

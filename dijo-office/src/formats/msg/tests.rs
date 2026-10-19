@@ -202,12 +202,11 @@ fn reads_a_submission_id_poi_leaves_unread() {
     );
 }
 
-/// A stream that cannot be read is left out of the message, which is read without it, noting what
-/// POI reads otherwise (#186) in a warning. A directory of a multi-valued property is never one of
-/// its values, as its name, ending in `000D`, holds no decimal index: POI takes it for the
-/// property's length, and so does the port, leaving nothing out.
+/// A stream whose chain ends before its size is read as far as it goes, where POI leaves it out,
+/// noting the difference (#186) in a warning. A directory named as a value of a multi-valued
+/// property, which is none, is left out with a warning, where POI records a chunk of no value.
 #[test]
-fn leaves_out_unreadable_streams() {
+fn reads_streams_as_far_as_their_chains_go() {
     use crate::ole2::{write, Node, Storage};
     const SENDER: &str = "__substg1.0_0C1A001F";
     const KEYWORD: &str = "__substg1.0_3A54101F-0000000D";
@@ -235,26 +234,136 @@ fn leaves_out_unreadable_streams() {
 
     let file = Ole2::open(&data).unwrap();
     let read = chunks::Message::read(&file, file.root(), false).unwrap();
-    assert!(read.main.all(0x0C1A).next().is_none());
-    assert!(read.main.all(0x3A54).next().is_none());
-    let left_out = read.left_out().unwrap();
-    assert!(
-        left_out.contains(&format!("the stream {SENDER}, which cannot be read")),
-        "{left_out}"
+    assert_eq!(
+        read.main.string(0x0C1A).map(|text| text.value.as_str()),
+        Some("Ann")
     );
-    assert!(!left_out.contains(KEYWORD), "{left_out}");
+    assert!(read.main.all(0x3A54).next().is_none());
+    let read_otherwise = read.read_otherwise().unwrap();
+    for what in [
+        format!("the stream {SENDER}, whose chain ends before its size"),
+        format!("the directory {KEYWORD}"),
+    ] {
+        assert!(read_otherwise.contains(&what), "{read_otherwise}");
+    }
     let (_, difference) = extract(&file, read, &ParserConfigs::default()).unwrap();
     assert!(difference.is_some_and(|Difference(reason)| reason.contains(SENDER)));
 
-    {
-        let (_, metadata) = crate::Extractor::new()
-            .extract_bytes_to_string(&data)
-            .unwrap();
-        assert_eq!(metadata["dc:title"], ["Minutes"]);
-        let warnings = &metadata[crate::formats::embedded::EXCEPTION_WARNING];
-        assert!(
-            warnings.iter().any(|warning| warning.contains(SENDER)),
-            "{warnings:?}"
-        );
+    let (_, metadata) = crate::Extractor::new()
+        .extract_bytes_to_string(&data)
+        .unwrap();
+    assert_eq!(metadata["dc:title"], ["Minutes"]);
+    assert_eq!(metadata["dc:creator"], ["Ann"]);
+    let warnings = &metadata[crate::formats::embedded::EXCEPTION_WARNING];
+    assert!(
+        warnings.iter().any(|warning| warning.contains(SENDER)),
+        "{warnings:?}"
+    );
+}
+
+/// A stream whose chain is whole is read with nothing noted.
+#[test]
+fn notes_nothing_of_whole_streams() {
+    let mut message = message_of_a_bad_chunk_name();
+    message
+        .entries
+        .retain(|(name, _)| *name != units("__substg1.0_003700"));
+    let data = crate::ole2::write(&message).unwrap();
+    let file = Ole2::open(&data).unwrap();
+    let read = chunks::Message::read(&file, file.root(), false).unwrap();
+    assert_eq!(read.read_otherwise(), None);
+}
+
+/// A message of the multi-valued named properties `PidLidCategories`, of the public strings,
+/// holding `categories` in streams of their own, and `PidLidNonSendToTrackStatus`, of the
+/// common properties, holding `statuses` in one stream.
+fn message_of_categories(categories: &[&str], statuses: &[i32]) -> Vec<u8> {
+    use crate::ole2::{write, Node, Storage};
+    let mut entries = vec![(
+        units("__substg1.0_0037001F"),
+        Node::Owned(unicode("Minutes")),
+    )];
+    let mut properties = vec![0; 32];
+    for (kind, id) in [(0x101Fu16, 0x8000u16), (0x1003, 0x8001)] {
+        properties.extend(kind.to_le_bytes());
+        properties.extend(id.to_le_bytes());
+        properties.extend([6, 0, 0, 0]);
+        properties.extend([0; 8]);
     }
+    entries.push((units("__properties_version1.0"), Node::Owned(properties)));
+    let mut lengths = Vec::new();
+    for (index, category) in categories.iter().enumerate() {
+        let value = unicode(&format!("{category}\0"));
+        lengths.extend((value.len() as u32).to_le_bytes());
+        entries.push((
+            units(&format!("__substg1.0_8000101F-{index:08X}")),
+            Node::Owned(value),
+        ));
+    }
+    entries.push((units("__substg1.0_8000101F"), Node::Owned(lengths)));
+    let values: Vec<u8> = statuses.iter().flat_map(|n| n.to_le_bytes()).collect();
+    entries.push((units("__substg1.0_80011003"), Node::Owned(values)));
+    let common = vec![
+        0x08, 0x20, 0x06, 0x00, 0, 0, 0, 0, 0xC0, 0, 0, 0, 0, 0, 0, 0x46,
+    ];
+    let mut named = vec![
+        (units("__substg1.0_00020102"), Node::Owned(common)),
+        (units("__substg1.0_00040102"), Node::Owned(Vec::new())),
+    ];
+    let mut entry_stream = Vec::new();
+    for (property_index, (long_id, guid_index)) in
+        [(0x9000u32, 2u16), (0x8543, 3)].into_iter().enumerate()
+    {
+        let mut entry = long_id.to_le_bytes().to_vec();
+        entry.extend((guid_index << 1).to_le_bytes());
+        entry.extend((property_index as u16).to_le_bytes());
+        let stream = 0x1000 + (long_id ^ (u32::from(guid_index) << 1)) % 0x1F;
+        named.push((
+            units(&format!("__substg1.0_{stream:04X}0102")),
+            Node::Owned(entry.clone()),
+        ));
+        entry_stream.extend(entry);
+    }
+    named.push((units("__substg1.0_00030102"), Node::Owned(entry_stream)));
+    entries.push((
+        units("__nameid_version1.0"),
+        Node::Storage(Storage {
+            class_id: [0; 16],
+            entries: named,
+        }),
+    ));
+    write(&Storage {
+        class_id: [0; 16],
+        entries,
+    })
+    .unwrap()
+}
+
+/// The values of multi-valued named properties are written, each of its own: strings in the
+/// order of their indexes, read as the hexadecimal numbers they are, past the tenth, and
+/// integers kept in one stream (#186). Tika writes none of them.
+#[test]
+fn writes_each_value_of_multi_valued_named_properties() {
+    let categories: Vec<String> = (0..12).map(|n| format!("Kategori {n}")).collect();
+    let categories: Vec<&str> = categories.iter().map(String::as_str).collect();
+    let data = message_of_categories(&categories, &[3, 0, 7]);
+    let (_, metadata) = crate::Extractor::new()
+        .extract_bytes_to_string(&data)
+        .unwrap();
+    assert_eq!(metadata["mapi:property:PidLidCategories"], categories);
+    assert_eq!(
+        metadata["mapi:property:PidLidNonSendToTrackStatus"],
+        ["3", "0", "7"]
+    );
+}
+
+/// A message of no values of its multi-valued named properties writes none of them.
+#[test]
+fn writes_no_multi_valued_named_property_without_values() {
+    let data = message_of_categories(&[], &[]);
+    let (_, metadata) = crate::Extractor::new()
+        .extract_bytes_to_string(&data)
+        .unwrap();
+    assert!(!metadata.contains_key("mapi:property:PidLidCategories"));
+    assert!(!metadata.contains_key("mapi:property:PidLidNonSendToTrackStatus"));
 }
