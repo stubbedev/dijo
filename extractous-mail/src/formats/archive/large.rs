@@ -3,7 +3,7 @@
 
 use std::io::{self, Write};
 
-use extractous_core::large::{bytes, zip_archive, Binary, LargeFile, BUDGET, END};
+use extractous_core::large::{bytes, zip_archive, Binary, LargeFile, END};
 
 use crate::compress::MAX_DECODED;
 use crate::input::MAX_READ_WHOLE;
