@@ -255,6 +255,11 @@ impl Drop for Paging<'_> {
 /// The most memory a [`Spool`] reserves on what a stream says it holds, which may be wrong: a
 /// document's own declaration costs no more than this until its bytes come.
 const SPOOL_RESERVED: u64 = 1 << 20;
+/// The most memory a [`Spool`] doubles to as its stream grows; past it, it grows straight to
+/// [`MAX_READ_WHOLE`]. Growing a buffer holds the old one beside the new while it copies, so
+/// doubling on to [`MAX_READ_WHOLE`] would hold half again as much at once; growing from no more
+/// than this holds an eighth more.
+const SPOOL_DOUBLED: u64 = MAX_READ_WHOLE / 8;
 
 /// Collects a stream of a document's bytes, as Tika's `CachingSource` caches a stream: in memory
 /// up to [`MAX_READ_WHOLE`], and beyond it in a temporary file of its own, mapped once complete,
@@ -309,10 +314,19 @@ impl Spool {
 
 impl Write for Spool {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.file.is_none()
-            && !self.large
-            && self.memory.len() as u64 + bytes.len() as u64 <= MAX_READ_WHOLE
-        {
+        let held = self.memory.len() as u64 + bytes.len() as u64;
+        if self.file.is_none() && !self.large && held <= MAX_READ_WHOLE {
+            if held > self.memory.capacity() as u64 {
+                let doubled = (2 * self.memory.capacity() as u64).max(held);
+                let capacity = if doubled <= SPOOL_DOUBLED {
+                    doubled
+                } else {
+                    MAX_READ_WHOLE
+                };
+                self.memory.reserve_exact(
+                    usize::try_from(capacity).expect("at most MAX_READ_WHOLE") - self.memory.len(),
+                );
+            }
             self.memory.extend_from_slice(bytes);
             return Ok(bytes.len());
         }
@@ -379,6 +393,27 @@ mod tests {
         assert!(mapped.is_mapped());
         assert_eq!(mapped.len() as u64, MAX_READ_WHOLE + 1);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A stream of unknown length held in memory up to [`MAX_READ_WHOLE`] never holds more than
+    /// an eighth beyond it at once while its buffer grows.
+    #[test]
+    fn spools_in_memory_holding_at_most_an_eighth_more_while_growing() {
+        let piece = vec![7u8; 1 << 20];
+        let peak = crate::memory::within(u64::MAX, || {
+            let mut spool = Spool::new(None);
+            for _ in 0..MAX_READ_WHOLE / piece.len() as u64 {
+                spool.write_all(&piece).unwrap();
+            }
+            let spooled = spool.finish().unwrap();
+            assert!(!spooled.is_mapped());
+            assert_eq!(spooled.len() as u64, MAX_READ_WHOLE);
+            crate::memory::peak().unwrap()
+        });
+        assert!(
+            peak <= MAX_READ_WHOLE + SPOOL_DOUBLED,
+            "the spool held {peak} bytes at its peak"
+        );
     }
 
     #[test]
