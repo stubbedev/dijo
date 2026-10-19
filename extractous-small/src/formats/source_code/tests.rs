@@ -172,7 +172,7 @@ impl Visitor for Recorder {
 #[test]
 fn highlights_source_code_too_large_to_read_whole_a_chunk_at_a_time() {
     let line = |index: u64| format!("int x{index} = {index}; // Linje\n").into_bytes();
-    let count = extractous_core::large::bodies_past_limit(line(1_000_000).len());
+    let count = extractous_core::large::bodies_past_limit(line(0).len());
     let file = extractous_core::large::LargeFile::new(
         "Large.java",
         b"/** @author Ane */\n",

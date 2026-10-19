@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn reads_part_files_too_large_to_read_whole() {
         let body = |index: u64| note(format!("Note {index}").as_bytes());
-        let count = extractous_core::large::bodies_past_limit(body(1_000_000).len());
+        let count = extractous_core::large::bodies_past_limit(body(0).len());
         let head = part(b"200803201052", b"Bolt", &[]);
         let file = extractous_core::large::LargeFile::new("long.prt", &head, count, body, b"");
         let mut notes = 0;

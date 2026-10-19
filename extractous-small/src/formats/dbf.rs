@@ -660,11 +660,12 @@ mod tests {
 
     /// The text of the row of record `number`.
     fn large_row(number: u64) -> String {
-        format!("Række {number}\t{}\t03/09/2024\tT", number % 1000)
+        format!("\tRække {number}\t{}\t03/09/2024\tT", number % 1000)
     }
 
     /// A table too large to read whole is read a record at a time, each row written as it is
-    /// read.
+    /// read, the first on the line of the column names, as Tika writes them in a `thead` of no
+    /// row.
     #[test]
     fn a_table_too_large_to_read_whole() {
         let mut head = table(0x03, &COLUMNS, &[]);
@@ -687,8 +688,8 @@ mod tests {
         let file = extractous_core::large::LargeFile::new("long.dbf", &head, count, body, b"");
         let mut rows = 0;
         let metadata = file.extract_lines(DbfParser.name(), |line| {
-            if line.starts_with("Række") {
-                assert_eq!(line, large_row(rows));
+            if let Some(at) = line.find("\tRække") {
+                assert_eq!(&line[at..], large_row(rows));
                 rows += 1;
             }
         });

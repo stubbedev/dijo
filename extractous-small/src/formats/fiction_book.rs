@@ -240,7 +240,7 @@ mod tests {
             ]
             .concat()
         };
-        let count = extractous_core::large::bodies_past_limit(paragraph(1_000_000).len());
+        let count = extractous_core::large::bodies_past_limit(paragraph(0).len());
         let file = extractous_core::large::LargeFile::new(
             "long.fb2",
             b"<?xml version=\"1.0\" encoding=\"windows-1251\"?>\r\n\
@@ -299,11 +299,10 @@ mod tests {
             "<body>",
         ] {
             let book = format!(
-                r#"<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">{body}"#
+                r#"<?xml version="1.0" encoding="UTF-8"?><FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">{body}"#
             );
-            assert!(crate::Extractor::new()
-                .extract_bytes_to_string(book.as_bytes())
-                .is_err());
+            let extracted = crate::Extractor::new().extract_bytes_to_string(book.as_bytes());
+            assert!(extracted.is_err(), "{body}: {extracted:?}");
         }
     }
 }

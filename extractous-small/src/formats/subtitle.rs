@@ -334,7 +334,7 @@ mod tests {
         let cue = |index: u64| {
             format!("{index}\n00:00:01,000 --> 00:00:02,000\nReplik {index}\n\n").into_bytes()
         };
-        let count = extractous_core::large::bodies_past_limit(cue(1_000_000).len());
+        let count = extractous_core::large::bodies_past_limit(cue(0).len());
         let file = extractous_core::large::LargeFile::new("long.srt", b"", count, cue, b"");
         let mut cues = 0;
         file.extract_lines(SubtitleParser.name(), |line| {

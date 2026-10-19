@@ -512,7 +512,7 @@ mod tests {
         let cell = |index: u64| {
             format!(r#"{{"cell_type": "markdown", "source": ["Linje {index}"]}},"#).into_bytes()
         };
-        let count = bodies_past_limit(cell(1_000_000).len());
+        let count = bodies_past_limit(cell(0).len());
         let file = LargeFile::new(
             "large.ipynb",
             br#"{"nbformat": 4, "cells": ["#,

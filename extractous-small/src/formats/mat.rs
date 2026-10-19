@@ -1432,9 +1432,8 @@ mod tests {
     }
 
     /// A file too large to read whole: an array of doubles past what is read whole, then a
-    /// compressed array that inflates past it, a character array behind it in the same
-    /// element, then a last variable. The data is passed over in place and as it inflates,
-    /// under a budget far below the file.
+    /// compressed array that inflates past it, then a last variable. The data is passed over
+    /// in place and as it inflates, under a budget far below the file.
     #[test]
     fn describes_variables_of_files_too_large_to_read_whole() {
         use extractous_core::large::{LargeFile, BUDGET};
@@ -1462,7 +1461,7 @@ mod tests {
             "pakket",
             &element(MI_DOUBLE, &vec![0; data_length as usize]),
         );
-        let compressed = element(MI_COMPRESSED, &zlib(&inflated));
+        let packed = compressed(&inflated);
         drop(inflated);
         let last = doubles("sidst", &[1, 1]);
         let file = LargeFile::written("large.mat", |out| {
@@ -1475,7 +1474,7 @@ mod tests {
                 out.write_all(&zeros[..count])?;
                 left -= count;
             }
-            out.write_all(&compressed)?;
+            out.write_all(&packed)?;
             out.write_all(&last)
         });
         assert!(std::fs::metadata(file.path()).unwrap().len() > MAX_READ_WHOLE);

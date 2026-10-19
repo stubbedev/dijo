@@ -617,7 +617,7 @@ mod large {
             )
             .into_bytes()
         };
-        let count = bodies_past_limit(unit(1_000_000).len());
+        let count = bodies_past_limit(unit(0).len());
         let file = LargeFile::new(
             "long.tmx",
             b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<tmx version=\"1.4\">\r\n\

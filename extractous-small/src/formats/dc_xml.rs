@@ -343,7 +343,7 @@ mod large {
     #[test]
     fn writes_utf16_documents_too_large_to_read_whole_as_they_are_read() {
         let row = |index: u64| utf16(&format!("<r>R\u{e6}kke {index}</r>\n"));
-        let count = bodies_past_limit(row(1_000_000).len());
+        let count = bodies_past_limit(row(0).len());
         let file = LargeFile::new(
             "long.xml",
             &utf16("\u{feff}<?xml version=\"1.0\" encoding=\"UTF-16\"?>\n<doc>\n"),

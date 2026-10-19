@@ -302,13 +302,17 @@ mod tests {
 > # end of TextFlow\n> # end of nothing\n# End of MIFFile\n";
 
     /// A MIF file too large to read whole is read a line at a time, each paragraph written as
-    /// it ends.
+    /// it ends, which `MIFExtractor` finds by the comment FrameMaker closes it with.
     #[test]
     fn reads_mif_files_too_large_to_read_whole() {
         let para = |index: u64| {
-            format!(" <Para \n  <ParaLine \n   <String `Linje {index}'>\n  >\n >\n").into_bytes()
+            format!(
+                " <Para \n  <ParaLine \n   <String `Linje {index}'>\n  > # end of ParaLine\n \
+                 > # end of Para\n"
+            )
+            .into_bytes()
         };
-        let count = extractous_core::large::bodies_past_limit(para(1_000_000).len());
+        let count = extractous_core::large::bodies_past_limit(para(0).len());
         let file = extractous_core::large::LargeFile::new(
             "long.mif",
             b"<MIFFile 2015>\n<TextFlow \n",

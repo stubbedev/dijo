@@ -73,8 +73,9 @@ const ROW_LENGTH: usize = 208;
 const ROWS_PER_PAGE: usize = (PAGE_LENGTH - 24) / ROW_LENGTH;
 /// Enough pages of data to make a file too large to read whole.
 const DATA_PAGES: u64 = 4100;
-/// Where the fixture's row size subheader starts.
-const ROW_SIZE_SUBHEADER: usize = 7984;
+/// Where the row size subheader the fixture's first page points to starts: the page also
+/// holds a stale copy at 7984, which no pointer leads to.
+const ROW_SIZE_SUBHEADER: usize = 16928;
 
 fn large_row_count() -> i32 {
     i32::try_from(11 + DATA_PAGES * ROWS_PER_PAGE as u64).unwrap()
@@ -130,7 +131,7 @@ fn reads_data_sets_too_large_to_read_whole_a_page_at_a_time() {
             return;
         }
         let of = if rows <= 10 { 10 } else { count };
-        assert_eq!(line, format!("{rows}\t{}", label(rows, of)));
+        assert_eq!(line, format!("\t{rows}\t{}", label(rows, of)));
         rows += 1;
     };
     let metadata = file.extract_lines(Sas7bdatParser.name(), &mut check);
