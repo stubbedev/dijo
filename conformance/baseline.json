@@ -4445,14 +4445,14 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testHWP-v5-dist.hwp": {
-    "mime_type": "undetected",
-    "outcome": "fails",
-    "similarity": 0.0
+    "mime_type": "application/x-hwp-v5",
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testHWP-v5b.hwp": {
-    "mime_type": "undetected",
-    "outcome": "fails",
-    "similarity": 0.0
+    "mime_type": "application/x-hwp-v5",
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testHWP_3.0.hwp": {
     "mime_type": "application/x-hwp",
@@ -4460,9 +4460,9 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testHWP_5.0.hwp": {
-    "mime_type": "undetected",
-    "outcome": "fails",
-    "similarity": 0.0
+    "mime_type": "application/x-hwp-v5",
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testIndesign.idml": {
     "mime_type": "application/vnd.adobe.indesign-idml-package",
