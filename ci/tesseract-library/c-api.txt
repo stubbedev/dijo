@@ -6,6 +6,7 @@ TessBaseAPISetVariable
 TessBaseAPISetPageSegMode
 TessBaseAPISetImage
 TessBaseAPISetImage2
+TessBaseAPISetSourceResolution
 pixReadMem
 pixDestroy
 TessBaseAPIRecognize

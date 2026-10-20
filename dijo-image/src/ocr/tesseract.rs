@@ -19,6 +19,7 @@ use std::ptr::NonNull;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::bitmap::Density;
 use crate::memory;
 
 /// How long an engine may sit unused before it is freed with the model it loaded.
@@ -130,6 +131,7 @@ c_api! {
     set_page_seg_mode = TessBaseAPISetPageSegMode(*mut BaseApi, c_int);
     set_image = TessBaseAPISetImage(*mut BaseApi, *const u8, c_int, c_int, c_int, c_int);
     set_pix = TessBaseAPISetImage2(*mut BaseApi, *mut Pix);
+    set_source_resolution = TessBaseAPISetSourceResolution(*mut BaseApi, c_int);
     read_pix = pixReadMem(*const u8, usize) -> *mut Pix;
     destroy_pix = pixDestroy(*mut *mut Pix);
     recognize = TessBaseAPIRecognize(*mut BaseApi, *mut Monitor) -> c_int;
@@ -238,7 +240,7 @@ impl Pixels<'_> {
     }
 
     /// Hands the image to an engine, which copies it: false when Leptonica cannot decode it.
-    unsafe fn set_on(&self, api: &Api, handle: *mut BaseApi) -> bool {
+    unsafe fn set_on(&self, api: &Api, handle: *mut BaseApi, density: Option<Density>) -> bool {
         match self {
             Self::Gray {
                 data,
@@ -272,6 +274,9 @@ impl Pixels<'_> {
                 (api.set_pix)(handle, pix);
                 (api.destroy_pix)(&mut pix);
             }
+        }
+        if let Some(density) = density {
+            (api.set_source_resolution)(handle, density.dpi());
         }
         true
     }
@@ -435,6 +440,7 @@ impl Tesseract {
     pub(crate) fn read(
         &self,
         image: Pixels<'_>,
+        density: Option<Density>,
         model: &str,
         segmentation: PageSegMode,
         thresholding: Thresholding,
@@ -442,15 +448,25 @@ impl Tesseract {
     ) -> Result<Reading, OcrError> {
         let _reserved = image.reserve()?;
         let engine = self.take(model)?;
-        let result = self.recognize(&engine, image, model, segmentation, thresholding, timeout);
+        let result = self.recognize(
+            &engine,
+            image,
+            density,
+            model,
+            segmentation,
+            thresholding,
+            timeout,
+        );
         self.release(model, engine);
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn recognize(
         &self,
         engine: &Engine,
         image: Pixels<'_>,
+        density: Option<Density>,
         model: &str,
         segmentation: PageSegMode,
         thresholding: Thresholding,
@@ -470,7 +486,7 @@ impl Tesseract {
                 thresholding.value().as_ptr(),
             );
             (api.set_page_seg_mode)(handle, c_int::from(segmentation.0));
-            if !image.set_on(api, handle) {
+            if !image.set_on(api, handle, density) {
                 return Err(failed());
             }
             if let Some(timeout) = timeout {
@@ -517,7 +533,11 @@ impl Tesseract {
     /// reports them, judged on the first fifty characters it classifies: ten, which stops
     /// sooner, take Thai for Latin. An image it cannot judge, such as one with too little text or
     /// one where no script is likelier than another, gives no script and no turns.
-    pub(crate) fn detect(&self, image: Pixels<'_>) -> Result<Detection, OcrError> {
+    pub(crate) fn detect(
+        &self,
+        image: Pixels<'_>,
+        density: Option<Density>,
+    ) -> Result<Detection, OcrError> {
         let _reserved = image.reserve()?;
         let engine = self.take(OSD_MODEL)?;
         let api = &self.api;
@@ -528,7 +548,7 @@ impl Tesseract {
         let mut script_confidence: c_float = 0.0;
         let found = unsafe {
             (api.set_page_seg_mode)(handle, OSD_ONLY);
-            if !image.set_on(api, handle) {
+            if !image.set_on(api, handle, density) {
                 self.release(OSD_MODEL, engine);
                 return Err(OcrError::Failed {
                     image: image.describe(),
@@ -1007,6 +1027,7 @@ mod tests {
             tesseract
                 .read(
                     encoded(&image),
+                    None,
                     "eng",
                     PageSegMode(3),
                     Thresholding::Otsu,
@@ -1014,7 +1035,7 @@ mod tests {
                 )
                 .unwrap()
         };
-        let detect = || tesseract.detect(encoded(&image)).unwrap();
+        let detect = || tesseract.detect(encoded(&image), None).unwrap();
         let (alone, detected) = (read(), detect());
         assert!(alone.text.contains("Participants"), "{}", alone.text);
         std::thread::scope(|scope| {

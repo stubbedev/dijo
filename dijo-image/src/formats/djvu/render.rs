@@ -11,6 +11,7 @@ use image::GrayImage;
 use super::document::{Chunk, DjvuDocument, Form};
 use super::jb2::{self, Bitmap, Blit};
 use super::{bzz, iw44, DjvuError, MAX_PIXELS};
+use crate::ocr::Density;
 
 const MAX_INCLUDES: usize = 16;
 const MAX_REDUCTION: usize = 12;
@@ -28,7 +29,11 @@ fn grey(red: u8, green: u8, blue: u8) -> u8 {
 }
 
 /// The page a FORM:DJVU chunk codes, in grey.
-pub(super) fn page(document: &DjvuDocument, page: &Form) -> Result<GrayImage, DjvuError> {
+/// With it, the pixels to the inch its INFO chunk records.
+pub(super) fn page(
+    document: &DjvuDocument,
+    page: &Form,
+) -> Result<(GrayImage, Option<Density>), DjvuError> {
     let chunks = document.chunks(page)?;
     let mut info = None;
     let mut mask = None;
@@ -61,6 +66,10 @@ pub(super) fn page(document: &DjvuDocument, page: &Form) -> Result<GrayImage, Dj
     let width = usize::from(u16::from_be_bytes([info[0], info[1]]));
     let height = usize::from(u16::from_be_bytes([info[2], info[3]]));
     let orientation = info.get(9).map_or(1, |flags| flags & 0x07);
+    let density = info.get(6..8).and_then(|dpi| {
+        let dpi = f64::from(u16::from_le_bytes([dpi[0], dpi[1]]));
+        Density::per_inch(dpi, dpi)
+    });
     if (width * height) as u64 > MAX_PIXELS {
         return Err(malformed(format!(
             "A DjVu page of {width}×{height} pixels exceeds {MAX_PIXELS}"
@@ -104,7 +113,7 @@ pub(super) fn page(document: &DjvuDocument, page: &Form) -> Result<GrayImage, Dj
     }
     let page =
         GrayImage::from_raw(width as u32, height as u32, pixels).expect("the pixels fill the page");
-    Ok(oriented(page, orientation))
+    Ok((oriented(page, orientation), density))
 }
 
 /// A layer's image: its IW44 chunks decoded, or else its JPEG, or none.
@@ -260,7 +269,7 @@ fn paint_blits(
 
 /// A JPEG layer in grey, as Java's ImageIO decodes it to RGB.
 fn decode_jpeg(data: &[u8]) -> Result<GrayImage, DjvuError> {
-    let bitmap = crate::ocr::jpeg(data)
+    let (bitmap, _) = crate::ocr::jpeg(data)
         .map_err(|e| malformed(format!("A DjVu JPEG layer cannot be decoded: {e}")))?;
     Ok(match bitmap {
         crate::ocr::Bitmap::Rgb(rgb) => GrayImage::from_fn(rgb.width(), rgb.height(), |x, y| {

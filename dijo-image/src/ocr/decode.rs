@@ -16,11 +16,12 @@
 use std::io::Cursor;
 
 use image::{DynamicImage, GrayImage, ImageFormat, RgbImage, RgbaImage};
+use tiff::decoder::ifd::Value;
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
 use tiff::ColorType;
 
-use super::bitmap::{cmyk_rgb, Bitmap};
+use super::bitmap::{cmyk_rgb, Bitmap, Density};
 use super::prepare::Orientation;
 use super::recognize::MAX_PIXELS;
 use super::{avif, heif, jbig2, raster};
@@ -123,15 +124,16 @@ pub(crate) struct TiffPageReader<'a> {
 }
 
 impl TiffPageReader<'_> {
-    /// A page, decoded unless it has more than [`MAX_PIXELS`] pixels or is damaged. The pages
-    /// of a mapped file read to decode it are released.
-    pub(crate) fn page(&mut self, index: usize) -> Page {
+    /// A page, decoded unless it has more than [`MAX_PIXELS`] pixels or is damaged, with the
+    /// pixels to the inch it records. The pages of a mapped file read to decode it are released.
+    pub(crate) fn page(&mut self, index: usize) -> Result<(Bitmap, Option<Density>), String> {
         self.decoder
             .seek_to_image(index)
             .map_err(|e| format!("cannot find page {}: {e}", index + 1))?;
+        let density = tiff_density(&mut self.decoder);
         let page = tiff_page(&mut self.decoder, MAX_PIXELS);
         self.memory.release();
-        page
+        Ok((page?, density))
     }
 }
 
@@ -143,10 +145,12 @@ fn tiff_decoder(input: &[u8]) -> Result<Decoder<Cursor<&[u8]>>, String> {
 
 /// An image file's decoded content.
 pub(crate) enum Decoded<'a> {
-    /// One image, and its file when tesseract reads the file itself.
+    /// One image, its file when tesseract reads the file itself, and the pixels to the inch the
+    /// file records.
     Single {
         bitmap: Bitmap,
         file: Option<&'a [u8]>,
+        density: Option<Density>,
     },
     /// The pages of a TIFF of more than one page.
     Pages(TiffPages<'a>),
@@ -180,16 +184,24 @@ pub(crate) fn decode<'a>(
     format: Format,
     timeout: Option<std::time::Duration>,
 ) -> Result<Decoded<'a>, Undecoded> {
-    let single = |bitmap| Decoded::Single {
+    let single = |bitmap, density| Decoded::Single {
         bitmap,
         file: format.read_by_tesseract().then_some(input),
+        density,
     };
     match format {
-        Format::Jpeg => Ok(single(jpeg(input)?)),
+        Format::Jpeg => {
+            let (bitmap, density) = jpeg(input)?;
+            Ok(single(bitmap, density))
+        }
         Format::Image(image_format) => {
             let image = image::load_from_memory_with_format(input, image_format)
                 .map_err(|e| format!("cannot decode the image: {e}"))?;
-            Ok(single(bitmap(image)))
+            let density = match image_format {
+                ImageFormat::Png => png_density(input),
+                _ => None,
+            };
+            Ok(single(bitmap(image), density))
         }
         Format::Tiff => {
             let mut decoder = tiff_decoder(input)?;
@@ -210,18 +222,24 @@ pub(crate) fn decode<'a>(
                     memory,
                 }));
             }
-            Ok(single(tiff_page(&mut decoder, MAX_DECODED_PIXELS)?))
+            let density = tiff_density(&mut decoder);
+            Ok(single(
+                tiff_page(&mut decoder, MAX_DECODED_PIXELS)?,
+                density,
+            ))
         }
-        Format::Photoshop => Ok(single(raster::photoshop(input)?)),
-        Format::Pcx => Ok(single(raster::pcx(input)?)),
-        Format::Jpeg2000 => Ok(single(jpeg2000(input)?)),
-        Format::Jbig2 => Ok(single(Bitmap::Gray(jbig2::decode(input)?))),
+        Format::Photoshop => Ok(single(raster::photoshop(input)?, None)),
+        Format::Pcx => Ok(single(raster::pcx(input)?, None)),
+        Format::Jpeg2000 => Ok(single(jpeg2000(input)?, None)),
+        Format::Jbig2 => Ok(single(Bitmap::Gray(jbig2::decode(input)?), None)),
         Format::Avif => match avif::decode(input) {
-            Ok(avif::Avif::Decoded(bitmap)) => Ok(single(bitmap)),
-            Ok(avif::Avif::OfOtherCodecs) | Err(_) => heif::decode(input, timeout).map(single),
+            Ok(avif::Avif::Decoded(bitmap)) => Ok(single(bitmap, None)),
+            Ok(avif::Avif::OfOtherCodecs) | Err(_) => {
+                heif::decode(input, timeout).map(|bitmap| single(bitmap, None))
+            }
         },
-        Format::Heif => heif::decode(input, timeout).map(single),
-        Format::Jxl => Ok(single(jxl(input)?)),
+        Format::Heif => heif::decode(input, timeout).map(|bitmap| single(bitmap, None)),
+        Format::Jxl => Ok(single(jxl(input)?, None)),
     }
 }
 
@@ -307,11 +325,12 @@ fn jxl_rendered(mut image: jxl_oxide::JxlImage) -> Page {
     }
 }
 
-/// A JPEG as the JDK decodes it: grey, or colours converted from the profile it embeds. CMYK,
-/// which the JDK's reader refuses, is printed with the CMYK profile it embeds as LittleCMS
-/// prints it, or else without a profile.
-pub(crate) fn jpeg(input: &[u8]) -> Page {
+/// A JPEG as the JDK decodes it: grey, or colours converted from the profile it embeds, with the
+/// pixels to the inch its JFIF segment records. CMYK, which the JDK's reader refuses, is printed
+/// with the CMYK profile it embeds as LittleCMS prints it, or else without a profile.
+pub(crate) fn jpeg(input: &[u8]) -> Result<(Bitmap, Option<Density>), String> {
     let decoded = super::jpeg::decode(input)?;
+    let density = decoded.density;
     let (width, height) = (decoded.width as u32, decoded.height as u32);
     let short = || "the JPEG holds fewer samples than its size needs".to_owned();
     let rgb = |samples| {
@@ -319,7 +338,7 @@ pub(crate) fn jpeg(input: &[u8]) -> Page {
             .map(Bitmap::Rgb)
             .ok_or_else(short)
     };
-    match decoded.samples {
+    let bitmap = match decoded.samples {
         super::jpeg::Samples::Gray(samples) => GrayImage::from_raw(width, height, samples)
             .map(Bitmap::Gray)
             .ok_or_else(short),
@@ -346,6 +365,59 @@ pub(crate) fn jpeg(input: &[u8]) -> Page {
                     .collect(),
             })
         }
+    }?;
+    Ok((bitmap, density))
+}
+
+/// The pixels to the inch a PNG's pHYs chunk records in pixels to the metre. It comes before the
+/// image data, so the chunks are read up to the first IDAT.
+fn png_density(input: &[u8]) -> Option<Density> {
+    const SIGNATURE: usize = 8;
+    const METRE: u8 = 1;
+    let mut chunks = input.get(SIGNATURE..)?;
+    while let [l0, l1, l2, l3, k0, k1, k2, k3, rest @ ..] = chunks {
+        let length = u32::from_be_bytes([*l0, *l1, *l2, *l3]) as usize;
+        let data = rest.get(..length)?;
+        match &[*k0, *k1, *k2, *k3] {
+            b"pHYs" => {
+                let [a0, a1, a2, a3, d0, d1, d2, d3, unit] = *data else {
+                    return None;
+                };
+                let across = f64::from(u32::from_be_bytes([a0, a1, a2, a3]));
+                let down = f64::from(u32::from_be_bytes([d0, d1, d2, d3]));
+                return (unit == METRE)
+                    .then(|| Density::per_centimetre(across / 100.0, down / 100.0))
+                    .flatten();
+            }
+            b"IDAT" => return None,
+            _ => chunks = rest.get(length + 4..)?,
+        }
+    }
+    None
+}
+
+/// The pixels to the inch the page a TIFF decoder is at records in its resolution tags, to the
+/// inch unless its unit says the centimetre.
+fn tiff_density(decoder: &mut Decoder<Cursor<&[u8]>>) -> Option<Density> {
+    const INCH: u16 = 2;
+    const CENTIMETRE: u16 = 3;
+    let mut resolution = |tag| match decoder.find_tag(tag).ok().flatten()? {
+        Value::Rational(numerator, denominator) => {
+            Some(f64::from(numerator) / f64::from(denominator))
+        }
+        _ => None,
+    };
+    let across = resolution(Tag::XResolution)?;
+    let down = resolution(Tag::YResolution)?;
+    match decoder
+        .find_tag_unsigned::<u16>(Tag::ResolutionUnit)
+        .ok()
+        .flatten()
+        .unwrap_or(INCH)
+    {
+        INCH => Density::per_inch(across, down),
+        CENTIMETRE => Density::per_centimetre(across, down),
+        _ => None,
     }
 }
 
@@ -635,9 +707,30 @@ mod tests {
         let large = std::fs::read("tests/fixtures/jbig2/large.jb2").unwrap();
         let bitmap = single(&large, Format::Jbig2);
         assert_eq!(bitmap.dimensions(), (8000, 7600));
-        assert!(!super::super::Image::of(&bitmap, None, large.len() as u64, None).preparable);
+        assert!(!super::super::Image::of(&bitmap, None, large.len() as u64, None, None).preparable);
         assert!(decodable(8000, 7600).is_ok());
         assert!(decodable(1 << 15, 1 << 15).is_err());
+    }
+
+    #[test]
+    fn reads_the_resolution_an_image_file_records() {
+        let dpi = |file: &str, format| {
+            let input = std::fs::read(format!("../quality/corpus/{file}")).unwrap();
+            match decode(&input, Pages::IN_MEMORY, format, None).unwrap() {
+                Decoded::Single { density, .. } => density.map(Density::dpi),
+                Decoded::Pages(pages) => {
+                    let (_, density) = pages.reader().unwrap().page(0).unwrap();
+                    density.map(Density::dpi)
+                }
+            }
+        };
+        assert_eq!(
+            dpi("prose-columns-scan.png", Format::Image(ImageFormat::Png)),
+            Some(300)
+        );
+        assert_eq!(dpi("prose-photo-upside-down.jpg", Format::Jpeg), Some(300));
+        assert_eq!(dpi("report-scan.tif", Format::Tiff), Some(200));
+        assert_eq!(dpi("prose-scan.psd", Format::Photoshop), None);
     }
 
     /// A CMYK JPEG, which the JDK's reader refuses, decodes in colour.

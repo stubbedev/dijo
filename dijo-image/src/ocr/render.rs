@@ -11,7 +11,7 @@ use hayro::vello_cpu::color::palette::css::WHITE;
 use hayro::{PixmapSettings, RenderCache, RenderSettings};
 use image::GrayImage;
 
-use super::bitmap::luma;
+use super::bitmap::{luma, Density};
 use super::recognize::MAX_PIXELS;
 
 /// `RenderSettings`' default resolution.
@@ -44,8 +44,12 @@ impl PdfPages {
         self.pdf.pages().len()
     }
 
-    /// A page rendered in grey at `resolution`.
-    pub fn render(&self, index: usize, resolution: Resolution) -> Result<GrayImage, String> {
+    /// A page rendered in grey at `resolution`, and the pixels to the inch it was rendered at.
+    pub fn render(
+        &self,
+        index: usize,
+        resolution: Resolution,
+    ) -> Result<(GrayImage, Density), String> {
         let page = self
             .pdf
             .pages()
@@ -75,8 +79,14 @@ impl PdfPages {
             .iter()
             .map(|pixel| luma(pixel.r, pixel.g, pixel.b))
             .collect();
-        GrayImage::from_raw(u32::from(pixmap.width()), u32::from(pixmap.height()), gray)
-            .ok_or_else(|| format!("page {} rendered to fewer pixels than its size", index + 1))
+        let image =
+            GrayImage::from_raw(u32::from(pixmap.width()), u32::from(pixmap.height()), gray)
+                .ok_or_else(|| {
+                    format!("page {} rendered to fewer pixels than its size", index + 1)
+                })?;
+        let density = Density::per_inch(dpi, dpi)
+            .ok_or_else(|| format!("page {} has no size to render at", index + 1))?;
+        Ok((image, density))
     }
 }
 
@@ -143,7 +153,7 @@ mod tests {
     /// Renders the page, of `expected`'s size but for a row or column the page's size in points
     /// rounds away, and counts its pixels more than 64 levels off `expected`'s.
     fn differing(pdf: Vec<u8>, expected: &GrayImage) -> usize {
-        let rendered = PdfPages::open(Arc::new(pdf), "")
+        let (rendered, _) = PdfPages::open(Arc::new(pdf), "")
             .unwrap()
             .render(0, Resolution::Capped)
             .unwrap();

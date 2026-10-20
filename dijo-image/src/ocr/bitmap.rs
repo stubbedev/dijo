@@ -22,6 +22,47 @@ pub enum Bitmap {
     Rgba(RgbaImage),
 }
 
+const CENTIMETRES_PER_INCH: f64 = 2.54;
+
+/// How many pixels an image holds to the inch across and down, as its file records it or as it
+/// was rendered. Tesseract's layout analysis measures by it, the gutter between columns among
+/// all, and guesses it from the text where it is not told: on a page set in two columns it
+/// guessed 413 dpi for 300, took the gutter for a word space and ran the columns together.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Density {
+    across: f64,
+    down: f64,
+}
+
+impl Density {
+    /// The density of `across` and `down` pixels to the inch, none unless both are positive.
+    pub fn per_inch(across: f64, down: f64) -> Option<Self> {
+        let positive = |value: f64| value.is_finite() && value > 0.0;
+        (positive(across) && positive(down)).then_some(Self { across, down })
+    }
+
+    pub(crate) fn per_centimetre(across: f64, down: f64) -> Option<Self> {
+        Self::per_inch(across * CENTIMETRES_PER_INCH, down * CENTIMETRES_PER_INCH)
+    }
+
+    /// The density of the image turned on its side when `sideways`, then scaled by `scale`.
+    pub(crate) fn transformed(self, sideways: bool, scale: f64) -> Self {
+        let (across, down) = match sideways {
+            true => (self.down, self.across),
+            false => (self.across, self.down),
+        };
+        Self {
+            across: across * scale,
+            down: down * scale,
+        }
+    }
+
+    /// The density as tesseract takes it: the pixels to the inch down, whole.
+    pub(crate) fn dpi(self) -> i32 {
+        self.down.round() as i32
+    }
+}
+
 /// The grey level Java2D draws a colour as: ITU-R BT.601 luma, rounded.
 pub fn luma(red: u8, green: u8, blue: u8) -> u8 {
     ((77 * u32::from(red) + 150 * u32::from(green) + 29 * u32::from(blue) + 128) >> 8) as u8
@@ -324,5 +365,15 @@ mod tests {
         };
         assert_eq!(turned.dimensions(), (1, 2));
         assert_eq!(turned.get_pixel(0, 0).0, [100, 50, 25]);
+    }
+
+    #[test]
+    fn a_density_turns_and_scales_with_its_image() {
+        let fax = Density::per_inch(204.0, 98.0).unwrap();
+        assert_eq!(fax.dpi(), 98);
+        assert_eq!(fax.transformed(true, 1.0).dpi(), 204);
+        assert_eq!(fax.transformed(false, 0.5).dpi(), 49);
+        assert_eq!(Density::per_centimetre(118.11, 118.11).unwrap().dpi(), 300);
+        assert_eq!(Density::per_inch(0.0, 300.0), None);
     }
 }

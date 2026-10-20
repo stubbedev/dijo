@@ -25,7 +25,7 @@ fn renders_pages_as_the_java_renderer_does() {
         let input = std::fs::read(Path::new("..").join(file)).unwrap();
         let document = DjvuDocument::read(&input).unwrap();
         let page: usize = page.parse().unwrap();
-        let ours = render::page(&document, &document.pages()[page - 1]);
+        let ours = render::page(&document, &document.pages()[page - 1]).map(|(image, _)| image);
         if pixels.is_empty() {
             let ours = match ours {
                 Ok(image) => format!(
@@ -63,7 +63,8 @@ fn renders_pages_as_the_java_renderer_does() {
 fn renders_the_corpus_scan_as_its_bitmap() {
     let input = std::fs::read("../quality/corpus/prose-scan.djvu").unwrap();
     let document = DjvuDocument::read(&input).unwrap();
-    let rendered = render::page(&document, &document.pages()[0]).unwrap();
+    let (rendered, density) = render::page(&document, &document.pages()[0]).unwrap();
+    assert_eq!(density, crate::ocr::Density::per_inch(300.0, 300.0));
     let bitmap = image::open("../quality/corpus/prose-scan.pbm")
         .unwrap()
         .to_luma8();

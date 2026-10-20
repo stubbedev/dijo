@@ -72,6 +72,23 @@ fn test_extract_file_to_string_ara_ocr_png() {
     );
 }
 
+/// A scan in two columns whose second holds only the last two lines of the first's last
+/// paragraph, set level with the title: told the scan's 300 dpi, tesseract sees the gutter and
+/// reads those lines after the first column, not into the title.
+#[test]
+fn test_extract_file_to_string_reads_scanned_columns_apart() {
+    let (extracted, _metadata) = Extractor::new()
+        .extract_file_to_string("../quality/corpus/prose-columns-scan.png")
+        .unwrap();
+    let at = |text: &str| {
+        extracted
+            .find(text)
+            .unwrap_or_else(|| panic!("{text:?} is not in {extracted}"))
+    };
+    assert!(at("The Lighthouse Keeper's\nLedger") < at("a calm sea, a light"));
+    assert!(at("a calm sea, a light") < at("westerly breeze"));
+}
+
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn test_extract_file_to_string_ocr_only_strategy_deu_ocr_pdf() {

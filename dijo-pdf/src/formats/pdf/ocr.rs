@@ -400,8 +400,8 @@ impl PageOcr {
             .as_ref()
             .map_err(Clone::clone)
             .and_then(|pages| pages.render(index, self.resolution));
-        let gray = match rendered {
-            Ok(gray) => gray,
+        let (gray, density) = match rendered {
+            Ok(rendered) => rendered,
             Err(failure) => {
                 return (
                     PageReading::Failed(format!("Rendering the page failed: {failure}")),
@@ -411,7 +411,7 @@ impl PageOcr {
         };
         let pixels = u64::from(gray.width()) * u64::from(gray.height());
         let bitmap = Bitmap::Gray(gray);
-        let image = Image::of(&bitmap, None, pixels, None);
+        let image = Image::of(&bitmap, None, pixels, None, Some(density));
         match Recognizer::new(tesseract, settings).recognize(&image, assumed) {
             Ok(Recognized { read, language }) => (
                 PageReading::Read {

@@ -1113,8 +1113,8 @@
     "reading_order": 1.0
   },
   "prose-columns-scan.png": {
-    "character_error_rate": 0.08219954648526077,
-    "token_error_rate": 0.07868852459016394,
+    "character_error_rate": 0.0005668934240362812,
+    "token_error_rate": 0.006557377049180328,
     "recall": 0.9934426229508196,
     "spurious": 0.003289473684210526,
     "reading_order": 1.0
@@ -1344,10 +1344,10 @@
     "reading_order": 1.0
   },
   "quixote-1605.pdf": {
-    "character_error_rate": 0.12283439987513657,
-    "token_error_rate": 0.3995016611295681,
-    "recall": 0.6345514950166113,
-    "spurious": 0.3385281385281385,
+    "character_error_rate": 0.11986889339784611,
+    "token_error_rate": 0.40448504983388706,
+    "recall": 0.6303986710963455,
+    "spurious": 0.34057341442224154,
     "reading_order": 0.0
   },
   "report-scan-skewed.tif": {
@@ -1703,8 +1703,8 @@
   "thai-scan.png": {
     "character_error_rate": 0.03496503496503497,
     "token_error_rate": 0.02491103202846975,
-    "recall": 0.9928825622775801,
-    "spurious": 0.014134275618374558,
+    "recall": 0.9893238434163701,
+    "spurious": 0.02112676056338028,
     "reading_order": 0.6666666666666666
   },
   "thai.docx": {

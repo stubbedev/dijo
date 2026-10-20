@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::bitmap::Bitmap;
+use super::bitmap::{Bitmap, Density};
 use super::flatten::flatten;
 use super::prepare::{self, Orientation};
 use super::report::Report;
@@ -120,6 +120,8 @@ pub struct Image<'a> {
     pub(crate) file_size: u64,
     /// The EXIF orientation recorded in it.
     pub(crate) orientation: Option<Orientation>,
+    /// Its pixels to the inch, as its file records them or as it was rendered.
+    pub(crate) density: Option<Density>,
 }
 
 impl<'a> Image<'a> {
@@ -130,6 +132,7 @@ impl<'a> Image<'a> {
         file: Option<&'a [u8]>,
         file_size: u64,
         orientation: Option<Orientation>,
+        density: Option<Density>,
     ) -> Self {
         let (width, height) = bitmap.dimensions();
         Self {
@@ -138,6 +141,7 @@ impl<'a> Image<'a> {
             preparable: u64::from(width) * u64::from(height) <= MAX_PIXELS,
             file_size,
             orientation,
+            density,
         }
     }
 }
@@ -298,6 +302,8 @@ struct Prepared {
     /// The script it is read in: the one detection found, the one assumed for a first reading,
     /// or none.
     script: Option<String>,
+    /// Its pixels to the inch, as turned and scaled from the image's.
+    density: Option<Density>,
     exif_orientation: Option<Orientation>,
     /// Whether it was decoded to prepare it.
     decoded: bool,
@@ -311,12 +317,13 @@ struct Prepared {
 
 impl Prepared {
     /// The image, read as it is.
-    fn unprepared(script: Option<String>, model: String) -> Self {
+    fn unprepared(script: Option<String>, model: String, density: Option<Density>) -> Self {
         Self {
             image: None,
             model,
             uneven_lighting: false,
             script,
+            density,
             exif_orientation: None,
             decoded: false,
             flattened: false,
@@ -501,7 +508,9 @@ impl<'t> Recognizer<'t> {
     ) -> Result<Attempt, OcrError> {
         let auto = self.settings.auto();
         let first = optimistic.prepared.clone();
-        let detected = self.tesseract.detect(pixels_of(image, &first))?;
+        let detected = self
+            .tesseract
+            .detect(pixels_of(image, &first), first.density)?;
         let reported = detected.script;
         let script = reported.as_ref().filter(|_| auto).map(|reported| {
             REPORTED_FOR
@@ -639,6 +648,7 @@ impl<'t> Recognizer<'t> {
     fn read(&self, image: &Image<'_>, prepared: &Prepared) -> Result<Reading, OcrError> {
         let reading = self.tesseract.read(
             pixels_of(image, prepared),
+            prepared.density,
             &prepared.model,
             SEGMENTATION,
             prepared.thresholding(),
@@ -719,7 +729,7 @@ fn finish(
     quarter_turns: u8,
 ) -> Prepared {
     let mut made = match &oriented.image {
-        Upright::Unprepared => return Prepared::unprepared(script, model),
+        Upright::Unprepared => return Prepared::unprepared(script, model, image.density),
         Upright::AsItIs => None,
         Upright::Made(upright) => Some(Arc::clone(upright)),
     };
@@ -760,11 +770,18 @@ fn finish(
             scale,
         ))));
     }
+    let sideways = oriented
+        .exif_orientation
+        .is_some_and(Orientation::swaps_sides)
+        != (quarter_turns % 2 == 1);
     Prepared {
         image: made,
         model,
         uneven_lighting,
         script,
+        density: image
+            .density
+            .map(|density| density.transformed(sideways, scale)),
         exif_orientation: oriented.exif_orientation,
         decoded: true,
         flattened: oriented.flattened,
@@ -811,7 +828,7 @@ mod tests {
 
     fn attempt(text: &str, confidence: i32) -> Attempt {
         Attempt::read(
-            Prepared::unprepared(Some("Latin".to_owned()), "script/Latin".to_owned()),
+            Prepared::unprepared(Some("Latin".to_owned()), "script/Latin".to_owned(), None),
             Reading {
                 text: text.to_owned(),
                 confidence,

@@ -8,6 +8,8 @@
 //! refuses for their Adobe transform, are decoded as libjpeg decodes them for tesseract, which
 //! reads the file where Java cannot: YCCK converted to CMYK, and the transform taken for YCbCr.
 
+use super::bitmap::Density;
+
 /// A decoded JPEG: its size, its samples and the ICC profile it embeds, if any.
 #[derive(Debug)]
 pub(crate) struct Jpeg {
@@ -15,6 +17,8 @@ pub(crate) struct Jpeg {
     pub(crate) height: usize,
     pub(crate) samples: Samples,
     pub(crate) icc_profile: Option<Vec<u8>>,
+    /// The pixels to the inch its JFIF segment records.
+    pub(crate) density: Option<Density>,
 }
 
 /// The samples of a decoded JPEG, row by row.
@@ -125,6 +129,7 @@ struct Planes {
     space: ColorSpace,
     adobe_transform: Option<u8>,
     icc_profile: Option<Vec<u8>>,
+    density: Option<Density>,
 }
 
 const DCTSIZE: usize = 8;
@@ -147,6 +152,9 @@ const DQT: u8 = 0xDB;
 const DNL: u8 = 0xDC;
 const DRI: u8 = 0xDD;
 const APP0: u8 = 0xE0;
+/// The units of a JFIF segment's density: dots to the inch, or to the centimetre.
+const JFIF_DOTS_PER_INCH: u8 = 1;
+const JFIF_DOTS_PER_CENTIMETRE: u8 = 2;
 const APP2: u8 = 0xE2;
 const APP14: u8 = 0xEE;
 const COM: u8 = 0xFE;
@@ -301,6 +309,7 @@ struct Decoder<'a> {
     ac_specs: [Option<TableSpec>; 4],
     restart_interval: usize,
     saw_jfif: bool,
+    density: Option<Density>,
     adobe_transform: Option<u8>,
     icc_markers: Vec<Vec<u8>>,
     in_headers: bool,
@@ -322,6 +331,7 @@ impl<'a> Decoder<'a> {
             ac_specs: [None, None, None, None],
             restart_interval: 0,
             saw_jfif: false,
+            density: None,
             adobe_transform: None,
             icc_markers: Vec::new(),
             in_headers: true,
@@ -340,6 +350,7 @@ impl<'a> Decoder<'a> {
             space,
             adobe_transform,
             icc_profile,
+            density,
         } = self.planes()?;
         let space = match space {
             ColorSpace::Unknown => ColorSpace::YCbCr,
@@ -351,6 +362,7 @@ impl<'a> Decoder<'a> {
             height: frame.height,
             samples,
             icc_profile,
+            density,
         })
     }
 
@@ -398,6 +410,7 @@ impl<'a> Decoder<'a> {
             space,
             adobe_transform: self.adobe_transform,
             icc_profile,
+            density: self.density,
         })
     }
 
@@ -522,6 +535,13 @@ impl<'a> Decoder<'a> {
         }
         if marker == APP0 && data_length >= 14 && data[..5] == *b"JFIF\0" {
             self.saw_jfif = true;
+            let across = f64::from(u16::from_be_bytes([data[8], data[9]]));
+            let down = f64::from(u16::from_be_bytes([data[10], data[11]]));
+            self.density = match data[7] {
+                JFIF_DOTS_PER_INCH => Density::per_inch(across, down),
+                JFIF_DOTS_PER_CENTIMETRE => Density::per_centimetre(across, down),
+                _ => None,
+            };
         }
         if marker == APP14 && data_length >= 12 && data[..5] == *b"Adobe" {
             self.adobe_transform = Some(data[11]);

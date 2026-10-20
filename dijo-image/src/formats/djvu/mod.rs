@@ -127,7 +127,7 @@ fn read_by_ocr(
     xhtml: &mut crate::formats::xhtml::Xhtml,
 ) -> Result<(), Failure> {
     xhtml.record_parser(PREPARING_OCR_PARSER);
-    let image =
+    let (image, density) =
         render::page(document, page).map_err(|error| Failure::Malformed(error.message()))?;
     let file_size = u64::from(image.width()) * u64::from(image.height());
     reader.read(
@@ -135,6 +135,7 @@ fn read_by_ocr(
         Decoded::Single {
             bitmap: Bitmap::Gray(image),
             file: None,
+            density,
         },
         file_size,
         None,

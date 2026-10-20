@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 use crate::bundle;
 use crate::errors::{Error, ExtractResult};
 use crate::formats::embedded::OcrLanguage;
-pub use bitmap::Bitmap;
+pub use bitmap::{Bitmap, Density};
 pub(crate) use decode::{decode, jpeg, Decoded, Format, Undecoded};
 pub use pages::{read_pages, Learning, Outputs};
 pub(crate) use prepare::Orientation;
@@ -70,8 +70,12 @@ pub(crate) fn read_image<W>(
 ) -> Result<Option<OcrLanguage>, Stopped<W>> {
     let recognizer = Recognizer::new(tesseract, settings);
     let learned = match decoded {
-        Decoded::Single { bitmap, file } => {
-            let image = Image::of(&bitmap, file, file_size, orientation);
+        Decoded::Single {
+            bitmap,
+            file,
+            density,
+        } => {
+            let image = Image::of(&bitmap, file, file_size, orientation, density);
             let Recognized { read, language } = recognizer
                 .recognize(&image, assumed)
                 .map_err(Stopped::Ocr)?;
@@ -90,10 +94,10 @@ pub(crate) fn read_image<W>(
                         Ok(reader) => reader.page(index),
                         Err(unreadable) => Err(unreadable.clone()),
                     };
-                    let Ok(bitmap) = page else {
+                    let Ok((bitmap, density)) = page else {
                         return Ok((None, None));
                     };
-                    let image = Image::of(&bitmap, None, file_size, orientation);
+                    let image = Image::of(&bitmap, None, file_size, orientation, density);
                     let Recognized { read, language } = recognizer.recognize(&image, assumed)?;
                     Ok((Some(read), language))
                 },
