@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use unicode_normalization::UnicodeNormalization;
 use unicode_script::Script;
 
-use dijo_core::unicode;
+use crate::unicode;
 
 const MODEL_BYTES: &[u8] = include_bytes!("../../models/language-groups.bin");
 const MAGIC: u32 = 0x4C47_5250;

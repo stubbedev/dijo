@@ -32,8 +32,6 @@ tokio = { version = "1.53.2", features = ["rt-multi-thread", "net", "time", "sig
 walkdir = "2.5.0"
 quick-xml = "0.42.0"
 unicode-normalization = "0.1.25"
-unicode-general-category = "1.1.0"
-unicode-script = "0.5.8"
 mimalloc = { version = "0.1.52", optional = true, features = ["override"] }
 
 [target.'cfg(unix)'.dependencies]

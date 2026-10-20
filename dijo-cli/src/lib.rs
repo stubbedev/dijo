@@ -5,7 +5,6 @@ mod batch;
 mod cache;
 mod cli;
 mod inputs;
-mod language;
 mod limit;
 mod normalize;
 mod render;

@@ -70,24 +70,24 @@ mime-tables:
 container:
     docker load --input "$(ci/container.sh target/static/dijo)"
 
-# Retrain the models that tell closely related languages apart (dijo-cli/models/language-groups.bin) from the
-# Wikipedia shards pinned in dijo-cli/models/language-groups.tsv, fetched into target/wikipedia (about 7 GB).
+# Retrain the models that tell closely related languages apart (dijo-base/models/language-groups.bin) from the
+# Wikipedia shards pinned in dijo-base/models/language-groups.tsv, fetched into target/wikipedia (about 7 GB).
 [unix]
 language-groups:
     #!/usr/bin/env bash
     set -euo pipefail
-    sources=dijo-cli/models/language-groups.tsv
+    sources=dijo-base/models/language-groups.tsv
     ci/fetch-wikipedia.sh "$sources" target/wikipedia
     python=$(nix build --no-link --print-out-paths --impure --expr \
         "((import $PWD/ci/nixpkgs.nix).legacyPackages.\${builtins.currentSystem}.python3.withPackages (ps: [ ps.pyarrow ]))")
-    "$python/bin/python3" -I dijo-cli/models/language-groups.py "$sources" target/wikipedia target/language-groups
-    LANGUAGE_GROUPS_SENTENCES="$PWD/target/language-groups" cargo test --release --package dijo --lib \
+    "$python/bin/python3" -I dijo-base/models/language-groups.py "$sources" target/wikipedia target/language-groups
+    LANGUAGE_GROUPS_SENTENCES="$PWD/target/language-groups" cargo test --release --package dijo-base --lib \
         language::groups::tests::train -- --ignored
 
 # Compare language detection with Tika's CharSoup per language on a TSV of the expected ISO 639-3 code and a text per
 # line, and print the shares each detects right as a Markdown table.
 language-accuracy file:
-    LANGUAGE_EVALUATION={{absolute_path(file)}} cargo test --release --package dijo --lib \
+    LANGUAGE_EVALUATION={{absolute_path(file)}} cargo test --release --package dijo-base --lib \
         language::tests::accuracy_against_tika -- --ignored --nocapture
 
 # The program alone, with musl, tesseract and libheif linked in, needing nothing at run time: the flake's
@@ -221,7 +221,7 @@ bench *args:
 licenses:
     mkdir -p target
     cargo about generate --workspace --fail --output-file target/rust-licenses.md about.hbs
-    cat target/rust-licenses.md dijo-cli/models/LICENSES.md > target/THIRD-PARTY-LICENSES.md
+    cat target/rust-licenses.md dijo-base/models/LICENSES.md > target/THIRD-PARTY-LICENSES.md
     mv target/THIRD-PARTY-LICENSES.md THIRD-PARTY-LICENSES.md
 
 # Write the CycloneDX SBOM of the Rust crates in the binary to target/sbom.

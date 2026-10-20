@@ -14,7 +14,7 @@ pub use dijo_base::errors::{Error, ExtractResult, Unsupported};
 pub use dijo_base::extracted::{CharSet, Metadata};
 pub use dijo_base::formats::DIFFERS_FROM_TIKA;
 pub use dijo_base::process::{configure as configure_process, ProcessSettings};
-pub use dijo_base::{memory, text, unicode};
+pub use dijo_base::{language, memory, text, unicode};
 use dijo_image::ocr;
 use dijo_mime::mime;
 use dijo_native as bundle;

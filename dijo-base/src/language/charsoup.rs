@@ -12,7 +12,7 @@ use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::{is_nfc, UnicodeNormalization};
 use unicode_script::{Script, UnicodeScript};
 
-use dijo_core::unicode::{is_letter, lowercase};
+use crate::unicode::{is_letter, lowercase};
 
 const MODEL_BYTES: &[u8] = include_bytes!("../../models/langdetect-20260320.bin");
 const MAGIC: u32 = 0x4C44_4D31;

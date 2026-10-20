@@ -691,9 +691,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "unicode-general-category",
  "unicode-normalization",
- "unicode-script",
  "walkdir",
 ]
 
@@ -724,6 +722,7 @@ dependencies = [
  "regex",
  "ripemd",
  "ruzstd",
+ "serde",
  "sevenz-rust2",
  "sha1",
  "sha2",

@@ -15,6 +15,7 @@ pub mod formats;
 pub mod hash;
 pub mod input;
 pub mod java;
+pub mod language;
 pub mod memory;
 pub mod ole2;
 pub mod ordered_map;

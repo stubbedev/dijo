@@ -10,7 +10,7 @@ use dijo_core::{EmbeddedSpool, Extractor, Metadata, SpooledEmbedded, StreamReade
 use crate::cli::Format;
 use serde::{Deserialize, Serialize};
 
-use crate::language::{self, DetectedLanguage, Sample};
+use dijo_core::language::{self, DetectedLanguage, Sample};
 use crate::limit::OutputLimit;
 use crate::normalize::{self, Normalizer, Step, Steps};
 use crate::running::{self, Placement, RunningLines};

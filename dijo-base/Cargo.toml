@@ -32,6 +32,7 @@ md4 = "0.11.0"
 memchr = "2.8.3"
 memmap2 = "0.9.11"
 rc4 = "0.2.0"
+serde = { version = "1.0.228", features = ["derive"] }
 regex = "1.13.1"
 ripemd = "0.2.0"
 ruzstd = "0.9.1"
