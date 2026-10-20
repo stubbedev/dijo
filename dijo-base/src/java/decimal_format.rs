@@ -365,6 +365,15 @@ impl DecimalFormat {
         self
     }
 
+    /// The format writing its decimal point even where no fraction digit follows it, when its
+    /// pattern has fraction digits: as Excel writes `0.##`, where Java leaves the point out.
+    pub(crate) fn with_point_always_shown(mut self) -> Self {
+        if self.max_fraction > 0 {
+            self.decimal_always_shown = true;
+        }
+        self
+    }
+
     fn double_limits(&self) -> Limits {
         Limits {
             min_integer: self.min_integer.min(DOUBLE_INTEGER_DIGITS),

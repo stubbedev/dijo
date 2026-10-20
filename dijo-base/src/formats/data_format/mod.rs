@@ -15,9 +15,10 @@
 //! writes the `?` itself; commas after the last digit divide by a thousand each before a
 //! literal suffix too, as in `0.0,,"M"`, where POI divides only by commas that end the format,
 //! and exactly, where POI rounds the quotient to the decimals of the value it divides;
-//! and an engineering format such as `##0.0E+0` writes its exponent in steps of its integer
+//! an engineering format such as `##0.0E+0` writes its exponent in steps of its integer
 //! digits and its mantissa with the digits the format gives it, where Java's `DecimalFormat`
-//! writes more of them. See `date_format` for the dates.
+//! writes more of them; and a format with a decimal point writes it also where no digit follows
+//! it, so that `0.##` writes 5 as `5.`, where POI writes `5`. See `date_format` for the dates.
 
 mod cell_format;
 mod date_format;
@@ -39,7 +40,10 @@ use crate::java::{self, trim};
 use crate::unicode::{is_letter, is_whitespace};
 use cell_format::{CellFormat, CellValue};
 pub(crate) use date_format::is_a_date_format;
-use date_format::{is_valid_excel_date, java_date, ExcelStyleDateFormatter, Literals};
+use date_format::{
+    is_valid_excel_date, java_date, Calendar, ExcelStyleDateFormatter, Literals, CALENDAR_PREFIX,
+    ERA_LETTER, ERA_NAME, ERA_SHORT, ERA_YEAR, ERA_YEAR_PADDED,
+};
 use fraction::FractionFormat;
 
 /// Java's `.` in a pattern: any character but a line terminator.
@@ -388,7 +392,9 @@ impl Engineering {
         let integer = found.get(1)?.as_str();
         let step = i32::try_from(integer.len()).ok().filter(|&step| step > 1)?;
         let fraction = found.get(2).map_or("", |m| m.as_str());
-        let mantissa = DecimalFormat::new(&format!("0{fraction}"), Rounding::HalfUp).ok()?;
+        let mantissa = DecimalFormat::new(&format!("0{fraction}"), Rounding::HalfUp)
+            .ok()?
+            .with_point_always_shown();
         Some(Self {
             step,
             mantissa,
@@ -450,8 +456,9 @@ impl ScaledDecimalFormat {
         };
         let question_marks = QuestionMarks::of(&trimmed).map(Box::new);
         let trimmed = trimmed.replace('?', "#");
-        let format =
-            DecimalFormat::new(&trimmed, Rounding::HalfUp)?.with_grouping_separator(grouping);
+        let format = DecimalFormat::new(&trimmed, Rounding::HalfUp)?
+            .with_grouping_separator(grouping)
+            .with_point_always_shown();
         Ok(Self {
             format,
             divider: commas.map(|range| 3 * range.len()),
@@ -752,10 +759,19 @@ impl DataFormatter {
                 Chosen::Text(text) => Ok(text),
                 Chosen::None => cell_format::date_to_string(instant, &self.zone),
                 Chosen::General => General::format(Input::Date(instant)),
-                Chosen::Cached(key) => {
-                    let format = self.cached(&key)?;
-                    format.format(Input::Date(instant), value, &self.zone)
-                }
+                Chosen::Cached(key) => match self.cached(&key)? {
+                    Format::Date(formatter) => {
+                        let shown = formatter.rounded(value);
+                        let instant =
+                            java_date(shown, &self.zone, self.date_1904).ok_or_else(|| {
+                                FormatError::Thrown(
+                                    "A valid Excel date has no Java date".to_owned(),
+                                )
+                            })?;
+                        formatter.format(shown, instant, &self.zone)
+                    }
+                    format => format.format(Input::Date(instant), value, &self.zone),
+                },
             };
         }
         let chosen = self.get_format(value, index, format)?;
@@ -853,10 +869,16 @@ impl DataFormatter {
             };
             format.replace_range(at..at + colour.len(), "");
         }
+        let mut calendar = Calendar::Gregorian;
         while let Some(found) = LOCALE_GROUP.find(&format) {
             let matched = found.as_str();
             let dollar = matched.find('$').map_or(0, |at| at + 1);
             let dash = matched.find('-').unwrap_or(matched.len());
+            if let Some(lcid) = matched.get(dash + 1..matched.len() - 1) {
+                if Calendar::of_locale_id(lcid) == Calendar::JapaneseEras {
+                    calendar = Calendar::JapaneseEras;
+                }
+            }
             let mut symbol = matched
                 .get(dollar..dash)
                 .ok_or_else(|| FormatError::Thrown(format!("substring of {matched:?}")))?
@@ -873,7 +895,7 @@ impl DataFormatter {
             return Ok(Created::General);
         }
         if is_a_date_format(index, &format) && is_valid_excel_date(value) {
-            return Ok(create_date_format(&format));
+            return create_date_format(&format, calendar);
         }
         if format.contains("#/") || format.contains("?/") {
             return create_fraction_format(&format).map(Created::Format);
@@ -895,10 +917,19 @@ enum Created {
 
 /// `createDateFormat`, the general format where the date format does not compile. The texts the
 /// format quotes and the characters it escapes are written as they are, where POI unescapes a
-/// few characters and hands the rest, and the quotes, on to `SimpleDateFormat` (#186).
-fn create_date_format(format: &str) -> Created {
+/// few characters and hands the rest, and the quotes, on to `SimpleDateFormat` (#186). As Excel
+/// shows them, where POI fails the format: a `B1` prefix names the Gregorian calendar the date
+/// is written in anyway; `g`, `gg` and `ggg` write the era of the date, by its letter, first
+/// character or name, and `e` and `ee` its year in the era, eras that `calendar` counts.
+fn create_date_format(format: &str, calendar: Calendar) -> Result<Created, FormatError> {
     let literals = Literals::of(&format.replace(";@", ""));
     let mut format = literals.format.clone();
+    if let Some(prefix) = CALENDAR_PREFIX.find(&format) {
+        if prefix.as_str() == "B2" {
+            return Err(FormatError::Unported("a date in the Hijri calendar"));
+        }
+        format.replace_range(prefix.range(), "");
+    }
     let has_am_pm = AM_PM.is_match(&format);
     if has_am_pm {
         format = AM_PM.replace_all(&format, "@").into_owned();
@@ -962,6 +993,19 @@ fn create_date_format(format: &str) -> Created {
             }
             m_is_month = true;
             months.clear();
+        } else if matches!(c, 'g' | 'G' | 'e') {
+            m_is_month = true;
+            months.clear();
+            let run = chars[j..].iter().take_while(|&&next| next == c).count();
+            pattern.push(match (c, run) {
+                ('e', 1) => ERA_YEAR,
+                ('e', _) => ERA_YEAR_PADDED,
+                (_, 1) => ERA_LETTER,
+                (_, 2) => ERA_SHORT,
+                _ => ERA_NAME,
+            });
+            j += run;
+            continue;
         } else if is_java_letter(c) {
             m_is_month = true;
             months.clear();
@@ -979,10 +1023,12 @@ fn create_date_format(format: &str) -> Created {
         j += 1;
     }
     let pattern: String = pattern.into_iter().collect();
-    match ExcelStyleDateFormatter::with_literals(&pattern, literals) {
-        Ok(formatter) => Created::Format(Format::Date(formatter)),
-        Err(_) => Created::General,
-    }
+    Ok(
+        match ExcelStyleDateFormatter::with_literals(&pattern, literals, calendar) {
+            Ok(formatter) => Created::Format(Format::Date(formatter)),
+            Err(_) => Created::General,
+        },
+    )
 }
 
 /// The fraction format `createFormat` makes of a format with a `#/` or `?/`.
@@ -1112,10 +1158,22 @@ mod tests {
     /// a number in the general format, which the port writes to 15 significant digits where
     /// Java writes it to fewer, ten after the point or, in spellings of `General` other than
     /// `General` and `general`, in `@` and in formats that do not compile, POI's of ten
-    /// significant digits, six in scientific notation.
+    /// significant digits, six in scientific notation; a decimal point no digit follows, which
+    /// the port writes as Excel does; or a date whose time the port rounds to the fraction of a
+    /// second the format shows, where Java truncates it.
     fn departs(value: f64, index: i32, format: &str, actual: &str, expected: &str) -> bool {
         if value < 0.0 && is_a_date_format(index, format) {
             return true;
+        }
+        if !expected.contains('.') && actual.replacen('.', "", 1) == expected {
+            return true;
+        }
+        if is_a_date_format(index, format) {
+            let digits = date_format::second_fraction_digits(&format.to_lowercase());
+            let shown = value * 86_400.0 * 10f64.powi(digits);
+            if shown - shown.floor() >= 0.5 - 1e-6 {
+                return true;
+            }
         }
         if is_a_date_format(index, format) && !Literals::of(format).texts.is_empty() {
             return true;
@@ -1193,7 +1251,7 @@ mod tests {
             ));
         }
         assert!(count > 9000, "formats.tsv has only {count} cases");
-        assert!(departed < 1000, "{departed} cases depart from Java's");
+        assert!(departed < 1100, "{departed} cases depart from Java's");
         assert!(
             differences.is_empty(),
             "{} of {count} differ:\n{}",
@@ -1294,6 +1352,19 @@ mod tests {
             (12345.678, "##0.0E+0", "12.3E+3"),
             (0.5, "##0.0E+0", "500.0E-3"),
             (999_960.0, "##0.0E+0", "1.0E+6"),
+            (5.0, "0.##", "5."),
+            (5.25, "0.##", "5.25"),
+            (0.5, "0.##%", "50.%"),
+            (5.0, "0.##E+0", "5.E+0"),
+            (45000.0 + 36_059.6 / 86_400.0, "h:mm:ss", "10:01:00"),
+            (45000.0 + 36_059.6 / 86_400.0, "h:mm", "10:01"),
+            (45000.0 + 36_059.66 / 86_400.0, "h:mm:ss.0", "10:00:59.7"),
+            (45000.0, "[$-411]ggge\"年\"m\"月\"d\"日\"", "令和5年3月15日"),
+            (45000.0, "[$-411]ge.m.d", "R5.3.15"),
+            (32515.0, "[$-411]ggee", "昭64"),
+            (32516.0, "[$-411]ggee", "平01"),
+            (45000.0, "ggge\"年\"m\"月\"d\"日\"", "2023年3月15日"),
+            (45000.0, "B1yyyy-mm-dd", "2023-03-15"),
             (
                 0.0,
                 "_(* #,##0.00_);_(* (#,##0.00);_(* \"-\"??_);_(@_)",
