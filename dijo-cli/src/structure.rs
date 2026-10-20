@@ -227,6 +227,11 @@ impl Splitter<'_> {
         }
         match name {
             "tr" => self.between_cells = true,
+            // `<td/>` has no end to pop its cell at: it ends where it starts, as `end` ends a cell.
+            "td" | "th" if empty => {
+                self.between_cells = true;
+                self.current_text().push('\t');
+            }
             "td" | "th" => {
                 self.between_cells = false;
                 self.cells.push(Cell::default());
@@ -725,6 +730,29 @@ mod tests {
             parts(xhtml, Unit::Elements)[0].text,
             "Year\tShips\n1921\t412"
         );
+    }
+
+    #[test]
+    fn an_empty_cell_element_is_an_empty_cell() {
+        let document = |cell: &str| {
+            format!(
+                "<html><body><div class=\"page\"><table><tr>\t<td>A</td>\t{cell}\t<td>B</td></tr>\
+                 </table></div>\n<div class=\"page\"><h1>Sheet2</h1>\n<table><tr>\t<td>The quick\
+                 </td></tr></table></div></body></html>"
+            )
+        };
+        for unit in [Unit::Pages, Unit::Elements] {
+            let texts = |cell: &str| -> Vec<String> {
+                parts(&document(cell), unit)
+                    .into_iter()
+                    .map(|part| part.text)
+                    .collect()
+            };
+            assert_eq!(texts("<td />"), texts("<td></td>"), "{unit:?}");
+        }
+        let pages = parts(&document("<td />"), Unit::Pages);
+        assert_eq!(pages[0].text, "A\t\tB");
+        assert_eq!(pages[1].text, "Sheet2\nThe quick");
     }
 
     #[test]
