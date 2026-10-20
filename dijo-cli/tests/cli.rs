@@ -449,7 +449,8 @@ fn djvu_documents_are_read_for_their_text_layers() {
         [
             "The keeper climbed the hundred and twelve steps.\n\
              He wrote one line in the ledger.\nShips passed before midnight.",
-            "The second page holds the storm."
+            "The second page holds the storm.",
+            ""
         ]
     );
 }
