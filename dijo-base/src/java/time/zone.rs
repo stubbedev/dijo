@@ -1,20 +1,8 @@
-//! Java's default `TimeZone`, as `java.util.TimeZone.getDefault()` finds it on a Unix system (and,
-//! from the Windows registry and the bundled time zone database, on Windows) and
-//! `sun.util.calendar.ZoneInfo` answers for it: the zone named by `TZ`, `/etc/timezone` or the
-//! `/etc/localtime` link, with its rules read from the system's zoneinfo files. Like `ZoneInfo`,
-//! it knows no local mean time: before 1900 a zone is at its current standard offset.
-#![cfg_attr(
-    all(not(unix), not(test)),
-    expect(
-        dead_code,
-        reason = "only Unix finds the default zone by its ID or zoneinfo file; Windows reads it \
-                  from the bundled database, so outside the tests that lookup is Unix's alone"
-    )
-)]
-
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+//! A `java.util.TimeZone` as `sun.util.calendar.ZoneInfo` answers for it: a fixed offset, or a
+//! zone of the JDK's time zone database by name, with its rules from the database bundled into
+//! the binary. Like `ZoneInfo`, it knows no local mean time: before 1900 a zone is at its
+//! current standard offset. No reading depends on the machine's own zone: where Java reads in
+//! its default zone, the port reads in UTC.
 
 use super::civil;
 
@@ -26,18 +14,6 @@ const UTC_2100: i64 = 4_133_980_799;
 const LAST_YEAR: i64 = 2037;
 const SECONDS_PER_DAY: i64 = 86_400;
 const SECONDS_PER_HOUR: i64 = 3_600;
-#[cfg(unix)]
-const ZONEINFO_DIRECTORIES: [&str; 4] = [
-    "/usr/share/zoneinfo",
-    "/etc/zoneinfo",
-    "/usr/lib/zoneinfo",
-    "/usr/share/lib/zoneinfo",
-];
-#[cfg(unix)]
-const LOCALTIME: &str = "/etc/localtime";
-#[cfg(unix)]
-const ETC_TIMEZONE: &str = "/etc/timezone";
-const GMT: &str = "GMT";
 /// The three-letter IDs `ZoneInfoFile.oldMappings` maps to regions.
 const JDK_ALIASES: [(&str, &str); 25] = [
     ("ACT", "Australia/Darwin"),
@@ -126,14 +102,7 @@ enum RuleDate {
     MonthWeekDay { month: i64, week: i64, weekday: i64 },
 }
 
-static DEFAULT: LazyLock<Result<TimeZone, String>> = LazyLock::new(TimeZone::system_default);
-
 impl TimeZone {
-    /// Java's default time zone, found once as `TimeZone.getDefault()` finds it once per process.
-    pub fn java_default() -> Result<&'static TimeZone, String> {
-        DEFAULT.as_ref().map_err(Clone::clone)
-    }
-
     /// A zone always `offset` seconds east of UTC, such as UTC itself or the offset a parsed
     /// date names.
     pub fn fixed(offset: i64) -> Self {
@@ -141,39 +110,6 @@ impl TimeZone {
             raw_offset: offset,
             transitions: Vec::new(),
             rule: None,
-        }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    fn system_default() -> Result<Self, String> {
-        Err("Java's default time zone is found only on Unix and Windows".to_owned())
-    }
-
-    /// The zone Windows is set to, as Java reads it from the registry and maps it to a zone ID,
-    /// with its rules from the time zone database bundled into the binary. Unlike Java, a `TZ`
-    /// variable in the environment wins over the registry.
-    #[cfg(windows)]
-    fn system_default() -> Result<Self, String> {
-        let system = jiff::tz::TimeZone::try_system()
-            .map_err(|e| format!("Windows's time zone cannot be read: {e}"))?;
-        let id = system
-            .iana_name()
-            .ok_or_else(|| "Windows's time zone maps to no zone ID".to_owned())?;
-        let (_, tzif) = jiff_tzdb::get(id)
-            .ok_or_else(|| format!("The bundled time zone database has no {id}"))?;
-        Self::from_tzif_bytes(tzif, id)?
-            .ok_or_else(|| format!("The bundled time zone {id} is not one Java reads"))
-    }
-
-    #[cfg(unix)]
-    fn system_default() -> Result<Self, String> {
-        match system_zone_id() {
-            ZoneSource::File(path) => Self::from_file(&path)?
-                .ok_or_else(|| format!("{} is not a zoneinfo file", path.display())),
-            ZoneSource::Id(id) => match Self::by_id(&id, &zoneinfo_directories())? {
-                Some(zone) => Ok(zone),
-                None => Ok(Self::fixed(system_gmt_offset()?)),
-            },
         }
     }
 
@@ -203,43 +139,9 @@ impl TimeZone {
         }
     }
 
-    /// The zone Java knows by `id`, with its rules from the first of `directories` that has
-    /// them, or `None` when Java would not know it.
-    pub(super) fn by_id(id: &str, directories: &[PathBuf]) -> Result<Option<Self>, String> {
-        if let Some(offset) = custom_offset(id) {
-            return Ok(Some(Self::fixed(offset)));
-        }
-        if id.starts_with('/') || id.split('/').any(|part| part.is_empty() || part == "..") {
-            return Ok(None);
-        }
-        for directory in directories {
-            if let Some(zone) = Self::from_file(&directory.join(id))? {
-                return Ok(Some(zone));
-            }
-        }
-        Ok(None)
-    }
-
-    /// The zone of a TZif file, or `None` when there is no such file or it is not one Java has
-    /// a zone for: not TZif, or counting leap seconds.
-    fn from_file(path: &Path) -> Result<Option<Self>, String> {
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) if e.kind() == std::io::ErrorKind::IsADirectory => return Ok(None),
-            Err(e) => {
-                return Err(format!(
-                    "Could not read the time zone {}: {e}",
-                    path.display()
-                ))
-            }
-        };
-        Self::from_tzif_bytes(&bytes, &path.display().to_string())
-    }
-
     /// The zone the TZif data `bytes`, which `what` names in errors, describes, or `None` when
     /// they are not TZif data Java reads: not TZif at all, or with leap seconds.
-    fn from_tzif_bytes(bytes: &[u8], what: &str) -> Result<Option<Self>, String> {
+    pub(super) fn from_tzif_bytes(bytes: &[u8], what: &str) -> Result<Option<Self>, String> {
         if !bytes.starts_with(TZIF_MAGIC) {
             return Ok(None);
         }
@@ -453,160 +355,6 @@ impl RuleDate {
             }
         }
     }
-}
-
-/// Where the default zone's rules are.
-#[cfg(unix)]
-#[derive(Debug, PartialEq, Eq)]
-enum ZoneSource {
-    /// A zone ID: from `TZ` or `/etc/timezone`, or the name `/etc/localtime` links to.
-    Id(String),
-    /// `/etc/localtime` itself, a copy of a zoneinfo file rather than a link naming one.
-    File(PathBuf),
-}
-
-/// What the JDK's `getSystemTimeZoneID` finds: `TZ` without a leading `:` (or, on Linux,
-/// `posix/`), else on Linux the zone `/etc/timezone` names, else the zone of `/etc/localtime`,
-/// else `GMT`.
-#[cfg(unix)]
-fn system_zone_id() -> ZoneSource {
-    if let Some(tz) = std::env::var_os("TZ").filter(|tz| !tz.is_empty()) {
-        let tz = tz.to_string_lossy();
-        let tz = tz.strip_prefix(':').unwrap_or(&tz);
-        let tz = match cfg!(target_os = "linux") {
-            true => tz.strip_prefix("posix/").unwrap_or(tz),
-            false => tz,
-        };
-        return ZoneSource::Id(tz.to_owned());
-    }
-    if cfg!(target_os = "linux") {
-        if let Some(id) = fs::read_to_string(ETC_TIMEZONE)
-            .ok()
-            .and_then(|text| text.lines().next().map(str::to_owned))
-            .filter(|line| !line.is_empty())
-        {
-            return ZoneSource::Id(id);
-        }
-    }
-    let Ok(metadata) = fs::symlink_metadata(LOCALTIME) else {
-        return ZoneSource::Id(GMT.to_owned());
-    };
-    if metadata.file_type().is_symlink() {
-        if let Some(id) = fs::read_link(LOCALTIME)
-            .ok()
-            .and_then(|target| zone_name(&target.to_string_lossy()))
-        {
-            return ZoneSource::Id(id);
-        }
-    }
-    ZoneSource::File(PathBuf::from(LOCALTIME))
-}
-
-/// The part of a zoneinfo path after `zoneinfo/`, as the JDK's `getZoneName` takes it.
-fn zone_name(target: &str) -> Option<String> {
-    let mut collapsed = String::with_capacity(target.len());
-    for part in target.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                collapsed.truncate(collapsed.rfind('/').unwrap_or(0));
-            }
-            part => {
-                collapsed.push('/');
-                collapsed.push_str(part);
-            }
-        }
-    }
-    collapsed
-        .find("zoneinfo/")
-        .map(|index| collapsed[index + "zoneinfo/".len()..].to_owned())
-}
-
-/// The directories zoneinfo files are looked for in: `TZDIR`, the usual places, and the one
-/// `/etc/localtime` links into.
-#[cfg(unix)]
-fn zoneinfo_directories() -> Vec<PathBuf> {
-    let mut directories: Vec<PathBuf> = std::env::var_os("TZDIR")
-        .map(PathBuf::from)
-        .into_iter()
-        .collect();
-    directories.extend(ZONEINFO_DIRECTORIES.iter().map(PathBuf::from));
-    if let Ok(target) = fs::canonicalize(LOCALTIME) {
-        let target = target.to_string_lossy().into_owned();
-        if let Some(index) = target.find("/zoneinfo/") {
-            directories.push(PathBuf::from(&target[..index + "/zoneinfo".len()]));
-        }
-    }
-    directories
-}
-
-/// The offset of a custom zone ID such as `GMT+1`, `GMT-0530` or `GMT+05:30`, as
-/// `TimeZone.parseCustomTimeZone` reads it.
-fn custom_offset(id: &str) -> Option<i64> {
-    if id == GMT {
-        return Some(0);
-    }
-    let rest = id.strip_prefix(GMT)?;
-    if rest.len() < 2 {
-        return None;
-    }
-    let (negative, digits) = match rest.as_bytes()[0] {
-        b'-' => (true, &rest[1..]),
-        b'+' => (false, &rest[1..]),
-        _ => return None,
-    };
-    let groups: Vec<&str> = digits.split(':').collect();
-    if groups.len() > 3
-        || groups
-            .iter()
-            .any(|group| group.is_empty() || !group.bytes().all(|b| b.is_ascii_digit()))
-    {
-        return None;
-    }
-    let number = |group: &str| group.parse::<i64>().ok();
-    let (hours, minutes, seconds) = match groups.as_slice() {
-        [all] if all.len() <= 2 => (number(all)?, 0, 0),
-        [all] if all.len() <= 4 => {
-            let value = number(all)?;
-            (value / 100, value % 100, 0)
-        }
-        [hours, minutes] if hours.len() <= 2 && minutes.len() == 2 => {
-            (number(hours)?, number(minutes)?, 0)
-        }
-        [hours, minutes, seconds]
-            if hours.len() <= 2 && minutes.len() <= 2 && seconds.len() == 2 =>
-        {
-            (number(hours)?, number(minutes)?, number(seconds)?)
-        }
-        _ => return None,
-    };
-    if hours > 23 || minutes > 59 || seconds > 59 {
-        return None;
-    }
-    let offset = hours * SECONDS_PER_HOUR + minutes * 60 + seconds;
-    Some(if negative { -offset } else { offset })
-}
-
-/// The offset the system's clock is at now, which Java falls back to as a fixed zone when it
-/// does not know the zone the system names.
-#[cfg(unix)]
-fn system_gmt_offset() -> Result<i64, String> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| format!("The system clock is before 1970: {e}"))?;
-    let now = libc::time_t::try_from(now.as_secs())
-        .map_err(|e| format!("The system clock does not fit a time_t: {e}"))?;
-    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
-    let result = unsafe { libc::localtime_r(&now, local.as_mut_ptr()) };
-    if result.is_null() {
-        return Err("The system's local time is unknown".to_owned());
-    }
-    let offset: libc::c_long = unsafe { local.assume_init() }.tm_gmtoff;
-    #[allow(
-        clippy::useless_conversion,
-        reason = "a c_long has 32 bits on some Unix targets"
-    )]
-    Ok(i64::from(offset))
 }
 
 const TZIF_MAGIC: &[u8] = b"TZif";
@@ -885,32 +633,6 @@ mod tests {
             }
         );
         assert!(zone.rule.is_some());
-    }
-
-    #[test]
-    fn reads_custom_zone_ids_as_java_does() {
-        assert_eq!(custom_offset("GMT"), Some(0));
-        assert_eq!(custom_offset("GMT+1"), Some(3600));
-        assert_eq!(custom_offset("GMT-0530"), Some(-19_800));
-        assert_eq!(custom_offset("GMT+05:30"), Some(19_800));
-        assert_eq!(custom_offset("GMT+05:30:15"), Some(19_815));
-        assert_eq!(custom_offset("GMT+24"), None);
-        assert_eq!(custom_offset("GMT+123:00"), None);
-        assert_eq!(custom_offset("GMT+"), None);
-        assert_eq!(custom_offset("UTC"), None);
-    }
-
-    #[test]
-    fn names_zones_as_the_jdk_reads_links() {
-        assert_eq!(
-            zone_name("/etc/zoneinfo/Europe/Copenhagen").as_deref(),
-            Some("Europe/Copenhagen")
-        );
-        assert_eq!(
-            zone_name("../usr/share//zoneinfo/./America/New_York").as_deref(),
-            Some("America/New_York")
-        );
-        assert_eq!(zone_name("/etc/localtime-copy"), None);
     }
 
     #[test]

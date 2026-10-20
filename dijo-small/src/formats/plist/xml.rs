@@ -661,7 +661,7 @@ struct Building {
 
 /// The first walk's taker of objects.
 struct Planner<'d> {
-    dates: Option<&'d Dates>,
+    dates: &'d Dates,
     checked: Result<(), Problem>,
     dicts: u64,
     data: u64,
@@ -680,7 +680,7 @@ struct Planner<'d> {
 }
 
 impl<'d> Planner<'d> {
-    fn new(dates: Option<&'d Dates>) -> Self {
+    fn new(dates: &'d Dates) -> Self {
         Self {
             dates,
             checked: Ok(()),
@@ -735,10 +735,8 @@ impl Values for Planner<'_> {
             Value::EndData if self.data_length > MAX_READ_WHOLE => {
                 self.large_data.insert(self.data_ordinal, self.data_length);
             }
-            Value::Leaf(Leaf::Date(seconds)) => {
-                if let (Ok(()), Some(dates)) = (&self.checked, self.dates) {
-                    self.checked = dates.text(*seconds).map(|_| ());
-                }
+            Value::Leaf(Leaf::Date(seconds)) if self.checked.is_ok() => {
+                self.checked = self.dates.text(*seconds).map(|_| ());
             }
             _ => {}
         }
@@ -809,11 +807,7 @@ impl Values for Planner<'_> {
 
 /// The first walk: fails where dd-plist fails on `input`, whose pages are `pages`, or the port
 /// does not read it as Tika does, and plans the second, checking dates as `dates` writes them.
-pub(super) fn survey(
-    input: &[u8],
-    pages: Pages<'_>,
-    dates: Option<&Dates>,
-) -> Result<Survey, Problem> {
+pub(super) fn survey(input: &[u8], pages: Pages<'_>, dates: &Dates) -> Result<Survey, Problem> {
     check_supported(input, &Paging::new(pages))?;
     let mut planner = Planner::new(dates);
     walk(input, pages, &mut planner).map_err(|halt| match halt {

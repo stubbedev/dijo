@@ -14,6 +14,8 @@
 
 mod xml;
 
+use std::cell::Cell;
+
 use crate::bplist as binary;
 
 use binary::{Node, Number, ObjectId, Reader};
@@ -23,7 +25,7 @@ use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
-use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
+use crate::formats::{unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages};
 use crate::java::simple_date_format::SimpleDateFormat;
 use crate::java::time::TimeZone;
@@ -77,25 +79,37 @@ fn malformed(thrown: binary::Thrown) -> Failure {
     }
 }
 
-/// The dates of a list, written as `PListParser`'s `SimpleDateFormat` writes them in Java's
-/// default time zone.
+/// The dates of a list, written as `PListParser`'s `SimpleDateFormat` writes them, in UTC.
+/// Tika writes them in the JVM's default time zone, so the same list reads differently on
+/// machines in different zones.
 struct Dates {
     format: SimpleDateFormat,
-    zone: &'static TimeZone,
+    zone: TimeZone,
+    /// Whether a date has been written or checked, which makes the reading differ from Tika's.
+    met: Cell<bool>,
 }
 
 impl Dates {
-    fn new() -> Result<Self, Problem> {
-        Ok(Self {
+    fn new() -> Self {
+        Self {
             format: SimpleDateFormat::new(DATE_PATTERN).expect("the date pattern compiles"),
-            zone: TimeZone::java_default().map_err(|_| {
-                Problem::Unread("the JVM's default time zone, which dates are written in")
-            })?,
+            zone: TimeZone::fixed(0),
+            met: Cell::new(false),
+        }
+    }
+
+    /// How the reading of a list differs from Tika's, once its dates are checked.
+    fn difference(&self) -> Option<Difference> {
+        self.met.get().then(|| {
+            Difference::new(
+                "a date, which Tika writes in the JVM's default time zone and the port in UTC",
+            )
         })
     }
 
     /// `NSDate`'s `Date` of `seconds` since 2001, as the pattern writes it.
     fn text(&self, seconds: f64) -> Result<String, Problem> {
+        self.met.set(true);
         let millis = EPOCH.wrapping_add((1000.0 * seconds) as i64);
         if millis.unsigned_abs() > MAX_DATE_MILLIS {
             return Err(Problem::Unread(
@@ -103,7 +117,7 @@ impl Dates {
             ));
         }
         self.format
-            .format(millis, self.zone)
+            .format(millis, &self.zone)
             .map_err(|_| Problem::Unread("a date the port does not format"))
     }
 }
@@ -363,12 +377,13 @@ fn type_by_keys(
 
 /// The binary list `input`, whose pages are `pages`, checked as dd-plist parses it: what
 /// writes it.
-fn binary_list<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Prepared<'a>, Problem> {
+fn binary_list<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Read<'a>, Problem> {
     let reader = Reader::open(input, pages)?;
     reader.validate()?;
-    let dates = Dates::new()?;
+    let dates = Dates::new();
     check(&reader, reader.top(), &dates, &mut 0)?;
-    Ok(Box::new(move |xhtml| {
+    let difference = dates.difference();
+    let reading: Prepared<'a> = Box::new(move |xhtml| {
         type_by_keys(xhtml, || {
             match reader.node(reader.top()).map_err(malformed)? {
                 Node::Dict(pairs) => Ok(Some(reader.kind(pairs).map_err(malformed)?)),
@@ -379,23 +394,28 @@ fn binary_list<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Prepared<'a>, Pr
         write_binary(&reader, reader.top(), &dates, xhtml)?;
         xhtml.end_element("plist")?;
         Ok(())
-    }))
+    });
+    Ok((reading, difference))
 }
+
+/// What writes a list, and how that differs from Tika's reading, if it does.
+type Read<'a> = (Prepared<'a>, Option<Difference>);
 
 /// The XML list `input`, whose pages are `pages`, read once as dd-plist reads it: what reads
 /// and writes it again.
-fn xml_list<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Prepared<'a>, Problem> {
+fn xml_list<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Read<'a>, Problem> {
     let dates = Dates::new();
-    let survey = xml::survey(input, pages, dates.as_ref().ok())?;
-    let dates = dates?;
+    let survey = xml::survey(input, pages, &dates)?;
     survey.checked()?;
-    Ok(Box::new(move |xhtml| {
+    let difference = dates.difference();
+    let reading: Prepared<'a> = Box::new(move |xhtml| {
         type_by_keys(xhtml, || Ok(survey.root_kind()))?;
         xhtml.start_element("plist")?;
         xml::write(input, pages, &survey, &dates, xhtml)?;
         xhtml.end_element("plist")?;
         Ok(())
-    }))
+    });
+    Ok((reading, difference))
 }
 
 /// Tika's `PListParser`.
@@ -440,12 +460,13 @@ impl Parser for PListParser {
                 "a property list that is neither binary nor XML",
             )),
         };
-        prepared.map_err(|problem| match problem {
+        let (reading, difference) = prepared.map_err(|problem| match problem {
             Problem::Unread(why) => Decline::Unread(why.to_owned()),
             Problem::Failed(reason) => {
                 Decline::Fails(Error::ParseError(format!("problem parsing root: {reason}")))
             }
-        })
+        })?;
+        unless_different(reading, difference)
     }
 }
 

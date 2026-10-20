@@ -418,11 +418,14 @@ pub(crate) mod tests {
 
     /// A zone of the zoneinfo files the reference dates were made with.
     pub(crate) fn zone(id: &str) -> TimeZone {
-        let directory =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rtf/zoneinfo");
-        TimeZone::by_id(id, &[directory])
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/rtf/zoneinfo")
+            .join(id);
+        let bytes =
+            std::fs::read(&path).unwrap_or_else(|e| panic!("the fixtures have no zone {id}: {e}"));
+        TimeZone::from_tzif_bytes(&bytes, id)
             .unwrap()
-            .unwrap_or_else(|| panic!("the fixtures have no zone {id}"))
+            .unwrap_or_else(|| panic!("the fixture zone {id} is not one Java reads"))
     }
 
     #[test]

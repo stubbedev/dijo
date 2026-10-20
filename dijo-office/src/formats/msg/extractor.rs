@@ -412,7 +412,7 @@ fn message_info(message: &Message, metadata: &mut TikaMetadata) -> Reading<()> {
         set(
             metadata,
             name::SUBMISSION_ACCEPTED_AT_TIME,
-            submission_date(submission)?.map(format_instant).as_deref(),
+            submission_date(submission).map(format_instant).as_deref(),
         );
     }
     Ok(())
@@ -430,15 +430,12 @@ fn submission<'m>(message: &'m Message<'_>) -> Option<&'m Submission> {
         })
 }
 
-/// The date of a submission id, in Java's default time zone.
-fn submission_date(submission: &Submission) -> Reading<Option<i64>> {
-    let Some([year, month, day, hour, minute, second]) = submission.date else {
-        return Ok(None);
-    };
-    let zone = TimeZone::java_default().map_err(|reason| {
-        Thrown::new(format!("Java's default time zone cannot be read: {reason}"))
-    })?;
-    Ok(Some(
+/// The date of a submission id, in UTC, as the `Z` that ends it says. POI reads it in the JVM's
+/// default time zone, so the same message gives different instants on machines in different
+/// zones.
+fn submission_date(submission: &Submission) -> Option<i64> {
+    let [year, month, day, hour, minute, second] = submission.date?;
+    Some(
         CalendarFields {
             year,
             month: month - 1,
@@ -448,15 +445,15 @@ fn submission_date(submission: &Submission) -> Reading<Option<i64>> {
             second,
             millisecond: 0,
         }
-        .epoch_millis(zone),
-    ))
+        .epoch_millis(&TimeZone::fixed(0)),
+    )
 }
 
 /// `getMessageDate`: the submission's date where the message has a submission id, else the
 /// first of its client submit, last modification and creation times.
 fn message_date(message: &Message) -> Reading<Option<i64>> {
     if let Some(submission) = submission(message) {
-        return submission_date(submission);
+        return Ok(submission_date(submission));
     }
     let Some(properties) = message.main.properties() else {
         return Ok(None);

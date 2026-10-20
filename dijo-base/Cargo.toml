@@ -23,7 +23,6 @@ deflate64 = "0.1.12"
 encoding_rs = "0.8.42"
 flate2 = "1.1.5"
 jiff-tzdb = "0.1.9"
-libc = { version = "0.2.178" }
 lz4_flex = "0.14.0"
 lzma-rust2 = { version = "0.21.0", default-features = false, features = ["std", "xz"] }
 md-5 = "0.11.0"
@@ -48,9 +47,6 @@ unicode-normalization = "0.1.25"
 unicode-script = "0.5.8"
 whirlpool = "0.11.0"
 zip = { version = "9.0.3", default-features = false, features = ["bzip2", "deflate-flate2-zlib-rs", "deflate64", "legacy-zip", "xz"] }
-
-[target.'cfg(windows)'.dependencies]
-jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-always"] }
 
 [dev-dependencies]
 brotli = "8.0.4"

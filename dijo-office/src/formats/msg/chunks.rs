@@ -98,7 +98,7 @@ pub(super) enum Value<'a> {
     Properties(PropertySet),
 }
 
-/// A message submission id, and the date in its `l=` part, as local calendar fields: neither
+/// A message submission id, and the date in its `l=` part, as UTC calendar fields: neither
 /// where POI leaves the chunk unread, as it does a directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Submission {
