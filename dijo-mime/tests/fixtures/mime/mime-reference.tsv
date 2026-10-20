@@ -288,6 +288,8 @@ quality	catalan.pdf	file	application/pdf	tk:content-type-magic-detected=applicat
 quality	catalan.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	chinese-gb18030.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	chinese-gb18030.txt	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
+quality	chinese-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	chinese-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	chinese-traditional-big5.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	chinese-traditional-big5.txt	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
 quality	chinese.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
@@ -392,10 +394,14 @@ quality	greek.pdf	file	application/pdf	tk:content-type-magic-detected=applicatio
 quality	greek.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	hebrew-cp1255.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	hebrew-cp1255.txt	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
+quality	hebrew-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	hebrew-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	hebrew.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
 quality	hebrew.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5915	zip:detector-zip-file-opened=true
 quality	hebrew.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	hebrew.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	hindi-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	hindi-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	hindi.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
 quality	hindi.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5990	zip:detector-zip-file-opened=true
 quality	hindi.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
@@ -438,6 +444,8 @@ quality	italian.pdf	file	application/pdf	tk:content-type-magic-detected=applicat
 quality	italian.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	japanese-euc-jp.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	japanese-euc-jp.txt	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
+quality	japanese-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	japanese-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	japanese-shift_jis.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	japanese-shift_jis.txt	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
 quality	japanese-vertical.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
@@ -596,6 +604,8 @@ quality	prose.pdf	file	application/pdf	tk:content-type-magic-detected=applicatio
 quality	prose.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	prose.rtf	file	application/rtf	tk:content-type-magic-detected=application/rtf
 quality	prose.rtf	bytes	application/rtf	tk:content-type-magic-detected=application/rtf
+quality	quixote-1605.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	quixote-1605.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	report-scan-skewed.tif	file	image/tiff	tk:content-type-magic-detected=image/tiff
 quality	report-scan-skewed.tif	bytes	image/tiff	tk:content-type-magic-detected=image/tiff
 quality	report-scan.tif	file	image/tiff	tk:content-type-magic-detected=image/tiff
@@ -694,6 +704,8 @@ quality	table.xlsx	file	application/vnd.openxmlformats-officedocument.spreadshee
 quality	table.xlsx	bytes	application/vnd.openxmlformats-officedocument.spreadsheetml.sheet	tk:content-type-magic-detected=application/zip	Content-Length=5848	zip:detector-zip-file-opened=true
 quality	thai-cp874.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	thai-cp874.txt	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
+quality	thai-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	thai-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	thai.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
 quality	thai.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5952	zip:detector-zip-file-opened=true
 quality	thai.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
