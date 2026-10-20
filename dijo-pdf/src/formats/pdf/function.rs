@@ -378,7 +378,7 @@ impl Sampled {
                     value = (value << 1) | i64::from(bit);
                     at += 1;
                 }
-                *sample = i64::from(value as i32);
+                *sample = value;
             }
         }
         Ok(Self {

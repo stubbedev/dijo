@@ -366,7 +366,9 @@ pub(super) enum Value {
     Double(f64),
     /// A date as the bits of the double Access keeps it as.
     Date(i64),
-    /// An extended date, which the extractor never writes.
+    /// An extended date, which the extractor never writes, so never reads either. Jackcess
+    /// parses its digits into a `long` that wraps, and fails the table on a date past
+    /// `LocalDateTime`'s range.
     ExtDate,
     Numeric(Decimal),
     Guid(String),
@@ -417,10 +419,7 @@ fn read_plain(
             Value::Numeric(numeric(&magnitude, negate, i64::from(scale)))
         }
         DataType::Guid => Value::Guid(guid(&bytes(data)?)),
-        DataType::ExtDateTime => {
-            check_extended_date(data)?;
-            Value::ExtDate
-        }
+        DataType::ExtDateTime => Value::ExtDate,
         DataType::ComplexType => Value::Complex(i32::from_le_bytes(bytes(data)?)),
         DataType::BigInt => Value::BigInt(i64::from_le_bytes(bytes(data)?)),
         DataType::Boolean => {
@@ -668,61 +667,4 @@ fn read_calculated_numeric(data: &[u8]) -> Result<Value, Thrown> {
         negate,
         i64::from(scale),
     )))
-}
-
-const EXT_EPOCH_DAY_MIN: i64 = -365_243_219_162;
-const EXT_EPOCH_DAY_MAX: i64 = 365_241_780_471;
-/// The epoch day of January 1 in the year 1.
-const EXT_BASE_EPOCH_DAY: i64 = -719_162;
-const NANOS_PER_SECOND: i64 = 1_000_000_000;
-const SECONDS_PER_DAY: i64 = 86_400;
-const NANOS_PER_DAY: i64 = NANOS_PER_SECOND * SECONDS_PER_DAY;
-
-/// Whether `readExtendedDateValue` reads the extended date: its days, seconds and hundreds of
-/// nanoseconds as digits added to January 1 in the year 1, which `LocalDateTime` refuses past
-/// its range.
-fn check_extended_date(data: &[u8]) -> Result<(), Thrown> {
-    let mut buffer = Buffer::new(data);
-    let mut number = |digits: usize| -> Result<i64, Thrown> {
-        let mut value: i64 = 0;
-        for _ in 0..digits {
-            let digit = i64::from(buffer.u8()? as i8 as u16) - i64::from(b'0');
-            value = value.wrapping_mul(10).wrapping_add(digit);
-        }
-        Ok(value)
-    };
-    let days = number(19)?;
-    let _ = number(1)?;
-    let seconds = number(12)?;
-    let nanos = number(7)?.wrapping_mul(100);
-    buffer.forward(3)?;
-    let out_of_range =
-        || Thrown::runtime("java.time.DateTimeException", "Invalid value for EpochDay");
-    let plus_days = |epoch_day: i64, days: i64| -> Result<i64, Thrown> {
-        if days == 0 {
-            return Ok(epoch_day);
-        }
-        let day = epoch_day.checked_add(days).ok_or_else(out_of_range)?;
-        if !(EXT_EPOCH_DAY_MIN..=EXT_EPOCH_DAY_MAX).contains(&day) {
-            return Err(out_of_range());
-        }
-        Ok(day)
-    };
-    let plus_time = |(day, nano_of_day): (i64, i64), days: i64, nanos: i64| {
-        let total = nanos + nano_of_day;
-        let days = days + total.div_euclid(NANOS_PER_DAY);
-        Ok::<_, Thrown>((plus_days(day, days)?, total.rem_euclid(NANOS_PER_DAY)))
-    };
-    let mut date_time = (plus_days(EXT_BASE_EPOCH_DAY, days)?, 0);
-    if seconds != 0 {
-        date_time = plus_time(
-            date_time,
-            seconds / SECONDS_PER_DAY,
-            seconds % SECONDS_PER_DAY * NANOS_PER_SECOND,
-        )?;
-    }
-    if nanos != 0 {
-        plus_time(date_time, nanos / NANOS_PER_DAY, nanos % NANOS_PER_DAY)?;
-    }
-    Ok(())
 }

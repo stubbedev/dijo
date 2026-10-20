@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use lopdf::{Dictionary, Object};
 
-use super::cos::{name_string, Pdf};
+use super::cos::{int_value, name_string, Pdf};
 use super::position::GlyphText;
 use crate::hash::FastMap;
 
@@ -275,16 +275,18 @@ impl Encoding {
             return encoding;
         };
         let mut differences = FastMap::default();
-        let mut index: i32 = -1;
+        let mut index = Some(-1);
         for item in array {
             match pdf.resolve(item) {
-                Some(Object::Integer(value)) => index = *value as i32,
-                Some(Object::Real(value)) => index = *value as i32,
+                Some(number @ (Object::Integer(_) | Object::Real(_))) => index = int_value(number),
                 Some(Object::Name(name)) => {
+                    let Some(code) = index else {
+                        continue;
+                    };
                     let name = name_string(name);
-                    encoding.overwrite(index, name.clone());
-                    differences.insert(index, name);
-                    index = index.wrapping_add(1);
+                    encoding.overwrite(code, name.clone());
+                    differences.insert(code, name);
+                    index = code.checked_add(1);
                 }
                 _ => {}
             }

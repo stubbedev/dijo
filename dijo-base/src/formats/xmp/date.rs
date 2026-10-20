@@ -202,7 +202,7 @@ pub fn try_to_parse(text: &str) -> Result<Option<i64>, Unported> {
         second,
         millisecond: 0,
     };
-    Ok(Some(fields.epoch_millis(&TimeZone::fixed(0))))
+    Ok(fields.epoch_millis(&TimeZone::fixed(0)))
 }
 
 fn simple_date_formats(text: &str) -> Unported {
@@ -257,7 +257,9 @@ fn big_endian(cursor: &mut Cursor) -> Result<Option<i64>, Unported> {
         second: second as i32,
         millisecond: 0,
     };
-    let millis = fields.epoch_millis(&TimeZone::fixed(0));
+    let Some(millis) = fields.epoch_millis(&TimeZone::fixed(0)) else {
+        return Ok(None);
+    };
     cursor.skip_optionals(" ");
     Ok(Some(millis))
 }

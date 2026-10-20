@@ -153,7 +153,7 @@ impl Parsed {
 /// field out of its range or a time skipped by a change of offset does not.
 fn strict(parsed: Parsed, zone: &TimeZone) -> Option<i64> {
     let fields = parsed.calendar()?;
-    let millis = fields.epoch_millis(zone);
+    let millis = fields.epoch_millis(zone)?;
     let local = time::local_fields(millis, zone);
     let matches = !local.before_christ
         && local.year == i64::from(fields.year)

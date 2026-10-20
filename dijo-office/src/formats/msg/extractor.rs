@@ -435,18 +435,16 @@ fn submission<'m>(message: &'m Message<'_>) -> Option<&'m Submission> {
 /// zones.
 fn submission_date(submission: &Submission) -> Option<i64> {
     let [year, month, day, hour, minute, second] = submission.date?;
-    Some(
-        CalendarFields {
-            year,
-            month: month - 1,
-            day,
-            hour,
-            minute,
-            second,
-            millisecond: 0,
-        }
-        .epoch_millis(&TimeZone::fixed(0)),
-    )
+    CalendarFields {
+        year,
+        month: month - 1,
+        day,
+        hour,
+        minute,
+        second,
+        millisecond: 0,
+    }
+    .epoch_millis(&TimeZone::fixed(0))
 }
 
 /// `getMessageDate`: the submission's date where the message has a submission id, else the

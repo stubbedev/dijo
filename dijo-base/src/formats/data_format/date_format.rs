@@ -334,7 +334,7 @@ pub(crate) fn java_date(value: f64, zone: &TimeZone, date_1904: bool) -> Option<
         second: 0,
         millisecond: milliseconds,
     };
-    Some(fields.epoch_millis(zone))
+    fields.epoch_millis(zone)
 }
 
 #[cfg(test)]

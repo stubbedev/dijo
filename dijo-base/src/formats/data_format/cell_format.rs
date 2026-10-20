@@ -1690,8 +1690,10 @@ impl DateFormatter {
         })
     }
 
-    /// The instant of a number of days since the start of 1904, as `formatValue` takes it.
-    fn instant_of_days(&self, days: f64, zone: &TimeZone) -> i64 {
+    /// The instant of a number of days since the start of 1904, as `formatValue` takes it, its
+    /// seconds rounded unless the format shows fractions of them. POI holds the seconds in an
+    /// `int`, which saturates for a date 68 years past 1904; this holds them in a `long`.
+    fn instant_of_days(&self, days: f64, zone: &TimeZone) -> Outcome<i64> {
         let epoch = CalendarFields {
             year: 1904,
             month: 0,
@@ -1701,25 +1703,32 @@ impl DateFormatter {
             second: 0,
             millisecond: 0,
         }
-        .epoch_millis(zone);
+        .epoch_millis(zone)
+        .expect("1904 lies within a long of milliseconds");
         let milliseconds = java_round(days * 86_400_000.0) as f64;
         if milliseconds == 0.0 {
-            return epoch;
+            return Ok(epoch);
         }
         let seconds = if self.seconds_format.is_none() {
             java_round(milliseconds / 1000.0) as f64
         } else {
             milliseconds / 1000.0
-        } as i32;
-        epoch
-            .wrapping_add(i64::from(seconds) * 1000)
-            .wrapping_add(i64::from((milliseconds % 1000.0) as i32))
+        } as i64;
+        seconds
+            .checked_mul(1000)
+            .and_then(|millis| millis.checked_add(epoch))
+            .and_then(|millis| millis.checked_add((milliseconds % 1000.0) as i64))
+            .ok_or_else(|| {
+                FormatError::Thrown(format!(
+                    "{days} days past 1904 lie beyond a long of milliseconds"
+                ))
+            })
     }
 
     fn format(&self, value: CellValue, zone: &TimeZone) -> Outcome<String> {
         let millis = match value {
             CellValue::Date(millis) => millis,
-            CellValue::Number(days) => self.instant_of_days(days, zone),
+            CellValue::Number(days) => self.instant_of_days(days, zone)?,
         };
         let pieces = self.format.pieces(millis, zone)?;
         let mut text = String::new();

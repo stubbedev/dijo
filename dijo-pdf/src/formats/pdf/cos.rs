@@ -998,14 +998,14 @@ fn object_stream_objects(
     }
     let mut source = Source::new(decoded);
     let first_object = i64::from(first) - 1;
-    let mut offsets: std::collections::BTreeMap<i32, i64> = std::collections::BTreeMap::new();
+    let mut offsets: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
     for _ in 0..count {
         if source.position() >= first_object {
             break;
         }
         let number = source.read_object_number()?;
         let offset = source.read_long()?;
-        offsets.insert(offset as i32, number);
+        offsets.insert(offset, number);
     }
     let distinct: HashSet<i64> = offsets.values().copied().collect();
     if distinct.len() < offsets.len() {
@@ -1027,7 +1027,7 @@ fn object_stream_objects(
                 "object number {number} in an object stream, which lopdf cannot hold"
             )))
         })?;
-        let at = i64::from(first) + i64::from(offset);
+        let at = i64::from(first).saturating_add(offset);
         if at > 0 && (lexer.position() as i64) < at {
             lexer.seek(at as usize);
         }
@@ -1163,11 +1163,14 @@ pub(super) fn is_dict(object: &Object) -> bool {
     as_dict(object).is_some()
 }
 
-/// `COSNumber.intValue`: an integer cast as Java casts a `long` to `int`, a real truncated.
+/// `COSNumber.intValue`: a number as an `int`, a real truncated, or none for one no `int` holds.
+/// PDFBox casts a `long` to an `int`, so that 4294967296 reads as 0, and saturates a real.
 pub(super) fn int_value(object: &Object) -> Option<i32> {
     match object {
-        Object::Integer(value) => Some(*value as i32),
-        Object::Real(value) => Some(*value as i32),
+        Object::Integer(value) => i32::try_from(*value).ok(),
+        Object::Real(value) if (i32::MIN as f32..i32::MAX as f32).contains(value) => {
+            Some(*value as i32)
+        }
         _ => None,
     }
 }
@@ -1280,7 +1283,10 @@ mod tests {
     fn numbers_convert_as_java_casts_them() {
         assert_eq!(int_value(&Object::Real(2.9)), Some(2));
         assert_eq!(int_value(&Object::Real(-2.9)), Some(-2));
-        assert_eq!(int_value(&Object::Integer(1 << 32)), Some(0));
+        assert_eq!(int_value(&Object::Integer(1 << 32)), None);
+        assert_eq!(int_value(&Object::Integer(-(1 << 31))), Some(i32::MIN));
+        assert_eq!(int_value(&Object::Real(3e9)), None);
+        assert_eq!(int_value(&Object::Real(f32::NAN)), None);
         assert_eq!(float_value(&Object::Integer(3)), Some(3.0));
         assert_eq!(int_value(&Object::Null), None);
     }

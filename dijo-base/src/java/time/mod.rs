@@ -40,8 +40,9 @@ enum CalendarSystem {
 
 impl CalendarFields {
     /// The milliseconds since the epoch `GregorianCalendar.getTimeInMillis()` gives for these
-    /// fields in `zone`. Java's `long` arithmetic wraps, and so does this.
-    pub fn epoch_millis(self, zone: &TimeZone) -> i64 {
+    /// fields in `zone`, or none when the instant lies beyond what a `long` of milliseconds
+    /// holds. Java's arithmetic wraps there, into an instant the fields do not name.
+    pub fn epoch_millis(self, zone: &TimeZone) -> Option<i64> {
         let time_of_day = ((i64::from(self.hour) * 60 + i64::from(self.minute)) * 60
             + i64::from(self.second))
             * 1000
@@ -52,46 +53,32 @@ impl CalendarFields {
             time_of_day += MILLIS_PER_DAY;
             fixed_date -= 1;
         }
-        let fixed_date = if self.year > CUTOVER_YEAR {
-            let gregorian = fixed_date + self.fixed_date(CalendarSystem::Gregorian);
-            if gregorian >= CUTOVER_FIXED_DATE {
-                gregorian
-            } else {
-                fixed_date + self.fixed_date(CalendarSystem::Julian)
-            }
-        } else if self.year < CUTOVER_YEAR {
-            fixed_date + self.fixed_date(CalendarSystem::Julian)
+        let fixed_date = if self.year < CUTOVER_YEAR {
+            fixed_date + self.fixed_date(CalendarSystem::Julian)?
         } else {
-            let gregorian = fixed_date + self.fixed_date(CalendarSystem::Gregorian);
+            let gregorian = fixed_date + self.fixed_date(CalendarSystem::Gregorian)?;
             if gregorian >= CUTOVER_FIXED_DATE {
                 gregorian
             } else {
-                fixed_date + self.fixed_date(CalendarSystem::Julian)
+                fixed_date + self.fixed_date(CalendarSystem::Julian)?
             }
         };
         let wall = (fixed_date - EPOCH_FIXED_DATE)
-            .wrapping_mul(MILLIS_PER_DAY)
-            .wrapping_add(time_of_day);
-        wall.wrapping_sub(zone.offset_by_wall(wall))
+            .checked_mul(MILLIS_PER_DAY)?
+            .checked_add(time_of_day)?;
+        wall.checked_sub(zone.offset_by_wall(wall))
     }
 
     /// `GregorianCalendar.getFixedDate` for a month and day of month: the month carried into the
-    /// year, then the day counted from the month's first.
-    fn fixed_date(self, system: CalendarSystem) -> i64 {
-        let mut year = self.year;
-        let mut month = self.month;
-        if month > 11 {
-            year = year.wrapping_add(month / 12);
-            month %= 12;
-        } else if month < 0 {
-            year = year.wrapping_add(month.div_euclid(12));
-            month = month.rem_euclid(12);
-        }
+    /// year, then the day counted from the month's first; none for a year past an `int`'s.
+    fn fixed_date(self, system: CalendarSystem) -> Option<i64> {
+        let year = self.year.checked_add(self.month.div_euclid(12))?;
+        let month = self.month.rem_euclid(12);
         let first = match system {
             CalendarSystem::Gregorian => gregorian_fixed_date(year, month + 1),
             CalendarSystem::Julian => julian_fixed_date(year, month + 1),
         };
-        first + i64::from(self.day) - 1
+        Some(first + i64::from(self.day) - 1)
     }
 }
 
@@ -457,6 +444,7 @@ pub(crate) mod tests {
         let mut zones = std::collections::BTreeMap::new();
         let mut differences = Vec::new();
         let mut count = 0;
+        let mut beyond = 0;
         for line in text.lines() {
             let fields: Vec<&str> = line.split('\t').collect();
             let (millis, expected) = match fields.as_slice() {
@@ -472,7 +460,12 @@ pub(crate) mod tests {
                         second: 0,
                         millisecond: 0,
                     };
-                    (fields.epoch_millis(zone), *expected)
+                    let Some(millis) = fields.epoch_millis(zone) else {
+                        assert!(beyond_a_long(fields), "{line} is within a long");
+                        beyond += 1;
+                        continue;
+                    };
+                    (millis, *expected)
                 }
                 _ => panic!("dates.tsv has a bad line: {line}"),
             };
@@ -484,11 +477,31 @@ pub(crate) mod tests {
         }
         assert!(count > 10_000);
         assert!(
+            beyond > 0 && beyond < count / 10,
+            "{beyond} of {count} beyond a long"
+        );
+        assert!(
             differences.is_empty(),
             "{} of {count} differ:\n{}",
             differences.len(),
             differences[..differences.len().min(40)].join("\n")
         );
+    }
+
+    /// Whether the instant of `fields` lies beyond a `long` of milliseconds, by days counted
+    /// without overflow.
+    fn beyond_a_long(fields: CalendarFields) -> bool {
+        let Some(year) = fields.year.checked_add(fields.month.div_euclid(12)) else {
+            return true;
+        };
+        let days = i128::from(gregorian_fixed_date(year, fields.month.rem_euclid(12) + 1))
+            + i128::from(fields.day)
+            - i128::from(EPOCH_FIXED_DATE);
+        let millis = days * i128::from(MILLIS_PER_DAY)
+            + i128::from(fields.hour) * 3_600_000
+            + i128::from(fields.minute) * 60_000;
+        i64::try_from(millis).is_err()
+            || i64::try_from(millis.abs() + 2 * i128::from(MILLIS_PER_DAY)).is_err()
     }
 
     #[test]

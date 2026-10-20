@@ -771,10 +771,12 @@ impl<'a> Lexer<'a> {
         else {
             return Ok(Some(Object::Null));
         };
-        if number <= 0 || (generation as i32) < 0 {
-            return Ok(Some(Object::Null));
+        match i32::try_from(generation) {
+            Ok(generation) if number > 0 && generation >= 0 => {
+                reference(number, generation).map(Some)
+            }
+            _ => Ok(Some(Object::Null)),
         }
-        reference(number, generation as i32).map(Some)
     }
 
     /// `BaseParser.readUntilEndOfCOSDictionary`: whether the stream ran out or the object ended.
@@ -836,13 +838,15 @@ impl<'a> Lexer<'a> {
                         array.pop();
                         if let Some(&Object::Integer(number)) = array.last() {
                             array.pop();
-                            if number >= 0 && generation as i32 >= 0 {
-                                if !self.file {
-                                    return Err(Nested::Stop);
+                            if let Ok(generation @ 0..) = i32::try_from(generation) {
+                                if number >= 0 {
+                                    if !self.file {
+                                        return Err(Nested::Stop);
+                                    }
+                                    array.push(reference(number, generation)?);
+                                    self.skip_spaces();
+                                    continue;
                                 }
-                                array.push(reference(number, generation as i32)?);
-                                self.skip_spaces();
-                                continue;
                             }
                         }
                     }

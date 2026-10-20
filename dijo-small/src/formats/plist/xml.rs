@@ -1166,7 +1166,8 @@ fn date(text: &str) -> Result<f64, Problem> {
         second,
         millisecond: 0,
     }
-    .epoch_millis(&TimeZone::fixed(0));
+    .epoch_millis(&TimeZone::fixed(0))
+    .ok_or_else(unread)?;
     Ok((millis - EPOCH) as f64 / 1000.0)
 }
 

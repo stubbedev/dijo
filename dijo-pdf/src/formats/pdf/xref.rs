@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use lopdf::{Dictionary, Object, ObjectId, Stream};
 
 use super::content::{is_digit, is_end_of_name, is_whitespace, Lexer};
-use super::cos::OBJECT_READ;
+use super::cos::{int_value, OBJECT_READ};
 use super::security::DocumentId;
 use super::Unported;
 use crate::formats::Difference;
@@ -965,13 +965,13 @@ fn trailer_long(dict: &Dictionary, key: &[u8], referenced: &mut Referenced) -> R
     })
 }
 
-/// `COSDictionary.getInt(key, -1)` of a trailer, a reference followed with `referenced`.
+/// `COSDictionary.getInt(key, -1)` of a trailer, a reference followed with `referenced`: -1
+/// also for a number no `int` holds.
 fn trailer_int(dict: &Dictionary, key: &[u8], referenced: &mut Referenced) -> Read<i64> {
-    Ok(match trailer_number(dict, key, referenced)? {
-        Some(Object::Integer(value)) => i64::from(value as i32),
-        Some(Object::Real(value)) => i64::from(value as i32),
-        _ => -1,
-    })
+    Ok(trailer_number(dict, key, referenced)?
+        .as_ref()
+        .and_then(int_value)
+        .map_or(-1, i64::from))
 }
 
 /// `XrefTrailerResolver.XrefTrailerObj`.
@@ -1594,11 +1594,7 @@ fn xref_stream_entries(dict: &Dictionary, data: &[u8]) -> Read<Vec<(Key, Locatio
     }
     let w: Vec<i64> = w_array
         .iter()
-        .map(|value| match value {
-            Object::Integer(value) => i64::from(*value as i32),
-            Object::Real(value) => i64::from(*value as i32),
-            _ => 0,
-        })
+        .map(|value| int_value(value).map_or(0, i64::from))
         .collect();
     if w.iter().any(|&width| width < 0) || w.iter().sum::<i64>() > MAX_ENTRY_BYTES {
         return Err(Thrown::Io);
@@ -1612,11 +1608,11 @@ fn xref_stream_entries(dict: &Dictionary, data: &[u8]) -> Read<Vec<(Key, Locatio
             })
             .collect::<Read<_>>()?,
         _ => {
-            let size = match dict.get(b"Size") {
-                Ok(Object::Integer(size)) => i64::from(*size as i32),
-                Ok(Object::Real(size)) => i64::from(*size as i32),
-                _ => 0,
-            };
+            let size = dict
+                .get(b"Size")
+                .ok()
+                .and_then(int_value)
+                .map_or(0, i64::from);
             vec![0, size]
         }
     };
@@ -2059,13 +2055,9 @@ fn object_stream_numbers(
     Ok(numbers)
 }
 
-/// `COSDictionary.getInt(key)`: a direct number's value, or -1.
+/// `COSDictionary.getInt(key)`: a direct number's value, or -1, also for one no `int` holds.
 fn int_entry(dict: &Dictionary, key: &[u8]) -> i64 {
-    match dict.get(key) {
-        Ok(Object::Integer(value)) => i64::from(*value as i32),
-        Ok(Object::Real(value)) => i64::from(*value as i32),
-        _ => -1,
-    }
+    dict.get(key).ok().and_then(int_value).map_or(-1, i64::from)
 }
 
 #[cfg(test)]

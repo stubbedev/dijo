@@ -21,7 +21,7 @@ use lopdf::{Dictionary, Document, Object};
 use md5::{Digest, Md5};
 use rc4::{KeyInit, Rc4, StreamCipher};
 
-use super::cos::{class_cast, name_string, text_string};
+use super::cos::{class_cast, int_value, name_string, text_string};
 use crate::formats::thrown::{Exception, Thrown};
 
 /// What a document lets the one who opened it do, as PDFBox's `AccessPermission` holds it.
@@ -494,13 +494,13 @@ fn filter(dictionary: &Dictionary) -> Option<String> {
     }
 }
 
-/// `COSDictionary.getInt`: a number entry as Java's `int` holds it, or `default`.
+/// `COSDictionary.getInt`: a number entry that fits an `int`, or `default`.
 fn int(dictionary: &Dictionary, key: &[u8], default: i32) -> i32 {
-    match dictionary.get(key) {
-        Ok(Object::Integer(value)) => *value as i32,
-        Ok(Object::Real(value)) => *value as i32,
-        _ => default,
-    }
+    dictionary
+        .get(key)
+        .ok()
+        .and_then(int_value)
+        .unwrap_or(default)
 }
 
 /// The bytes PDFBox makes of `password` for the AES-256 encryption of revision `revision` of

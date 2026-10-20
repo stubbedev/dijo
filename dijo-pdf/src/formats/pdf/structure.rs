@@ -269,8 +269,10 @@ impl<'p, S> StructureIndex<'p, S> {
             };
             match kid {
                 Object::Integer(mcid) => {
-                    if let (Some(parent), Some(page)) = (parent, page) {
-                        self.add_leaf(parent, page, *mcid as i32);
+                    if let (Some(parent), Some(page), Ok(mcid)) =
+                        (parent, page, i32::try_from(*mcid))
+                    {
+                        self.add_leaf(parent, page, mcid);
                     }
                 }
                 Object::Array(_) => Self::push_kids(&mut stack, kid, parent, depth, page),
