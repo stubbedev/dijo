@@ -1,9 +1,12 @@
 //! Our Java `PreparingOcrParser`'s reading of an image: prepared first, turned upright by its
 //! EXIF orientation and by the skew of its text lines, and resized so its text lines are of a
 //! size tesseract reads well and fast, then read as it is: with the automatic language, as
-//! upright text in the script the extraction assumes. When tesseract is not confident of that
-//! reading, its orientation and script detection runs: the image is turned by the quarter turns
-//! it finds and, with the automatic language, read with a model for the script it finds.
+//! upright text in the script and model the extraction assumes. When tesseract is not confident
+//! of that reading, its orientation and script detection runs: the image is turned by the
+//! quarter turns it finds and, with the automatic language, read with a model for the script it
+//! finds. With the automatic language, a reading whose language is detected is then read again
+//! with that language's model, when one is installed. A reading tesseract is not confident of
+//! and that is in no language is taken for noise, such as a texture or blank paper, and dropped.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,10 +15,13 @@ use super::bitmap::Bitmap;
 use super::flatten::flatten;
 use super::prepare::{self, Orientation};
 use super::report::Report;
-use super::script::{installed_language, language, written_in};
+use super::script::{installed_language, language, language_model, written_in};
 use super::tesseract::{OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding};
 use super::text::corrected;
 use crate::config::TesseractOcrConfig;
+use crate::formats::embedded::OcrLanguage;
+use crate::language::{self as detection, DetectedLanguage};
+use crate::unicode::is_letter;
 
 /// The most pixels an image may have to be prepared; a larger one is read as it is.
 pub(crate) const MAX_PIXELS: u64 = 60_000_000;
@@ -27,6 +33,10 @@ const ASSUMED_SCRIPT: &str = "Latin";
 /// The mean word confidence above which a first reading as upright Latin text stands: upright
 /// pages of Latin script read at 90 or more, other scripts and turned pages at 60 or less.
 const MIN_CONFIDENCE: i32 = 80;
+/// The mean word confidence below which a reading is taken for noise when it is mostly digits
+/// and marks, or in no language detected with confidence: tesseract reads a texture or blank
+/// paper at 40 or so, and pages of text at 80 or more.
+const MIN_TEXT_CONFIDENCE: i32 = 50;
 /// Scripts tesseract's detection takes for others (Armenian for upside-down Latin, Georgian for
 /// Malayalam), tried in turn when no reading of an image with plenty of text is confident.
 const OVERLOOKED_SCRIPTS: [&str; 2] = ["Armenian", "Georgian"];
@@ -125,11 +135,11 @@ impl<'a> Image<'a> {
     }
 }
 
-/// How an image was read, and the script it taught the extraction, if any.
+/// How an image was read, and the script and model it taught the extraction, if any.
 #[derive(Debug)]
 pub struct Recognized {
     pub read: Attempt,
-    pub learned: Option<String>,
+    pub learned: Option<OcrLanguage>,
 }
 
 /// A way an image was prepared and what tesseract read in it that way.
@@ -137,9 +147,19 @@ pub struct Recognized {
 pub struct Attempt {
     prepared: Prepared,
     reading: Option<Reading>,
+    /// Whether what tesseract read was taken for noise and dropped.
+    noise: bool,
 }
 
 impl Attempt {
+    fn read(prepared: Prepared, reading: Reading) -> Self {
+        Self {
+            prepared,
+            reading: Some(reading),
+            noise: false,
+        }
+    }
+
     fn confidence(&self) -> i32 {
         self.reading
             .as_ref()
@@ -166,6 +186,37 @@ impl Attempt {
         }
     }
 
+    /// The language of what was read, when it is detected with confidence.
+    fn detected_language(&self) -> Option<DetectedLanguage> {
+        let reading = self.reading.as_ref()?;
+        detection::detect(&reading.text).filter(|detected| detected.reliable)
+    }
+
+    /// This attempt, its text dropped when it is noise: text tesseract read with less than
+    /// [`MIN_TEXT_CONFIDENCE`] that is not mostly letters, such as the digits and marks it reads
+    /// in a texture, or is in no language detected with confidence.
+    fn without_noise(mut self) -> Self {
+        let noise = self.reading.as_ref().is_some_and(|reading| {
+            reading.confidence < MIN_TEXT_CONFIDENCE
+                && !reading.text.trim().is_empty()
+                && (!mostly_letters(&reading.text) || self.detected_language().is_none())
+        });
+        if let Some(reading) = self.reading.as_mut().filter(|_| noise) {
+            reading.text.clear();
+            self.noise = true;
+        }
+        self
+    }
+
+    /// The script and model it was read in, with the automatic language.
+    fn language(&self) -> Option<OcrLanguage> {
+        let prepared = &self.prepared;
+        prepared.script.as_ref().map(|script| OcrLanguage {
+            script: script.clone(),
+            model: prepared.model.clone(),
+        })
+    }
+
     /// The report of how the image was read, on a page when it is one.
     pub fn report(&self, page: Option<u32>) -> String {
         let prepared = &self.prepared;
@@ -183,6 +234,7 @@ impl Attempt {
                 prepared.scale,
                 prepared.uneven_lighting,
             )
+            .noise(self.noise)
             .json()
     }
 
@@ -190,6 +242,17 @@ impl Attempt {
     pub fn text(&self) -> Option<&str> {
         self.reading.as_ref().map(|reading| reading.text.as_str())
     }
+}
+
+/// Whether most of the characters of a text, but for whitespace, are letters.
+fn mostly_letters(text: &str) -> bool {
+    let (characters, letters) = text
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .fold((0u64, 0u64), |(characters, letters), c| {
+            (characters + 1, letters + u64::from(is_letter(c)))
+        });
+    letters * 2 > characters
 }
 
 /// The words of `text`: the pieces between runs of whitespace. Our Java counted
@@ -316,24 +379,29 @@ impl<'t> Recognizer<'t> {
         }
     }
 
-    /// Prepares an image and reads it: what is read, how, and the script the extraction learns
-    /// from it, if any. The image is first read as it is, upright text with the automatic
-    /// language in the script assumed, or in the configured language otherwise. Only when
-    /// tesseract is not confident of that reading does its orientation and script detection
-    /// run; the image is then turned by the quarter turns it finds and, with the automatic
-    /// language, read with a model for the script it finds, unless that would read it as
-    /// before. When no reading of an image with at least [`MIN_WORDS_TO_RETRY`] words is
+    /// Prepares an image and reads it: what is read, how, and the script and model the
+    /// extraction learns from it, if any. The image is first read as it is, upright text with
+    /// the automatic language in the script and model assumed, or in the configured language
+    /// otherwise. Only when tesseract is not confident of that reading does its orientation and
+    /// script detection run; the image is then turned by the quarter turns it finds and, with
+    /// the automatic language, read with a model for the script it finds, unless that would read
+    /// it as before. When no reading of an image with at least [`MIN_WORDS_TO_RETRY`] words is
     /// confident, the scripts detection overlooks are tried as well, and the most confident
-    /// reading is kept. Without a reading when the image is outside the configured limits.
+    /// reading is kept. With the automatic language, the image is read again with the model of
+    /// the language detected in the best reading, and the more confident reading kept. A reading
+    /// that is noise has its text dropped. Without a reading when the image is outside the
+    /// configured limits.
     ///
-    /// `assumed` is the script to read it in first with the automatic language: the one
-    /// detection last found in this extraction, or none for Latin, the most common kind.
+    /// `assumed` is the script and model to read it in first with the automatic language: the
+    /// ones an earlier image of this extraction settled on, or none for Latin, the most common
+    /// kind, with its model. The extraction learns the script and model of the reading kept when
+    /// they differ from those, unless it is noise.
     ///
     /// The images prepared to read it are freed once it is read: what was read keeps none.
     pub fn recognize(
         &self,
         image: &Image<'_>,
-        assumed: Option<&str>,
+        assumed: Option<&OcrLanguage>,
     ) -> Result<Recognized, OcrError> {
         let mut recognized = self.recognize_preparing(image, assumed)?;
         recognized.read.prepared.image = None;
@@ -344,32 +412,67 @@ impl<'t> Recognizer<'t> {
     fn recognize_preparing(
         &self,
         image: &Image<'_>,
-        assumed: Option<&str>,
+        assumed: Option<&OcrLanguage>,
     ) -> Result<Recognized, OcrError> {
         let auto = self.settings.auto();
         let oriented = Oriented::of(image);
-        let assumed_script = auto.then(|| assumed.unwrap_or(ASSUMED_SCRIPT).to_owned());
-        let first_model = self.model(assumed_script.as_deref())?;
-        let first = finish(image, &oriented, assumed_script, first_model, 0);
+        let first_language = match (auto, assumed) {
+            (false, _) => None,
+            (true, Some(assumed)) => Some(assumed.clone()),
+            (true, None) => Some(OcrLanguage {
+                script: ASSUMED_SCRIPT.to_owned(),
+                model: self.model(Some(ASSUMED_SCRIPT))?,
+            }),
+        };
+        let first = match &first_language {
+            Some(OcrLanguage { script, model }) => {
+                finish(image, &oriented, Some(script.clone()), model.clone(), 0)
+            }
+            None => finish(image, &oriented, None, self.model(None)?, 0),
+        };
         if image.file_size > MAX_FILE_SIZE {
             return Ok(Recognized {
                 read: Attempt {
                     prepared: first,
                     reading: None,
+                    noise: false,
                 },
                 learned: None,
             });
         }
-        let optimistic = self.read(image, &first)?;
-        if optimistic.confidence > MIN_CONFIDENCE {
-            return Ok(Recognized {
-                read: Attempt {
-                    prepared: first,
-                    reading: Some(optimistic),
-                },
-                learned: None,
-            });
+        let optimistic = Attempt::read(first.clone(), self.read(image, &first)?);
+        let mut best = match optimistic.confident() {
+            true => optimistic,
+            false => self.read_detected(optimistic, image, &oriented)?,
+        };
+        if auto {
+            best = self.read_in_detected_language(best, image, &oriented)?;
         }
+        let best = best.without_noise();
+        let learned = match best.noise {
+            true => None,
+            false => best
+                .language()
+                .filter(|read| Some(read) != first_language.as_ref()),
+        };
+        Ok(Recognized {
+            read: best,
+            learned,
+        })
+    }
+
+    /// Runs orientation and script detection on an image tesseract did not read confidently
+    /// first, and reads it turned upright by the quarter turns it finds and, with the automatic
+    /// language, with a model for the script it finds, then in the scripts detection overlooks
+    /// when no reading of plenty of words is confident: the most confident reading.
+    fn read_detected(
+        &self,
+        optimistic: Attempt,
+        image: &Image<'_>,
+        oriented: &Oriented,
+    ) -> Result<Attempt, OcrError> {
+        let auto = self.settings.auto();
+        let first = optimistic.prepared.clone();
         let detected = self.tesseract.detect(pixels_of(image, &first))?;
         let reported = detected.script;
         let script = reported.as_ref().filter(|_| auto).map(|reported| {
@@ -379,43 +482,66 @@ impl<'t> Recognizer<'t> {
                 .map_or_else(|| reported.clone(), |(_, read)| (*read).to_owned())
         });
         let model = self.model(script.as_deref())?;
-        let mut learned = script.clone();
-        let mut best = Attempt {
-            prepared: first.clone(),
-            reading: Some(optimistic),
-        };
+        let mut best = optimistic;
         let mut fallback = first.clone();
         if detected.clockwise_quarter_turns != 0 || model != first.model {
             fallback = prepare_again(
                 &first,
                 image,
-                &oriented,
+                oriented,
                 script,
                 model,
                 detected.clockwise_quarter_turns,
             );
             let reading = self.read(image, &fallback)?;
-            best = best.or(Attempt {
-                prepared: fallback.clone(),
-                reading: Some(reading),
-            });
+            best = best.or(Attempt::read(fallback.clone(), reading));
         }
-        if auto && !best.confident() && best.words() >= MIN_WORDS_TO_RETRY {
-            let tried: Vec<&str> = [&first, &fallback]
-                .into_iter()
-                .filter(|read| read.quarter_turns == 0)
-                .filter_map(|read| read.script.as_deref())
-                .collect();
-            let scripts = overlooked(reported.as_deref(), &tried);
-            best = self.read_overlooked(best, &scripts, image, &oriented)?;
-            if best.prepared.script.is_some() {
-                learned = best.prepared.script.clone();
-            }
+        if !auto || best.confident() || best.words() < MIN_WORDS_TO_RETRY {
+            return Ok(best);
         }
-        Ok(Recognized {
-            read: best,
-            learned,
-        })
+        let tried: Vec<&str> = [&first, &fallback]
+            .into_iter()
+            .filter(|read| read.quarter_turns == 0)
+            .filter_map(|read| read.script.as_deref())
+            .collect();
+        let scripts = overlooked(reported.as_deref(), &tried);
+        self.read_overlooked(best, &scripts, image, oriented)
+    }
+
+    /// Reads an image again with the installed model of the language detected with confidence
+    /// in its best reading so far, in the script it was read in, unless it was read with that
+    /// model: the more confident reading.
+    fn read_in_detected_language(
+        &self,
+        best: Attempt,
+        image: &Image<'_>,
+        oriented: &Oriented,
+    ) -> Result<Attempt, OcrError> {
+        let Some(script) = best.prepared.script.as_deref() else {
+            return Ok(best);
+        };
+        let Some(detected) = best
+            .detected_language()
+            .filter(|detected| detected.script == script)
+        else {
+            return Ok(best);
+        };
+        let installed = self.tesseract.languages()?;
+        let Some(model) = language_model(&installed, detected.code, script)
+            .filter(|model| *model != best.prepared.model)
+        else {
+            return Ok(best);
+        };
+        let retried = prepare_again(
+            &best.prepared,
+            image,
+            oriented,
+            Some(script.to_owned()),
+            model.to_owned(),
+            best.prepared.quarter_turns,
+        );
+        let reading = self.read(image, &retried)?;
+        Ok(best.or(Attempt::read(retried, reading)))
     }
 
     /// Reads an image in the given scripts in turn, until one reads it confidently, passing over
@@ -447,21 +573,21 @@ impl<'t> Recognizer<'t> {
             );
             let reading = self.read(image, &retried)?;
             if written_in(&reading.text, script) {
-                overlooked = overlooked.or(Attempt {
-                    prepared: retried,
-                    reading: Some(reading),
-                });
+                overlooked = overlooked.or(Attempt::read(retried, reading));
             }
         }
         Ok(overlooked)
     }
 
     /// The model to read a script with: with the automatic language, the one for the script,
-    /// else the configured one.
+    /// else the configured one, which must be installed.
     fn model(&self, script: Option<&str>) -> Result<String, OcrError> {
         Ok(match &self.settings.language {
-            Language::Auto => language(&self.tesseract.languages()?, script),
-            Language::Configured(language) => language.clone(),
+            Language::Auto => language(self.tesseract.languages()?.as_ref(), script),
+            Language::Configured(language) => {
+                self.tesseract.check_installed(language)?;
+                language.clone()
+            }
         })
     }
 
@@ -636,6 +762,61 @@ mod tests {
         assert_eq!(word_count("   "), 0);
         assert_eq!(word_count("one two\n\nthree "), 3);
         assert_eq!(word_count(" one two"), 2);
+    }
+
+    fn attempt(text: &str, confidence: i32) -> Attempt {
+        Attempt::read(
+            Prepared::unprepared(Some("Latin".to_owned()), "script/Latin".to_owned()),
+            Reading {
+                text: text.to_owned(),
+                confidence,
+            },
+        )
+    }
+
+    const SPANISH: &str = "En un lugar de la Mancha, de cuyo nombre no quiero acordarme, no ha mucho \
+                           tiempo que vivia un hidalgo de los de lanza en astillero, adarga antigua, \
+                           rocin flaco y galgo corredor.";
+
+    #[test]
+    fn drops_the_digits_and_marks_read_in_a_texture() {
+        let texture = attempt("0 0\nرن 0\nس6 0 7 4-00\n4« ور 00 .6 5_7 7 83\nقي 70 0", 40);
+        let dropped = texture.without_noise();
+        assert!(dropped.noise);
+        assert_eq!(dropped.text(), Some(""));
+        assert!(dropped.report(None).ends_with(",\"noise\":true}"));
+    }
+
+    #[test]
+    fn drops_letters_read_in_a_texture_in_no_language() {
+        let texture = attempt(
+            "EEE NEON EEA IERS AER TOEN ERA NEEESE RE EEL KOSEGOL JORIE",
+            26,
+        );
+        assert!(texture.without_noise().noise);
+    }
+
+    #[test]
+    fn keeps_text_in_a_language_read_with_little_confidence() {
+        let kept = attempt(SPANISH, 45).without_noise();
+        assert!(!kept.noise);
+        assert_eq!(kept.text(), Some(SPANISH));
+    }
+
+    #[test]
+    fn keeps_digits_read_with_confidence() {
+        let table = "2019 2020 2021\n1 204,50 1 310,00 1 422,75\n-3,2% 8,8% 8,5%";
+        let kept = attempt(table, 91).without_noise();
+        assert!(!kept.noise);
+        assert_eq!(kept.text(), Some(table));
+        assert!(!kept.report(None).contains("noise"));
+    }
+
+    #[test]
+    fn tells_text_that_is_mostly_letters() {
+        assert!(mostly_letters(SPANISH));
+        assert!(!mostly_letters("0 0 7 4-00 .6 5_7 رن"));
+        assert!(!mostly_letters(""));
     }
 
     #[test]

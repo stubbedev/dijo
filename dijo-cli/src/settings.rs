@@ -13,6 +13,12 @@ use crate::render::RenderOptions;
 /// even when the text is intact.
 const AUTO_OCR_PAGES: &str = "50%,10";
 
+/// An OCR language as `--ocr-lang` and the server's `ocr_lang` take it, or why it cannot be read
+/// with: a model of it is not installed.
+pub fn ocr_language(language: &str) -> Result<String, String> {
+    dijo_core::check_ocr_language(language).map(|()| language.to_owned())
+}
+
 /// Builds the extractor for one set of extraction options, shared by the command line and the
 /// server.
 pub fn extractor(

@@ -313,6 +313,26 @@ fn ocr_language_reaches_tesseract() {
     );
 }
 
+#[test]
+fn an_ocr_language_that_is_not_installed_is_a_usage_error_naming_those_that_are() {
+    let output = dijo(&["--ocr-lang", "eng+xyz", &document("ara-ocr.png")]);
+    assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+    let message = stderr(&output);
+    assert!(
+        message.contains("The OCR language xyz is not installed"),
+        "{message}"
+    );
+    assert!(message.contains("spa"), "{message}");
+    assert!(!message.contains("Exception"), "{message}");
+    assert!(stdout(&output).is_empty());
+}
+
+#[test]
+fn every_national_language_of_europe_is_an_ocr_language() {
+    let output = dijo(&["--ocr-lang", "spa+fra+ita+pol", &document("eng-ocr.pdf")]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
 fn json_objects(args: &[&str]) -> Vec<serde_json::Value> {
     let mut all = vec!["--format", "json", "--metadata", "--raw-metadata"];
     all.extend_from_slice(args);

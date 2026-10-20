@@ -171,7 +171,7 @@
                   },
                   "language": {
                     "type": "string",
-                    "description": "The tesseract model read with, such as eng, ara or script/Latin."
+                    "description": "The tesseract model read with, such as eng, ara, script/Latin, or without --ocr-lang the model of the language detected in the text, such as spa."
                   },
                   "script": {
                     "type": "string",
@@ -215,6 +215,10 @@
                   "thresholded": {
                     "type": "boolean",
                     "description": "Whether the image was thresholded for uneven lighting."
+                  },
+                  "noise": {
+                    "const": true,
+                    "description": "Present when what tesseract read was taken for noise, such as a texture or blank paper, and dropped: it read it with low confidence, and no language was detected in it."
                   }
                 }
               }

@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{c_char, c_float, c_int, CStr, CString};
 use std::fmt;
 use std::ptr::NonNull;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::memory;
@@ -25,6 +25,8 @@ use crate::memory;
 const IDLE: Duration = Duration::from_secs(5 * 60);
 /// The model orientation and script detection runs with.
 const OSD_MODEL: &str = "osd";
+/// What joins the models of a language read with more than one, as `-l eng+deu` does.
+const MODEL_SEPARATOR: char = '+';
 /// The extension of a model's file.
 const MODEL_EXTENSION: &str = ".traineddata";
 /// `PSM_OSD_ONLY`.
@@ -274,6 +276,12 @@ pub enum OcrError {
     Failed { image: String, model: String },
     /// It could not load a model.
     Model { model: String },
+    /// A model asked for is not installed: neither bundled with the build nor where the
+    /// tesseract on the `PATH` reads its models.
+    NotInstalled {
+        model: String,
+        installed: Vec<String>,
+    },
     /// The models it reads with could not be listed.
     Models { dir: String, reason: String },
     /// The tesseract the build carries could not be set up, for this reason.
@@ -288,13 +296,18 @@ impl fmt::Display for OcrError {
         match self {
             Self::TimedOut { image, millis } => write!(
                 f,
-                "Reading {image} failed: tesseract did not finish within {millis} ms"
+                "Reading {image} failed: tesseract timed out after {millis} ms"
             ),
             Self::Failed { image, model } => write!(
                 f,
                 "Reading {image} failed: tesseract could not read it with {model}"
             ),
             Self::Model { model } => write!(f, "tesseract cannot load the model {model}"),
+            Self::NotInstalled { model, installed } => write!(
+                f,
+                "The OCR language {model} is not installed; the installed ones are {}",
+                installed.join(", ")
+            ),
             Self::Models { dir, reason } => {
                 write!(f, "Listing tesseract's models under {dir} failed: {reason}")
             }
@@ -326,7 +339,7 @@ pub struct Tesseract {
     /// Where the models are, or none for where tesseract looks by itself.
     datapath: Option<CString>,
     idle: Mutex<BTreeMap<String, Vec<Idle>>>,
-    languages: Mutex<Option<BTreeSet<String>>>,
+    languages: Mutex<Option<Arc<BTreeSet<String>>>>,
     #[cfg(not(feature = "static"))]
     _library: libloading::Library,
 }
@@ -505,17 +518,36 @@ impl Tesseract {
 
     /// The models it reads with, named as `-l` names them, with a slash before a model in a
     /// subdirectory on every platform: `eng`, `script/Latin`.
-    pub(crate) fn languages(&self) -> Result<BTreeSet<String>, OcrError> {
+    pub(crate) fn languages(&self) -> Result<Arc<BTreeSet<String>>, OcrError> {
         let mut known = self.languages.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(languages) = known.as_ref() {
-            return Ok(languages.clone());
+            return Ok(Arc::clone(languages));
         }
-        let languages = match self.data_dir() {
+        let languages = Arc::new(match self.data_dir() {
             Some(dir) => models_under(&dir)?,
             None => self.listed_languages()?,
-        };
-        *known = Some(languages.clone());
+        });
+        *known = Some(Arc::clone(&languages));
         Ok(languages)
+    }
+
+    /// Fails unless every model of a language, joined by `+` as `-l` joins them, is installed.
+    pub fn check_installed(&self, language: &str) -> Result<(), OcrError> {
+        let installed = self.languages()?;
+        match language
+            .split(MODEL_SEPARATOR)
+            .find(|model| !installed.contains(*model))
+        {
+            Some(model) => Err(OcrError::NotInstalled {
+                model: model.to_owned(),
+                installed: installed
+                    .iter()
+                    .filter(|model| model.as_str() != OSD_MODEL)
+                    .cloned()
+                    .collect(),
+            }),
+            None => Ok(()),
+        }
     }
 
     /// The directory tesseract reads its models from, when it is known without loading one: the
@@ -746,7 +778,7 @@ mod tests {
     fn lists_the_models_tesseract_lists() {
         let tesseract = crate::ocr::tesseract().unwrap();
         assert_eq!(
-            tesseract.languages().unwrap(),
+            *tesseract.languages().unwrap(),
             tesseract.listed_languages().unwrap()
         );
     }
@@ -799,5 +831,21 @@ mod tests {
         assert!(decided(0.004));
         assert!(!decided(0.0));
         assert!(!decided(f32::NAN));
+    }
+
+    #[test]
+    fn names_the_models_installed_when_one_asked_for_is_not() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        tesseract.check_installed("eng+deu").unwrap();
+        let Err(OcrError::NotInstalled { model, installed }) = tesseract.check_installed("eng+xyz")
+        else {
+            panic!("a model that is not installed passed");
+        };
+        assert_eq!(model, "xyz");
+        assert!(
+            installed.iter().any(|model| model == "spa"),
+            "{installed:?}"
+        );
+        assert!(!installed.iter().any(|model| model == OSD_MODEL));
     }
 }

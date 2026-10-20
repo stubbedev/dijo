@@ -398,7 +398,7 @@ fn parse_extract_request(
                 extract.ocr =
                     Ocr::from_str(&value, false).map_err(|_| format!("Unknown ocr {value:?}"))?
             }
-            "ocr_lang" => extract.ocr_lang = Some(value),
+            "ocr_lang" => extract.ocr_lang = Some(crate::settings::ocr_language(&value)?),
             "embedded" => {
                 extract.embedded = Embedded::from_str(&value, false)
                     .map_err(|_| format!("Unknown embedded {value:?}"))?

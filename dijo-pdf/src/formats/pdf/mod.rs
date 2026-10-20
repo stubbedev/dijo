@@ -375,7 +375,7 @@ fn difference(document: &Document) -> Option<Difference> {
 }
 
 /// Writes `recording` to `xhtml`, with the pages `page_ocr` reads read side by side, the script
-/// the first of them learned kept for the extraction.
+/// and model the first of them learned kept for the extraction.
 fn write_read(
     page_ocr: &PageOcr,
     recording: &mut Recording,
@@ -384,11 +384,11 @@ fn write_read(
 ) -> Result<(), Failure> {
     let context = xhtml.context();
     let auto = OcrSettings::of(&configs.ocr).auto();
-    let assumed = auto.then(|| context.assumed_ocr_script()).flatten();
+    let assumed = auto.then(|| context.assumed_ocr_language()).flatten();
     let (written, learned) =
         page_ocr.write_document(assumed, |page_ends| recording.flush(xhtml, Some(page_ends)));
     if let (Ok(()), Some(learned)) = (&written, learned) {
-        context.learn_ocr_script(learned);
+        context.learn_ocr_language(learned);
     }
     written
 }

@@ -10,12 +10,12 @@ use dijo_core::{EmbeddedSpool, Extractor, Metadata, SpooledEmbedded, StreamReade
 use crate::cli::Format;
 use serde::{Deserialize, Serialize};
 
-use dijo_core::language::{self, DetectedLanguage, Sample};
 use crate::limit::OutputLimit;
 use crate::normalize::{self, Normalizer, Step, Steps};
 use crate::running::{self, Placement, RunningLines};
 use crate::schema::{self, ErrorCategory, ExtractionError, Source, Status, SCHEMA_VERSION};
 use crate::structure::{self, ElementKind, SplitError, Unit};
+use dijo_core::language::{self, DetectedLanguage, Sample};
 
 const READ_BUFFER_SIZE: usize = 64 * 1024;
 

@@ -366,8 +366,11 @@ pub struct ExtractArgs {
     pub ocr: Ocr,
 
     /// Tesseract languages for OCR, such as `deu` or `eng+ara`. By default each image's script is
-    /// detected (with tesseract's `osd` data) and read with an installed model for it.
-    #[arg(long, value_name = "LANGS", env = "DIJO_OCR_LANG")]
+    /// detected (with tesseract's `osd` data) and read with an installed model for it, then
+    /// with the model of the language detected in the text. The release binaries carry a model
+    /// for every national language of Europe and one for each other script detection finds; a
+    /// language whose model is not installed is a usage error naming the installed ones.
+    #[arg(long, value_name = "LANGS", env = "DIJO_OCR_LANG", value_parser = crate::settings::ocr_language)]
     pub ocr_lang: Option<String>,
 }
 

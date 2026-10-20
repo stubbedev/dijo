@@ -26,6 +26,7 @@ use std::sync::OnceLock;
 
 use crate::bundle;
 use crate::errors::{Error, ExtractResult};
+use crate::formats::embedded::OcrLanguage;
 pub use bitmap::Bitmap;
 pub(crate) use decode::{decode, jpeg, Decoded, Format, Undecoded};
 pub use pages::{read_pages, FirstPage, Outputs};
@@ -54,19 +55,19 @@ pub(crate) enum Stopped<W> {
 }
 
 /// Our Java `PreparingOcrParser.parse` of a decoded image file: one image read as any image is,
-/// or the pages of a TIFF read side by side, the first in the script the extraction assumes
-/// and the rest in the one it settles, each decoded when it is read and freed once it is, and
-/// handed to `write` in page order. With the automatic language, the extraction learns the
-/// script of the image, or of its first page, which this returns.
+/// or the pages of a TIFF read side by side, the first in the script and model the extraction
+/// assumes and the rest in the ones it settles, each decoded when it is read and freed once it
+/// is, and handed to `write` in page order. With the automatic language, the extraction learns
+/// the script and model of the image, or of its first page, which this returns.
 pub(crate) fn read_image<W>(
     tesseract: &Tesseract,
     settings: &OcrSettings,
     decoded: Decoded<'_>,
     file_size: u64,
     orientation: Option<Orientation>,
-    assumed: Option<&str>,
+    assumed: Option<&OcrLanguage>,
     mut write: impl FnMut(ImageRead<'_>) -> Result<(), W>,
-) -> Result<Option<String>, Stopped<W>> {
+) -> Result<Option<OcrLanguage>, Stopped<W>> {
     let recognizer = Recognizer::new(tesseract, settings);
     let learned = match decoded {
         Decoded::Single { bitmap, file } => {
@@ -79,12 +80,12 @@ pub(crate) fn read_image<W>(
             learned
         }
         Decoded::Pages(pages) => {
-            let first_page = FirstPage::new(assumed.map(str::to_owned));
+            let first_page = FirstPage::new(assumed.cloned());
             read_pages(
                 pages.count(),
                 &first_page,
                 || pages.reader(),
-                |reader, index, script| {
+                |reader, index, assumed| {
                     let page = match reader {
                         Ok(reader) => reader.page(index),
                         Err(unreadable) => Err(unreadable.clone()),
@@ -93,7 +94,7 @@ pub(crate) fn read_image<W>(
                         return Ok((None, None));
                     };
                     let image = Image::of(&bitmap, None, file_size, orientation);
-                    let Recognized { read, learned } = recognizer.recognize(&image, script)?;
+                    let Recognized { read, learned } = recognizer.recognize(&image, assumed)?;
                     Ok((Some(read), learned))
                 },
                 |outputs| {
@@ -111,7 +112,7 @@ pub(crate) fn read_image<W>(
             first_page.learned()
         }
     };
-    Ok(learned.filter(|_| settings.auto()))
+    Ok(learned)
 }
 
 /// The version of the tesseract OCR runs, since OCR output depends on it: the one the build

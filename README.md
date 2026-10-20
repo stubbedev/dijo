@@ -7,7 +7,8 @@ Extract text and metadata from documents. One native binary, no JVM.
   1094 test documents, `just conformance` matches Tika's text for 1052 (or both are empty), and most of the others are Tika bugs dijo
   fixes on purpose.
 - **Automatic language detection** of the text, for OCR and in the output, covering every national language of Europe:
-  86.7% of single sentences right, where Tika's detector gets 80.5%.
+  86.7% of single sentences right, where Tika's detector gets 80.5%. OCR reads each page with the model of the
+  language it detects there.
 - **Faster and lighter**: a 28-page PDF in 52 ms and 79 MiB, against 3.3 s and 467 MiB for `tika-app`; a DOCX in 7 ms
   and 35 MiB, against 2.8 s and 287 MiB. Files of any size stream through bounded memory.
 - **More accurate text**: on the ground-truth corpus in `quality/`, dijo recalls 99.6% of the words, Tika 84.8%
@@ -23,6 +24,11 @@ and Windows (x86_64), plus `SHA256SUMS`, an SBOM and build provenance
   in a `FROM scratch` container. OCR and HEIC/AVIF decoding are built in.
 - The other release binaries need the system C library (glibc 2.35 or later on Linux) and carry their own OCR library
   and language data.
+- Every release binary carries the tesseract models of [`ci/tessdata.tsv`](ci/tessdata.tsv): one for every national
+  language of Europe (`bel bos bul cat ces cym dan deu ell eng est eus fao fin fra gle glg hrv hun hye isl ita kat lav
+  lit ltz mkd mlt nld nor pol por ron rus slk slv spa sqi srp srp_latn swe tur ukr`), one for each other script
+  detection finds (`amh ara ben bod chi_sim guj heb hin jpn kan khm kor lao mal mya pan sin tam tel tha`), and
+  `script/Latin`, `script/Cyrillic`, `script/Greek` and `script/Armenian`.
 
 From source:
 
@@ -53,7 +59,7 @@ dijo detect mystery.bin                 # application/pdf
 | `-r, --recursive` | Descend into directories, in sorted order |
 | `-j, --jobs <N>` | Inputs extracted in parallel (default: the number of cores); output stays in input order |
 | `--ocr auto\|never\|always` | OCR images and PDF pages without a usable text layer (default); never; or every PDF page |
-| `--ocr-lang <LANGS>` | Tesseract languages, such as `deu` or `eng+ara`; detected per image by default |
+| `--ocr-lang <LANGS>` | Tesseract languages, such as `deu` or `eng+ara`; by default the script, then the language, is detected per image. A model that is not installed is a usage error listing those that are |
 | `--password <PW>`, `--password-file <FILE>` | Passwords tried, in order, on encrypted documents |
 | `--embedded inline\|separate` | Add embedded documents' text to their container's (default), or extract each as its own document |
 | `--max-depth`, `--max-embedded`, `--max-expanded-bytes` | Limits for `--embedded separate` |

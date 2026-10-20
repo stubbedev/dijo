@@ -34,15 +34,24 @@ pub const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-except
 /// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
 pub const EXCEPTION_WARNING: &str = "tk:exception:warn";
 
+/// The script and the tesseract model an image is read in with the automatic OCR language.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcrLanguage {
+    /// The script, by tesseract's name, such as `Latin`.
+    pub script: String,
+    /// The model, such as `script/Latin` or `spa`.
+    pub model: String,
+}
+
 /// What the parses of one extraction share, as Tika's `ParseContext` does: the parser settings,
-/// whether its embedded documents are parsed or spooled, and the script OCR last found in its
-/// images, as our Java `OcrConfig` keeps it.
+/// whether its embedded documents are parsed or spooled, and the script and model OCR last
+/// settled on in its images, as our Java `OcrConfig` keeps the script.
 #[derive(Debug)]
 pub struct ParseContext<'c> {
     configs: &'c ParserConfigs,
     spooler: Option<RefCell<Spooler>>,
     file: InputFile,
-    ocr_script: RefCell<Option<String>>,
+    ocr_language: RefCell<Option<OcrLanguage>>,
     write_limit: Option<usize>,
     pages: Pages<'c>,
 }
@@ -54,7 +63,7 @@ impl<'c> ParseContext<'c> {
             configs,
             spooler: None,
             file: InputFile::Spooled,
-            ocr_script: RefCell::new(None),
+            ocr_language: RefCell::new(None),
             write_limit: None,
             pages: Pages::IN_MEMORY,
         }
@@ -70,7 +79,7 @@ impl<'c> ParseContext<'c> {
                 spooled: Vec::new(),
             })),
             file: InputFile::Spooled,
-            ocr_script: RefCell::new(None),
+            ocr_language: RefCell::new(None),
             write_limit: None,
             pages: Pages::IN_MEMORY,
         }
@@ -109,15 +118,15 @@ impl<'c> ParseContext<'c> {
         self.pages
     }
 
-    /// The script the next image of this extraction is first read in with the automatic OCR
-    /// language: the one detection last found in an earlier image, or none before any.
-    pub fn assumed_ocr_script(&self) -> Option<String> {
-        self.ocr_script.borrow().clone()
+    /// The script and model the next image of this extraction is first read in with the
+    /// automatic OCR language: the ones an earlier image settled on, or none before any.
+    pub fn assumed_ocr_language(&self) -> Option<OcrLanguage> {
+        self.ocr_language.borrow().clone()
     }
 
-    /// Remembers the script OCR detection found, for the next images of this extraction.
-    pub fn learn_ocr_script(&self, script: String) {
-        *self.ocr_script.borrow_mut() = Some(script);
+    /// Remembers the script and model OCR settled on, for the next images of this extraction.
+    pub fn learn_ocr_language(&self, language: OcrLanguage) {
+        *self.ocr_language.borrow_mut() = Some(language);
     }
 
     /// The limit of the extraction's text, if it has one.

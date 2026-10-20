@@ -1,5 +1,6 @@
 //! Our Java `ScriptDetection`'s choice of a language model for a script among the models that
-//! are installed, and `PreparingOcrParser`'s test of whether a reading is written in a script.
+//! are installed, the model of each national language of Europe the language detector tells
+//! apart, and `PreparingOcrParser`'s test of whether a reading is written in a script.
 
 use std::collections::BTreeSet;
 
@@ -39,6 +40,69 @@ const LANGUAGE_BY_SCRIPT: [(&str, &str); 25] = [
     ("Sinhala", "sin"),
     ("Tibetan", "bod"),
 ];
+
+/// The model of each national language of Europe the language detector tells apart, by the
+/// detector's ISO 639-3 code and the script of the text. Northern Sami has no tesseract model and
+/// reads with its script's.
+const MODEL_BY_LANGUAGE: [(&str, &str, &str); 44] = [
+    ("bel", "Cyrillic", "bel"),
+    ("bos", "Latin", "bos"),
+    ("bul", "Cyrillic", "bul"),
+    ("cat", "Latin", "cat"),
+    ("ces", "Latin", "ces"),
+    ("cym", "Latin", "cym"),
+    ("dan", "Latin", "dan"),
+    ("deu", "Latin", "deu"),
+    ("ell", "Greek", "ell"),
+    ("eng", "Latin", "eng"),
+    ("est", "Latin", "est"),
+    ("eus", "Latin", "eus"),
+    ("fao", "Latin", "fao"),
+    ("fin", "Latin", "fin"),
+    ("fra", "Latin", "fra"),
+    ("gle", "Latin", "gle"),
+    ("glg", "Latin", "glg"),
+    ("hrv", "Latin", "hrv"),
+    ("hun", "Latin", "hun"),
+    ("hye", "Armenian", "hye"),
+    ("isl", "Latin", "isl"),
+    ("ita", "Latin", "ita"),
+    ("kat", "Georgian", "kat"),
+    ("lav", "Latin", "lav"),
+    ("lit", "Latin", "lit"),
+    ("ltz", "Latin", "ltz"),
+    ("mkd", "Cyrillic", "mkd"),
+    ("mlt", "Latin", "mlt"),
+    ("nld", "Latin", "nld"),
+    ("nno", "Latin", "nor"),
+    ("nob", "Latin", "nor"),
+    ("pol", "Latin", "pol"),
+    ("por", "Latin", "por"),
+    ("ron", "Latin", "ron"),
+    ("rus", "Cyrillic", "rus"),
+    ("slk", "Latin", "slk"),
+    ("slv", "Latin", "slv"),
+    ("spa", "Latin", "spa"),
+    ("sqi", "Latin", "sqi"),
+    ("srp", "Cyrillic", "srp"),
+    ("srp", "Latin", "srp_latn"),
+    ("swe", "Latin", "swe"),
+    ("tur", "Latin", "tur"),
+    ("ukr", "Cyrillic", "ukr"),
+];
+
+/// The installed model of a language, by the detector's ISO 639-3 code, in a script, or none
+/// when it has none or none is installed.
+pub(crate) fn language_model<'i>(
+    installed: &'i BTreeSet<String>,
+    language: &str,
+    script: &str,
+) -> Option<&'i str> {
+    let (_, _, model) = MODEL_BY_LANGUAGE
+        .iter()
+        .find(|(code, written_in, _)| *code == language && *written_in == script)?;
+    installed.get(*model).map(String::as_str)
+}
 
 /// The model to read a script with: the script model, then the script's most common language,
 /// if installed, and English otherwise.
@@ -107,5 +171,65 @@ mod tests {
         assert!(written_in("Բարեւ աշխարհ, hi", "Armenian"));
         assert!(!written_in("hello world, Բարեւ", "Armenian"));
         assert!(!written_in("日本語", "Japanese"));
+    }
+
+    #[test]
+    fn picks_the_model_of_a_language_in_its_script() {
+        let models = installed(&["nor", "spa", "srp", "srp_latn"]);
+        assert_eq!(language_model(&models, "spa", "Latin"), Some("spa"));
+        assert_eq!(language_model(&models, "nno", "Latin"), Some("nor"));
+        assert_eq!(language_model(&models, "srp", "Cyrillic"), Some("srp"));
+        assert_eq!(language_model(&models, "srp", "Latin"), Some("srp_latn"));
+        assert_eq!(language_model(&models, "spa", "Cyrillic"), None);
+        assert_eq!(language_model(&models, "fra", "Latin"), None);
+        assert_eq!(language_model(&models, "sme", "Latin"), None);
+    }
+
+    /// The OCR bundle and the models devenv and CI read with are those of `ci/tessdata.tsv`.
+    fn bundled() -> BTreeSet<String> {
+        std::fs::read_to_string("../ci/tessdata.tsv")
+            .unwrap()
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| line.split('\t').next().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn every_national_language_of_europe_has_a_bundled_model() {
+        let bundled = bundled();
+        let tatoeba =
+            std::fs::read_to_string("../dijo-base/tests/fixtures/language/tatoeba.tsv").unwrap();
+        let labels: BTreeSet<&str> = tatoeba
+            .lines()
+            .filter_map(|line| line.split('\t').next())
+            .collect();
+        let missing: Vec<&str> = labels
+            .into_iter()
+            .filter(|label| *label != "sme")
+            .filter(|label| {
+                let (code, script) = match label.split_once('-') {
+                    Some((code, "Latn")) => (code, "Latin"),
+                    Some((_, other)) => panic!("unknown script suffix {other}"),
+                    None => (*label, default_script(label)),
+                };
+                language_model(&bundled, code, script).is_none()
+            })
+            .collect();
+        assert!(missing.is_empty(), "no bundled model for {missing:?}");
+        for (_, _, model) in MODEL_BY_LANGUAGE {
+            assert!(bundled.contains(model), "{model} is not bundled");
+        }
+        for (_, model) in LANGUAGE_BY_SCRIPT {
+            assert!(bundled.contains(model), "{model} is not bundled");
+        }
+    }
+
+    /// The script a language of the fixture without a script suffix is written in.
+    fn default_script(code: &str) -> &'static str {
+        MODEL_BY_LANGUAGE
+            .iter()
+            .find(|(language, _, _)| *language == code)
+            .map_or("Latin", |(_, script, _)| script)
     }
 }

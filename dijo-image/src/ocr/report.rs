@@ -74,6 +74,14 @@ impl Report {
         self.json
     }
 
+    /// Notes that what was read was taken for noise and dropped.
+    pub(crate) fn noise(self, noise: bool) -> Self {
+        match noise {
+            true => self.boolean("noise", true),
+            false => self,
+        }
+    }
+
     fn key(mut self, name: &str) -> Self {
         if self.json.len() > 1 {
             self.json.push(',');
@@ -137,5 +145,17 @@ mod tests {
              \"despeckled\":false,\"turned_degrees\":90,\"deskewed_degrees\":-0.500,\
              \"scale\":0.696,\"thresholded\":true}"
         );
+    }
+
+    #[test]
+    fn notes_a_reading_taken_for_noise() {
+        let report = |noise| {
+            Report::of("script/Latin")
+                .prepared(true, false, false, false, 0, 0.0, 1.0, false)
+                .noise(noise)
+                .json()
+        };
+        assert!(report(true).ends_with(",\"thresholded\":false,\"noise\":true}"));
+        assert!(!report(false).contains("noise"));
     }
 }

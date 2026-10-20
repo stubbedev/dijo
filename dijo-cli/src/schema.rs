@@ -194,7 +194,10 @@ impl ExtractionError {
             || message.contains("Suspected zip bomb")
         {
             ErrorCategory::LimitExceeded
-        } else if message.contains("TimeoutException") || message.contains("timeout") {
+        } else if message.contains("TimeoutException")
+            || message.contains("timeout")
+            || message.contains("timed out")
+        {
             ErrorCategory::Timeout
         } else if message.contains("ZipException")
             || message.contains("Truncated")
@@ -302,6 +305,8 @@ pub struct OcrReport {
     pub deskewed_degrees: f64,
     pub scale: f64,
     pub thresholded: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub noise: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -564,6 +569,10 @@ mod tests {
         );
         assert_eq!(
             classify("java.io.IOException: <- caused by org.apache.tika.exception.TikaException: TesseractOCRParser timeout"),
+            ErrorCategory::Timeout
+        );
+        assert_eq!(
+            classify("OCR of page 3 failed: Reading a 2480x3508 image failed: tesseract timed out after 120000 ms"),
             ErrorCategory::Timeout
         );
         assert_eq!(

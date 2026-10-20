@@ -60,8 +60,8 @@ impl OcrReader {
 
     /// `PreparingOcrParser.parse` of a decoded image of `file_size` bytes, turned upright by
     /// its EXIF `orientation`, the image on page `page` of the document embedding it: read in
-    /// the script the extraction assumes, the script it learns kept, and what it read written
-    /// into the document.
+    /// the script and model the extraction assumes, the ones it learns kept, and what it read
+    /// written into the document.
     pub(crate) fn read(
         &self,
         xhtml: &mut Xhtml,
@@ -74,7 +74,7 @@ impl OcrReader {
         let assumed = self
             .settings
             .auto()
-            .then(|| context.assumed_ocr_script())
+            .then(|| context.assumed_ocr_language())
             .flatten();
         let tesseract = self.tesseract.clone().map_err(ocr_failure)?;
         let learned = ocr::read_image(
@@ -83,7 +83,7 @@ impl OcrReader {
             decoded,
             file_size,
             orientation,
-            assumed.as_deref(),
+            assumed.as_ref(),
             |read| write(xhtml, read, page),
         )
         .map_err(|stopped| match stopped {
@@ -91,7 +91,7 @@ impl OcrReader {
             Stopped::Writing(stop) => Failure::Stopped(stop),
         })?;
         if let Some(learned) = learned {
-            context.learn_ocr_script(learned);
+            context.learn_ocr_language(learned);
         }
         Ok(())
     }

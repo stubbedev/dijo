@@ -15,13 +15,13 @@ use super::cos::Document;
 use super::quality::{self, Assessment, Unmapped};
 use crate::config::{ParserConfigs, Password, PdfOcrStrategy, PdfParserConfig};
 use crate::errors::Error;
-use crate::formats::embedded::EXCEPTION_WARNING;
+use crate::formats::embedded::{OcrLanguage, EXCEPTION_WARNING};
 use crate::formats::image::enricher::write_text;
 use crate::formats::image::PREPARING_OCR_PARSER;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Difference, Failure};
 use crate::ocr::{
-    self, Attempt, Bitmap, FirstPage, Image, OcrError, OcrSettings, Outputs, PdfPages, Recognized,
+    self, Attempt, Bitmap, FirstPage, Image, OcrSettings, Outputs, PdfPages, Recognized,
     Recognizer, Resolution,
 };
 
@@ -350,12 +350,12 @@ impl PageOcr {
 
     /// Writes the document with `write`, the pages to read rendered and read side by side
     /// meanwhile, each page to read passed on by the hook `write` is handed. The extraction then
-    /// assumes the script the first page read learned.
+    /// assumes the script and model the first page read learned.
     pub(super) fn write_document<T>(
         &self,
-        assumed: Option<String>,
+        assumed: Option<OcrLanguage>,
         write: impl FnOnce(&mut PageHook<'_, '_, '_>) -> T,
-    ) -> (T, Option<String>) {
+    ) -> (T, Option<OcrLanguage>) {
         let first_page = FirstPage::new(assumed);
         let written = ocr::read_pages(
             self.pages.len(),
@@ -366,21 +366,22 @@ impl PageOcr {
                 }
                 Reader::Skipping => None,
             },
-            |pages, at, script| {
-                Ok::<_, Infallible>(self.read(pages.as_ref(), self.pages[at], script))
+            |pages, at, assumed| {
+                Ok::<_, Infallible>(self.read(pages.as_ref(), self.pages[at], assumed))
             },
             |outputs| write(&mut PageHook { ocr: self, outputs }),
         );
         (written, first_page.learned())
     }
 
-    /// Renders a page and reads it in a script: what it read, and the script it learned.
+    /// Renders a page and reads it in a script and model: what it read, and the script and
+    /// model it learned.
     fn read(
         &self,
         pages: Option<&Result<PdfPages, String>>,
         index: usize,
-        script: Option<&str>,
-    ) -> (PageReading, Option<String>) {
+        assumed: Option<&OcrLanguage>,
+    ) -> (PageReading, Option<OcrLanguage>) {
         let (
             Reader::Tesseract {
                 tesseract,
@@ -393,7 +394,7 @@ impl PageOcr {
         };
         let tesseract = match tesseract {
             Ok(tesseract) => *tesseract,
-            Err(failure) => return (PageReading::Failed(described(failure)), None),
+            Err(failure) => return (PageReading::Failed(failure.to_string()), None),
         };
         let rendered = pages
             .as_ref()
@@ -403,7 +404,7 @@ impl PageOcr {
             Ok(gray) => gray,
             Err(failure) => {
                 return (
-                    PageReading::Failed(format!("java.io.IOException: {failure}")),
+                    PageReading::Failed(format!("Rendering the page failed: {failure}")),
                     None,
                 )
             }
@@ -411,30 +412,17 @@ impl PageOcr {
         let pixels = u64::from(gray.width()) * u64::from(gray.height());
         let bitmap = Bitmap::Gray(gray);
         let image = Image::of(&bitmap, None, pixels, None);
-        match Recognizer::new(tesseract, settings).recognize(&image, script) {
+        match Recognizer::new(tesseract, settings).recognize(&image, assumed) {
             Ok(Recognized { read, learned }) => (
                 PageReading::Read {
                     attempt: read,
                     page: index as u32 + 1,
                 },
-                learned.filter(|_| settings.auto()),
+                learned,
             ),
-            Err(failure) => (PageReading::Failed(described(&failure)), None),
+            Err(failure) => (PageReading::Failed(failure.to_string()), None),
         }
     }
-}
-
-/// An OCR failure as `Throwables.describe` renders the exception Tika throws for it.
-fn described(failure: &OcrError) -> String {
-    let class = match failure {
-        OcrError::TimedOut { .. } => "org.apache.tika.exception.TikaTimeoutException",
-        OcrError::Failed { .. }
-        | OcrError::Model { .. }
-        | OcrError::Models { .. }
-        | OcrError::Unavailable { .. }
-        | OcrError::MemoryLimit { .. } => "org.apache.tika.exception.TikaException",
-    };
-    format!("{class}: {failure}")
 }
 
 /// What reading a page by OCR gave.
