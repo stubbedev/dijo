@@ -1,11 +1,10 @@
 //! A namespace-aware, non-validating XML parser that fails where the JDK's built-in Xerces, as
 //! Tika configures it (no external DTD, no external entities), raises a fatal error, and reads
 //! the bytes as Xerces reads them: the byte order mark and first bytes pick the encoding, the
-//! bytes it reads before the declaration ends are decoded before the declaration can switch it,
-//! and a malformed UTF-8, UTF-16 or UCS-4 sequence fails the parse when the scanner reaches it, as
-//! Xerces' own readers do. It
-//! reports start and end tags and the text inside elements; `formats::xml` gives SAX's view of
-//! them to the native parsers.
+//! declaration switches it for the bytes after it, and a malformed UTF-8, UTF-16 or UCS-4
+//! sequence fails the parse when the scanner reaches it, as Xerces' own readers do. It reports
+//! start and end tags and the text inside elements; `formats::xml` gives SAX's view of them to
+//! the native parsers.
 //!
 //! What it does not reproduce: the IANA-to-Java encoding table of Xerces (a declared encoding is
 //! looked up as Java's `Charset.forName` looks it up), the replacement text of parameter
@@ -258,10 +257,6 @@ enum Reader {
     Java(Charset),
 }
 
-/// Where Xerces' reads in chunks end before the declaration is scanned: the four bytes it sniffed
-/// the encoding from, then a chunk of 28; it reads on byte by byte until the declaration ends.
-const FIRST_READS: usize = 4 + 28;
-
 /// How many bytes of the document a reader decodes into the window at a time.
 const CHUNK: usize = 64 << 10;
 
@@ -287,8 +282,6 @@ struct Text<'a> {
     start: usize,
     /// The reader the characters are decoded with.
     reader: Reader,
-    /// Where the reads in chunks made before the declaration is scanned end.
-    first_read_end: usize,
     /// The encoding name Xerces records for the document before its declaration.
     detected: &'static str,
 }
@@ -343,7 +336,6 @@ impl<'a> Text<'a> {
             bytes,
             start,
             reader,
-            first_read_end: FIRST_READS.min(bytes.len()),
             detected,
         }
     }
@@ -423,19 +415,12 @@ impl<'a> Text<'a> {
         true
     }
 
-    /// Whether the reader delivers exactly `count` characters, decoding them as far as telling
-    /// needs into the window, which still holds them from the start.
-    fn holds_exactly(&mut self, count: usize) -> bool {
-        let held = |text: &Self| text.window.chars().take(count + 1).count();
-        while held(self) <= count && self.fill(0) {}
-        held(self) == count
-    }
-
-    /// Switches to the declared encoding, as `XMLEntityScanner.setEncoding` does: the
-    /// characters the first reader decoded stay, and a new reader takes over where the first
-    /// stopped reading bytes, which loses what a malformed sequence left unread in the first.
-    /// `declaration_end` counts the characters up to the end of the declaration, which the
-    /// window still holds from the start.
+    /// Switches to the declared encoding at the end of the declaration: the characters of the
+    /// declaration stay, and a new reader decodes the bytes after them. `declaration_end`
+    /// counts the characters up to the end of the declaration, which the window still holds
+    /// from the start. Xerces switches where its first reader stopped reading bytes, so that
+    /// what it read in chunks past a short declaration stays decoded in the encoding it
+    /// detected, and what a malformed sequence left unread is lost.
     fn switch(&mut self, declared: &str, declaration_end: usize) -> Result<()> {
         if declared == self.detected {
             return Ok(());
@@ -456,32 +441,17 @@ impl<'a> Text<'a> {
                 _ => return malformed(format!("the encoding {declared} is unsupported")),
             },
         };
-        let mut ends = Vec::new();
+        let mut resume = self.start;
+        let mut decoded = 0;
         decode_normalized(self.reader, self.bytes, self.start, |_, end| {
-            let previous_end = ends.last().copied().unwrap_or(self.start);
-            ends.push(end);
-            ends.len() < declaration_end || previous_end < self.first_read_end
+            resume = end;
+            decoded += 1;
+            decoded < declaration_end
         });
-        let mut first_read = 0;
-        let mut previous_end = self.start;
-        for &end in &ends {
-            if previous_end >= self.first_read_end {
-                break;
-            }
-            first_read += 1;
-            previous_end = end;
-        }
-        let (kept, resume) = if declaration_end > first_read {
-            (declaration_end, ends[declaration_end - 1])
-        } else if self.holds_exactly(first_read) && self.malformed {
-            (first_read, self.first_read_end)
-        } else {
-            (first_read, previous_end.max(self.first_read_end))
-        };
         let kept_bytes = self
             .window
             .char_indices()
-            .nth(kept)
+            .nth(declaration_end)
             .map_or(self.window.len(), |(index, _)| index);
         self.window = Cow::Owned(self.window[..kept_bytes].to_owned());
         self.reader = reader;
