@@ -19,6 +19,7 @@ TessPageIteratorBlockType
 TessResultIteratorGetUTF8Text
 TessDeleteText
 TessBaseAPIMeanTextConf
+TessBaseAPIIsValidWord
 TessBaseAPIClear
 TessBaseAPIDetectOrientationScript
 TessBaseAPIGetAvailableLanguagesAsVector

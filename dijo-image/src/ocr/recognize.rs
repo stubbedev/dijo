@@ -8,7 +8,9 @@
 //! whose language is detected is then read again with that language's model, when one is
 //! installed and it was not read with it, and the more confident reading kept; the next images
 //! are first read with that model. A reading tesseract is not confident of and that is in no
-//! language is taken for noise, such as a texture or blank paper, and dropped.
+//! language is taken for noise, such as a texture or blank paper, and dropped. In the reading
+//! kept, the long s of early modern print, which tesseract reads as f, is restored by the
+//! dictionary of the language's model.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,7 +21,7 @@ use super::prepare::{self, Orientation};
 use super::report::Report;
 use super::script::{installed_language, language, language_model, written_in};
 use super::tesseract::{OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding};
-use super::text::corrected;
+use super::text::{corrected, with_long_s};
 use crate::config::TesseractOcrConfig;
 use crate::formats::embedded::OcrLanguage;
 use crate::language::{self as detection, DetectedLanguage};
@@ -409,8 +411,9 @@ impl<'t> Recognizer<'t> {
     /// least [`MIN_WORDS_TO_RETRY`] words is confident, the scripts detection overlooks are tried
     /// as well, and the most confident reading is kept. With the automatic language, the image is
     /// then read with the model of the language detected in the best reading, unless it was, and
-    /// the more confident reading kept. A reading that is noise has its text dropped. Without a
-    /// reading when the image is outside the configured limits.
+    /// the more confident reading kept. A reading that is noise has its text dropped; in any
+    /// other, long s read as f is restored by the dictionary of the language detected in it, or
+    /// else of its model. Without a reading when the image is outside the configured limits.
     ///
     /// `assumed` is the script and model to read it in first with the automatic language: the
     /// ones an earlier image of this extraction settled on, or none for Latin, the most common
@@ -475,6 +478,11 @@ impl<'t> Recognizer<'t> {
             true => None,
             false => detected.or_else(|| best.language()),
         };
+        let dictionary = language
+            .as_ref()
+            .map_or(&best.prepared.model, |language| &language.model)
+            .clone();
+        let best = self.with_long_s(best, &dictionary)?;
         Ok(Recognized {
             read: best,
             language,
@@ -600,6 +608,20 @@ impl<'t> Recognizer<'t> {
             }
         }
         Ok(overlooked)
+    }
+
+    /// The attempt with the long s restored in what it read, by the dictionary of `model`.
+    fn with_long_s(&self, mut attempt: Attempt, model: &str) -> Result<Attempt, OcrError> {
+        if let Some(reading) = attempt
+            .reading
+            .as_mut()
+            .filter(|reading| reading.text.contains('f'))
+        {
+            reading.text = self
+                .tesseract
+                .with_dictionary(model, |is_word| with_long_s(&reading.text, is_word))?;
+        }
+        Ok(attempt)
     }
 
     /// The model to read a script with: with the automatic language, the one for the script,

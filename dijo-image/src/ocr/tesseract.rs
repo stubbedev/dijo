@@ -144,6 +144,7 @@ c_api! {
     iterated_text = TessResultIteratorGetUTF8Text(*const ResultIterator, c_int) -> *mut c_char;
     delete_text = TessDeleteText(*const c_char);
     mean_text_conf = TessBaseAPIMeanTextConf(*mut BaseApi) -> c_int;
+    is_valid_word = TessBaseAPIIsValidWord(*mut BaseApi, *const c_char) -> c_int;
     clear = TessBaseAPIClear(*mut BaseApi);
     detect_orientation_script = TessBaseAPIDetectOrientationScript(
         *mut BaseApi, *mut c_int, *mut c_float, *mut *const c_char, *mut c_float) -> c_int;
@@ -492,6 +493,24 @@ impl Tesseract {
         };
         unsafe { (api.clear)(handle) };
         reading
+    }
+
+    /// What `check` answers given whether a word is in a model's dictionary, as
+    /// `TessBaseAPIIsValidWord` tells: the word list its recognizer reads with.
+    pub(crate) fn with_dictionary<R>(
+        &self,
+        model: &str,
+        check: impl FnOnce(&dyn Fn(&str) -> bool) -> R,
+    ) -> Result<R, OcrError> {
+        let engine = self.take(model)?;
+        let handle = engine.0.as_ptr();
+        let is_word = |word: &str| {
+            CString::new(word)
+                .is_ok_and(|word| unsafe { (self.api.is_valid_word)(handle, word.as_ptr()) } != 0)
+        };
+        let answer = check(&is_word);
+        self.release(model, engine);
+        Ok(answer)
     }
 
     /// Detects the orientation and script of an image, as `tesseract <image> stdout --psm 0`
@@ -956,6 +975,18 @@ mod tests {
             *tesseract.languages().unwrap(),
             tesseract.listed_languages().unwrap()
         );
+    }
+
+    #[test]
+    fn a_models_dictionary_holds_the_words_of_its_language() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let held = |model, words: [&str; 2]| {
+            tesseract
+                .with_dictionary(model, |is_word| words.map(is_word))
+                .unwrap()
+        };
+        assert_eq!(held("eng", ["such", "fuch"]), [true, false]);
+        assert_eq!(held("spa", ["casa", "cafa"]), [true, false]);
     }
 
     /// Readings and detections on many threads at once, each with an engine of its own taken
