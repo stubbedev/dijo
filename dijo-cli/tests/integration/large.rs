@@ -1,16 +1,51 @@
 #![cfg(target_os = "linux")]
 
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Read, Seek, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-mod common;
-
-use common::{text_pdf, write_docx, Scratch, StoredZip, XorShift};
+use crate::common::{text_pdf, Scratch, StoredZip, XorShift};
 
 const MAX_RSS_BYTES: u64 = 512 << 20;
+
+const OOXML: &str = "http://schemas.openxmlformats.org";
+
+/// Writes a DOCX into `out`: `doctype` (empty for none) declares the document part's DTD, and
+/// `body` writes what goes inside its `w:body`.
+fn write_docx<W: Write + Seek>(
+    out: W,
+    doctype: &str,
+    body: impl FnOnce(&mut dyn Write) -> io::Result<()>,
+) -> io::Result<W> {
+    let mut zip = StoredZip::new(out);
+    zip.entry("[Content_Types].xml", |out| {
+        write!(
+            out,
+            "<?xml version=\"1.0\"?><Types xmlns=\"{OOXML}/package/2006/content-types\">\
+             <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+             <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>"
+        )
+    })?;
+    zip.entry("_rels/.rels", |out| {
+        write!(
+            out,
+            "<?xml version=\"1.0\"?><Relationships xmlns=\"{OOXML}/package/2006/relationships\">\
+             <Relationship Id=\"rId1\" Type=\"{OOXML}/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>"
+        )
+    })?;
+    zip.entry("word/document.xml", |out| {
+        write!(
+            out,
+            "<?xml version=\"1.0\"?>{doctype}\
+             <w:document xmlns:w=\"{OOXML}/wordprocessingml/2006/main\"><w:body>"
+        )?;
+        body(out)?;
+        write!(out, "</w:body></w:document>")
+    })?;
+    zip.finish()
+}
 
 fn generate(path: &Path, size: u64, header: &str, mut record: impl FnMut(u64) -> String) -> u64 {
     let mut file = BufWriter::new(File::create(path).unwrap());

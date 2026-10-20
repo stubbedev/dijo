@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use dijo_core::{Error, Extractor};
 
-mod test_utils;
+use crate::test_utils;
 
 const DOCUMENT: &str = "../test_files/documents/simple.odt";
 const DOCUMENT_TYPE: &str = "application/vnd.oasis.opendocument.text";

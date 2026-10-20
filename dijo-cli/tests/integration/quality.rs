@@ -1,5 +1,3 @@
-mod common;
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
@@ -10,7 +8,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
-use common::{matched, tokens};
+use crate::common::{matched, tokens};
 
 const QUALITY: &str = "../quality";
 /// How many documents are extracted at once, unless `QUALITY_JOBS` names another number.

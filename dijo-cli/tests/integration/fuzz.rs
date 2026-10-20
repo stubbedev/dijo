@@ -1,11 +1,9 @@
-mod common;
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
-use common::{documents, mutate, Scratch, XorShift, DOCUMENTS};
+use crate::common::{documents, mutate, Scratch, XorShift, DOCUMENTS};
 
 const DEFAULT_MUTANTS_PER_DOCUMENT: usize = 12;
 const JOBS: usize = 4;

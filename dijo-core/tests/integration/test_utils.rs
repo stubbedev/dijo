@@ -3,14 +3,12 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::thread;
 
-#[allow(dead_code)]
 pub fn parse_metadata_file(file_path: &str) -> HashMap<String, Vec<String>> {
     let expected_metadata_string = std::fs::read_to_string(file_path).unwrap();
 
     serde_json::from_str(&expected_metadata_string).expect("JSON was not well-formatted")
 }
 
-#[allow(dead_code)]
 pub fn calculate_similarity_percent(
     expected: &HashMap<String, Vec<String>>,
     current: &HashMap<String, Vec<String>>,
@@ -34,7 +32,6 @@ pub fn calculate_similarity_percent(
     (matches as f64) / (total as f64)
 }
 
-#[allow(dead_code)]
 pub fn is_expected_metadata_contained(
     expected: &HashMap<String, Vec<String>>,
     current: &HashMap<String, Vec<String>>,
@@ -65,7 +62,6 @@ pub fn is_expected_metadata_contained(
 /// The `file:` URL of the file at `path`, as `Path.toUri` writes it: absolute, with forward
 /// slashes, a slash before a Windows drive letter, and spaces encoded. The path is made absolute
 /// without `canonicalize`, whose `\\?\` prefix on Windows no URL path holds.
-#[allow(dead_code)]
 pub fn file_url(path: &str) -> String {
     let absolute = std::path::absolute(path).unwrap();
     let slashed = absolute
@@ -79,13 +75,11 @@ pub fn file_url(path: &str) -> String {
     }
 }
 
-#[allow(dead_code)]
 pub fn serve(body: Vec<u8>, content_type: &'static str) -> SocketAddr {
     answer("200 OK", body, content_type)
 }
 
 /// Answers every request with `status`, the `body` of `content_type`, and its length.
-#[allow(dead_code)]
 pub fn answer(status: &'static str, body: Vec<u8>, content_type: &'static str) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -109,7 +103,6 @@ pub fn answer(status: &'static str, body: Vec<u8>, content_type: &'static str) -
 }
 
 /// Accepts connections and never answers on them.
-#[allow(dead_code)]
 pub fn silent() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

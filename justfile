@@ -22,12 +22,12 @@ test *args:
 
 # Extract generated gigabyte inputs with a release build and check memory stays bounded.
 test-large:
-    cargo nextest run --package dijo --cargo-profile release --run-ignored only --test large
+    cargo nextest run --package dijo --cargo-profile release --run-ignored only --test integration -E 'test(/^large::/)'
 
 # Extract randomly damaged copies of the test documents with a release build and check none
 # crashes or hangs; FUZZ_SEED repeats a run, FUZZ_MUTANTS sets the copies per document.
 test-fuzz:
-    cargo nextest run --package dijo --cargo-profile release --run-ignored only --test fuzz
+    cargo nextest run --package dijo --cargo-profile release --run-ignored only --test integration -E 'test(/^fuzz::/)'
 
 # Assemble the tesseract library a build loads into its process (built with vcpkg, ci/ocr-vcpkg.sh), its
 # language data and their licenses, for a build that carries its own OCR:
@@ -106,7 +106,7 @@ static-native:
 # answers stay alike and memory level over a long run, and damaged documents are answered while
 # worker processes recover; SOAK_SEED repeats a run's damage.
 test-soak:
-    cargo nextest run --package dijo --cargo-profile release --run-ignored only --test soak --no-capture
+    cargo nextest run --package dijo --cargo-profile release --run-ignored only --test integration -E 'test(/^soak::/)' --no-capture
 
 # Fuzz the parsers of untrusted input (XHTML splitter, normaliser, query decoder, metadata) with
 # coverage guidance for the given seconds each; a failing input is kept under
@@ -123,7 +123,7 @@ fuzz seconds="300":
 # Measure the CLI's extraction throughput per format, peak memory and cold start with a release
 # build; BENCH_OUTPUT writes the Markdown table to a file, BENCH_ROUNDS sets the repetitions.
 throughput:
-    cargo nextest run --package dijo --cargo-profile release --run-ignored only --test bench --no-capture
+    cargo nextest run --package dijo --cargo-profile release --run-ignored only --test integration -E 'test(/^bench::/)' --no-capture
 
 # The corpus and tika-app are cached in target/.
 # Compare native extraction of Apache Tika's own test documents with Tika on the JVM, fail on
@@ -133,7 +133,7 @@ conformance:
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
-    cargo nextest run --package dijo --cargo-profile release --run-ignored only --test conformance
+    cargo nextest run --package dijo --cargo-profile release --run-ignored only --test integration -E 'test(/^conformance::/)'
 
 # Score Tika on the JVM, Kreuzberg and Docling (in Docker) against the quality corpus too, each
 # with its defaults, and write quality/COMPARISON.md with all their scores side by side.
@@ -148,7 +148,7 @@ quality-compare:
     conformance/tika-app.sh "$dir" quality/corpus "$dir/tools/Tika $version" > "$dir/tika.log" 2>&1
     quality/compare-python.sh "$dir/cache" "$dir/tools" > "$dir/python.log" 2>&1
     QUALITY_COMPARE="$dir/tools" QUALITY_COMPARISON={{justfile_directory()}}/quality/COMPARISON.md \
-        cargo nextest run --package dijo --test quality
+        cargo nextest run --package dijo --test integration -E 'test(/^quality::/)'
 
 # Load tika-server of the pinned Tika version and `dijo serve` alike on this machine, and
 # write their throughput, latency and memory to target/server-compare/comparison.md;
@@ -169,7 +169,7 @@ server-compare:
         sleep 1
     done
     TIKA_SERVER_ADDRESS="127.0.0.1:$port" TIKA_SERVER_PID="$pid" SERVER_COMPARISON="$dir/comparison.md" \
-        cargo nextest run --package dijo --cargo-profile release --run-ignored only --test server_compare --no-capture
+        cargo nextest run --package dijo --cargo-profile release --run-ignored only --test integration -E 'test(/^server_compare::/)' --no-capture
 
 # Accept the current conformance results as conformance/baseline.json.
 [unix]
@@ -178,17 +178,17 @@ conformance-bless:
     set -euo pipefail
     eval "$(conformance/prepare.sh {{justfile_directory()}}/target/conformance)"
     CONFORMANCE_BLESS=1 cargo nextest run --package dijo --cargo-profile release --run-ignored only \
-        --test conformance
+        --test integration -E 'test(/^conformance::/)'
 
 # Score extraction against the quality corpus and write quality/SCOREBOARD.md.
 [unix]
 quality:
-    QUALITY_SCOREBOARD={{justfile_directory()}}/quality/SCOREBOARD.md cargo nextest run --package dijo --test quality
+    QUALITY_SCOREBOARD={{justfile_directory()}}/quality/SCOREBOARD.md cargo nextest run --package dijo --test integration -E 'test(/^quality::/)'
 
 # Accept the current quality scores as the baseline that CI holds later changes to.
 [unix]
 quality-bless:
-    QUALITY_BLESS=1 QUALITY_SCOREBOARD={{justfile_directory()}}/quality/SCOREBOARD.md cargo nextest run --package dijo --test quality
+    QUALITY_BLESS=1 QUALITY_SCOREBOARD={{justfile_directory()}}/quality/SCOREBOARD.md cargo nextest run --package dijo --test integration -E 'test(/^quality::/)'
 
 # Regenerate the quality corpus from quality/truth with LibreOffice, pandoc, LaTeX, poppler, ImageMagick and exiftool.
 [unix]

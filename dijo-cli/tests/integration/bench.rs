@@ -1,12 +1,10 @@
-mod common;
-
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use common::DOCUMENTS;
+use crate::common::DOCUMENTS;
 
 const QUALITY_CORPUS: &str = "../quality/corpus";
 const DEFAULT_ROUNDS: usize = 10;

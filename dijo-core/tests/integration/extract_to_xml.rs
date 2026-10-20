@@ -5,8 +5,7 @@ use std::fs;
 use test_case::test_case;
 use textdistance::nstr::cosine;
 
-// Declarers the shared test_utils code as module in this integration test
-mod test_utils;
+use crate::test_utils;
 
 fn extract_p_tag_content(xml: &str) -> String {
     let mut reader = Reader::from_str(xml);

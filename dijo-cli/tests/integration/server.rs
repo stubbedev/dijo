@@ -2,10 +2,8 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
-mod common;
-
-use common::server::{read_response, write_head, Server};
-use common::Scratch;
+use crate::common::server::{read_response, write_head, Server};
+use crate::common::Scratch;
 
 #[test]
 fn health_and_readiness() {
@@ -667,7 +665,7 @@ fn no_request_leaves_files_behind() {
 #[test]
 fn sigterm_lets_running_requests_finish() {
     let mut server = Server::start(&[]);
-    let body = std::fs::read(common::document("simple.odt")).unwrap();
+    let body = std::fs::read(crate::common::document("simple.odt")).unwrap();
     let mut running = server.connect();
     write_head(&mut running, "POST", "/extract", &[], body.len());
     running.write_all(&body[..100]).unwrap();

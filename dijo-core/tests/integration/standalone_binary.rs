@@ -29,13 +29,12 @@ fn extracts_in_a_copied_binary_without_the_cargo_environment() {
     let binary = scratch.join("standalone");
     fs::copy(env::current_exe().unwrap(), &binary).unwrap();
 
+    let (_, module) = module_path!()
+        .split_once("::")
+        .expect("a test module is inside its test crate");
+    let test = format!("{module}::extracts_in_a_copied_binary_without_the_cargo_environment");
     let output = Command::new(&binary)
-        .args([
-            "--exact",
-            "extracts_in_a_copied_binary_without_the_cargo_environment",
-            "--nocapture",
-            "--test-threads=1",
-        ])
+        .args(["--exact", &test, "--nocapture", "--test-threads=1"])
         .env_clear()
         .env(CHILD_MARKER, "1")
         .env("XDG_CACHE_HOME", &cache)

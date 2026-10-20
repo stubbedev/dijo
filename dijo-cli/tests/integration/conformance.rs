@@ -1,5 +1,3 @@
-mod common;
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -8,7 +6,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-use common::{matched, tokens, Scratch};
+use crate::common::{matched, tokens, Scratch};
 
 const CONFORMANCE: &str = "../conformance";
 const WORKS: f64 = 0.95;

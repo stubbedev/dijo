@@ -8,8 +8,6 @@
 
 #![cfg(target_os = "linux")]
 
-mod common;
-
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,8 +15,8 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::server::{request, Server};
-use common::{corpus, tree_rss_bytes};
+use crate::common::server::{request, Server};
+use crate::common::{corpus, tree_rss_bytes};
 
 const DEFAULT_ROUNDS: usize = 3;
 const WORKERS: usize = 4;

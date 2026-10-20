@@ -1,0 +1,12 @@
+mod detect;
+mod encoding;
+mod encrypted;
+mod extract_many_files;
+mod extract_to_stream;
+mod extract_to_string;
+mod extract_to_xml;
+mod extract_url;
+mod ooxml_regression;
+mod revisions;
+mod standalone_binary;
+mod test_utils;

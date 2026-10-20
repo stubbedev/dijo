@@ -1,18 +1,16 @@
 //! Long runs of the server under load, which `just test-soak` runs nightly. SOAK_SECONDS sets
 //! how long each lasts, SOAK_SEED repeats the damage of a failing run.
 
-mod common;
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use common::server::Server;
+use crate::common::server::Server;
 #[cfg(target_os = "linux")]
-use common::tree_rss_bytes;
-use common::{corpus, mutate, XorShift};
+use crate::common::tree_rss_bytes;
+use crate::common::{corpus, mutate, XorShift};
 
 const CLIENTS: usize = 4;
 const DEFAULT_SECONDS: u64 = 120;

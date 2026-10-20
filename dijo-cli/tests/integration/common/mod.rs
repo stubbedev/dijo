@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Seek, SeekFrom, Write};
@@ -37,13 +35,6 @@ impl Scratch {
             self.0.display(),
             std::env::var("PATH").unwrap_or_default()
         )
-    }
-
-    /// A PATH holding tesseract and nothing else.
-    #[cfg(unix)]
-    pub fn path_with_only_tesseract(&self) -> String {
-        self.tesseract_wrapper("");
-        self.0.display().to_string()
     }
 
     /// Writes a tesseract into this directory that runs `before`, then the installed one.
@@ -116,6 +107,7 @@ impl<W: Write + Seek> StoredZip<W> {
     }
 
     /// Adds the entry `name`, deflated, whose data `write` writes.
+    #[cfg(target_os = "linux")]
     pub fn deflated_entry(
         &mut self,
         name: &str,
@@ -225,43 +217,6 @@ impl<W: Write> Write for Checksummed<'_, W> {
     fn flush(&mut self) -> io::Result<()> {
         self.out.flush()
     }
-}
-
-const OOXML: &str = "http://schemas.openxmlformats.org";
-
-/// Writes a DOCX into `out`: `doctype` (empty for none) declares the document part's DTD, and
-/// `body` writes what goes inside its `w:body`.
-pub fn write_docx<W: Write + Seek>(
-    out: W,
-    doctype: &str,
-    body: impl FnOnce(&mut dyn Write) -> io::Result<()>,
-) -> io::Result<W> {
-    let mut zip = StoredZip::new(out);
-    zip.entry("[Content_Types].xml", |out| {
-        write!(
-            out,
-            "<?xml version=\"1.0\"?><Types xmlns=\"{OOXML}/package/2006/content-types\">\
-             <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
-             <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>"
-        )
-    })?;
-    zip.entry("_rels/.rels", |out| {
-        write!(
-            out,
-            "<?xml version=\"1.0\"?><Relationships xmlns=\"{OOXML}/package/2006/relationships\">\
-             <Relationship Id=\"rId1\" Type=\"{OOXML}/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>"
-        )
-    })?;
-    zip.entry("word/document.xml", |out| {
-        write!(
-            out,
-            "<?xml version=\"1.0\"?>{doctype}\
-             <w:document xmlns:w=\"{OOXML}/wordprocessingml/2006/main\"><w:body>"
-        )?;
-        body(out)?;
-        write!(out, "</w:body></w:document>")
-    })?;
-    zip.finish()
 }
 
 /// A PDF of `pages` pages of plain text, large enough that parsing all of it takes a while.

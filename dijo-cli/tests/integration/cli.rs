@@ -3,9 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-mod common;
-
-use common::{document, text_pdf, Scratch, StoredZip, DOCUMENTS};
+use crate::common::{document, text_pdf, Scratch, StoredZip, DOCUMENTS};
 
 fn dijo(args: &[&str]) -> Output {
     dijo_with_stdin(args, None)
