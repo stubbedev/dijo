@@ -581,11 +581,11 @@
     "reading_order": 1.0
   },
   "hebrew-scan.png": {
-    "character_error_rate": 0.9354838709677419,
-    "token_error_rate": 4.448979591836735,
-    "recall": 0.0,
-    "spurious": 1.0,
-    "reading_order": 0.0
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
   },
   "hebrew.docx": {
     "character_error_rate": 0.0,

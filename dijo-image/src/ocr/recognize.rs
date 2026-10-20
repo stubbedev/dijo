@@ -42,8 +42,9 @@ const MIN_CONFIDENCE: i32 = 80;
 /// scripts and pages upside down read at 50 or less and in no language.
 const MIN_TEXT_CONFIDENCE: i32 = 50;
 /// Scripts tesseract's detection takes for others (Armenian for upside-down Latin, Georgian for
-/// Malayalam), tried in turn when no reading of an image with plenty of text is confident.
-const OVERLOOKED_SCRIPTS: [&str; 2] = ["Armenian", "Georgian"];
+/// Malayalam, Hebrew for Thai), tried in turn when no reading of an image with plenty of text is
+/// confident.
+const OVERLOOKED_SCRIPTS: [&str; 3] = ["Armenian", "Georgian", "Hebrew"];
 /// Scripts detection reports for pages in another script, which is read first in its place:
 /// Georgian pages are reported as Malayalam. The reported script is then the first of the
 /// overlooked ones tried.
@@ -845,12 +846,12 @@ mod tests {
     fn tries_the_reported_script_then_the_overlooked_ones() {
         assert_eq!(
             overlooked(Some("Georgian"), &["Latin"]),
-            ["Georgian", "Armenian"]
+            ["Georgian", "Armenian", "Hebrew"]
         );
-        assert_eq!(overlooked(None, &["Armenian"]), ["Georgian"]);
+        assert_eq!(overlooked(None, &["Armenian"]), ["Georgian", "Hebrew"]);
         assert_eq!(
             overlooked(Some("Cyrillic"), &["Latin"]),
-            ["Cyrillic", "Armenian", "Georgian"]
+            ["Cyrillic", "Armenian", "Georgian", "Hebrew"]
         );
     }
 }
