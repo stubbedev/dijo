@@ -1,3 +1,34 @@
+# 0.2.6 (2026-10-20)
+
+### Added
+
+* OCR restores the long s of early modern print, which tesseract reads as f (`fu cafa` for *su casa*), by the
+  dictionary of the page's language model, on a page with at least three such words (#210).
+
+### Changed
+
+* Tesseract reads its models' dictionaries in place in the mapped model file, so every process shares one copy of
+  them: reading a Latin page peaks at 191 MB instead of 305 MB, and each worker process holds about 85 MB less (#211).
+* With the automatic OCR language, a page of a known language is read once rather than four or five times (#198), a
+  page waits for the pages before it rather than guessing their script, and an image is enlarged only when its lines
+  are small, not its specks (#199): pages of old print read with a third less CPU and a lower peak.
+
+### Fixed
+
+* Scans set in columns read column by column: tesseract is told the resolution an image records or was rendered at,
+  and no longer runs a column's lines into the title beside it (#209).
+* `--format pages` learns running headers and footers from every window of pages instead of the first eight, from left
+  and right pages apart, and despite OCR misreadings, so a book that opens with front matter has them moved out (#201);
+  a page that is nothing but its running line keeps it as its text (#213).
+* The blocks of an OCR'd page are read from the top down where they share width, so a verse above prose comes first
+  (#200).
+* Chinese, Japanese and Thai scans are read without a space between every character (#205), a Thai scan is no longer
+  dropped as noise (#203), and a Hebrew scan is read in Hebrew rather than Thai (#204).
+* A PDF page that scales its text through the CTM, as macOS Quartz writes it, reads its lines apart instead of
+  interleaving them (#212).
+* An empty table cell written as `<td/>`, as spreadsheets write them, keeps its tab and no longer joins the next
+  heading to the following text when splitting pages or elements (#214).
+
 # 0.2.5 (2026-10-20)
 
 ### Fixed

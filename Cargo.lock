@@ -708,7 +708,7 @@ dependencies = [
 
 [[package]]
 name = "dijo"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "blake3",
  "bytes",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-base"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "aes",
  "ar",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-core"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "criterion",
  "dijo-base",
@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-html"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dijo-base",
  "dijo-core",
@@ -815,7 +815,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-image"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dijo-base",
  "dijo-core",
@@ -841,7 +841,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-mail"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "ar",
  "cpio",
@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-media"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dijo-base",
  "dijo-core",
@@ -868,7 +868,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-mime"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dijo-base",
  "fancy-regex",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-native"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "flate2",
  "libloading",
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-odf"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dijo-base",
  "dijo-core",
@@ -900,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-office"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "aes",
  "des",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-ooxml"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dijo-base",
  "dijo-core",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-pdf"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "arrayvec",
  "dijo-base",
@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-science"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dijo-base",
  "dijo-core",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "dijo-small"
-version = "0.2.5"
+version = "0.2.6"
 dependencies = [
  "dijo-base",
  "dijo-core",
