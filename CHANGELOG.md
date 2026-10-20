@@ -1,3 +1,16 @@
+# 0.2.5 (2026-10-20)
+
+### Fixed
+
+* No reading depends on the machine's time zone any more: property list dates and MSG submission dates are read in
+  UTC (#193).
+* Numbers are no longer wrapped the way Java's `int` and `long` wrap them: a PDF number that no `int` holds counts as
+  missing rather than wrapping around, and a date past what a `long` of milliseconds holds is no date (#193).
+* An unmappable Big5 character in a Word 6/95 document is U+FFFD rather than `?` (#193).
+* An XML document switches to its declared encoding right after the declaration (#193).
+* Excel formats are written as Excel shows them: `0.##` writes 5 as `5.`, times are rounded to the fraction of a
+  second the format shows, and Japanese eras (`ggge`) and the `B1` calendar prefix are written (#193).
+
 # 0.2.4 (2026-10-20)
 
 ### Added

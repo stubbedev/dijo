@@ -1,6 +1,6 @@
 [package]
 name = "dijo"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 publish = false
 description = "Command-line text and metadata extraction for PDF, Office, email and many other formats"
