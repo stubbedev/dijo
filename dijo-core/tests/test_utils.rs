@@ -62,6 +62,23 @@ pub fn is_expected_metadata_contained(
     })
 }
 
+/// The `file:` URL of the file at `path`, as `Path.toUri` writes it: absolute, with forward
+/// slashes, a slash before a Windows drive letter, and spaces encoded. The path is made absolute
+/// without `canonicalize`, whose `\\?\` prefix on Windows no URL path holds.
+#[allow(dead_code)]
+pub fn file_url(path: &str) -> String {
+    let absolute = std::path::absolute(path).unwrap();
+    let slashed = absolute
+        .to_str()
+        .unwrap()
+        .replace('\\', "/")
+        .replace(' ', "%20");
+    match slashed.starts_with('/') {
+        true => format!("file://{slashed}"),
+        false => format!("file:///{slashed}"),
+    }
+}
+
 #[allow(dead_code)]
 pub fn serve(body: Vec<u8>, content_type: &'static str) -> SocketAddr {
     answer("200 OK", body, content_type)

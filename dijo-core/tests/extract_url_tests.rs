@@ -47,12 +47,11 @@ fn test_detect_http_url() {
 
 #[test]
 fn test_extract_file_url_as_the_file() {
-    let path = std::fs::canonicalize(DOCUMENT).unwrap();
     let extractor = Extractor::new();
     let (expected, expected_metadata) = extractor.extract_file_to_string(DOCUMENT).unwrap();
 
     let (content, metadata) = extractor
-        .extract_url_to_string(&format!("file://{}", path.display()))
+        .extract_url_to_string(&test_utils::file_url(DOCUMENT))
         .unwrap();
 
     assert_eq!(content, expected);
