@@ -210,7 +210,7 @@
     "reading_order": 1.0
   },
   "chinese-scan.png": {
-    "character_error_rate": 0.8561151079136691,
+    "character_error_rate": 0.02877697841726619,
     "token_error_rate": 0.015748031496062992,
     "recall": 0.9921259842519685,
     "spurious": 0.015625,
@@ -581,7 +581,7 @@
     "reading_order": 1.0
   },
   "hebrew-scan.png": {
-    "character_error_rate": 1.3225806451612903,
+    "character_error_rate": 0.9354838709677419,
     "token_error_rate": 4.448979591836735,
     "recall": 0.0,
     "spurious": 1.0,
@@ -763,7 +763,7 @@
     "reading_order": 1.0
   },
   "japanese-scan.png": {
-    "character_error_rate": 0.803030303030303,
+    "character_error_rate": 0.022727272727272728,
     "token_error_rate": 0.00819672131147541,
     "recall": 1.0,
     "spurious": 0.008130081300813009,

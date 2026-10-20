@@ -656,10 +656,7 @@ impl Tesseract {
         let variables: &[(&CStr, &CStr)] = if model == OSD_MODEL {
             &[(c"min_characters_to_try", c"10")]
         } else {
-            &[
-                (c"page_separator", c""),
-                (c"preserve_interword_spaces", c"0"),
-            ]
+            &[(c"page_separator", c"")]
         };
         for (name, value) in variables {
             unsafe { (api.set_variable)(handle.as_ptr(), name.as_ptr(), value.as_ptr()) };

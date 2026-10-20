@@ -207,11 +207,11 @@
 | slovenian-scan.png | ocr | 0.001 | 0.005 | 0.995 | 0.005 | 1.000 |
 | spanish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | ukrainian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| chinese-scan.png | ocr | 0.856 | 0.016 | 0.992 | 0.016 | 1.000 |
-| japanese-scan.png | ocr | 0.803 | 0.008 | 1.000 | 0.008 | 1.000 |
+| chinese-scan.png | ocr | 0.029 | 0.016 | 0.992 | 0.016 | 1.000 |
+| japanese-scan.png | ocr | 0.023 | 0.008 | 1.000 | 0.008 | 1.000 |
 | thai-scan.png | ocr | 1.000 | 1.000 | 0.000 | 0.000 | 0.000 |
 | hindi-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| hebrew-scan.png | ocr | 1.323 | 4.449 | 0.000 | 1.000 | 0.000 |
+| hebrew-scan.png | ocr | 0.935 | 4.449 | 0.000 | 1.000 | 0.000 |
 | quixote-1605.pdf | ocr | 0.134 | 0.452 | 0.581 | 0.394 | 0.000 |
 | french-cp1252.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | spanish-cp1252.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
