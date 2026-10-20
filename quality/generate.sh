@@ -50,20 +50,29 @@ fodt() {
 <style:style style:name="Heading" style:family="paragraph" style:parent-style-name="Standard"><style:text-properties fo:font-size="16pt" fo:font-weight="bold"/></style:style>
 </office:styles>
 <office:automatic-styles>
+<style:style style:name="Columns" style:family="section"><style:section-properties><style:columns fo:column-count="3" fo:column-gap="0.8cm"/></style:section-properties></style:style>
 <style:page-layout style:name="Layout"><style:page-layout-properties fo:page-width="21cm" fo:page-height="29.7cm" fo:margin="2cm"$page_direction>$columns</style:page-layout-properties>$header_style</style:page-layout>
 </office:automatic-styles>
 <office:master-styles><style:master-page style:name="Standard" style:page-layout-name="Layout">$header</style:master-page></office:master-styles>
 <office:body><office:text>
 EOF
-        local first=true
+        local first=true count=0 total
+        total=$(awk 'NF' "$source" | wc -l)
         while IFS= read -r line; do
             [ -z "$line" ] && continue
+            count=$((count + 1))
             escaped=$(printf '%s' "$line" | xml_escape)
+            if [ "$layout" = newspaper ] && [ "$count" -eq "$total" ]; then
+                echo '</text:section>'
+            fi
             if $first || [[ "$line" =~ ^Part\ [A-Z][a-z]+$ ]]; then
                 first=false
                 echo "<text:h text:style-name=\"Heading\" text:outline-level=\"1\">$escaped</text:h>"
             else
                 echo "<text:p text:style-name=\"Standard\">$escaped</text:p>"
+            fi
+            if [ "$layout" = newspaper ] && [ "$count" -eq 1 ]; then
+                echo '<text:section text:style-name="Columns" text:name="Columns">'
             fi
         done < "$source"
         echo '</office:text></office:body></office:document>'
@@ -93,6 +102,8 @@ pandoc "$work/prose.md" --metadata title=Ledger -o "$corpus/prose.epub"
 
 fodt "$truth/prose.txt" "$work/prose-columns.fodt" columns lr-tb
 convert "$work/prose-columns.fodt" prose-columns pdf pdf
+fodt "$truth/prose.txt" "$work/prose-newspaper.fodt" newspaper lr-tb
+convert "$work/prose-newspaper.fodt" prose-newspaper pdf pdf
 
 fodt "$truth/report.txt" "$work/report.fodt" running lr-tb
 convert "$work/report.fodt" report pdf pdf
@@ -207,6 +218,10 @@ magick "$work/scan-150.png" -colorspace Gray -resize 1240x \( +clone -fill '#555
     +swap -gravity center -compose over -composite -virtual-pixel background -background '#555555' \
     -distort Perspective '0,0 420,260  1736,0 1330,300  1736,2455 1700,2380  0,2455 40,2420' -quality 90 \
     "$corpus/prose-photo-perspective.jpg"
+for layout in columns newspaper; do
+    pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/prose-$layout.pdf" "$work/$layout-300"
+    magick "$work/$layout-300.png" -colorspace Gray -depth 8 "$corpus/prose-$layout-scan.png"
+done
 pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/arabic.pdf" "$work/arabic-300"
 magick "$work/arabic-300.png" -colorspace Gray -depth 8 "$corpus/arabic-scan-300dpi.png"
 cp "$here/quixote-1605.pdf" "$corpus/quixote-1605.pdf"

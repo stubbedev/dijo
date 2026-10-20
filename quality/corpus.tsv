@@ -9,6 +9,7 @@ prose.epub	prose	born-digital
 prose-pandoc.docx	prose	born-digital		
 prose-columns.pdf	prose	multi-column		
 prose-columns-reversed.pdf	prose	multi-column		
+prose-newspaper.pdf	prose	multi-column		
 report.pdf	report	headers-footers		
 report.docx	report	headers-footers		
 report.pdf	report	headers-footers		--format pages
@@ -45,6 +46,8 @@ table.docx	table	tables
 table.html	table	tables		
 table.pdf	table	tables		
 prose-scan-300dpi.png	prose	ocr		
+prose-columns-scan.png	prose	ocr		
+prose-newspaper-scan.png	prose	ocr		
 prose-scan-150dpi.png	prose	ocr		
 prose-scan-skewed.png	prose	ocr		
 prose-scan-rotated.png	prose	ocr		
