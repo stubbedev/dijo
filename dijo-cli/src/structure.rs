@@ -117,6 +117,20 @@ impl Splitter<'_> {
     }
 
     fn flush_loose(&mut self) -> io::Result<()> {
+        self.flush(false)
+    }
+
+    /// Ends the open page, which in pages is passed on even when it has no text, so that every
+    /// page of the document has its part.
+    fn end_page(&mut self) -> io::Result<()> {
+        self.flush(self.unit == Unit::Pages)?;
+        self.page = None;
+        Ok(())
+    }
+
+    /// Passes on the text collected outside every element, unless there is none and `keep_empty`
+    /// is false.
+    fn flush(&mut self, keep_empty: bool) -> io::Result<()> {
         let text = std::mem::take(&mut self.loose);
         let artifacts = std::mem::take(&mut self.artifacts);
         let continues_run = std::mem::take(&mut self.in_pieces);
@@ -126,7 +140,7 @@ impl Splitter<'_> {
             text.trim()
         };
         let artifacts = artifacts.trim();
-        if text.is_empty() && artifacts.is_empty() && !continues_run {
+        if text.is_empty() && artifacts.is_empty() && !continues_run && !keep_empty {
             return Ok(());
         }
         let page = self.page.map(|(page, _)| page);
@@ -205,10 +219,10 @@ impl Splitter<'_> {
         if self.page.is_none() && is_div_of_class(start, &PAGE_CLASSES) {
             self.flush_loose()?;
             self.pages_seen += 1;
-            if empty {
-                return Ok(());
-            }
             self.page = Some((self.pages_seen, self.depth));
+            if empty {
+                return self.end_page();
+            }
             return Ok(());
         }
         match name {
@@ -293,8 +307,7 @@ impl Splitter<'_> {
             self.artifact = None;
         }
         if self.page.is_some_and(|(_, depth)| depth == self.depth) {
-            self.flush_loose()?;
-            self.page = None;
+            self.end_page()?;
         }
         if name == "body" {
             self.in_body = false;
@@ -661,6 +674,32 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_page_without_text_is_a_part_of_its_own() {
+        let xhtml = r#"<html><body><div class="page"><p>One</p></div>
+<div class="page"><div class="ocr"> </div></div>
+<div class="page"/>
+<div class="page"><p>Four</p></div></body></html>"#;
+        let pages: Vec<_> = parts(xhtml, Unit::Pages)
+            .into_iter()
+            .map(|part| (part.page, part.text))
+            .collect();
+        assert_eq!(
+            pages,
+            [
+                (Some(1), "One".to_string()),
+                (Some(2), String::new()),
+                (Some(3), String::new()),
+                (Some(4), "Four".to_string()),
+            ]
+        );
+        let elements: Vec<_> = parts(xhtml, Unit::Elements)
+            .into_iter()
+            .map(|part| part.text)
+            .collect();
+        assert_eq!(elements, ["One", "Four"]);
     }
 
     #[test]
