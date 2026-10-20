@@ -17,7 +17,6 @@ in
     (pkgs.tesseract.override { enableLanguages = [ "eng" ]; })
     pkgs.libheif.bin
     pkgs.git
-    pkgs.sccache
     pkgs.jre_headless
   ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.mold-wrapped ];
 
@@ -26,7 +25,6 @@ in
   env = {
     OMP_THREAD_LIMIT = "1";
     TESSDATA_PREFIX = tessdata;
-    RUSTC_WRAPPER = "sccache";
   } // lib.optionalAttrs pkgs.stdenv.isLinux {
     "CARGO_TARGET_${hostTarget}_LINKER" = lib.mkForce (lib.getExe pkgs.clang);
     "CARGO_TARGET_${hostTarget}_RUSTFLAGS" = "-C link-arg=-fuse-ld=mold";
