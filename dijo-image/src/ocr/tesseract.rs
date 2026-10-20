@@ -31,6 +31,12 @@ const MODEL_SEPARATOR: char = '+';
 const MODEL_EXTENSION: &str = ".traineddata";
 /// `PSM_OSD_ONLY`.
 const OSD_ONLY: c_int = 0;
+/// `RIL_BLOCK`: blocks of text, images and lines, as a result iterator steps through them.
+const BLOCK: c_int = 0;
+/// `RIL_PARA`: paragraphs, as a result iterator steps through them.
+const PARAGRAPH: c_int = 1;
+/// `PT_FLOWING_IMAGE` to `PT_VERT_LINE`: the blocks `GetUTF8Text` leaves out, images and lines.
+const IMAGE_AND_LINE_BLOCKS: std::ops::RangeInclusive<c_int> = 9..=13;
 /// `L_SEVERITY_NONE`: Leptonica reports nothing.
 const LEPTONICA_QUIET: c_int = 6;
 /// The memory tesseract and Leptonica take to read a grey image, a pixel.
@@ -51,6 +57,18 @@ struct Monitor {
 /// Leptonica's image.
 #[repr(C)]
 struct Pix {
+    _opaque: [u8; 0],
+}
+
+/// A walk through what an engine read.
+#[repr(C)]
+struct ResultIterator {
+    _opaque: [u8; 0],
+}
+
+/// The layout a [`ResultIterator`] walks through.
+#[repr(C)]
+struct PageIterator {
     _opaque: [u8; 0],
 }
 
@@ -115,7 +133,15 @@ c_api! {
     read_pix = pixReadMem(*const u8, usize) -> *mut Pix;
     destroy_pix = pixDestroy(*mut *mut Pix);
     recognize = TessBaseAPIRecognize(*mut BaseApi, *mut Monitor) -> c_int;
-    utf8_text = TessBaseAPIGetUTF8Text(*mut BaseApi) -> *mut c_char;
+    result_iterator = TessBaseAPIGetIterator(*mut BaseApi) -> *mut ResultIterator;
+    delete_result_iterator = TessResultIteratorDelete(*mut ResultIterator);
+    page_iterator = TessResultIteratorGetPageIterator(*mut ResultIterator) -> *mut PageIterator;
+    next = TessPageIteratorNext(*mut PageIterator, c_int) -> c_int;
+    at_beginning_of = TessPageIteratorIsAtBeginningOf(*const PageIterator, c_int) -> c_int;
+    bounding_box = TessPageIteratorBoundingBox(
+        *const PageIterator, c_int, *mut c_int, *mut c_int, *mut c_int, *mut c_int) -> c_int;
+    block_type = TessPageIteratorBlockType(*const PageIterator) -> c_int;
+    iterated_text = TessResultIteratorGetUTF8Text(*const ResultIterator, c_int) -> *mut c_char;
     delete_text = TessDeleteText(*const c_char);
     mean_text_conf = TessBaseAPIMeanTextConf(*mut BaseApi) -> c_int;
     clear = TessBaseAPIClear(*mut BaseApi);
@@ -696,16 +722,120 @@ fn models_under(dir: &std::path::Path) -> Result<BTreeSet<String>, OcrError> {
 
 /// The text an engine recognized, and its words' mean confidence.
 unsafe fn text_of(api: &Api, handle: *mut BaseApi) -> Option<Reading> {
-    let text = (api.utf8_text)(handle);
-    if text.is_null() {
-        return None;
-    }
-    let read = CStr::from_ptr(text).to_string_lossy().into_owned();
-    (api.delete_text)(text);
+    let blocks = blocks_of(api, handle)?;
+    let text = reading_order(&blocks)
+        .into_iter()
+        .map(|block| blocks[block].text.as_str())
+        .collect();
     Some(Reading {
-        text: read,
+        text,
         confidence: (api.mean_text_conf)(handle),
     })
+}
+
+/// A block of text an engine read: where it lies on the image, and its paragraphs' text.
+#[derive(Debug)]
+struct Block {
+    area: Area,
+    text: String,
+}
+
+/// A rectangle on an image, in pixels from its top left corner, `right` and `bottom` exclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Area {
+    left: c_int,
+    top: c_int,
+    right: c_int,
+    bottom: c_int,
+}
+
+impl Area {
+    /// Whether this area starts higher than `other` and shares some of its width: whether it is
+    /// read before it on a page, as a heading or a verse is before the prose under it, even when
+    /// tightly set lines make their areas overlap. No column shares width with one beside it.
+    fn above(&self, other: &Area) -> bool {
+        self.top < other.top && self.left < other.right && other.left < self.right
+    }
+}
+
+/// The area of the block a page iterator is in.
+unsafe fn block_area(api: &Api, page: *const PageIterator) -> Area {
+    let (mut left, mut top, mut right, mut bottom) = (0, 0, 0, 0);
+    (api.bounding_box)(page, BLOCK, &mut left, &mut top, &mut right, &mut bottom);
+    Area {
+        left,
+        top,
+        right,
+        bottom,
+    }
+}
+
+/// The blocks of text an engine read, in its order, each with the text of its paragraphs as
+/// `GetUTF8Text` joins them: images, lines and empty paragraphs left out. None when it read
+/// nothing it can walk through.
+unsafe fn blocks_of(api: &Api, handle: *mut BaseApi) -> Option<Vec<Block>> {
+    let results = NonNull::new((api.result_iterator)(handle))?;
+    let page = (api.page_iterator)(results.as_ptr());
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut new_block = true;
+    loop {
+        new_block |= (api.at_beginning_of)(page, BLOCK) != 0;
+        let text = match IMAGE_AND_LINE_BLOCKS.contains(&(api.block_type)(page)) {
+            true => std::ptr::null_mut(),
+            false => (api.iterated_text)(results.as_ptr(), PARAGRAPH),
+        };
+        if !text.is_null() {
+            let paragraph = CStr::from_ptr(text).to_string_lossy();
+            match blocks.last_mut().filter(|_| !new_block) {
+                Some(block) => block.text.push_str(&paragraph),
+                None => blocks.push(Block {
+                    area: block_area(api, page),
+                    text: paragraph.into_owned(),
+                }),
+            }
+            new_block = false;
+            (api.delete_text)(text);
+        }
+        if (api.next)(page, PARAGRAPH) == 0 {
+            break;
+        }
+    }
+    (api.delete_result_iterator)(results.as_ptr());
+    Some(blocks)
+}
+
+/// The order to read blocks in: tesseract's, but for a block that starts higher than another
+/// read before it and shares some of its width, which is read first. Tesseract's layout
+/// analysis sometimes splits a page set solid into blocks of a few lines each and puts some of
+/// the prose under a heading or a verse before them, depending on a pixel's difference in the
+/// rendering; columns, which share no width, keep its order. Each step reads the first block in
+/// tesseract's order that no unread block lies above; since a block lies above another only
+/// when its top is higher, every block is read.
+fn reading_order(blocks: &[Block]) -> Vec<usize> {
+    let below: Vec<Vec<usize>> = blocks
+        .iter()
+        .map(|block| {
+            (0..blocks.len())
+                .filter(|&other| block.area.above(&blocks[other].area))
+                .collect()
+        })
+        .collect();
+    let mut waiting = vec![0usize; blocks.len()];
+    for &other in below.iter().flatten() {
+        waiting[other] += 1;
+    }
+    let mut ready: BTreeSet<usize> = (0..blocks.len()).filter(|&i| waiting[i] == 0).collect();
+    let mut order = Vec::with_capacity(blocks.len());
+    while let Some(next) = ready.pop_first() {
+        order.push(next);
+        for &other in &below[next] {
+            waiting[other] -= 1;
+            if waiting[other] == 0 {
+                ready.insert(other);
+            }
+        }
+    }
+    order
 }
 
 /// Whether detection decided on a script: whether its confidence is above zero. Our Java read
@@ -750,6 +880,55 @@ mod tests {
     fn the_bundled_library_exports_every_function_readings_call() {
         let exported = std::fs::read_to_string("../ci/tesseract-library/c-api.txt").unwrap();
         assert_eq!(exported.lines().collect::<Vec<_>>(), SYMBOLS);
+    }
+
+    fn block(left: c_int, top: c_int, right: c_int, bottom: c_int) -> Block {
+        Block {
+            area: Area {
+                left,
+                top,
+                right,
+                bottom,
+            },
+            text: String::new(),
+        }
+    }
+
+    #[test]
+    fn reads_a_heading_and_a_verse_before_the_prose_under_them() {
+        let prose = block(100, 700, 1500, 2000);
+        let heading = block(400, 100, 1300, 180);
+        let verse = block(200, 200, 1400, 650);
+        assert_eq!(reading_order(&[prose, heading, verse]), [1, 2, 0]);
+    }
+
+    #[test]
+    fn reads_blocks_of_a_page_set_solid_from_the_top_down() {
+        let blocks = [
+            block(152, 963, 1126, 1053),
+            block(140, 1098, 1130, 1798),
+            block(155, 137, 1128, 999),
+            block(151, 1048, 1129, 1106),
+            block(952, 1801, 1488, 1851),
+        ];
+        assert_eq!(reading_order(&blocks), [2, 0, 3, 1, 4]);
+    }
+
+    #[test]
+    fn keeps_the_order_of_columns_side_by_side() {
+        let left = || block(100, 100, 700, 2000);
+        let right = || block(800, 300, 1400, 2000);
+        assert_eq!(reading_order(&[left(), right()]), [0, 1]);
+        assert_eq!(reading_order(&[right(), left()]), [0, 1]);
+    }
+
+    #[test]
+    fn reads_what_spans_columns_above_them_first_and_below_them_last() {
+        let left = block(100, 300, 700, 2000);
+        let right = block(800, 300, 1400, 2000);
+        let heading = block(100, 100, 1400, 250);
+        let footer = block(100, 2100, 1400, 2200);
+        assert_eq!(reading_order(&[left, right, footer, heading]), [3, 0, 1, 2]);
     }
 
     #[test]

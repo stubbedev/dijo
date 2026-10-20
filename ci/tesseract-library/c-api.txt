@@ -9,7 +9,14 @@ TessBaseAPISetImage2
 pixReadMem
 pixDestroy
 TessBaseAPIRecognize
-TessBaseAPIGetUTF8Text
+TessBaseAPIGetIterator
+TessResultIteratorDelete
+TessResultIteratorGetPageIterator
+TessPageIteratorNext
+TessPageIteratorIsAtBeginningOf
+TessPageIteratorBoundingBox
+TessPageIteratorBlockType
+TessResultIteratorGetUTF8Text
 TessDeleteText
 TessBaseAPIMeanTextConf
 TessBaseAPIClear
