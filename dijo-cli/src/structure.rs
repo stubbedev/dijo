@@ -116,6 +116,11 @@ impl Splitter<'_> {
         }
     }
 
+    fn end_cell(&mut self) {
+        self.between_cells = true;
+        self.current_text().push('\t');
+    }
+
     fn flush_loose(&mut self) -> io::Result<()> {
         self.flush(false)
     }
@@ -227,11 +232,7 @@ impl Splitter<'_> {
         }
         match name {
             "tr" => self.between_cells = true,
-            // `<td/>` has no end to pop its cell at: it ends where it starts, as `end` ends a cell.
-            "td" | "th" if empty => {
-                self.between_cells = true;
-                self.current_text().push('\t');
-            }
+            "td" | "th" if empty => self.end_cell(),
             "td" | "th" => {
                 self.between_cells = false;
                 self.cells.push(Cell::default());
@@ -275,8 +276,7 @@ impl Splitter<'_> {
         match name {
             "td" | "th" => {
                 self.cells.pop();
-                self.between_cells = true;
-                self.current_text().push('\t');
+                self.end_cell();
             }
             "tr" => {
                 self.between_cells = false;
