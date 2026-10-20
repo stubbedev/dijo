@@ -209,6 +209,9 @@ fn split(text: String, placement: Placement, patterns: &Patterns) -> Page {
             body = rest;
             line
         });
+    if body.trim().is_empty() {
+        return Page::unchanged(text);
+    }
     Page {
         text: if header.is_none() && footer.is_none() {
             text
@@ -408,5 +411,19 @@ mod tests {
         let single = run(&["Title\nOnly page\nPage 1"]);
         assert_eq!(single[0].header, None);
         assert_eq!(single[0].footer, None);
+    }
+
+    #[test]
+    fn a_page_that_is_only_the_recurring_line_keeps_it() {
+        let out = run(&["Product label", "Product label", "Product label"]);
+        for page in &out {
+            assert_eq!(page.text, "Product label");
+            assert_eq!(page.header, None);
+            assert_eq!(page.footer, None);
+        }
+        let mixed = run(&["Label\nFront.", "Label", "Label\nBack."]);
+        assert_eq!(mixed[0].text, "Front.");
+        assert_eq!(mixed[1].text, "Label");
+        assert_eq!(mixed[2].text, "Back.");
     }
 }
