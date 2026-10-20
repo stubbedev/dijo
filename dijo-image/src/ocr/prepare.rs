@@ -163,7 +163,10 @@ fn sharpness(points: &[(f64, f64)], degrees: f64, diagonal: i64, rows: &mut [u64
 /// above [`MAX_LINE_PIXELS`], since tesseract reads such text as well and faster once it is
 /// smaller. The line height is only trusted for reducing when at least [`MIN_MEASURED_LINES`]
 /// lines were measured, each under a tenth of the image's height: on an inverted page or one
-/// with a dark border, every row holds ink. 1 when the image has no lines of text.
+/// with a dark border, every row holds ink. It is only trusted for enlarging when most rows with
+/// ink lie in runs that short: on a page set solid, whose lines touch, the text reads as a few
+/// runs of hundreds of rows, and the specks and marks beside them as the shortest. 1 when the
+/// image has no lines of text.
 pub(crate) fn scale_factor(image: &Bitmap, max_pixels: u64, reduce: bool) -> f64 {
     let image = image.gray();
     let (width, height) = image.dimensions();
@@ -199,7 +202,13 @@ pub(crate) fn scale_factor(image: &Bitmap, max_pixels: u64, reduce: bool) -> f64
             1.0
         };
     }
-    if line_height >= MIN_LINE_PIXELS {
+    let (short_rows, rows) = runs.iter().fold((0, 0), |(short, all), &run| {
+        (
+            short + if run < MIN_LINE_PIXELS { run } else { 0 },
+            all + run,
+        )
+    });
+    if line_height >= MIN_LINE_PIXELS || short_rows * 2 <= rows {
         return 1.0;
     }
     let wanted = MAX_UPSCALE.min(TARGET_LINE_PIXELS / line_height as f64);
@@ -515,6 +524,42 @@ mod tests {
         let scaled = scale(&Bitmap::Gray(image), 2.5);
         assert_eq!(scaled.dimensions(), (10, 10));
         assert!(scaled.pixels().all(|pixel| pixel.0[0] == 100));
+    }
+
+    /// A white page with dark rows from each `(top, height)` across its width.
+    fn rows(width: u32, height: u32, inked: &[(u32, u32)]) -> Bitmap {
+        let mut image = GrayImage::from_pixel(width, height, Luma([WHITE]));
+        for &(top, rows) in inked {
+            for y in top..top + rows {
+                for x in 100..width - 100 {
+                    image.put_pixel(x, y, Luma([0]));
+                }
+            }
+        }
+        Bitmap::Gray(image)
+    }
+
+    #[test]
+    fn enlarges_lines_of_small_text() {
+        let lines: Vec<(u32, u32)> = (0..20).map(|line| (50 + line * 16, 10)).collect();
+        let factor = scale_factor(&rows(800, 400, &lines), 60_000_000, true);
+        assert!((factor - 3.2).abs() < 1e-9, "{factor}");
+    }
+
+    #[test]
+    fn keeps_solid_text_beside_specks() {
+        let inked = [
+            (60, 4),
+            (90, 5),
+            (130, 7),
+            (170, 9),
+            (300, 900),
+            (1250, 1000),
+        ];
+        assert_eq!(
+            scale_factor(&rows(1600, 2400, &inked), 60_000_000, true),
+            1.0
+        );
     }
 
     #[test]
