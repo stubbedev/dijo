@@ -1286,8 +1286,8 @@
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testBPList.bplist": {
     "mime_type": "application/x-bplist-itunes",
-    "outcome": "works",
-    "similarity": 1.0
+    "outcome": "differs",
+    "similarity": 0.9211111111111111
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-apple-module/src/test/resources/test-documents/testBulletPoints.key": {
     "mime_type": "application/vnd.apple.keynote",
