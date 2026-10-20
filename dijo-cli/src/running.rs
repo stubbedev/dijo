@@ -31,15 +31,16 @@ impl Page {
 
 /// Finds the lines repeated at the top or bottom of most pages (running headers and footers,
 /// page numbers) and moves them out of the page text. It learns them from each window of pages,
-/// held back meanwhile so the output still streams, and keeps what earlier windows taught: a book
-/// whose heads begin after its front matter, or change from one part to the next, has them all
-/// moved out.
+/// held back meanwhile so the output still streams, and moves out what the window and the one
+/// before it taught: a book whose heads begin after its front matter, or change from one part to
+/// the next, has them all moved out, and a window whose heads OCR misread too often to learn
+/// still has those of the window before.
 pub struct RunningLines<'a, T> {
     emit: &'a mut dyn FnMut(T, Page) -> io::Result<()>,
     enabled: bool,
     held: Vec<(T, String, Placement)>,
     held_bytes: usize,
-    learned: Patterns,
+    previous: Option<Patterns>,
 }
 
 /// Whether text is a page's, or lies outside every page, such as the bookmarks Tika appends to
@@ -58,17 +59,18 @@ struct Patterns {
 }
 
 impl Patterns {
-    fn extend(&mut self, other: Patterns) {
+    fn and(mut self, other: &Patterns) -> Patterns {
         for (known, new) in [
-            (&mut self.headers, other.headers),
-            (&mut self.footers, other.footers),
+            (&mut self.headers, &other.headers),
+            (&mut self.footers, &other.footers),
         ] {
             for pattern in new {
-                if !recurs(&pattern, known) {
-                    known.push(pattern);
+                if !known.contains(pattern) {
+                    known.push(pattern.clone());
                 }
             }
         }
+        self
     }
 }
 
@@ -81,7 +83,7 @@ impl<'a, T> RunningLines<'a, T> {
             enabled,
             held: Vec::new(),
             held_bytes: 0,
-            learned: Patterns::default(),
+            previous: None,
         }
     }
 
@@ -115,14 +117,22 @@ impl<'a, T> RunningLines<'a, T> {
     }
 
     fn learn(&mut self) -> io::Result<()> {
-        self.learned.extend(learn(
+        let pages_at_least = if self.previous.is_some() {
+            WINDOW_PAGES
+        } else {
+            0
+        };
+        let learned = learn(
             self.held
                 .iter()
                 .map(|(_, text, placement)| (text.as_str(), *placement)),
-        ));
+            pages_at_least,
+        );
+        let applied = self.previous.take().unwrap_or_default().and(&learned);
+        self.previous = Some(learned);
         self.held_bytes = 0;
         for (with, text, placement) in std::mem::take(&mut self.held) {
-            (self.emit)(with, split(text, placement, &self.learned))?;
+            (self.emit)(with, split(text, placement, &applied))?;
         }
         Ok(())
     }
@@ -223,8 +233,10 @@ fn last_line_of(text: &str) -> Option<&str> {
 /// The first and last lines that recur, as [`similar`] lines, on at least half of the pages and
 /// on two at least, or on at least half of the pages of one side and on three at least: a book
 /// heads its left pages with its title and its right pages with the chapter's, and OCR misses
-/// some of either.
-fn learn<'t>(texts: impl Iterator<Item = (&'t str, Placement)>) -> Patterns {
+/// some of either. The pages are counted as `pages_at_least` when there are fewer, so that the
+/// few pages ending a document, such as exhibits titled alike, are held to a whole window's
+/// counts rather than learn their titles as running lines.
+fn learn<'t>(texts: impl Iterator<Item = (&'t str, Placement)>, pages_at_least: usize) -> Patterns {
     let mut headers = Vec::new();
     let mut footers = Vec::new();
     for (text, placement) in texts {
@@ -243,20 +255,21 @@ fn learn<'t>(texts: impl Iterator<Item = (&'t str, Placement)>) -> Patterns {
         }
     }
     Patterns {
-        headers: recurring(&headers),
-        footers: recurring(&footers),
+        headers: recurring(&headers, pages_at_least),
+        footers: recurring(&footers, pages_at_least),
     }
 }
 
-fn recurring(lines: &[Option<Vec<char>>]) -> Vec<Vec<char>> {
+fn recurring(lines: &[Option<Vec<char>>], pages_at_least: usize) -> Vec<Vec<char>> {
+    let pages = lines.len().max(pages_at_least);
     let mut learned: Vec<Vec<char>> = Vec::new();
     for pattern in lines.iter().flatten() {
-        if recurs(pattern, &learned) {
+        if learned.contains(pattern) {
             continue;
         }
-        let on_most_pages = support(pattern, lines.iter()) >= lines.len().div_ceil(2).max(2);
+        let on_most_pages = support(pattern, lines.iter()) >= pages.div_ceil(2).max(2);
         let on_most_of_a_side = [0, 1].into_iter().any(|side| {
-            let pages = lines.len().saturating_sub(side).div_ceil(2);
+            let pages = pages.saturating_sub(side).div_ceil(2);
             support(pattern, lines.iter().skip(side).step_by(2)) >= pages.div_ceil(2).max(3)
         });
         if on_most_pages || on_most_of_a_side {
@@ -577,6 +590,37 @@ mod tests {
                 assert_eq!(page.text, pages[number]);
             }
         }
+    }
+
+    #[test]
+    fn a_window_moves_out_the_heads_the_window_before_learned() {
+        let pages: Vec<String> = (0..24)
+            .map(|number| match number {
+                0..12 | 15 | 20 => format!("Annual Report\n{}", body(number)),
+                _ => format!("Section {}\n{}", body(number), body(number + 100)),
+            })
+            .collect();
+        let pages: Vec<&str> = pages.iter().map(String::as_str).collect();
+        let out = run(&pages);
+        for (number, page) in out.iter().enumerate() {
+            let head = (number < 12 || number == 15 || number == 20).then_some("Annual Report");
+            assert_eq!(page.header.as_deref(), head, "page {number}");
+        }
+    }
+
+    #[test]
+    fn the_few_pages_ending_a_document_do_not_learn_their_titles() {
+        let mut pages: Vec<String> = (0..12)
+            .map(|number| format!("Chapter {}\n{}", body(number), body(number + 100)))
+            .collect();
+        pages.extend(
+            ["Exhibit 31.1", "Exhibit 31.2", "Exhibit 32.1"]
+                .iter()
+                .enumerate()
+                .map(|(number, title)| format!("{title}\n{}", body(number + 200))),
+        );
+        let pages: Vec<&str> = pages.iter().map(String::as_str).collect();
+        assert!(run(&pages).iter().all(|page| page.header.is_none()));
     }
 
     #[test]
