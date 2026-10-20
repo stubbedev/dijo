@@ -207,6 +207,11 @@ slovak-scan.png	slovak	ocr
 slovenian-scan.png	slovenian	ocr		
 spanish-scan.png	spanish	ocr		
 ukrainian-scan.png	ukrainian	ocr		
+chinese-scan.png	chinese	ocr		
+japanese-scan.png	japanese	ocr		
+thai-scan.png	thai	ocr		
+hindi-scan.png	hindi	ocr		
+hebrew-scan.png	hebrew	ocr		
 quixote-1605.pdf	quixote	ocr		
 french-cp1252.txt	french	legacy-encoding		
 spanish-cp1252.txt	spanish	legacy-encoding		

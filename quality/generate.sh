@@ -186,6 +186,10 @@ for language in "${european[@]}"; do
     pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/$language.pdf" "$work/$language-scan"
     magick "$work/$language-scan.png" -colorspace Gray -depth 8 "$corpus/$language-scan.png"
 done
+for language in chinese japanese thai hindi hebrew; do
+    pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/$language.pdf" "$work/$language-scan"
+    magick "$work/$language-scan.png" -colorspace Gray -depth 8 "$corpus/$language-scan.png"
+done
 for language in danish polish; do
     magick "$corpus/$language-scan.png" -resize 50% -seed 1 -attenuate 0.3 +noise Impulse -threshold 55% \
         "$corpus/$language-scan-fax.png"
