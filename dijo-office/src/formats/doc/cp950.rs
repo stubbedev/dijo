@@ -2,12 +2,13 @@
 //! document in Big5 with: two bytes a character, the trailing byte first, a leading byte below
 //! 0x81 giving the trailing byte as it is, the user-defined areas of code page 950 as Microsoft
 //! maps them into the private use area, the row 0xF9 that Big5 lacks as code page 950 has it, and
-//! any other pair as Java's Big5 decoder decodes it, `?` where it does not.
+//! any other pair as Big5 decodes it, U+FFFD where it has no character. POI writes `?` there,
+//! which reads as text that was never in the document.
 
 use crate::text::charset::Charset;
 
-/// The character POI gives a pair Big5 has none of.
-const UNMAPPABLE: u16 = b'?' as u16;
+/// The character of a pair Big5 has none of.
+const UNMAPPABLE: u16 = 0xFFFD;
 
 /// The user-defined areas of code page 950, by the pairs they span, and the first private use
 /// character each maps to.
@@ -87,7 +88,7 @@ fn character(big5: Charset, trailing: u8, leading: u8) -> u16 {
         .expect("the JDK decodes Big5");
     let mut units = decoded.encode_utf16();
     match (units.next(), units.next()) {
-        (Some(unit), None) if unit != 0xFFFD => unit,
+        (Some(unit), None) => unit,
         _ => UNMAPPABLE,
     }
 }
@@ -97,7 +98,8 @@ mod tests {
     use super::*;
 
     /// Pairs decode as POI's reader decodes them: ASCII padded with a zero byte, Big5, row 0xF9
-    /// and the user-defined areas of code page 950, and `?` where Big5 has no character.
+    /// and the user-defined areas of code page 950, and U+FFFD where Big5 has no character.
+    /// POI writes `?` for those.
     #[test]
     fn decodes_pairs_as_pois_reader_does() {
         assert_eq!(decode(b"a\0b\0c"), [0x61, 0x62]);
@@ -105,7 +107,8 @@ mod tests {
         assert_eq!(decode(&[0x40, 0xF9, 0xFE, 0xF9]), [0x7E98, 0x2593]);
         assert_eq!(decode(&[0x40, 0x81, 0xA1, 0x81]), [0xEEB8, 0xEEF7]);
         assert_eq!(decode(&[0x40, 0xFA]), [0xE000]);
-        assert_eq!(decode(&[0x30, 0xF9]), [UNMAPPABLE]);
+        assert_eq!(decode(&[0x30, 0xF9]), [0xFFFD]);
+        assert_eq!(decode(&[0xFF, 0xA3]), [0xFFFD]);
         assert!(is_ascii_unit(0x0D, 0x00, 0x0D));
         assert!(is_ascii_unit(0x0D, 0x80, 0x0D));
         assert!(!is_ascii_unit(0x0D, 0x81, 0x0D));
