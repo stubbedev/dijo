@@ -1,3 +1,20 @@
+# 0.2.4 (2026-10-20)
+
+### Added
+
+* OCR models for every national language of Europe in the release binaries. Without `--ocr-lang`, each page is read
+  again with the model of the language detected in it, so a Spanish scan reads with `spa` rather than `script/Latin`.
+
+### Fixed
+
+* `--format pages` writes a record for every page, with empty text for a blank one, instead of skipping it (#196).
+* `--ocr-lang` (and the server's `ocr_lang`) with a model that is not installed is a usage error (exit 2, HTTP 400)
+  listing the installed models, rather than every page failing as an internal error; OCR errors no longer name Java
+  exception classes (#195).
+* A page without text, such as a patterned endpaper, no longer comes out as OCR noise in another script: a reading
+  with low confidence that is mostly digits and marks, or in no detected language, is dropped and reported as
+  `"noise":true` in `metadata.ocr` (#194).
+
 # 0.2.3 (2026-10-20)
 
 ### Added
