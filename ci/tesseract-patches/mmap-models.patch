@@ -1,0 +1,832 @@
+diff --git a/src/ccutil/tessdatamanager.cpp b/src/ccutil/tessdatamanager.cpp
+index 35b1d91..f4c9aaf 100644
+--- a/src/ccutil/tessdatamanager.cpp
++++ b/src/ccutil/tessdatamanager.cpp
+@@ -22,9 +22,26 @@
+ 
+ #include "tessdatamanager.h"
+ 
++#include <cstdint>
+ #include <cstdio>
++#include <cstring>
+ #include <string>
+ 
++#if defined(_WIN32)
++#  ifndef WIN32_LEAN_AND_MEAN
++#    define WIN32_LEAN_AND_MEAN
++#  endif
++#  ifndef NOMINMAX
++#    define NOMINMAX
++#  endif
++#  include <windows.h>
++#else
++#  include <fcntl.h>
++#  include <sys/mman.h>
++#  include <sys/stat.h>
++#  include <unistd.h>
++#endif
++
+ #if defined(HAVE_LIBARCHIVE)
+ #  include <archive.h>
+ #  include <archive_entry.h>
+@@ -39,6 +56,76 @@
+ 
+ namespace tesseract {
+ 
++// The file mapped read-only, which the system backs by its page cache: one copy
++// on the machine for every engine and process that maps it. Null when it cannot
++// be mapped, and then read into memory instead.
++static std::shared_ptr<const char> MapFile(const char *name, size_t *size) {
++#if defined(_WIN32)
++  HANDLE file = CreateFileA(name, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
++                            FILE_ATTRIBUTE_NORMAL, nullptr);
++  if (file == INVALID_HANDLE_VALUE) {
++    return nullptr;
++  }
++  LARGE_INTEGER length;
++  if (!GetFileSizeEx(file, &length) || length.QuadPart <= 0) {
++    CloseHandle(file);
++    return nullptr;
++  }
++  HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
++  CloseHandle(file);
++  if (mapping == nullptr) {
++    return nullptr;
++  }
++  void *view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
++  CloseHandle(mapping);
++  if (view == nullptr) {
++    return nullptr;
++  }
++  *size = static_cast<size_t>(length.QuadPart);
++  return std::shared_ptr<const char>(static_cast<const char *>(view),
++                                     [](const char *view) { UnmapViewOfFile(view); });
++#else
++  int file = open(name, O_RDONLY | O_CLOEXEC);
++  if (file < 0) {
++    return nullptr;
++  }
++  struct stat status;
++  if (fstat(file, &status) != 0 || status.st_size <= 0) {
++    close(file);
++    return nullptr;
++  }
++  auto length = static_cast<size_t>(status.st_size);
++  void *view = mmap(nullptr, length, PROT_READ, MAP_SHARED, file, 0);
++  close(file);
++  if (view == MAP_FAILED) {
++    return nullptr;
++  }
++  *size = length;
++  return std::shared_ptr<const char>(static_cast<const char *>(view), [length](const char *view) {
++    munmap(const_cast<char *>(view), length);
++  });
++#endif
++}
++
++// The dictionaries, which DawgLoader reads: almost all of a model's bytes, read
++// in place when the file is mapped.
++static bool IsDictionary(unsigned type) {
++  switch (type) {
++    case TESSDATA_PUNC_DAWG:
++    case TESSDATA_SYSTEM_DAWG:
++    case TESSDATA_NUMBER_DAWG:
++    case TESSDATA_FREQ_DAWG:
++    case TESSDATA_BIGRAM_DAWG:
++    case TESSDATA_UNAMBIG_DAWG:
++    case TESSDATA_LSTM_PUNC_DAWG:
++    case TESSDATA_LSTM_SYSTEM_DAWG:
++    case TESSDATA_LSTM_NUMBER_DAWG:
++      return true;
++    default:
++      return false;
++  }
++}
++
+ TessdataManager::TessdataManager() : reader_(nullptr), is_loaded_(false), swap_(false) {
+   SetVersionString(TESSERACT_VERSION_STR);
+ }
+@@ -95,6 +182,12 @@ bool TessdataManager::Init(const char *data_file_name) {
+       return true;
+     }
+ #endif
++    size_t size = 0;
++    std::shared_ptr<const char> mapping = MapFile(data_file_name, &size);
++    if (mapping != nullptr) {
++      const char *mapped = mapping.get();
++      return Load(data_file_name, mapped, size, std::move(mapping));
++    }
+     if (!LoadDataFromFile(data_file_name, &data)) {
+       return false;
+     }
+@@ -103,48 +196,54 @@ bool TessdataManager::Init(const char *data_file_name) {
+       return false;
+     }
+   }
+-  return LoadMemBuffer(data_file_name, &data[0], data.size());
++  return Load(data_file_name, data.data(), data.size(), nullptr);
+ }
+ 
+ // Loads from the given memory buffer as if a file.
+ bool TessdataManager::LoadMemBuffer(const char *name, const char *data, int size) {
++  return size >= 0 && Load(name, data, size, nullptr);
++}
++
++bool TessdataManager::Load(const char *name, const char *data, size_t size,
++                           std::shared_ptr<const char> mapping) {
+   // TODO: This method supports only the proprietary file format.
+-  if (size < 0) {
+-    return false;
+-  }
+   Clear();
+   data_file_name_ = name;
+-  TFile fp;
+-  fp.Open(data, size);
+   uint32_t num_entries;
+-  if (!fp.DeSerialize(&num_entries)) {
++  if (size < sizeof(num_entries)) {
+     return false;
+   }
++  memcpy(&num_entries, data, sizeof(num_entries));
+   swap_ = num_entries > kMaxNumTessdataEntries;
+-  fp.set_swap(swap_);
+   if (swap_) {
+     ReverseN(&num_entries, sizeof(num_entries));
+   }
+   if (num_entries > kMaxNumTessdataEntries) {
+     return false;
+   }
+-  // TODO: optimize (no init required).
+-  std::vector<int64_t> offset_table(num_entries);
+-  if (!fp.DeSerialize(&offset_table[0], num_entries)) {
++  if (size < sizeof(num_entries) + num_entries * sizeof(int64_t)) {
+     return false;
+   }
++  std::vector<int64_t> offset_table(num_entries);
++  memcpy(offset_table.data(), data + sizeof(num_entries), num_entries * sizeof(int64_t));
++  if (swap_) {
++    for (auto &offset : offset_table) {
++      ReverseN(&offset, sizeof(offset));
++    }
++  }
++  const auto end = static_cast<int64_t>(size);
+   for (unsigned i = 0; i < num_entries && i < TESSDATA_NUM_ENTRIES; ++i) {
+     if (offset_table[i] >= 0) {
+-      if (offset_table[i] > size) {
++      if (offset_table[i] > end) {
+         return false;
+       }
+-      int64_t entry_size = size - offset_table[i];
++      int64_t entry_size = end - offset_table[i];
+       unsigned j = i + 1;
+       while (j < num_entries && offset_table[j] == -1) {
+         ++j;
+       }
+       if (j < num_entries) {
+-        if (offset_table[j] < 0 || offset_table[j] > size) {
++        if (offset_table[j] < 0 || offset_table[j] > end) {
+           return false;
+         }
+         entry_size = offset_table[j] - offset_table[i];
+@@ -152,9 +251,12 @@ bool TessdataManager::LoadMemBuffer(const char *name, const char *data, int size
+       if (entry_size < 0) {
+         return false;
+       }
+-      entries_[i].resize(entry_size);
+-      if (entry_size > 0 && !fp.DeSerialize(&entries_[i][0], entry_size)) {
+-        return false;
++      const char *entry = data + offset_table[i];
++      if (mapping != nullptr && !swap_ && IsDictionary(i) && entry_size > 0) {
++        mapped_[i] = {entry, static_cast<size_t>(entry_size)};
++        mapping_ = mapping;
++      } else {
++        entries_[i].assign(entry, entry + entry_size);
+       }
+     }
+   }
+@@ -165,9 +267,17 @@ bool TessdataManager::LoadMemBuffer(const char *name, const char *data, int size
+   return true;
+ }
+ 
++std::pair<const char *, size_t> TessdataManager::Component(TessdataType type) const {
++  if (entries_[type].empty() && mapped_[type].second != 0) {
++    return mapped_[type];
++  }
++  return {entries_[type].data(), entries_[type].size()};
++}
++
+ // Overwrites a single entry of the given type.
+ void TessdataManager::OverwriteEntry(TessdataType type, const char *data, int size) {
+   is_loaded_ = true;
++  mapped_[type] = {};
+   entries_[type].resize(size);
+   memcpy(&entries_[type][0], data, size);
+ }
+@@ -193,11 +303,12 @@ void TessdataManager::Serialize(std::vector<char> *data) const {
+   int64_t offset_table[TESSDATA_NUM_ENTRIES];
+   int64_t offset = sizeof(int32_t) + sizeof(offset_table);
+   for (unsigned i = 0; i < TESSDATA_NUM_ENTRIES; ++i) {
+-    if (entries_[i].empty()) {
++    auto entry_size = Component(static_cast<TessdataType>(i)).second;
++    if (entry_size == 0) {
+       offset_table[i] = -1;
+     } else {
+       offset_table[i] = offset;
+-      offset += entries_[i].size();
++      offset += entry_size;
+     }
+   }
+   data->resize(offset, 0);
+@@ -206,9 +317,10 @@ void TessdataManager::Serialize(std::vector<char> *data) const {
+   fp.OpenWrite(data);
+   fp.Serialize(&num_entries);
+   fp.Serialize(&offset_table[0], countof(offset_table));
+-  for (const auto &entry : entries_) {
+-    if (!entry.empty()) {
+-      fp.Serialize(&entry[0], entry.size());
++  for (unsigned i = 0; i < TESSDATA_NUM_ENTRIES; ++i) {
++    auto [entry, entry_size] = Component(static_cast<TessdataType>(i));
++    if (entry_size != 0) {
++      fp.Serialize(entry, entry_size);
+     }
+   }
+ }
+@@ -218,6 +330,10 @@ void TessdataManager::Clear() {
+   for (auto &entry : entries_) {
+     entry.clear();
+   }
++  for (auto &mapped : mapped_) {
++    mapped = {};
++  }
++  mapping_.reset();
+   is_loaded_ = false;
+ }
+ 
+@@ -226,10 +342,10 @@ void TessdataManager::Directory() const {
+   printf("Version:%s\n", VersionString().c_str());
+   auto offset = TESSDATA_NUM_ENTRIES * sizeof(int64_t);
+   for (unsigned i = 0; i < TESSDATA_NUM_ENTRIES; ++i) {
+-    if (!entries_[i].empty()) {
+-      printf("%u:%s:size=%zu, offset=%zu\n", i, kTessdataFileSuffixes[i], entries_[i].size(),
+-              offset);
+-      offset += entries_[i].size();
++    auto entry_size = Component(static_cast<TessdataType>(i)).second;
++    if (entry_size != 0) {
++      printf("%u:%s:size=%zu, offset=%zu\n", i, kTessdataFileSuffixes[i], entry_size, offset);
++      offset += entry_size;
+     }
+   }
+ }
+@@ -248,17 +364,33 @@ bool TessdataManager::GetComponent(TessdataType type, TFile *fp) {
+ // loaded.
+ bool TessdataManager::GetComponent(TessdataType type, TFile *fp) const {
+   ASSERT_HOST(is_loaded_);
+-  if (entries_[type].empty()) {
++  auto [entry, entry_size] = Component(type);
++  if (entry_size == 0) {
+     return false;
+   }
+-  fp->Open(&entries_[type][0], entries_[type].size());
++  fp->Open(entry, entry_size);
+   fp->set_swap(swap_);
+   return true;
+ }
+ 
++bool TessdataManager::GetMappedComponent(TessdataType type, const char **data, size_t *size,
++                                         std::shared_ptr<const char> *mapping) {
++  if (!is_loaded_ && !Init(data_file_name_.c_str())) {
++    return false;
++  }
++  if (!entries_[type].empty() || mapped_[type].second == 0) {
++    return false;
++  }
++  *data = mapped_[type].first;
++  *size = mapped_[type].second;
++  *mapping = mapping_;
++  return true;
++}
++
+ // Returns the current version string.
+ std::string TessdataManager::VersionString() const {
+-  return std::string(&entries_[TESSDATA_VERSION][0], entries_[TESSDATA_VERSION].size());
++  auto [version, version_size] = Component(TESSDATA_VERSION);
++  return std::string(version, version_size);
+ }
+ 
+ // Sets the version string to the given v_str.
+@@ -318,10 +450,11 @@ bool TessdataManager::OverwriteComponents(const char *new_traineddata_filename,
+ bool TessdataManager::ExtractToFile(const char *filename) {
+   TessdataType type = TESSDATA_NUM_ENTRIES;
+   ASSERT_HOST(tesseract::TessdataManager::TessdataTypeFromFileName(filename, &type));
+-  if (entries_[type].empty()) {
++  auto [entry, entry_size] = Component(type);
++  if (entry_size == 0) {
+     return false;
+   }
+-  return SaveDataToFile(entries_[type], filename);
++  return SaveDataToFile(std::vector<char>(entry, entry + entry_size), filename);
+ }
+ 
+ bool TessdataManager::TessdataTypeFromFileSuffix(const char *suffix, TessdataType *type) {
+diff --git a/src/ccutil/tessdatamanager.h b/src/ccutil/tessdatamanager.h
+index 01bfebe..edf2309 100644
+--- a/src/ccutil/tessdatamanager.h
++++ b/src/ccutil/tessdatamanager.h
+@@ -20,7 +20,9 @@
+ #define TESSERACT_CCUTIL_TESSDATAMANAGER_H_
+ 
+ #include <tesseract/baseapi.h> // FileReader
++#include <memory>              // std::shared_ptr
+ #include <string>              // std::string
++#include <utility>             // std::pair
+ #include <vector>              // std::vector
+ #include "serialis.h"          // FileWriter
+ 
+@@ -164,7 +166,7 @@ public:
+ 
+   // Returns true if the component requested is present.
+   bool IsComponentAvailable(TessdataType type) const {
+-    return !entries_[type].empty();
++    return Component(type).second != 0;
+   }
+   // Opens the given TFile pointer to the given component type.
+   // Returns false in case of failure.
+@@ -172,6 +174,11 @@ public:
+   // As non-const version except it can't load the component if not already
+   // loaded.
+   bool GetComponent(TessdataType type, TFile *fp) const;
++  // Points *data and *size at a dictionary the file was mapped with, read in
++  // place rather than copied, and sets *mapping to what keeps it mapped.
++  // Returns false for a component that is not mapped, which GetComponent opens.
++  bool GetMappedComponent(TessdataType type, const char **data, size_t *size,
++                          std::shared_ptr<const char> *mapping);
+ 
+   // Returns the current version string.
+   std::string VersionString() const;
+@@ -180,12 +187,12 @@ public:
+ 
+   // Returns true if the base Tesseract components are present.
+   bool IsBaseAvailable() const {
+-    return !entries_[TESSDATA_UNICHARSET].empty() && !entries_[TESSDATA_INTTEMP].empty();
++    return IsComponentAvailable(TESSDATA_UNICHARSET) && IsComponentAvailable(TESSDATA_INTTEMP);
+   }
+ 
+   // Returns true if the LSTM components are present.
+   bool IsLSTMAvailable() const {
+-    return !entries_[TESSDATA_LSTM].empty();
++    return IsComponentAvailable(TESSDATA_LSTM);
+   }
+ 
+   // Return the name of the underlying data file.
+@@ -224,6 +231,14 @@ private:
+   // Use libarchive.
+   bool LoadArchiveFile(const char *filename);
+ 
++  // Loads the components of a file's bytes, the dictionaries left in place when
++  // mapping is the mapped file they lie in, the others copied.
++  bool Load(const char *name, const char *data, size_t size,
++            std::shared_ptr<const char> mapping);
++
++  // The bytes of a component: its copy, or where it lies in the mapped file.
++  std::pair<const char *, size_t> Component(TessdataType type) const;
++
+   /**
+    * Fills type with TessdataType of the tessdata component represented by the
+    * given file name. E.g. tessdata/eng.unicharset -> TESSDATA_UNICHARSET.
+@@ -248,6 +263,10 @@ private:
+   bool swap_;
+   // Contents of each element of the traineddata file.
+   std::vector<char> entries_[TESSDATA_NUM_ENTRIES];
++  // The file, mapped read-only, when components are read from it in place.
++  std::shared_ptr<const char> mapping_;
++  // Where each component read in place lies in the mapped file, and its size.
++  std::pair<const char *, size_t> mapped_[TESSDATA_NUM_ENTRIES] = {};
+ };
+ 
+ } // namespace tesseract
+diff --git a/src/dict/dawg.cpp b/src/dict/dawg.cpp
+index 060b565..d9cd7e7 100644
+--- a/src/dict/dawg.cpp
++++ b/src/dict/dawg.cpp
+@@ -27,6 +27,7 @@
+ #include "tprintf.h"
+ 
+ #include <climits>
++#include <cstring>
+ #include <memory>
+ 
+ /*----------------------------------------------------------------------
+@@ -201,8 +202,13 @@ void Dawg::init(int unicharset_size) {
+          F u n c t i o n s   f o r   S q u i s h e d    D a w g
+ ----------------------------------------------------------------------*/
+ 
+-SquishedDawg::~SquishedDawg() {
+-  delete[] edges_;
++SquishedDawg::~SquishedDawg() = default;
++
++void SquishedDawg::release_edges() {
++  owned_edges_.reset();
++  mapping_.reset();
++  edges_ = nullptr;
++  num_edges_ = 0;
+ }
+ 
+ EDGE_REF SquishedDawg::edge_char_of(NODE_REF node, UNICHAR_ID unichar_id,
+@@ -215,7 +221,7 @@ EDGE_REF SquishedDawg::edge_char_of(NODE_REF node, UNICHAR_ID unichar_id,
+     while (start <= end) {
+       edge = (start + end) >> 1; // (start + end) / 2
+       compare = given_greater_than_edge_rec(NO_EDGE, word_end, unichar_id,
+-                                            edges_[edge]);
++                                            edge_record(edge));
+       if (compare == 0) { // given == vec[k]
+         return edge;
+       } else if (compare == 1) { // given > vec[k]
+@@ -227,8 +233,8 @@ EDGE_REF SquishedDawg::edge_char_of(NODE_REF node, UNICHAR_ID unichar_id,
+   } else { // linear search
+     if (edge != NO_EDGE && edge_occupied(edge)) {
+       do {
+-        if ((unichar_id_from_edge_rec(edges_[edge]) == unichar_id) &&
+-            (!word_end || end_of_word_from_edge_rec(edges_[edge]))) {
++        if ((unichar_id_from_edge_rec(edge_record(edge)) == unichar_id) &&
++            (!word_end || end_of_word_from_edge_rec(edge_record(edge)))) {
+           return (edge);
+         }
+         if (last_edge(edge)) {
+@@ -337,24 +343,13 @@ void SquishedDawg::print_edge(EDGE_REF edge) const {
+   }
+ }
+ 
+-bool SquishedDawg::read_squished_dawg(TFile *file) {
+-  if (debug_level_) {
+-    tprintf("Reading squished dawg\n");
+-  }
+-
+-  // Read the magic number and check that it matches kDawgMagicNumber, as
+-  // auto-endian fixing should make sure it is always correct.
+-  int16_t magic;
+-  if (!file->DeSerialize(&magic)) {
+-    return false;
+-  }
+-  if (magic != kDawgMagicNumber) {
+-    tprintf("Bad magic number on dawg: %d vs %d\n", magic, kDawgMagicNumber);
+-    return false;
+-  }
+-
+-  uint32_t unicharset_size;
+-  if (!file->DeSerialize(&unicharset_size)) {
++// Checks a dictionary's header: the magic number, which auto-endian fixing
++// should make sure is always correct, the unicharset's size, and the number of
++// edges, of which the bytes after the header hold at most max_edges.
++static bool valid_header(int16_t magic, uint32_t unicharset_size, uint32_t num_edges,
++                         size_t max_edges) {
++  if (magic != Dawg::kDawgMagicNumber) {
++    tprintf("Bad magic number on dawg: %d vs %d\n", magic, Dawg::kDawgMagicNumber);
+     return false;
+   }
+   // Dawg::init takes int; reject values that would overflow.
+@@ -362,37 +357,87 @@ bool SquishedDawg::read_squished_dawg(TFile *file) {
+     tprintf("Bad dawg unicharset_size %u\n", unicharset_size);
+     return false;
+   }
+-  if (!file->DeSerialize(&num_edges_)) {
+-    return false;
+-  }
+-  if (num_edges_ == 0) {
++  if (num_edges == 0) {
+     tprintf("Empty dawg: num_edges is 0\n");
+     return false;
+   }
+   // Hard upper bound to prevent resource-exhaustion DoS.
+-  if (num_edges_ > 50000000) {
+-    tprintf("Dawg num_edges %u exceeds hard limit\n", num_edges_);
++  if (num_edges > 50000000) {
++    tprintf("Dawg num_edges %u exceeds hard limit\n", num_edges);
+     return false;
+   }
+   // Reject if the declared edge count exceeds the remaining component bytes.
+-  if (num_edges_ > file->RemainingBytes() / sizeof(EDGE_RECORD)) {
+-    tprintf("Dawg num_edges %u exceeds remaining data\n", num_edges_);
++  if (num_edges > max_edges) {
++    tprintf("Dawg num_edges %u exceeds remaining data\n", num_edges);
++    return false;
++  }
++  return true;
++}
++
++bool SquishedDawg::read_squished_dawg(TFile *file) {
++  if (debug_level_) {
++    tprintf("Reading squished dawg\n");
++  }
++  int16_t magic;
++  uint32_t unicharset_size;
++  uint32_t num_edges;
++  if (!file->DeSerialize(&magic) || !file->DeSerialize(&unicharset_size) ||
++      !file->DeSerialize(&num_edges) ||
++      !valid_header(magic, unicharset_size, num_edges,
++                    file->RemainingBytes() / sizeof(EDGE_RECORD))) {
+     return false;
+   }
+   Dawg::init(unicharset_size);
++  release_edges();
++  owned_edges_.reset(new EDGE_RECORD[num_edges]);
++  edges_ = reinterpret_cast<const char *>(owned_edges_.get());
++  num_edges_ = num_edges;
++  if (!file->DeSerialize(owned_edges_.get(), num_edges_)) {
++    release_edges();
++    return false;
++  }
++  return check_edges();
++}
+ 
+-  delete[] edges_;
+-  edges_ = new EDGE_RECORD[num_edges_];
+-  if (!file->DeSerialize(&edges_[0], num_edges_)) {
+-    delete[] edges_;
+-    edges_ = nullptr;
+-    num_edges_ = 0;
++bool SquishedDawg::Load(const char *data, size_t size, std::shared_ptr<const char> mapping) {
++  if (debug_level_) {
++    tprintf("Reading squished dawg\n");
++  }
++  int16_t magic;
++  uint32_t unicharset_size;
++  uint32_t num_edges;
++  const size_t header = sizeof(magic) + sizeof(unicharset_size) + sizeof(num_edges);
++  if (size < header) {
++    return false;
++  }
++  memcpy(&magic, data, sizeof(magic));
++  memcpy(&unicharset_size, data + sizeof(magic), sizeof(unicharset_size));
++  memcpy(&num_edges, data + sizeof(magic) + sizeof(unicharset_size), sizeof(num_edges));
++  if (!valid_header(magic, unicharset_size, num_edges, (size - header) / sizeof(EDGE_RECORD))) {
+     return false;
+   }
+-  // Validate the loaded edge structure: check that next_node values are in
+-  // bounds and that forward edge runs are properly terminated.
++  Dawg::init(unicharset_size);
++  release_edges();
++  const char *table = data + header;
++  if (mapping != nullptr) {
++    edges_ = table;
++    mapping_ = std::move(mapping);
++  } else {
++    owned_edges_.reset(new EDGE_RECORD[num_edges]);
++    memcpy(owned_edges_.get(), table, num_edges * sizeof(EDGE_RECORD));
++    edges_ = reinterpret_cast<const char *>(owned_edges_.get());
++  }
++  num_edges_ = num_edges;
++  if (!check_edges()) {
++    return false;
++  }
++  num_forward_edges_in_node0 = num_forward_edges(0);
++  return true;
++}
++
++bool SquishedDawg::check_edges() {
+   for (uint32_t i = 0; i < num_edges_; ++i) {
+-    if (edges_[i] == next_node_mask_) {
++    if (edge_record(i) == next_node_mask_) {
+       continue; // Empty slot.
+     }
+     if (forward_edge(i)) {
+@@ -400,12 +445,10 @@ bool SquishedDawg::read_squished_dawg(TFile *file) {
+       bool terminated = false;
+       uint32_t j = i;
+       do {
+-        NODE_REF nj = next_node_from_edge_rec(edges_[j]);
++        NODE_REF nj = next_node_from_edge_rec(edge_record(j));
+         if (nj != 0 && static_cast<uint32_t>(nj) >= num_edges_) {
+           tprintf("Dawg edge %u has out-of-bounds next_node\n", j);
+-          delete[] edges_;
+-          edges_ = nullptr;
+-          num_edges_ = 0;
++          release_edges();
+           return false;
+         }
+         if (last_edge(j)) {
+@@ -417,18 +460,14 @@ bool SquishedDawg::read_squished_dawg(TFile *file) {
+       } while (j < num_edges_);
+       if (!terminated) {
+         tprintf("Dawg forward edge run starting at %u is not terminated\n", i);
+-        delete[] edges_;
+-        edges_ = nullptr;
+-        num_edges_ = 0;
++        release_edges();
+         return false;
+       }
+     } else {
+-      NODE_REF next = next_node_from_edge_rec(edges_[i]);
++      NODE_REF next = next_node_from_edge_rec(edge_record(i));
+       if (next != 0 && static_cast<uint32_t>(next) >= num_edges_) {
+         tprintf("Dawg edge %u has out-of-bounds next_node\n", i);
+-        delete[] edges_;
+-        edges_ = nullptr;
+-        num_edges_ = 0;
++        release_edges();
+         return false;
+       }
+     }
+@@ -527,13 +566,12 @@ bool SquishedDawg::write_squished_dawg(TFile *file) {
+   for (edge = 0; edge < num_edges_; edge++) {
+     if (forward_edge(edge)) { // write forward edges
+       do {
+-        old_index = next_node_from_edge_rec(edges_[edge]);
+-        set_next_node(edge, node_map[old_index]);
+-        temp_record = edges_[edge];
++        old_index = next_node_from_edge_rec(edge_record(edge));
++        temp_record = edge_record(edge);
++        set_next_node_in_edge_rec(&temp_record, node_map[old_index]);
+         if (!file->Serialize(&temp_record)) {
+           return false;
+         }
+-        set_next_node(edge, old_index);
+       } while (!last_edge(edge++));
+ 
+       if (edge >= num_edges_) {
+diff --git a/src/dict/dawg.h b/src/dict/dawg.h
+index 87bfc0e..6e5f2c0 100644
+--- a/src/dict/dawg.h
++++ b/src/dict/dawg.h
+@@ -26,6 +26,7 @@
+ ----------------------------------------------------------------------*/
+ 
+ #include <cinttypes>  // for PRId64
++#include <cstring>    // for memcpy
+ #include <functional> // for std::function
+ #include <memory>
+ #include "elst.h"
+@@ -417,8 +418,9 @@ public:
+                const std::string &lang, PermuterType perm, int unicharset_size,
+                int debug_level)
+       : Dawg(type, lang, perm, debug_level),
+-        edges_(edges),
+-        num_edges_(num_edges) {
++        edges_(reinterpret_cast<const char *>(edges)),
++        num_edges_(num_edges),
++        owned_edges_(edges) {
+     init(unicharset_size);
+     num_forward_edges_in_node0 = num_forward_edges(0);
+     if (debug_level > 3) {
+@@ -435,6 +437,10 @@ public:
+     num_forward_edges_in_node0 = num_forward_edges(0);
+     return true;
+   }
++  // Loads from a dictionary's bytes as written, reading its edges in place when
++  // mapping is the mapped file that holds them and copying them otherwise.
++  // Returns false on failure.
++  bool Load(const char *data, size_t size, std::shared_ptr<const char> mapping);
+ 
+   uint32_t NumEdges() const {
+     return num_edges_;
+@@ -454,8 +460,8 @@ public:
+     }
+     assert(forward_edge(edge)); // we don't expect any backward edges to
+     do {                        // be present when this function is called
+-      if (!word_end || end_of_word_from_edge_rec(edges_[edge])) {
+-        vec->push_back(NodeChild(unichar_id_from_edge_rec(edges_[edge]), edge));
++      if (!word_end || end_of_word_from_edge_rec(edge_record(edge))) {
++        vec->push_back(NodeChild(unichar_id_from_edge_rec(edge_record(edge)), edge));
+       }
+       if (last_edge(edge)) {
+         break;
+@@ -467,18 +473,18 @@ public:
+   /// Returns the next node visited by following the edge
+   /// indicated by the given EDGE_REF.
+   NODE_REF next_node(EDGE_REF edge) const override {
+-    return next_node_from_edge_rec((edges_[edge]));
++    return next_node_from_edge_rec((edge_record(edge)));
+   }
+ 
+   /// Returns true if the edge indicated by the given EDGE_REF
+   /// marks the end of a word.
+   bool end_of_word(EDGE_REF edge_ref) const override {
+-    return end_of_word_from_edge_rec((edges_[edge_ref]));
++    return end_of_word_from_edge_rec((edge_record(edge_ref)));
+   }
+ 
+   /// Returns UNICHAR_ID stored in the edge indicated by the given EDGE_REF.
+   UNICHAR_ID edge_letter(EDGE_REF edge_ref) const override {
+-    return unichar_id_from_edge_rec((edges_[edge_ref]));
++    return unichar_id_from_edge_rec((edge_record(edge_ref)));
+   }
+ 
+   /// Prints the contents of the node indicated by the given NODE_REF.
+@@ -505,41 +511,30 @@ public:
+   }
+ 
+ private:
+-  /// Sets the next node link for this edge.
+-  inline void set_next_node(EDGE_REF edge_ref, EDGE_REF value) {
+-    set_next_node_in_edge_rec(&(edges_[edge_ref]), value);
+-  }
+-  /// Sets the edge to be empty.
+-  inline void set_empty_edge(EDGE_REF edge_ref) {
+-    (edges_[edge_ref] = next_node_mask_);
+-  }
+-  /// Goes through all the edges and clears each one out.
+-  inline void clear_all_edges() {
+-    for (uint32_t edge = 0; edge < num_edges_; edge++) {
+-      set_empty_edge(edge);
+-    }
+-  }
+-  /// Clears the last flag of this edge.
+-  inline void clear_marker_flag(EDGE_REF edge_ref) {
+-    (edges_[edge_ref] &= ~(MARKER_FLAG << flag_start_bit_));
++  /// Returns the edge record of the given EDGE_REF, read so that the records
++  /// need not be aligned, as they are not in a dictionary read in place.
++  inline EDGE_RECORD edge_record(EDGE_REF edge_ref) const {
++    EDGE_RECORD record;
++    memcpy(&record, edges_ + edge_ref * sizeof(record), sizeof(record));
++    return record;
+   }
+   /// Returns true if this edge is in the forward direction.
+   inline bool forward_edge(EDGE_REF edge_ref) const {
+     return (edge_occupied(edge_ref) &&
+-            (FORWARD_EDGE == direction_from_edge_rec(edges_[edge_ref])));
++            (FORWARD_EDGE == direction_from_edge_rec(edge_record(edge_ref))));
+   }
+   /// Returns true if this edge is in the backward direction.
+   inline bool backward_edge(EDGE_REF edge_ref) const {
+     return (edge_occupied(edge_ref) &&
+-            (BACKWARD_EDGE == direction_from_edge_rec(edges_[edge_ref])));
++            (BACKWARD_EDGE == direction_from_edge_rec(edge_record(edge_ref))));
+   }
+   /// Returns true if the edge spot in this location is occupied.
+   inline bool edge_occupied(EDGE_REF edge_ref) const {
+-    return (edges_[edge_ref] != next_node_mask_);
++    return (edge_record(edge_ref) != next_node_mask_);
+   }
+   /// Returns true if this edge is the last edge in a sequence.
+   inline bool last_edge(EDGE_REF edge_ref) const {
+-    return (edges_[edge_ref] & (MARKER_FLAG << flag_start_bit_)) != 0;
++    return (edge_record(edge_ref) & (MARKER_FLAG << flag_start_bit_)) != 0;
+   }
+ 
+   /// Counts and returns the number of forward edges in this node.
+@@ -547,6 +542,11 @@ private:
+ 
+   /// Reads SquishedDawg from a file.
+   bool read_squished_dawg(TFile *file);
++  /// Checks the edges just read: next_node values in bounds and forward edge
++  /// runs terminated. Releases them and returns false when they are not.
++  bool check_edges();
++  /// Frees the edges, or lets go of the mapped file they are read in place in.
++  void release_edges();
+ 
+   /// Prints the contents of an edge indicated by the given EDGE_REF.
+   void print_edge(EDGE_REF edge) const;
+@@ -563,8 +563,12 @@ private:
+   std::unique_ptr<EDGE_REF[]> build_node_map(int32_t *num_nodes) const;
+ 
+   // Member variables.
+-  EDGE_ARRAY edges_ = nullptr;
++  // The edges as written: owned_edges_, or a dictionary read in place in
++  // mapping_.
++  const char *edges_ = nullptr;
+   uint32_t num_edges_ = 0;
++  std::unique_ptr<EDGE_RECORD[]> owned_edges_;
++  std::shared_ptr<const char> mapping_;
+   int num_forward_edges_in_node0 = 0;
+ };
+ 
+diff --git a/src/dict/dawg_cache.cpp b/src/dict/dawg_cache.cpp
+index a8671ad..7184b9e 100644
+--- a/src/dict/dawg_cache.cpp
++++ b/src/dict/dawg_cache.cpp
+@@ -22,6 +22,9 @@
+ #include "object_cache.h"
+ #include "tessdatamanager.h"
+ 
++#include <memory>
++#include <utility>
++
+ namespace tesseract {
+ 
+ struct DawgLoader {
+@@ -49,10 +52,6 @@ Dawg *DawgCache::GetSquishedDawg(const std::string &lang, TessdataType tessdata_
+ }
+ 
+ Dawg *DawgLoader::Load() {
+-  TFile fp;
+-  if (!data_file_->GetComponent(tessdata_dawg_type_, &fp)) {
+-    return nullptr;
+-  }
+   DawgType dawg_type;
+   PermuterType perm_type;
+   switch (tessdata_dawg_type_) {
+@@ -87,7 +86,14 @@ Dawg *DawgLoader::Load() {
+       return nullptr;
+   }
+   auto *retval = new SquishedDawg(dawg_type, lang_, perm_type, dawg_debug_level_);
+-  if (retval->Load(&fp)) {
++  const char *data;
++  size_t size;
++  std::shared_ptr<const char> mapping;
++  TFile fp;
++  bool loaded = data_file_->GetMappedComponent(tessdata_dawg_type_, &data, &size, &mapping)
++                    ? retval->Load(data, size, std::move(mapping))
++                    : data_file_->GetComponent(tessdata_dawg_type_, &fp) && retval->Load(&fp);
++  if (loaded) {
+     return retval;
+   }
+   delete retval;

@@ -1009,6 +1009,40 @@ mod tests {
         assert_eq!(held("spa", ["casa", "cafa"]), [true, false]);
     }
 
+    /// Engines of one model share its dictionaries, which a patched tesseract reads in place in
+    /// the mapped model file (#211): an engine reads on alike after every other engine of its
+    /// model, of another tesseract, is freed.
+    #[test]
+    fn an_engine_reads_on_after_the_others_of_its_model_are_freed() {
+        let image =
+            std::fs::read("../test_files/documents/table-multi-row-column-cells.png").unwrap();
+        let read = |tesseract: &Tesseract| {
+            let pixels = Pixels::Encoded {
+                data: Cow::Borrowed(&image),
+                width: 1377,
+                height: 648,
+            };
+            tesseract
+                .read(
+                    pixels,
+                    None,
+                    "script/Latin",
+                    PageSegMode(3),
+                    Thresholding::Otsu,
+                    None,
+                )
+                .unwrap()
+                .text
+        };
+        let first = super::super::set_up().unwrap();
+        let second = super::super::set_up().unwrap();
+        let alone = read(&first);
+        assert!(alone.contains("Participants"), "{alone}");
+        assert_eq!(read(&second), alone);
+        drop(first);
+        assert_eq!(read(&second), alone);
+    }
+
     /// Readings and detections on many threads at once, each with an engine of its own taken
     /// from and given back to the shared pool, read what one reading alone reads (#62).
     #[test]

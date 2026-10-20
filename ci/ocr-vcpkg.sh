@@ -67,7 +67,9 @@ if [ "$("${sha512[@]}" "$archive" | cut -d' ' -f1)" != "$TESSERACT_SHA512" ]; th
 fi
 mkdir "$root/tesseract"
 tar -xzf "$archive" -C "$root/tesseract" --strip-components 1
-patch --directory "$root/tesseract" --strip 1 --input "$here/tesseract-inline-stridemap.patch"
+for patch in "$here"/tesseract-patches/*.patch; do
+    patch --directory "$root/tesseract" --strip 1 --input "$patch"
+done
 cmake -S "$(native "$here/tesseract-library")" -B "$(native "$root/tesseract-library")" "${toolchain[@]}" \
     -DCMAKE_BUILD_TYPE=Release -DTESSERACT_SOURCE="$(native "$root/tesseract")"
 cmake --build "$(native "$root/tesseract-library")" --config Release --target dijo_tesseract

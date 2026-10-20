@@ -3,9 +3,13 @@
 # bundles' library are. Readings run side by side, a page per thread; an OpenMP team per reading
 # spent 2.6 times the processor time for a 1.2 times faster lone page, and a worker of one aborted
 # the static server once (#62). The StrideMap index methods the network calls for every time step are
-# made inline (tesseract-inline-stridemap.patch): out of line they took a fifth of a page's
+# made inline (tesseract-patches/inline-stridemap.patch): out of line they took a fifth of a page's
 # instructions, and inline a page reads 10 to 13% faster with the same text. It is compiled at -O3,
-# as CMake's release builds of it are, where its autotools build sets -O2: 5% faster again.
+# as CMake's release builds of it are, where its autotools build sets -O2: 5% faster again. A model
+# file is mapped read-only and its dictionaries, almost all of its bytes (88.8 of script/Latin's
+# 89.4 MB), are read in place rather than copied (tesseract-patches/mmap-models.patch): every
+# process reading with a model shares one copy of them in the page cache, and loading one copies
+# nothing large, so reading a Latin page peaks at 191 MB instead of 305 MB (#211).
 # Its internal headers and the configuration it was built with are installed in
 # include/tesseract-internal, for code that reads its results while it recognizes a page.
 static:
@@ -16,7 +20,7 @@ static:
   libarchive = null;
 }).overrideAttrs
   (old: {
-    patches = (old.patches or [ ]) ++ [ ./tesseract-inline-stridemap.patch ];
+    patches = (old.patches or [ ]) ++ import ./tesseract-patches.nix;
     env = (old.env or { }) // {
       CXXFLAGS = "-O3";
     };

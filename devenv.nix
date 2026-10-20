@@ -14,7 +14,12 @@ in
     pkgs.cargo-fuzz
     pkgs.pkg-config
     pkgs.openssl
-    (pkgs.tesseract.override { enableLanguages = [ "eng" ]; })
+    (pkgs.tesseract.override {
+      enableLanguages = [ "eng" ];
+      tesseractBase = pkgs.tesseract5.passthru.tesseractBase.overrideAttrs (old: {
+        patches = (old.patches or [ ]) ++ import ./ci/tesseract-patches.nix;
+      });
+    })
     pkgs.libheif.bin
     pkgs.git
     pkgs.jre_headless
