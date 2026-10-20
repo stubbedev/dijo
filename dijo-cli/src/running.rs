@@ -209,8 +209,6 @@ fn split(text: String, placement: Placement, patterns: &Patterns) -> Page {
             body = rest;
             line
         });
-    // A page that is nothing but the recurring line, such as a document whose every page reads
-    // the same, has that line as its text rather than as a running header or footer.
     if body.trim().is_empty() {
         return Page::unchanged(text);
     }
