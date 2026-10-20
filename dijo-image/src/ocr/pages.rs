@@ -3,7 +3,9 @@
 //! output on in order. Each page is first read in the script and model the latest page before it
 //! that was read in one was, or in those assumed before the first page, so that a document in one
 //! language is read with its model from its first page of text on, a cover or a notice in another
-//! language before it notwithstanding, and every page reads the same whichever finishes first.
+//! language before it notwithstanding, and every page reads the same whichever finishes first. A
+//! page waits for the pages before it while none of them has been read in anything, rather than
+//! load the assumed script's model for each page read side by side.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -64,6 +66,25 @@ impl<L: Clone + PartialEq> Learning<L> {
         Self::latest(&state.pages[..index.min(state.pages.len())]).or_else(|| self.assumed.clone())
     }
 
+    /// What page `index` is first read in, and whether that is settled: what the pages before
+    /// it settle once every one is read, else what the latest of those read so far was read in.
+    /// While none of those read so far was read in anything, it waits rather than guess what was
+    /// assumed: a guess in the script first assumed loads that script's model, the largest by
+    /// far for Latin, once for each page read side by side, only to read most of them again in
+    /// the language the first page settles.
+    fn guess(&self, index: usize) -> (Option<L>, bool) {
+        let mut state = self.state();
+        loop {
+            if state.read >= index {
+                return (self.before(&state, index), true);
+            }
+            if let Some(latest) = Self::latest(&state.pages[..index.min(state.pages.len())]) {
+                return (Some(latest), false);
+            }
+            state = self.recorded.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
     /// What page `index` is read in, waiting until every page before it is read.
     fn settled(&self, index: usize) -> Option<L> {
         let mut state = self.state();
@@ -92,8 +113,9 @@ impl<L: Clone + PartialEq> Learning<L> {
     }
 
     /// Reads page `index` in what the pages before it settle. A page read before every page
-    /// before it is read is read in what those read so far tell, and read again if the rest
-    /// settle otherwise; a failure of that guess counts only when it stands.
+    /// before it is read is read in what the latest of those read so far was read in, once one
+    /// was read in something, and read again if the rest settle otherwise; a failure of that
+    /// guess counts only when it stands.
     fn read<T, E>(
         &self,
         index: usize,
@@ -103,10 +125,7 @@ impl<L: Clone + PartialEq> Learning<L> {
             learning: self,
             index,
         };
-        let (guess, settled) = {
-            let state = self.state();
-            (self.before(&state, index), state.read >= index)
-        };
+        let (guess, settled) = self.guess(index);
         let mut output = read(guess.as_ref());
         if !settled {
             let settled = self.settled(index);
@@ -363,6 +382,41 @@ mod tests {
             assert_eq!(read, expected);
             assert_eq!(language.as_deref(), Some("fra"));
         }
+    }
+
+    #[test]
+    fn reads_no_page_in_what_was_assumed_while_the_first_settles_otherwise() {
+        let calls = Mutex::new(Vec::new());
+        let learning = Learning::new(Some("Latin".to_owned()));
+        read_pages(
+            6,
+            &learning,
+            || (),
+            |(), page, script| {
+                if page == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+                calls
+                    .lock()
+                    .unwrap()
+                    .push((page, script.cloned().unwrap_or_default()));
+                Ok::<_, ()>((page, Some("Cyrillic".to_owned())))
+            },
+            read_all,
+        );
+        let mut calls = calls.into_inner().unwrap();
+        calls.sort();
+        assert_eq!(
+            calls,
+            [
+                (0, "Latin".to_owned()),
+                (1, "Cyrillic".to_owned()),
+                (2, "Cyrillic".to_owned()),
+                (3, "Cyrillic".to_owned()),
+                (4, "Cyrillic".to_owned()),
+                (5, "Cyrillic".to_owned()),
+            ]
+        );
     }
 
     #[test]
