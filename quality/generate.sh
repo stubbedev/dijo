@@ -205,3 +205,4 @@ magick "$work/scan-150.png" -colorspace Gray -resize 1240x \( +clone -fill '#555
     "$corpus/prose-photo-perspective.jpg"
 pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/arabic.pdf" "$work/arabic-300"
 magick "$work/arabic-300.png" -colorspace Gray -depth 8 "$corpus/arabic-scan-300dpi.png"
+cp "$here/quixote-1605.pdf" "$corpus/quixote-1605.pdf"

@@ -1294,6 +1294,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "quixote-1605.pdf": {
+    "character_error_rate": 0.24769783049789293,
+    "token_error_rate": 0.5191029900332226,
+    "recall": 0.5813953488372093,
+    "spurious": 0.3939393939393939,
+    "reading_order": 0.0
+  },
   "report-scan-skewed.tif": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,

@@ -207,6 +207,7 @@
 | slovenian-scan.png | ocr | 0.001 | 0.005 | 0.995 | 0.005 | 1.000 |
 | spanish-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | ukrainian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| quixote-1605.pdf | ocr | 0.248 | 0.519 | 0.581 | 0.394 | 0.000 |
 | french-cp1252.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | spanish-cp1252.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | italian-cp1252.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
