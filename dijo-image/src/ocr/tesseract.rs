@@ -494,11 +494,10 @@ impl Tesseract {
         reading
     }
 
-    /// Detects the orientation and script of an image, as `tesseract <image> stdout --psm 0 -c
-    /// min_characters_to_try=10` reports them, stopping once it is sure of the first ten
-    /// characters it classifies rather than of fifty. An image it cannot judge, such as one with
-    /// too little text or one where no script is likelier than another, gives no script and no
-    /// turns.
+    /// Detects the orientation and script of an image, as `tesseract <image> stdout --psm 0`
+    /// reports them, judged on the first fifty characters it classifies: ten, which stops
+    /// sooner, take Thai for Latin. An image it cannot judge, such as one with too little text or
+    /// one where no script is likelier than another, gives no script and no turns.
     pub(crate) fn detect(&self, image: Pixels<'_>) -> Result<Detection, OcrError> {
         let _reserved = image.reserve()?;
         let engine = self.take(OSD_MODEL)?;
@@ -654,7 +653,7 @@ impl Tesseract {
             return Err(unloadable());
         }
         let variables: &[(&CStr, &CStr)] = if model == OSD_MODEL {
-            &[(c"min_characters_to_try", c"10")]
+            &[]
         } else {
             &[(c"page_separator", c"")]
         };

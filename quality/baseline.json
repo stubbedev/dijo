@@ -1680,11 +1680,11 @@
     "reading_order": 1.0
   },
   "thai-scan.png": {
-    "character_error_rate": 1.0,
-    "token_error_rate": 1.0,
-    "recall": 0.0,
-    "spurious": 0.0,
-    "reading_order": 0.0
+    "character_error_rate": 0.03496503496503497,
+    "token_error_rate": 0.02491103202846975,
+    "recall": 0.9928825622775801,
+    "spurious": 0.014134275618374558,
+    "reading_order": 0.6666666666666666
   },
   "thai.docx": {
     "character_error_rate": 0.0,
