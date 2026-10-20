@@ -120,8 +120,19 @@ fn permute<T>(items: &mut [T], mut order: Vec<usize>) {
     }
 }
 
+/// Measured with the drawn size: `font_size_in_pt` leaves out the CTM, as PDFBox's does, so on a
+/// page that scales its text by the CTM (macOS Quartz: `0.24 cm`, `1 Tf`, `58 Tm`) it is several
+/// times the drawn size, and the lines below a heading counted as on its line.
 fn on_one_line(one: &TextPosition, other: &TextPosition) -> bool {
-    (other.y_dir_adj() - one.y_dir_adj()).abs() <= SAME_LINE * jfloat::max(em(one), em(other))
+    (other.y_dir_adj() - one.y_dir_adj()).abs()
+        <= SAME_LINE * jfloat::max(drawn_em(one), drawn_em(other))
+}
+
+fn drawn_em(glyph: &TextPosition) -> f32 {
+    jfloat::max(
+        glyph.text_matrix().scaling_factor_y().abs(),
+        glyph.height_dir(),
+    )
 }
 
 fn em(glyph: &TextPosition) -> f32 {

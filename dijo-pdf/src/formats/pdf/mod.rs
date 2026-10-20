@@ -967,6 +967,26 @@ mod tests {
         assert!(xhtml.contains("After the state"), "{xhtml}");
     }
 
+    /// A heading and the line below it as macOS Quartz draws them: at `1 Tf` in a text matrix
+    /// of 58 inside `0.24 cm`, so 13.92 pt lines 23.04 pt apart, which a size taken from the
+    /// text matrix alone, 58 pt, counts as one line of two fonts and interleaves.
+    #[test]
+    fn keeps_apart_the_lines_of_text_the_ctm_scales() {
+        let content = "q 0.24 0 0 0.24 12 627.92 cm \
+                       BT /F2 1 Tf 58 0 0 58 250 -907.33 Tm (Find Your Email Confirmation) Tj ET \
+                       BT /F1 1 Tf 58 0 0 58 250 -1003.33 Tm (In this guide, we assume that) Tj ET \
+                       Q";
+        let mut objects = page_objects(content);
+        objects[2] = objects[2].replace("/Font << /F1 5 0 R >>", "/Font << /F1 5 0 R /F2 6 0 R >>");
+        objects.push(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"
+                .to_owned(),
+        );
+        let (xml, _) = native_xml(&document(&objects, b"", &[]));
+        assert!(xml.contains("Find Your Email Confirmation"), "{xml}");
+        assert!(xml.contains("In this guide, we assume that"), "{xml}");
+    }
+
     pub(super) const TEXT: &str =
         "BT /F1 12 Tf 72 720 Td (Det var en gang en konge, som havde tre d\\370tre.) Tj \
                         0 -14 Td (Den yngste var den smukkeste af dem alle sammen.) Tj ET";
