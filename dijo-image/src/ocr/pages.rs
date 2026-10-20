@@ -1,99 +1,137 @@
 //! Our Java `PageReadings`: the pages of a document read by OCR side by side, on as many threads
 //! as the process may use processors, while the document is written and passes each page's
-//! output on in order. The first page is read as any image is; the rest are first read in the
-//! script and model it leaves the extraction assuming, so that every page reads as it would after
-//! the first, whichever finishes first.
+//! output on in order. Each page is first read in the script and model the latest page before it
+//! that was read in one was, or in those assumed before the first page, so that a document in one
+//! language is read with its model from its first page of text on, a cover or a notice in another
+//! language before it notwithstanding, and every page reads the same whichever finishes first.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, MutexGuard};
 
 use crate::formats::embedded::OcrLanguage;
 use crate::memory;
 
-/// What the pages of a document after its first are first read in, such as a script and model:
-/// what was assumed before the first page, unless reading it teaches otherwise.
-pub struct FirstPage<L = OcrLanguage> {
+/// What the pages of a document are first read in, such as a script and model: what the latest
+/// page before each that was read in one was read in, or what was assumed before the first page.
+pub struct Learning<L = OcrLanguage> {
     assumed: Option<L>,
-    /// What the first page learned, once it is settled: none when it learned nothing.
-    learned: Mutex<Option<Option<L>>>,
-    settled: Condvar,
+    state: Mutex<Learned<L>>,
+    recorded: Condvar,
 }
 
-impl<L: Clone + PartialEq> FirstPage<L> {
+struct Learned<L> {
+    /// What each page was read in, by its index, once it is read: none for a page read in
+    /// nothing, such as noise or a page that could not be read.
+    pages: Vec<Option<Option<L>>>,
+    /// How many pages from the first are read.
+    read: usize,
+}
+
+impl<L: Clone + PartialEq> Learning<L> {
     pub fn new(assumed: Option<L>) -> Self {
         Self {
             assumed,
-            learned: Mutex::new(None),
-            settled: Condvar::new(),
+            state: Mutex::new(Learned {
+                pages: Vec::new(),
+                read: 0,
+            }),
+            recorded: Condvar::new(),
         }
     }
 
-    /// What was assumed before the first page.
-    pub(crate) fn assumed(&self) -> Option<&L> {
-        self.assumed.as_ref()
+    /// What the extraction assumes after the pages: what the latest of the pages read from the
+    /// first on was read in, or none when none was read in anything.
+    pub fn language(&self) -> Option<L> {
+        let state = self.state();
+        Self::latest(&state.pages[..state.read])
     }
 
-    /// Settles what the later pages are read in: what the first page learned, or, when it is
-    /// none, what was assumed. Only the first call counts, so that a page that could not be read
-    /// settles it as assumed.
-    pub(crate) fn settle(&self, learned: Option<L>) {
-        let mut settled = self.learned.lock().unwrap_or_else(|e| e.into_inner());
-        if settled.is_none() {
-            *settled = Some(learned);
-            self.settled.notify_all();
+    fn state(&self) -> MutexGuard<'_, Learned<L>> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// What the latest of `pages` that is read and was read in something was read in.
+    fn latest(pages: &[Option<Option<L>>]) -> Option<L> {
+        pages
+            .iter()
+            .rev()
+            .find_map(|page| page.as_ref().and_then(Option::as_ref))
+            .cloned()
+    }
+
+    /// What page `index` is read in as far as the pages before it read so far tell.
+    fn before(&self, state: &Learned<L>, index: usize) -> Option<L> {
+        Self::latest(&state.pages[..index.min(state.pages.len())]).or_else(|| self.assumed.clone())
+    }
+
+    /// What page `index` is read in, waiting until every page before it is read.
+    fn settled(&self, index: usize) -> Option<L> {
+        let mut state = self.state();
+        while state.read < index {
+            state = self.recorded.wait(state).unwrap_or_else(|e| e.into_inner());
         }
+        self.before(&state, index)
     }
 
-    /// What the first page learned, once it is settled.
-    pub fn learned(&self) -> Option<L> {
-        self.learned
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .flatten()
-    }
-
-    /// What the later pages are read in, waiting until it is settled.
-    fn settled(&self) -> Option<L> {
-        let mut learned = self.learned.lock().unwrap_or_else(|e| e.into_inner());
-        while learned.is_none() {
-            learned = self
-                .settled
-                .wait(learned)
-                .unwrap_or_else(|e| e.into_inner());
+    /// Records what page `index` was read in. Only the first record of a page counts, so that a
+    /// page whose reading ended without one is recorded as read in nothing.
+    fn record(&self, index: usize, language: Option<L>) {
+        let mut state = self.state();
+        if state.pages.len() <= index {
+            state.pages.resize(index + 1, None);
         }
-        learned.clone().flatten().or_else(|| self.assumed.clone())
+        if state.pages[index].is_some() {
+            return;
+        }
+        state.pages[index] = Some(language);
+        let Learned { pages, read } = &mut *state;
+        while pages.get(*read).is_some_and(Option::is_some) {
+            *read += 1;
+        }
+        self.recorded.notify_all();
     }
 
-    fn is_settled(&self) -> bool {
-        self.learned
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
-    }
-
-    /// Reads a later page in what the first page settles. A page read before it is settled is
-    /// read in what was assumed, and read again if the first page teaches otherwise; a failure
-    /// of that guess counts only when it stands.
-    fn later<T, E>(&self, mut read: impl FnMut(Option<&L>) -> Result<T, E>) -> Result<T, E> {
-        if self.is_settled() {
-            return read(self.settled().as_ref());
+    /// Reads page `index` in what the pages before it settle. A page read before every page
+    /// before it is read is read in what those read so far tell, and read again if the rest
+    /// settle otherwise; a failure of that guess counts only when it stands.
+    fn read<T, E>(
+        &self,
+        index: usize,
+        mut read: impl FnMut(Option<&L>) -> Result<(T, Option<L>), E>,
+    ) -> Result<T, E> {
+        let _record = RecordOnExit {
+            learning: self,
+            index,
+        };
+        let (guess, settled) = {
+            let state = self.state();
+            (self.before(&state, index), state.read >= index)
+        };
+        let mut output = read(guess.as_ref());
+        if !settled {
+            let settled = self.settled(index);
+            if settled != guess {
+                output = read(settled.as_ref());
+            }
         }
-        let guess = read(self.assumed());
-        let settled = self.settled();
-        if settled != self.assumed {
-            return read(settled.as_ref());
-        }
-        guess
+        let (output, language) = match output {
+            Ok((output, language)) => (Ok(output), language),
+            Err(failure) => (Err(failure), None),
+        };
+        self.record(index, language);
+        output
     }
 }
 
-/// Settles the first page as assumed when its reading ends without settling it.
-struct SettleOnExit<'a, L: Clone + PartialEq>(&'a FirstPage<L>);
+/// Records a page as read in nothing when its reading ends without recording it.
+struct RecordOnExit<'a, L: Clone + PartialEq> {
+    learning: &'a Learning<L>,
+    index: usize,
+}
 
-impl<L: Clone + PartialEq> Drop for SettleOnExit<'_, L> {
+impl<L: Clone + PartialEq> Drop for RecordOnExit<'_, L> {
     fn drop(&mut self) {
-        self.0.settle(None);
+        self.learning.record(self.index, None);
     }
 }
 
@@ -160,9 +198,9 @@ impl<T, E> Iterator for Outputs<'_, T, E> {
 /// Reads `count` pages side by side on the processors the process may use, while `consume`
 /// takes their outputs in page order. Each thread reads its pages with a `state` of its own,
 /// made when it reads its first: `read` reads a page in a script and model, or the configured
-/// language, and tells what it read and what it learned. The first page is read in what
-/// `first_page` assumes and settles what the rest are read in. When `consume` returns, the pages
-/// not yet read are given up, and those being read are waited for.
+/// language, and tells what it read and the script and model it was read in. Each page is read in
+/// what `learning` settles for it. When `consume` returns, the pages not yet read are given up,
+/// and those being read are waited for.
 ///
 /// Under a memory budget the pages are read one at a time, on a thread whose allocations are
 /// charged to the budget of the thread that called: a page takes the memory of its raster, the
@@ -170,14 +208,11 @@ impl<T, E> Iterator for Outputs<'_, T, E> {
 /// multiply, by whichever happen to be read at once.
 pub fn read_pages<S, T: Send, E: Send, R, L: Clone + PartialEq + Send + Sync>(
     count: usize,
-    first_page: &FirstPage<L>,
+    learning: &Learning<L>,
     state: impl Fn() -> S + Sync,
     read: impl Fn(&mut S, usize, Option<&L>) -> Result<(T, Option<L>), E> + Sync,
     consume: impl FnOnce(&mut Outputs<'_, T, E>) -> R,
 ) -> R {
-    if count == 0 {
-        first_page.settle(None);
-    }
     let shared = Shared {
         outputs: Mutex::new((0..count).map(|_| None).collect()),
         ready: Condvar::new(),
@@ -195,9 +230,9 @@ pub fn read_pages<S, T: Send, E: Send, R, L: Clone + PartialEq + Send + Sync>(
             let (shared, next, state, read, budget) = (&shared, &next, &state, &read, &budget);
             scope.spawn(move || match budget {
                 Some(budget) => {
-                    budget.within(|| read_in_turn(shared, next, count, first_page, state, read))
+                    budget.within(|| read_in_turn(shared, next, count, learning, state, read))
                 }
-                None => read_in_turn(shared, next, count, first_page, state, read),
+                None => read_in_turn(shared, next, count, learning, state, read),
             });
         }
         let mut outputs = Outputs {
@@ -215,7 +250,7 @@ fn read_in_turn<S, T, E, L: Clone + PartialEq>(
     shared: &Shared<T, E>,
     next: &AtomicUsize,
     count: usize,
-    first_page: &FirstPage<L>,
+    learning: &Learning<L>,
     state: &impl Fn() -> S,
     read: &impl Fn(&mut S, usize, Option<&L>) -> Result<(T, Option<L>), E>,
 ) {
@@ -230,15 +265,7 @@ fn read_in_turn<S, T, E, L: Clone + PartialEq>(
             return;
         }
         let own = own.get_or_insert_with(state);
-        let output = if index == 0 {
-            let _settle = SettleOnExit(first_page);
-            read(own, index, first_page.assumed()).map(|(output, learned)| {
-                first_page.settle(learned);
-                output
-            })
-        } else {
-            first_page.later(|assumed| read(own, index, assumed).map(|(output, _)| output))
-        };
+        let output = learning.read(index, |language| read(own, index, language));
         let mut outputs = shared.outputs.lock().unwrap_or_else(|e| e.into_inner());
         outputs[index] = Some(output);
         shared.ready.notify_all();
@@ -253,29 +280,41 @@ mod tests {
         std::iter::from_fn(|| outputs.next()).collect()
     }
 
-    #[test]
-    fn reads_later_pages_in_the_script_the_first_learns() {
-        let first_page = FirstPage::new(Some("Latin".to_owned()));
+    /// Reads pages each written in the script `written` gives it, the slower the earlier when
+    /// `staggered`, so later pages finish first: what each page was read in, in page order, and
+    /// what the extraction assumes after them.
+    fn read_written(
+        count: usize,
+        assumed: Option<&str>,
+        written: impl Fn(usize) -> Option<&'static str> + Sync,
+        staggered: bool,
+    ) -> (Vec<String>, Option<String>) {
+        let learning = Learning::new(assumed.map(str::to_owned));
         let read = read_pages(
-            6,
-            &first_page,
+            count,
+            &learning,
             || (),
             |(), page, script| {
-                if page == 0 {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                    return Ok::<_, ()>((
-                        format!("{page}:{}", script.map_or("-", String::as_str)),
-                        Some("Cyrillic".to_owned()),
-                    ));
+                if staggered {
+                    let millis = (count - page) as u64 * 3 + (page as u64 * 7) % 5;
+                    std::thread::sleep(std::time::Duration::from_millis(millis));
                 }
-                Ok((
+                Ok::<_, ()>((
                     format!("{page}:{}", script.map_or("-", String::as_str)),
-                    None,
+                    written(page).map(str::to_owned),
                 ))
             },
             read_all,
         );
-        let read: Vec<String> = read.into_iter().map(Result::unwrap).collect();
+        (
+            read.into_iter().map(Result::unwrap).collect(),
+            learning.language(),
+        )
+    }
+
+    #[test]
+    fn reads_later_pages_in_the_script_the_first_was_read_in() {
+        let (read, language) = read_written(6, Some("Latin"), |_| Some("Cyrillic"), true);
         assert_eq!(
             read,
             [
@@ -287,15 +326,51 @@ mod tests {
                 "5:Cyrillic"
             ]
         );
-        assert_eq!(first_page.learned().as_deref(), Some("Cyrillic"));
+        assert_eq!(language.as_deref(), Some("Cyrillic"));
+    }
+
+    #[test]
+    fn reads_each_page_in_what_the_latest_page_before_it_was_read_in() {
+        let written = |page| match page {
+            0 => None,
+            1 => Some("eng"),
+            _ => Some("spa"),
+        };
+        let (read, language) = read_written(6, Some("Latin"), written, true);
+        assert_eq!(
+            read,
+            ["0:Latin", "1:Latin", "2:eng", "3:spa", "4:spa", "5:spa"]
+        );
+        assert_eq!(language.as_deref(), Some("spa"));
+    }
+
+    #[test]
+    fn reads_alike_whichever_page_finishes_first() {
+        let written = |page| match page {
+            7 | 8 => None,
+            0..=9 => Some("eng"),
+            10..=29 => Some("spa"),
+            _ => Some("fra"),
+        };
+        let expected: Vec<String> = (0..40)
+            .map(|page| {
+                let before = (0..page).rev().find_map(written).unwrap_or("Latin");
+                format!("{page}:{before}")
+            })
+            .collect();
+        for staggered in [false, true] {
+            let (read, language) = read_written(40, Some("Latin"), written, staggered);
+            assert_eq!(read, expected);
+            assert_eq!(language.as_deref(), Some("fra"));
+        }
     }
 
     #[test]
     fn keeps_the_assumed_script_when_the_first_page_fails() {
-        let first_page = FirstPage::<String>::new(None);
+        let learning = Learning::<String>::new(None);
         let read = read_pages(
             3,
-            &first_page,
+            &learning,
             || (),
             |(), page, _| {
                 if page == 0 {
@@ -307,17 +382,17 @@ mod tests {
             read_all,
         );
         assert_eq!(read, [Err("unreadable"), Ok(1), Ok(2)]);
-        assert_eq!(first_page.learned(), None);
+        assert_eq!(learning.language(), None);
     }
 
     #[test]
     fn gives_up_the_pages_left_when_the_output_stops() {
-        let first_page = FirstPage::<String>::new(None);
+        let learning = Learning::<String>::new(None);
         let started = AtomicUsize::new(0);
         let pages = 100 * crate::process::processors();
         let first = read_pages(
             pages,
-            &first_page,
+            &learning,
             || (),
             |(), page, _| {
                 started.fetch_add(1, Ordering::SeqCst);

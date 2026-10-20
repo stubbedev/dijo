@@ -29,7 +29,7 @@ use crate::errors::{Error, ExtractResult};
 use crate::formats::embedded::OcrLanguage;
 pub use bitmap::Bitmap;
 pub(crate) use decode::{decode, jpeg, Decoded, Format, Undecoded};
-pub use pages::{read_pages, FirstPage, Outputs};
+pub use pages::{read_pages, Learning, Outputs};
 pub(crate) use prepare::Orientation;
 pub use recognize::{Attempt, Image, OcrSettings, Recognized, Recognizer};
 pub use render::{PdfPages, Resolution};
@@ -55,10 +55,10 @@ pub(crate) enum Stopped<W> {
 }
 
 /// Our Java `PreparingOcrParser.parse` of a decoded image file: one image read as any image is,
-/// or the pages of a TIFF read side by side, the first in the script and model the extraction
-/// assumes and the rest in the ones it settles, each decoded when it is read and freed once it
-/// is, and handed to `write` in page order. With the automatic language, the extraction learns
-/// the script and model of the image, or of its first page, which this returns.
+/// or the pages of a TIFF read side by side, each in the script and model the pages before it
+/// settle, each decoded when it is read and freed once it is, and handed to `write` in page
+/// order. With the automatic language, the extraction then assumes the script and model the
+/// image, or its latest page read in one, was read in, which this returns.
 pub(crate) fn read_image<W>(
     tesseract: &Tesseract,
     settings: &OcrSettings,
@@ -72,18 +72,18 @@ pub(crate) fn read_image<W>(
     let learned = match decoded {
         Decoded::Single { bitmap, file } => {
             let image = Image::of(&bitmap, file, file_size, orientation);
-            let Recognized { read, learned } = recognizer
+            let Recognized { read, language } = recognizer
                 .recognize(&image, assumed)
                 .map_err(Stopped::Ocr)?;
             drop(bitmap);
             write(ImageRead::One(&read)).map_err(Stopped::Writing)?;
-            learned
+            language
         }
         Decoded::Pages(pages) => {
-            let first_page = FirstPage::new(assumed.cloned());
+            let learning = Learning::new(assumed.cloned());
             read_pages(
                 pages.count(),
-                &first_page,
+                &learning,
                 || pages.reader(),
                 |reader, index, assumed| {
                     let page = match reader {
@@ -94,8 +94,8 @@ pub(crate) fn read_image<W>(
                         return Ok((None, None));
                     };
                     let image = Image::of(&bitmap, None, file_size, orientation);
-                    let Recognized { read, learned } = recognizer.recognize(&image, assumed)?;
-                    Ok((Some(read), learned))
+                    let Recognized { read, language } = recognizer.recognize(&image, assumed)?;
+                    Ok((Some(read), language))
                 },
                 |outputs| {
                     for (index, output) in std::iter::from_fn(|| outputs.next()).enumerate() {
@@ -109,7 +109,7 @@ pub(crate) fn read_image<W>(
                     Ok(())
                 },
             )?;
-            first_page.learned()
+            learning.language()
         }
     };
     Ok(learned)

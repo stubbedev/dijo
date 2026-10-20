@@ -21,8 +21,8 @@ use crate::formats::image::PREPARING_OCR_PARSER;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Difference, Failure};
 use crate::ocr::{
-    self, Attempt, Bitmap, FirstPage, Image, OcrSettings, Outputs, PdfPages, Recognized,
-    Recognizer, Resolution,
+    self, Attempt, Bitmap, Image, Learning, OcrSettings, Outputs, PdfPages, Recognized, Recognizer,
+    Resolution,
 };
 
 /// Each page whose text layer was replaced by OCR text, as `page:fault`.
@@ -350,16 +350,16 @@ impl PageOcr {
 
     /// Writes the document with `write`, the pages to read rendered and read side by side
     /// meanwhile, each page to read passed on by the hook `write` is handed. The extraction then
-    /// assumes the script and model the first page read learned.
+    /// assumes the script and model the latest page read in one was read in.
     pub(super) fn write_document<T>(
         &self,
         assumed: Option<OcrLanguage>,
         write: impl FnOnce(&mut PageHook<'_, '_, '_>) -> T,
     ) -> (T, Option<OcrLanguage>) {
-        let first_page = FirstPage::new(assumed);
+        let learning = Learning::new(assumed);
         let written = ocr::read_pages(
             self.pages.len(),
-            &first_page,
+            &learning,
             || match &self.reader {
                 Reader::Tesseract { .. } => {
                     Some(PdfPages::open(self.document.clone(), &self.password))
@@ -371,11 +371,11 @@ impl PageOcr {
             },
             |outputs| write(&mut PageHook { ocr: self, outputs }),
         );
-        (written, first_page.learned())
+        (written, learning.language())
     }
 
     /// Renders a page and reads it in a script and model: what it read, and the script and
-    /// model it learned.
+    /// model it was read in.
     fn read(
         &self,
         pages: Option<&Result<PdfPages, String>>,
@@ -413,12 +413,12 @@ impl PageOcr {
         let bitmap = Bitmap::Gray(gray);
         let image = Image::of(&bitmap, None, pixels, None);
         match Recognizer::new(tesseract, settings).recognize(&image, assumed) {
-            Ok(Recognized { read, learned }) => (
+            Ok(Recognized { read, language }) => (
                 PageReading::Read {
                     attempt: read,
                     page: index as u32 + 1,
                 },
-                learned,
+                language,
             ),
             Err(failure) => (PageReading::Failed(failure.to_string()), None),
         }

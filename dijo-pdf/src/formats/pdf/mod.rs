@@ -375,7 +375,7 @@ fn difference(document: &Document) -> Option<Difference> {
 }
 
 /// Writes `recording` to `xhtml`, with the pages `page_ocr` reads read side by side, the script
-/// and model the first of them learned kept for the extraction.
+/// and model the latest of them was read in kept for the extraction.
 fn write_read(
     page_ocr: &PageOcr,
     recording: &mut Recording,
