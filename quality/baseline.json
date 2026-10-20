@@ -98,7 +98,7 @@
     "reading_order": 1.0
   },
   "belarusian-scan.png": {
-    "character_error_rate": 0.0034411562284927736,
+    "character_error_rate": 0.0041293874741913286,
     "token_error_rate": 0.04878048780487805,
     "recall": 0.975609756097561,
     "spurious": 0.047619047619047616,
@@ -315,10 +315,10 @@
     "reading_order": 1.0
   },
   "danish-scan-fax.png": {
-    "character_error_rate": 0.01166489925768823,
-    "token_error_rate": 0.06535947712418301,
-    "recall": 0.9411764705882353,
-    "spurious": 0.06493506493506493,
+    "character_error_rate": 0.007423117709437964,
+    "token_error_rate": 0.0457516339869281,
+    "recall": 0.954248366013072,
+    "spurious": 0.039473684210526314,
     "reading_order": 0.75
   },
   "danish-scan.png": {
@@ -385,10 +385,10 @@
     "reading_order": 1.0
   },
   "estonian-scan.png": {
-    "character_error_rate": 0.0013449899125756557,
-    "token_error_rate": 0.010471204188481676,
-    "recall": 0.9895287958115183,
-    "spurious": 0.010471204188481676,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "estonian.docx": {
@@ -413,7 +413,7 @@
     "reading_order": 1.0
   },
   "faroese-scan.png": {
-    "character_error_rate": 0.0007535795026375283,
+    "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
     "spurious": 0.0,
@@ -805,10 +805,10 @@
     "reading_order": 1.0
   },
   "latvian-scan.png": {
-    "character_error_rate": 0.000749063670411985,
-    "token_error_rate": 0.005714285714285714,
-    "recall": 0.9942857142857143,
-    "spurious": 0.005714285714285714,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "latvian.docx": {
@@ -918,9 +918,9 @@
   },
   "maltese-scan.png": {
     "character_error_rate": 0.005734767025089606,
-    "token_error_rate": 0.00423728813559322,
-    "recall": 0.9957627118644068,
-    "spurious": 0.00423728813559322,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "maltese.docx": {
@@ -966,11 +966,11 @@
     "reading_order": 1.0
   },
   "notes.doc": {
-    "character_error_rate": 0.27794561933534745,
-    "token_error_rate": 0.2711864406779661,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
     "recall": 1.0,
     "spurious": 0.0,
-    "reading_order": 0.8571428571428571
+    "reading_order": 1.0
   },
   "notes.docx": {
     "character_error_rate": 0.0,
@@ -1036,10 +1036,10 @@
     "reading_order": 1.0
   },
   "polish-scan-fax.png": {
-    "character_error_rate": 0.0053475935828877,
-    "token_error_rate": 0.0196078431372549,
-    "recall": 0.9803921568627451,
-    "spurious": 0.0196078431372549,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "polish-scan.png": {
@@ -1393,10 +1393,10 @@
     "reading_order": 0.2857142857142857
   },
   "romanian-scan.png": {
-    "character_error_rate": 0.002805049088359046,
-    "token_error_rate": 0.019138755980861243,
-    "recall": 0.9808612440191388,
-    "spurious": 0.019138755980861243,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "romanian.docx": {
@@ -1540,10 +1540,10 @@
     "reading_order": 1.0
   },
   "slovak-scan.png": {
-    "character_error_rate": 0.0016666666666666668,
-    "token_error_rate": 0.01098901098901099,
-    "recall": 0.989010989010989,
-    "spurious": 0.01098901098901099,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "slovak.docx": {
