@@ -2,7 +2,7 @@
   description = "dijo's development shell and Nix-built release artifacts: the static Linux executable and its container image";
 
   inputs = {
-    nixpkgs.url = "github:cachix/devenv-nixpkgs/rolling";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     crane.url = "github:ipetkov/crane/v0.24.0";
   };
 
