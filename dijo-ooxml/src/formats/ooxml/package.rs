@@ -10,10 +10,11 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 
+use zip::read::{ArchiveOffset, Config};
 use zip::ZipArchive;
 
 use super::uri::{self, Resolution};
-use crate::compress::zip::file::ZipFile;
+use crate::compress::zip::file::{self, ZipFile};
 use crate::compress::zip::stream::{self, ZipStream};
 use crate::compress::zip::Decoded;
 use crate::formats::xml::{self, attribute_named, Attribute, SaxHandler};
@@ -151,7 +152,13 @@ impl<'a> Archive<'a> {
     /// `ZipPackage`'s archive: `ZipFile`'s, else, where `ZipFile` cannot read the central
     /// directory, `ZipInputStreamZipEntrySource`'s.
     fn open(input: &'a [u8], pages: Pages<'a>) -> Result<Self, Unopened> {
-        let archive = match ZipArchive::new(Cursor::new(input)) {
+        let Ok(offset) = file::archive_offset(input) else {
+            return Self::stream(input, pages);
+        };
+        let config = Config {
+            archive_offset: ArchiveOffset::Known(offset),
+        };
+        let archive = match ZipArchive::with_config(config, Cursor::new(input)) {
             Ok(archive) => archive,
             Err(_) if ZipFile::open(input).is_err() => return Self::stream(input, pages),
             Err(e) => {
@@ -840,6 +847,22 @@ mod tests {
         );
         assert!(is_relationship_part("/word/_rels/document.xml.rels"));
         assert!(!is_relationship_part("/word/document.xml"));
+    }
+
+    #[test]
+    fn opens_the_central_directory_and_finds_bytes_prepended_to_it() {
+        let package = super::super::testing::package(
+            "word/document.xml",
+            &[("word/document.xml", "application/xml", b"<w:document/>")],
+        );
+        let archive = Archive::open(&package, Pages::IN_MEMORY).unwrap();
+        assert!(matches!(archive.entries, Entries::Directory(_)));
+        assert!(archive.names.iter().any(|name| name == "word/document.xml"));
+        let prepended = [b"#!/bin/sh\nexit 0\n".as_slice(), &package].concat();
+        assert!(matches!(
+            Archive::open(&prepended, Pages::IN_MEMORY),
+            Err(Unopened::Unported(Unported(why))) if why == "the archive is preceded by other data"
+        ));
     }
 
     #[test]

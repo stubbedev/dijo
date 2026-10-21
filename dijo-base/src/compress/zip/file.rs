@@ -207,27 +207,38 @@ struct Central<'a> {
     local_header_offset: i64,
 }
 
+/// `positionAtCentralDirectory`: the offset of the first local file header, which bytes
+/// prepended to the archive move past 0, and where the central directory starts.
+fn central_directory(data: &[u8]) -> Result<(i64, i64)> {
+    let eocd = locate_eocd(data).ok_or(Corrupt)?;
+    if eocd > 20 && data[eocd - 20..eocd - 16] == ZIP64_EOCD_LOCATOR_SIG {
+        let mut cursor = Cursor::at(data, eocd as i64 - 12);
+        cursor.position = u64_at(cursor.read(8)?, 0);
+        if cursor.read(4)? != ZIP64_EOCD_SIG {
+            return Err(Corrupt);
+        }
+        cursor.skip(44)?;
+        return Ok((0, u64_at(cursor.read(8)?, 0)));
+    }
+    let mut cursor = Cursor::at(data, eocd as i64);
+    cursor.skip(12)?;
+    let length = u32_at(cursor.read(4)?, 0);
+    let offset = u32_at(cursor.read(4)?, 0);
+    let first = (eocd as i64 - length - offset).max(0);
+    Ok((first, offset + first))
+}
+
+/// Where `ZipFile` finds the archive in `data`: the offset its central directory's entry offsets
+/// count from, found from the end of central directory record without scanning the archive.
+pub fn archive_offset(data: &[u8]) -> Result<u64> {
+    let (first_lfh_offset, _) = central_directory(data)?;
+    u64::try_from(first_lfh_offset).map_err(|_| Corrupt)
+}
+
 impl<'a> ZipFile<'a> {
     /// `ZipFile.builder().setSeekableByteChannel(channel).get()`.
     pub fn open(data: &'a [u8]) -> Result<ZipFile<'a>> {
-        let eocd = locate_eocd(data).ok_or(Corrupt)?;
-        let (first_lfh_offset, cd_start) =
-            if eocd > 20 && data[eocd - 20..eocd - 16] == ZIP64_EOCD_LOCATOR_SIG {
-                let mut cursor = Cursor::at(data, eocd as i64 - 12);
-                cursor.position = u64_at(cursor.read(8)?, 0);
-                if cursor.read(4)? != ZIP64_EOCD_SIG {
-                    return Err(Corrupt);
-                }
-                cursor.skip(44)?;
-                (0, u64_at(cursor.read(8)?, 0))
-            } else {
-                let mut cursor = Cursor::at(data, eocd as i64);
-                cursor.skip(12)?;
-                let length = u32_at(cursor.read(4)?, 0);
-                let offset = u32_at(cursor.read(4)?, 0);
-                let first = (eocd as i64 - length - offset).max(0);
-                (first, offset + first)
-            };
+        let (first_lfh_offset, cd_start) = central_directory(data)?;
         let mut cursor = Cursor::at(data, cd_start);
         let mut signature = cursor.read(4)?;
         if signature != CFH_SIG && Cursor::at(data, first_lfh_offset).read(4)? == LFH_SIG {
@@ -543,6 +554,18 @@ pub mod tests {
         assert_eq!(entry.size, 4);
         assert_eq!(entry.method, DEFLATED);
         assert!(entry.can_read());
+    }
+
+    #[test]
+    fn finds_the_archive_after_prepended_bytes() {
+        let data = zip(&[("a", b"hello")]);
+        assert_eq!(archive_offset(&data), Ok(0));
+        let prepended = [b"MZ stub".as_slice(), &data].concat();
+        assert_eq!(archive_offset(&prepended), Ok(7));
+        let file = ZipFile::open(&prepended).unwrap();
+        let entry = file.entry("a").unwrap();
+        assert_eq!(file.read(entry).unwrap().bytes(), b"hello");
+        assert!(archive_offset(b"not a zip").is_err());
     }
 
     #[test]
