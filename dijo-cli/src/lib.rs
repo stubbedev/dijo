@@ -72,6 +72,24 @@ static ALLOCATOR: dijo_core::memory::CountingAllocator<mimalloc::MiMalloc> =
 static ALLOCATOR: dijo_core::memory::CountingAllocator<std::alloc::System> =
     dijo_core::memory::CountingAllocator(std::alloc::System);
 
+/// glibc's allocator gives the threads that allocate arenas of their own, up to eight per
+/// processor, and keeps what is freed in each for that arena: as readings run on threads of
+/// their own, a server's memory climbs towards every arena's high-water mark. As many arenas as
+/// the processors this process may use allocate as concurrently as its readings run.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn limit_allocator_arenas() -> Result<(), String> {
+    let processors = dijo_core::process::processors();
+    let arenas = libc::c_int::try_from(processors).map_err(|_| {
+        format!("{processors} processors are more allocator arenas than glibc counts")
+    })?;
+    match unsafe { libc::mallopt(libc::M_ARENA_MAX, arenas) } {
+        0 => Err(format!(
+            "glibc refused to limit its allocator to {arenas} arenas"
+        )),
+        _ => Ok(()),
+    }
+}
+
 static ARGUMENTS: OnceLock<Vec<OsString>> = OnceLock::new();
 
 /// The arguments the program was run with, without the program name: those a worker process is
@@ -188,6 +206,11 @@ fn run_command(cli: Cli) -> bool {
         };
         if let Err(error) = dijo_core::configure_process(settings) {
             report("dijo", &error.to_string());
+            return false;
+        }
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        if let Err(error) = limit_allocator_arenas() {
+            report("dijo", &error);
             return false;
         }
     }
