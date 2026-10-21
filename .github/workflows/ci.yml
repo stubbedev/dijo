@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  devenv:
+  nix:
     name: just check (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -27,20 +27,18 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-      - name: Install devenv
-        run: nix profile install nixpkgs#devenv
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             target
-          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('devenv.lock', 'Cargo.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ runner.arch }}-
       - name: just check
-        run: devenv shell -- just check
+        run: nix develop -c just check
       - name: just deps
         if: matrix.os == 'ubuntu-24.04'
-        run: devenv shell -- just deps
+        run: nix develop -c just deps
 
   windows:
     name: just check (windows-2025)

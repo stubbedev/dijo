@@ -1,4 +1,4 @@
-# The tesseract language models the OCR bundle carries and devenv and CI read with, from tessdata_fast at
+# The tesseract language models the OCR bundle carries and the dev shell and CI read with, from tessdata_fast at
 # TESSDATA_COMMIT: orientation and script detection; script/Latin, script/Greek, script/Cyrillic and script/Armenian,
 # which read a page before its language is known; a model for every national language of Europe the language detector
 # tells apart (MODEL_BY_LANGUAGE), which the automatic OCR language reads a page with once its language is detected;

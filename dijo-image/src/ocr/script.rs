@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(language_model(&models, "sme", "Latin"), None);
     }
 
-    /// The OCR bundle and the models devenv and CI read with are those of `ci/tessdata.tsv`.
+    /// The OCR bundle and the models the dev shell and CI read with are those of `ci/tessdata.tsv`.
     fn bundled() -> BTreeSet<String> {
         std::fs::read_to_string("../ci/tessdata.tsv")
             .unwrap()

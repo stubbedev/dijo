@@ -1,5 +1,5 @@
 # The tesseract language models of ci/tessdata.tsv, from tessdata_fast at the commit in
-# ci/tessdata.env, as one tessdata directory: the models devenv and CI read with, the same the
+# ci/tessdata.env, as one tessdata directory: the models the dev shell and CI read with, the same the
 # OCR bundle carries, with tessdata_fast's license as passthru.license.
 { pkgs }:
 let

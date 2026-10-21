@@ -145,7 +145,7 @@ The image (linux/amd64, linux/arm64) is the static binary `FROM scratch`, runnin
 
 ## Development
 
-Dependencies come from [devenv](https://devenv.sh): `devenv shell`, or `direnv allow` once. Commands are recipes in the
+Dependencies come from the flake's dev shell: `nix develop`, or `direnv allow` once. Commands are recipes in the
 `justfile`; `just` lists them.
 
 | Recipe | What it does |

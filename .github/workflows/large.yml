@@ -18,10 +18,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-      - name: Install devenv
-        run: nix profile install nixpkgs#devenv
       - name: just test-large
-        run: devenv shell -- just test-large
+        run: nix develop -c just test-large
 
   fuzz:
     name: just test-fuzz
@@ -32,10 +30,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-      - name: Install devenv
-        run: nix profile install nixpkgs#devenv
       - name: just test-fuzz
-        run: devenv shell -- just test-fuzz
+        run: nix develop -c just test-fuzz
       - name: Keep failing inputs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -52,10 +48,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-      - name: Install devenv
-        run: nix profile install nixpkgs#devenv
       - name: just test-soak
-        run: devenv shell -- just test-soak
+        run: nix develop -c just test-soak
         env:
           SOAK_SECONDS: "600"
 
@@ -68,10 +62,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-      - name: Install devenv
-        run: nix profile install nixpkgs#devenv
       - name: just fuzz
-        run: devenv shell -- just fuzz 600
+        run: nix develop -c just fuzz 600
       - name: Keep failing inputs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -88,10 +80,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-      - name: Install devenv
-        run: nix profile install nixpkgs#devenv
       - name: just throughput
-        run: BENCH_OUTPUT="$GITHUB_STEP_SUMMARY" devenv shell -- just throughput
+        run: BENCH_OUTPUT="$GITHUB_STEP_SUMMARY" nix develop -c just throughput
 
   conformance:
     name: just conformance
@@ -102,7 +92,5 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-      - name: Install devenv
-        run: nix profile install nixpkgs#devenv
       - name: just conformance
-        run: devenv shell -- just conformance
+        run: nix develop -c just conformance
