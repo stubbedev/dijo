@@ -128,7 +128,7 @@ index 8e1c667..5b74d19 100644
 -      line[i] = ClipToRange<int>(IntCastRounded(input[i] * INT8_MAX), -INT8_MAX, INT8_MAX);
 +      const TFloat scaled = input[i] * INT8_MAX;
 +      const int rounded = static_cast<int>(scaled + std::copysign(TFloat(0.5), scaled));
-+      line[i] = std::clamp(rounded, -INT8_MAX, INT8_MAX);
++      line[i] = std::clamp<int>(rounded, -INT8_MAX, INT8_MAX);
      }
    } else {
      float *line = f_[t] + offset;
