@@ -1294,6 +1294,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "prose-typewriter-scan.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "prose.doc": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,

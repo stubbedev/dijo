@@ -596,6 +596,8 @@ quality	prose-scan.tga	file	image/x-tga	tk:content-type-magic-detected=image/x-t
 quality	prose-scan.tga	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
 quality	prose-scan.webp	file	image/webp	tk:content-type-magic-detected=image/webp
 quality	prose-scan.webp	bytes	image/webp	tk:content-type-magic-detected=image/webp
+quality	prose-typewriter-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	prose-typewriter-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	prose.doc	file	application/msword	tk:content-type-magic-detected=application/msword
 quality	prose.doc	bytes	application/msword	tk:content-type-magic-detected=application/x-tika-msoffice	Content-Length=12800
 quality	prose.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true

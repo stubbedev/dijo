@@ -222,6 +222,10 @@ for layout in columns newspaper; do
     pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/prose-$layout.pdf" "$work/$layout-300"
     magick "$work/$layout-300.png" -colorspace Gray -depth 8 "$corpus/prose-$layout-scan.png"
 done
+python3 "$here/typewritten.py" "$truth/prose.txt" "$work/prose-typewritten.txt"
+magick -size 2480x3508 xc:white -density 300 -font Courier-Prime-Regular -pointsize 12 -fill black \
+    -annotate +310+350 @"$work/prose-typewritten.txt" -colorspace Gray -alpha off -blur 0x1 -seed 1 \
+    -attenuate 1.5 +noise Gaussian -threshold 55% -depth 8 "$corpus/prose-typewriter-scan.png"
 pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/arabic.pdf" "$work/arabic-300"
 magick "$work/arabic-300.png" -colorspace Gray -depth 8 "$corpus/arabic-scan-300dpi.png"
 cp "$here/quixote-1605.pdf" "$corpus/quixote-1605.pdf"
