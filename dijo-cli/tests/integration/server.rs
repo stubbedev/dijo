@@ -162,6 +162,25 @@ fn a_slow_extraction_ends_with_a_timeout_in_the_document() {
     assert_eq!(document["errors"][0]["category"], "timeout");
 }
 
+/// The parse a worker process stopped waiting for may run on: the process is replaced, not
+/// handed the next job.
+#[test]
+fn a_worker_process_whose_extraction_timed_out_is_replaced() {
+    let server = Server::start(&["--isolation", "process", "--workers", "1", "--timeout", "3"]);
+    let document = server
+        .post_file("/extract?format=json&ocr=always", &[], "2022_Q3_AAPL.pdf")
+        .json();
+    assert_eq!(document["errors"][0]["category"], "timeout");
+    let metrics = server.request("GET", "/metrics", &[], b"").text();
+    assert!(metrics.contains("dijo_workers 0"), "{metrics}");
+    let next = server.post_file("/extract", &[], "simple.odt");
+    assert!(next
+        .text()
+        .contains("These are a few of my favorite things"));
+    let metrics = server.request("GET", "/metrics", &[], b"").text();
+    assert!(metrics.contains("dijo_workers 1"), "{metrics}");
+}
+
 #[test]
 fn separate_embedded_documents_stream_as_records() {
     let server = Server::start(&[]);

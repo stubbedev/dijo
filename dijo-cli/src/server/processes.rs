@@ -399,7 +399,7 @@ fn relay(
 
     let error = match answered {
         Ok(Answered::Completely) => return Some(process),
-        Ok(Answered::ToNobody) => {
+        Ok(Answered::OverTime | Answered::ToNobody) => {
             process.stop();
             return None;
         }
@@ -428,6 +428,9 @@ fn relay(
 
 enum Answered {
     Completely,
+    /// Completely, with an extraction that overran its timeout: its parse, which the worker
+    /// stopped waiting for, may still run.
+    OverTime,
     /// The client went away mid-answer.
     ToNobody,
 }
@@ -441,6 +444,7 @@ fn relay_answer(
     metrics: &Metrics,
     within_limits: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<Answered> {
+    let mut over_time = false;
     loop {
         let Some((tag, payload)) = read_frame(output)? else {
             return Err(io::Error::new(
@@ -466,7 +470,12 @@ fn relay_answer(
                 }
                 metrics.bytes_out(length);
             }
-            REPORT => metrics.record(serde_json::from_slice(&payload).map_err(invalid)?),
+            REPORT => {
+                let report = serde_json::from_slice(&payload).map_err(invalid)?;
+                over_time |= matches!(report, Report::Failure(ErrorCategory::Timeout));
+                metrics.record(report);
+            }
+            END if over_time => return Ok(Answered::OverTime),
             END => return Ok(Answered::Completely),
             other => return Err(invalid(format!("it sent an unknown frame {other}"))),
         }
