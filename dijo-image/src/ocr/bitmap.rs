@@ -112,26 +112,50 @@ impl Bitmap {
         }
     }
 
-    /// A pixel as Java2D reads it to draw it with interpolation: alpha, red, green and blue,
-    /// the colours premultiplied by the alpha.
-    fn premultiplied(&self, x: u32, y: u32) -> [u8; 4] {
+    /// The image drawn through `transform` as [`java2d::draw`] draws it, each pixel read as Java2D
+    /// reads it to interpolate: alpha, red, green and blue, the colours premultiplied by the
+    /// alpha. The kind of image is matched once rather than for each of the pixels an
+    /// interpolated one is drawn from.
+    fn draw(
+        &self,
+        transform: (Affine, Affine),
+        size: (u32, u32),
+        interpolation: Interpolation,
+        put: impl FnMut(u32, u32, [u8; 4]),
+    ) {
+        let dimensions = self.dimensions();
+        let row = dimensions.0 as usize;
+        let at = move |x: u32, y: u32| y as usize * row + x as usize;
         match self {
             Self::Gray(image) => {
-                let level = image.get_pixel(x, y).0[0];
-                [255, level, level, level]
+                let levels = image.as_raw();
+                let pixel = |x, y| {
+                    let level = levels[at(x, y)];
+                    [255, level, level, level]
+                };
+                java2d::draw(dimensions, pixel, transform, size, interpolation, put);
             }
             Self::Rgb(image) => {
-                let [red, green, blue] = image.get_pixel(x, y).0;
-                [255, red, green, blue]
+                let colours = image.as_raw();
+                let pixel = |x, y| {
+                    let start = at(x, y) * 3;
+                    [255, colours[start], colours[start + 1], colours[start + 2]]
+                };
+                java2d::draw(dimensions, pixel, transform, size, interpolation, put);
             }
             Self::Rgba(image) => {
-                let [red, green, blue, alpha] = image.get_pixel(x, y).0;
-                [
-                    alpha,
-                    mul8(alpha, red),
-                    mul8(alpha, green),
-                    mul8(alpha, blue),
-                ]
+                let colours = image.as_raw();
+                let pixel = |x, y| {
+                    let start = at(x, y) * 4;
+                    let alpha = colours[start + 3];
+                    [
+                        alpha,
+                        mul8(alpha, colours[start]),
+                        mul8(alpha, colours[start + 1]),
+                        mul8(alpha, colours[start + 2]),
+                    ]
+                };
+                java2d::draw(dimensions, pixel, transform, size, interpolation, put);
             }
         }
     }
@@ -144,9 +168,7 @@ impl Bitmap {
         }
         let (source_width, source_height) = self.dimensions();
         let mut gray = GrayImage::new(width, height);
-        java2d::draw(
-            (source_width, source_height),
-            |x, y| self.premultiplied(x, y),
+        self.draw(
             Affine::scale(
                 f64::from(width) / f64::from(source_width),
                 f64::from(height) / f64::from(source_height),
@@ -223,39 +245,40 @@ impl Bitmap {
             -w / 2.0,
             -h / 2.0,
         );
-        let draw = |put: &mut dyn FnMut(u32, u32, [u8; 4])| {
-            java2d::draw(
-                (width, height),
-                |x, y| self.premultiplied(x, y),
-                transform,
-                (rotated_width, rotated_height),
-                Interpolation::Bicubic,
-                put,
-            );
-        };
+        let size = (rotated_width, rotated_height);
         let over_white = |alpha: u8, colour: u8| colour + (255 - alpha);
         match self {
             Self::Gray(_) => {
                 let mut rotated = GrayImage::from_pixel(rotated_width, rotated_height, Luma([255]));
-                draw(&mut |x, y, [alpha, level, _, _]| {
-                    rotated.put_pixel(x, y, Luma([over_white(alpha, level)]));
-                });
+                self.draw(
+                    transform,
+                    size,
+                    Interpolation::Bicubic,
+                    |x, y, [alpha, level, _, _]| {
+                        rotated.put_pixel(x, y, Luma([over_white(alpha, level)]));
+                    },
+                );
                 Self::Gray(rotated)
             }
             Self::Rgb(_) | Self::Rgba(_) => {
                 let mut rotated =
                     RgbImage::from_pixel(rotated_width, rotated_height, Rgb([255, 255, 255]));
-                draw(&mut |x, y, [alpha, red, green, blue]| {
-                    rotated.put_pixel(
-                        x,
-                        y,
-                        Rgb([
-                            over_white(alpha, red),
-                            over_white(alpha, green),
-                            over_white(alpha, blue),
-                        ]),
-                    );
-                });
+                self.draw(
+                    transform,
+                    size,
+                    Interpolation::Bicubic,
+                    |x, y, [alpha, red, green, blue]| {
+                        rotated.put_pixel(
+                            x,
+                            y,
+                            Rgb([
+                                over_white(alpha, red),
+                                over_white(alpha, green),
+                                over_white(alpha, blue),
+                            ]),
+                        );
+                    },
+                );
                 Self::Rgb(rotated)
             }
         }
@@ -298,6 +321,73 @@ mod tests {
         Bitmap::Gray(GrayImage::from_fn(width, height, |x, y| {
             Luma([(y * width + x) as u8])
         }))
+    }
+
+    /// A pixel as Java2D reads it to interpolate, read with `get_pixel`.
+    fn read_premultiplied(image: &Bitmap, x: u32, y: u32) -> [u8; 4] {
+        match image {
+            Bitmap::Gray(image) => {
+                let level = image.get_pixel(x, y).0[0];
+                [255, level, level, level]
+            }
+            Bitmap::Rgb(image) => {
+                let [red, green, blue] = image.get_pixel(x, y).0;
+                [255, red, green, blue]
+            }
+            Bitmap::Rgba(image) => {
+                let [red, green, blue, alpha] = image.get_pixel(x, y).0;
+                [
+                    alpha,
+                    mul8(alpha, red),
+                    mul8(alpha, green),
+                    mul8(alpha, blue),
+                ]
+            }
+        }
+    }
+
+    #[test]
+    fn draws_each_kind_of_image_with_the_pixels_get_pixel_reads() {
+        let (width, height) = (37, 23);
+        let byte = |x: u32, y: u32, channel: u32| ((x * 7 + y * 13 + channel * 101) % 256) as u8;
+        let images = [
+            Bitmap::Gray(GrayImage::from_fn(width, height, |x, y| {
+                Luma([byte(x, y, 0)])
+            })),
+            Bitmap::Rgb(RgbImage::from_fn(width, height, |x, y| {
+                Rgb([byte(x, y, 0), byte(x, y, 1), byte(x, y, 2)])
+            })),
+            Bitmap::Rgba(RgbaImage::from_fn(width, height, |x, y| {
+                image::Rgba([byte(x, y, 0), byte(x, y, 1), byte(x, y, 2), byte(x, y, 3)])
+            })),
+        ];
+        let transforms = [
+            (
+                Affine::rotation(30.0, 25.0, 0.3, -18.5, -11.5),
+                (61, 50),
+                Interpolation::Bicubic,
+            ),
+            (Affine::scale(1.7, 0.6), (63, 14), Interpolation::Bilinear),
+        ];
+        for image in &images {
+            for &(transform, size, interpolation) in &transforms {
+                let mut drawn = Vec::new();
+                image.draw(transform, size, interpolation, |x, y, pixel| {
+                    drawn.push((x, y, pixel));
+                });
+                let mut expected = Vec::new();
+                java2d::draw(
+                    image.dimensions(),
+                    |x, y| read_premultiplied(image, x, y),
+                    transform,
+                    size,
+                    interpolation,
+                    |x, y, pixel| expected.push((x, y, pixel)),
+                );
+                assert!(!expected.is_empty());
+                assert_eq!(drawn, expected);
+            }
+        }
     }
 
     fn rows(image: &Bitmap) -> Vec<Vec<u8>> {
