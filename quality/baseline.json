@@ -41,6 +41,20 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "arabic-wikipedia-dolphin-scan.png": {
+    "character_error_rate": 0.07314410480349345,
+    "token_error_rate": 0.18037974683544303,
+    "recall": 0.8607594936708861,
+    "spurious": 0.1337579617834395,
+    "reading_order": 0.6
+  },
+  "arabic-wikipedia-village-scan.png": {
+    "character_error_rate": 0.36495031616982837,
+    "token_error_rate": 0.821917808219178,
+    "recall": 0.886986301369863,
+    "spurious": 0.452431289640592,
+    "reading_order": 0.0
+  },
   "arabic.docx": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -61,6 +75,20 @@
     "recall": 0.9074012612014604,
     "spurious": 0.10886571056062581,
     "reading_order": 0.64
+  },
+  "armenian-dussap-1959-p28.png": {
+    "character_error_rate": 0.0892756878158338,
+    "token_error_rate": 0.37543859649122807,
+    "recall": 0.6421052631578947,
+    "spurious": 0.36678200692041524,
+    "reading_order": 0.0
+  },
+  "armenian-dussap-1959-p29.png": {
+    "character_error_rate": 0.10331125827814569,
+    "token_error_rate": 0.36363636363636365,
+    "recall": 0.6442687747035574,
+    "spurious": 0.35826771653543305,
+    "reading_order": 0.2
   },
   "armenian-scan.png": {
     "character_error_rate": 0.03488372093023256,
@@ -123,6 +151,13 @@
     "token_error_rate": 0.0,
     "recall": 1.0,
     "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "betrayed-armenia-1910-p46.tif": {
+    "character_error_rate": 0.028084252758274825,
+    "token_error_rate": 0.03003003003003003,
+    "recall": 0.987987987987988,
+    "spurious": 0.014970059880239521,
     "reading_order": 1.0
   },
   "bosnian-cp1250.txt": {
@@ -243,6 +278,13 @@
     "recall": 1.0,
     "spurious": 0.0,
     "reading_order": 1.0
+  },
+  "colonial-florida-1892-p14.tif": {
+    "character_error_rate": 0.030035335689045935,
+    "token_error_rate": 0.06565656565656566,
+    "recall": 0.9545454545454546,
+    "spurious": 0.05025125628140704,
+    "reading_order": 0.75
   },
   "croatian-cp1250.txt": {
     "character_error_rate": 0.0,
@@ -608,6 +650,20 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "hindi-diksita-1895-01.jpg": {
+    "character_error_rate": 0.331306990881459,
+    "token_error_rate": 0.4423076923076923,
+    "recall": 0.7307692307692307,
+    "spurious": 0.3770491803278688,
+    "reading_order": 0.5
+  },
+  "hindi-diksita-1895-02.jpg": {
+    "character_error_rate": 0.5278246205733558,
+    "token_error_rate": 0.7934782608695652,
+    "recall": 0.29347826086956524,
+    "spurious": 0.5970149253731343,
+    "reading_order": 0.25
+  },
   "hindi-scan.png": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -768,6 +824,20 @@
     "recall": 1.0,
     "spurious": 0.0,
     "reading_order": 1.0
+  },
+  "japanese-ndl-1910s.jpg": {
+    "character_error_rate": 1.0,
+    "token_error_rate": 1.0,
+    "recall": 0.0,
+    "spurious": 0.0,
+    "reading_order": 0.0
+  },
+  "japanese-ndl-1920s.jpg": {
+    "character_error_rate": 1.0,
+    "token_error_rate": 1.0,
+    "recall": 0.0,
+    "spurious": 0.0,
+    "reading_order": 0.0
   },
   "japanese-scan.png": {
     "character_error_rate": 0.022727272727272728,
@@ -950,6 +1020,13 @@
     "recall": 0.8418207681365576,
     "spurious": 0.1697530864197531,
     "reading_order": 0.26153846153846155
+  },
+  "more-epigrammata-1520.jpg": {
+    "character_error_rate": 0.15967365967365968,
+    "token_error_rate": 0.552,
+    "recall": 0.64,
+    "spurious": 0.4594594594594595,
+    "reading_order": 0.0
   },
   "norwegian-cp1252.txt": {
     "character_error_rate": 0.0,
@@ -1511,6 +1588,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "russian-vaska-1901.jpg": {
+    "character_error_rate": 0.029988465974625143,
+    "token_error_rate": 0.14285714285714285,
+    "recall": 0.8823529411764706,
+    "spurious": 0.13934426229508196,
+    "reading_order": 0.4
+  },
   "russian.docx": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -1811,5 +1895,26 @@
     "recall": 1.0,
     "spurious": 0.0,
     "reading_order": 1.0
+  },
+  "unlv-8071-093.tif": {
+    "character_error_rate": 0.03380356667553899,
+    "token_error_rate": 0.041474654377880185,
+    "recall": 0.9815668202764977,
+    "spurious": 0.015408320493066256,
+    "reading_order": 0.6428571428571429
+  },
+  "unlv-8087-054.tif": {
+    "character_error_rate": 0.018728437654016758,
+    "token_error_rate": 0.01443001443001443,
+    "recall": 0.9942279942279942,
+    "spurious": 0.01430615164520744,
+    "reading_order": 0.8888888888888888
+  },
+  "zoologia-danica-1779.png": {
+    "character_error_rate": 0.10278578290105668,
+    "token_error_rate": 0.25165562913907286,
+    "recall": 0.7880794701986755,
+    "spurious": 0.2119205298013245,
+    "reading_order": 0.8333333333333334
   }
 }
