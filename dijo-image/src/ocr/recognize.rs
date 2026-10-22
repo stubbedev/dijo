@@ -19,9 +19,9 @@ use super::bitmap::{Bitmap, Density};
 use super::flatten::flatten;
 use super::prepare::{self, Orientation};
 use super::report::Report;
-use super::script::{installed_language, language, language_model, written_in};
+use super::script::{installed_language, language, language_model, written_in, BLACKLETTER_SCRIPT};
 use super::tesseract::{OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding};
-use super::text::{corrected, with_long_s};
+use super::text::{corrected, lexicality, with_long_s};
 use crate::config::TesseractOcrConfig;
 use crate::formats::embedded::OcrLanguage;
 use crate::language::{self as detection, DetectedLanguage};
@@ -489,7 +489,12 @@ impl<'t> Recognizer<'t> {
             .as_ref()
             .map_or(&best.prepared.model, |language| &language.model)
             .clone();
+        let read_with_f = best.text().map(str::to_owned);
         let best = self.with_long_s(best, &dictionary)?;
+        let best = match best.text() == read_with_f.as_deref() {
+            true => best,
+            false => self.in_blackletter(best, image, &dictionary)?,
+        };
         Ok(Recognized {
             read: best,
             language,
@@ -633,6 +638,38 @@ impl<'t> Recognizer<'t> {
         Ok(attempt)
     }
 
+    fn in_blackletter(
+        &self,
+        modern: Attempt,
+        image: &Image<'_>,
+        dictionary: &str,
+    ) -> Result<Attempt, OcrError> {
+        if !self.settings.auto() {
+            return Ok(modern);
+        }
+        let installed = self.tesseract.languages()?;
+        let Some(model) = installed_language(&installed, BLACKLETTER_SCRIPT) else {
+            return Ok(modern);
+        };
+        if model == modern.prepared.model {
+            return Ok(modern);
+        }
+        let detected = self
+            .tesseract
+            .detect(pixels_of(image, &modern.prepared), modern.prepared.density)?;
+        if detected.script.as_deref() != Some(BLACKLETTER_SCRIPT) {
+            return Ok(modern);
+        }
+        let prepared = modern
+            .prepared
+            .read_in(modern.prepared.script.clone(), model);
+        let reading = self.read(image, &prepared)?;
+        let blackletter = Attempt::read(prepared, reading);
+        self.tesseract.with_dictionary(dictionary, |is_word| {
+            more_lexical(modern, blackletter, is_word)
+        })
+    }
+
     /// The model to read a script with: with the automatic language, the one for the script,
     /// else the configured one, which must be installed.
     fn model(&self, script: Option<&str>) -> Result<String, OcrError> {
@@ -675,6 +712,14 @@ fn pixels_of<'a>(image: &Image<'a>, prepared: &'a Prepared) -> Pixels<'a> {
             }
         }
         (None, None) => image.bitmap.pixels(),
+    }
+}
+
+fn more_lexical(read: Attempt, replacement: Attempt, is_word: &dyn Fn(&str) -> bool) -> Attempt {
+    let lexicality_of = |attempt: &Attempt| lexicality(attempt.text().unwrap_or_default(), is_word);
+    match lexicality_of(&replacement) > lexicality_of(&read) {
+        true => replacement,
+        false => read,
     }
 }
 
@@ -908,5 +953,31 @@ mod tests {
         assert_eq!(prepared.thresholding(), Thresholding::Sauvola);
         let made = prepared.image.expect("a prepared image");
         assert!(!prepare::uneven_lighting(&made));
+    }
+
+    fn german(word: &str) -> bool {
+        ["die", "der", "Zulassung", "Frauen", "zur", "Sitzung"].contains(&word)
+    }
+
+    #[test]
+    fn keeps_the_blackletter_reading_with_more_words_of_the_language() {
+        let modern = attempt("Die Zulafsung der Srauen zur Situng", 66);
+        let blackletter = attempt("Die Zulassung der Frauen zur Sitzung", 80);
+        assert_eq!(
+            more_lexical(modern, blackletter, &german).text(),
+            Some("Die Zulassung der Frauen zur Sitzung")
+        );
+    }
+
+    #[test]
+    fn keeps_the_reading_it_would_replace_unless_the_other_has_more_words() {
+        let modern = attempt("Die Zulassung der Frauen zur Sitzung", 80);
+        let blackletter = attempt("Die Zulafsung der Frauen zur Sitzung", 90);
+        assert_eq!(
+            more_lexical(modern.clone(), blackletter, &german).text(),
+            Some("Die Zulassung der Frauen zur Sitzung")
+        );
+        let same = attempt("Die Zulassung der Frauen zur Sitzung", 95);
+        assert_eq!(more_lexical(modern, same, &german).confidence(), 80);
     }
 }

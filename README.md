@@ -27,8 +27,8 @@ and Windows (x86_64), plus `SHA256SUMS`, an SBOM and build provenance
 - Every release binary carries the tesseract models of [`ci/tessdata.tsv`](ci/tessdata.tsv): one for every national
   language of Europe (`bel bos bul cat ces cym dan deu ell eng est eus fao fin fra gle glg hrv hun hye isl ita kat lav
   lit ltz mkd mlt nld nor pol por ron rus slk slv spa sqi srp srp_latn swe tur ukr`), one for each other script
-  detection finds (`amh ara ben bod chi_sim guj heb hin jpn kan khm kor lao mal mya pan sin tam tel tha`), and
-  `script/Latin`, `script/Cyrillic`, `script/Greek` and `script/Armenian`.
+  detection finds (`amh ara ben bod chi_sim guj heb hin jpn kan khm kor lao mal mya pan sin tam tel tha`), `deu_latf`
+  for blackletter (Fraktur), and `script/Latin`, `script/Cyrillic`, `script/Greek` and `script/Armenian`.
 
 From source:
 

@@ -11,10 +11,12 @@ use crate::unicode::{is_letter, script};
 /// The model read with when a script has none installed.
 const DEFAULT_LANGUAGE: &str = "eng";
 const SCRIPT_MODEL_PREFIX: &str = "script/";
+pub(crate) const BLACKLETTER_SCRIPT: &str = "Fraktur";
 
 /// The most common language of each script tesseract's detection reports.
-const LANGUAGE_BY_SCRIPT: [(&str, &str); 25] = [
+const LANGUAGE_BY_SCRIPT: [(&str, &str); 26] = [
     ("Latin", "eng"),
+    (BLACKLETTER_SCRIPT, "deu_latf"),
     ("Arabic", "ara"),
     ("Cyrillic", "rus"),
     ("Greek", "ell"),
@@ -163,6 +165,16 @@ mod tests {
         assert_eq!(
             installed_language(&models, "Armenian").as_deref(),
             Some("script/Armenian")
+        );
+    }
+
+    #[test]
+    fn reads_blackletter_with_the_fraktur_model() {
+        let models = installed(&["deu", "deu_latf", "script/Latin"]);
+        assert_eq!(language(&models, Some(BLACKLETTER_SCRIPT)), "deu_latf");
+        assert_eq!(
+            installed_language(&installed(&["deu"]), BLACKLETTER_SCRIPT),
+            None
         );
     }
 
