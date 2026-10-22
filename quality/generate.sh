@@ -193,6 +193,10 @@ magick "$work/scan-300.png" -colorspace Gray -type Palette "$corpus/prose-scan.p
 magick "$work/scan-300.png" -colorspace Gray -depth 8 -compress RLE "$corpus/prose-scan.tga"
 magick "$work/scan-300.png" -colorspace Gray \( -size 2480x3508 radial-gradient:white-gray20 \) -compose multiply \
     -composite -depth 8 "$corpus/prose-scan-shadow.png"
+magick "$work/scan-300.png" -colorspace Gray \( -size 2480x3508 xc:white -fill gray30 \
+    -draw 'polygon 1600,0 2480,0 2480,3508 500,3508' -blur 0x6 \) -compose multiply -composite \
+    \( -size 2480x3508 radial-gradient:white-gray55 \) -compose multiply -composite -depth 8 \
+    "$corpus/prose-photo-shadow.png"
 for language in "${european[@]}"; do
     pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/$language.pdf" "$work/$language-scan"
     magick "$work/$language-scan.png" -colorspace Gray -depth 8 "$corpus/$language-scan.png"

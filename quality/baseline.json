@@ -1154,6 +1154,13 @@
     "spurious": 0.003278688524590164,
     "reading_order": 1.0
   },
+  "prose-photo-shadow.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "prose-photo-upside-down.jpg": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,

@@ -556,6 +556,8 @@ quality	prose-pandoc.docx	file	application/vnd.openxmlformats-officedocument.wor
 quality	prose-pandoc.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=11308	zip:detector-zip-file-opened=true
 quality	prose-photo-perspective.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	prose-photo-perspective.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	prose-photo-shadow.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	prose-photo-shadow.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	prose-photo-upside-down.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	prose-photo-upside-down.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	prose-scan-150dpi.png	file	image/png	tk:content-type-magic-detected=image/png
