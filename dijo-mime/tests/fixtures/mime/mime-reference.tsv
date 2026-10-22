@@ -244,6 +244,8 @@ quality	arabic.docx	file	application/vnd.openxmlformats-officedocument.wordproce
 quality	arabic.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5977	zip:detector-zip-file-opened=true
 quality	arabic.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	arabic.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	arbeiter-zeitung-1895.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	arbeiter-zeitung-1895.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	armenian-scan.png	file	image/png	tk:content-type-magic-detected=image/png
 quality	armenian-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	armenian.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
@@ -494,6 +496,8 @@ quality	maltese.docx	file	application/vnd.openxmlformats-officedocument.wordproc
 quality	maltese.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=6360	zip:detector-zip-file-opened=true
 quality	maltese.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	maltese.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	neue-freie-presse-1895.tif	file	image/tiff	tk:content-type-magic-detected=image/tiff
+quality	neue-freie-presse-1895.tif	bytes	image/tiff	tk:content-type-magic-detected=image/tiff
 quality	norwegian-cp1252.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	norwegian-cp1252.txt	bytes	text/plain	tk:content-type-magic-detected=text/plain
 quality	norwegian-scan.png	file	image/png	tk:content-type-magic-detected=image/png

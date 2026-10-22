@@ -1501,6 +1501,21 @@ fn scripts_detection_confuses_are_read_in_their_own() {
 }
 
 #[test]
+fn blackletter_is_read_with_the_fraktur_model() {
+    let object = &json_objects(&["../quality/corpus/arbeiter-zeitung-1895.jpg"])[0];
+    assert_matches_schema(object);
+    let report = &object["metadata"]["ocr"][0];
+    assert_eq!(report["language"], "deu_latf", "{report}");
+    assert_eq!(report["script"], "Latin", "{report}");
+    let text = object["text"].as_str().unwrap();
+    assert!(
+        text.contains("in der Geschichte der fortschrittlichen Partei unvergeßlich")
+            && !text.contains('ſ'),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_clean_pdf_text_layer_is_kept() {
     let objects = json_objects(&["../quality/corpus/hindi.pdf", &document("2022_Q3_AAPL.pdf")]);
     for document in &objects {

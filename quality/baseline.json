@@ -55,6 +55,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "arbeiter-zeitung-1895.jpg": {
+    "character_error_rate": 0.05729532369049291,
+    "token_error_rate": 0.134749419183538,
+    "recall": 0.9074012612014604,
+    "spurious": 0.10886571056062581,
+    "reading_order": 0.64
+  },
   "armenian-scan.png": {
     "character_error_rate": 0.03488372093023256,
     "token_error_rate": 0.2138728323699422,
@@ -936,6 +943,13 @@
     "recall": 1.0,
     "spurious": 0.0,
     "reading_order": 1.0
+  },
+  "neue-freie-presse-1895.tif": {
+    "character_error_rate": 0.16150025689330363,
+    "token_error_rate": 0.27539118065433854,
+    "recall": 0.8418207681365576,
+    "spurious": 0.1697530864197531,
+    "reading_order": 0.26153846153846155
   },
   "norwegian-cp1252.txt": {
     "character_error_rate": 0.0,
