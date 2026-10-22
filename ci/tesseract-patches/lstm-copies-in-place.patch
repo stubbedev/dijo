@@ -1,0 +1,149 @@
+diff --git a/src/lstm/convolve.cpp b/src/lstm/convolve.cpp
+index 66c126d..5f53a18 100644
+--- a/src/lstm/convolve.cpp
++++ b/src/lstm/convolve.cpp
+@@ -23,7 +23,10 @@
+ 
+ #include "convolve.h"
+ 
++#include <algorithm>
++#include <cstddef>
+ #include <cstdint>
++#include <vector>
+ 
+ #include "networkscratch.h"
+ #include "serialis.h"
+@@ -72,37 +75,70 @@ bool Convolve::DeSerialize(TFile *fp) {
+   return true;
+ }
+ 
++namespace {
++
++template <typename T>
++void StackWindows(const StrideMap &stride_map, int half_x, int half_y, int ni, const T *src,
++                  int src_features, T *dest, int dest_features, NetworkIO *output,
++                  TRand *randomizer) {
++  const int y_scale = 2 * half_y + 1;
++  const int x_step = StrideMap::Index(stride_map, 0, 0, 1).t();
++  const int y_step = StrideMap::Index(stride_map, 0, 1, 0).t();
++  std::vector<ptrdiff_t> offsets;
++  for (int x = -half_x; x <= half_x; ++x) {
++    for (int y = -half_y; y <= half_y; ++y) {
++      offsets.push_back(static_cast<ptrdiff_t>(x * x_step + y * y_step) * src_features);
++    }
++  }
++  StrideMap::Index dest_index(stride_map);
++  do {
++    const int t = dest_index.t();
++    const int dest_x = dest_index.index(FD_WIDTH);
++    const int dest_y = dest_index.index(FD_HEIGHT);
++    const int max_x = dest_index.MaxIndexOfDim(FD_WIDTH);
++    const int max_y = dest_index.MaxIndexOfDim(FD_HEIGHT);
++    const T *src_line = src + static_cast<ptrdiff_t>(t) * src_features;
++    T *dest_line = dest + static_cast<ptrdiff_t>(t) * dest_features;
++    if (dest_x >= half_x && dest_x + half_x <= max_x && dest_y >= half_y &&
++        dest_y + half_y <= max_y) {
++      for (ptrdiff_t offset : offsets) {
++        dest_line = std::copy_n(src_line + offset, ni, dest_line);
++      }
++      continue;
++    }
++    int k = 0;
++    for (int x = -half_x; x <= half_x; ++x) {
++      if (dest_x + x < 0 || dest_x + x > max_x) {
++        output->Randomize(t, k * ni, y_scale * ni, randomizer);
++        k += y_scale;
++        continue;
++      }
++      for (int y = -half_y; y <= half_y; ++y, ++k) {
++        if (dest_y + y < 0 || dest_y + y > max_y) {
++          output->Randomize(t, k * ni, ni, randomizer);
++        } else {
++          std::copy_n(src_line + offsets[k], ni, dest_line + k * ni);
++        }
++      }
++    }
++  } while (dest_index.Increment());
++}
++
++}
++
+ // Runs forward propagation of activations on the input line.
+ // See NetworkCpp for a detailed discussion of the arguments.
+ void Convolve::Forward(bool debug, const NetworkIO &input,
+                        const TransposedArray * /*input_transpose*/,
+                        NetworkScratch * /*scratch*/, NetworkIO *output) {
+   output->Resize(input, no_);
+-  int y_scale = 2 * half_y_ + 1;
+-  StrideMap::Index dest_index(output->stride_map());
+-  do {
+-    // Stack x_scale groups of y_scale * ni_ inputs together.
+-    int t = dest_index.t();
+-    int out_ix = 0;
+-    for (int x = -half_x_; x <= half_x_; ++x, out_ix += y_scale * ni_) {
+-      StrideMap::Index x_index(dest_index);
+-      if (!x_index.AddOffset(x, FD_WIDTH)) {
+-        // This x is outside the image.
+-        output->Randomize(t, out_ix, y_scale * ni_, randomizer_);
+-      } else {
+-        int out_iy = out_ix;
+-        for (int y = -half_y_; y <= half_y_; ++y, out_iy += ni_) {
+-          StrideMap::Index y_index(x_index);
+-          if (!y_index.AddOffset(y, FD_HEIGHT)) {
+-            // This y is outside the image.
+-            output->Randomize(t, out_iy, ni_, randomizer_);
+-          } else {
+-            output->CopyTimeStepGeneral(t, out_iy, ni_, input, y_index.t(), 0);
+-          }
+-        }
+-      }
+-    }
+-  } while (dest_index.Increment());
++  if (input.int_mode()) {
++    StackWindows(output->stride_map(), half_x_, half_y_, ni_, input.i(0), input.NumFeatures(),
++                 output->i(0), output->NumFeatures(), output, randomizer_);
++  } else {
++    StackWindows(output->stride_map(), half_x_, half_y_, ni_, input.f(0), input.NumFeatures(),
++                 output->f(0), output->NumFeatures(), output, randomizer_);
++  }
+ #ifndef GRAPHICS_DISABLED
+   if (debug) {
+     DisplayForward(*output);
+diff --git a/src/lstm/networkio.cpp b/src/lstm/networkio.cpp
+index 8e1c667..5b74d19 100644
+--- a/src/lstm/networkio.cpp
++++ b/src/lstm/networkio.cpp
+@@ -16,6 +16,7 @@
+ ///////////////////////////////////////////////////////////////////////
+ 
+ #include "networkio.h"
++#include <algorithm>
+ #include <cfloat> // for FLT_MAX
+ #include <cmath>
+ 
+@@ -665,7 +666,9 @@ void NetworkIO::WriteTimeStepPart(int t, int offset, int num_features, const TFl
+   if (int_mode_) {
+     int8_t *line = i_[t] + offset;
+     for (int i = 0; i < num_features; ++i) {
+-      line[i] = ClipToRange<int>(IntCastRounded(input[i] * INT8_MAX), -INT8_MAX, INT8_MAX);
++      const TFloat scaled = input[i] * INT8_MAX;
++      const int rounded = static_cast<int>(scaled + std::copysign(TFloat(0.5), scaled));
++      line[i] = std::clamp(rounded, -INT8_MAX, INT8_MAX);
+     }
+   } else {
+     float *line = f_[t] + offset;
+diff --git a/src/lstm/networkio.h b/src/lstm/networkio.h
+index a5e7a80..21a7847 100644
+--- a/src/lstm/networkio.h
++++ b/src/lstm/networkio.h
+@@ -115,6 +115,10 @@ public:
+     ASSERT_HOST(!int_mode_);
+     return f_[t];
+   }
++  int8_t *i(int t) {
++    ASSERT_HOST(int_mode_);
++    return i_[t];
++  }
+   const int8_t *i(int t) const {
+     ASSERT_HOST(int_mode_);
+     return i_[t];
