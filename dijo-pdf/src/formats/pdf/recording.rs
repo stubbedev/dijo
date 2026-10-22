@@ -321,6 +321,26 @@ impl Recording {
             .collect()
     }
 
+    pub(super) fn doubtful_text(&self) -> String {
+        self.events
+            .iter()
+            .filter_map(|event| match event {
+                Event::PageRead {
+                    check: PageCheck::Weigh(_),
+                    held,
+                    ..
+                } => Some(&self.read_pages[*held]),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|event| match event {
+                Event::Characters(text) => Some(self.get_text(*text)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// About how many bytes the recording holds.
     pub(super) fn size(&self) -> usize {
         let events = self.events.len() + self.read_pages.iter().map(Vec::len).sum::<usize>();

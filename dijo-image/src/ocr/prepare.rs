@@ -6,6 +6,8 @@
 //! threshold. Turning and rotating keep the colours of an image ([`Bitmap`]); the other
 //! corrections make it grey.
 
+use std::ops::Range;
+
 use image::GrayImage;
 
 use super::bitmap::Bitmap;
@@ -172,24 +174,7 @@ fn sharpness(points: &[(f64, f64)], degrees: f64, diagonal: i64, rows: &mut [u64
 pub(crate) fn scale_factor(image: &Bitmap, max_pixels: u64, reduce: bool) -> f64 {
     let image = image.gray();
     let (width, height) = image.dimensions();
-    let levels = image.as_raw();
-    let darkest: Vec<u8> = levels
-        .chunks_exact(width as usize)
-        .map(|row| row.iter().copied().min().unwrap_or(WHITE))
-        .collect();
-    let threshold = otsu_threshold(&histogram(levels));
-    let mut runs = Vec::new();
-    let mut run = 0;
-    for y in 0..=darkest.len() {
-        if y < darkest.len() && u32::from(darkest[y]) < threshold {
-            run += 1;
-            continue;
-        }
-        if run >= MIN_INK_RUN_PIXELS {
-            runs.push(run);
-        }
-        run = 0;
-    }
+    let mut runs: Vec<usize> = ink_runs(&image).into_iter().map(|run| run.len()).collect();
     if runs.is_empty() {
         return 1.0;
     }
@@ -216,6 +201,27 @@ pub(crate) fn scale_factor(image: &Bitmap, max_pixels: u64, reduce: bool) -> f64
     let wanted = MAX_UPSCALE.min(TARGET_LINE_PIXELS / line_height as f64);
     let allowed = (max_pixels as f64 / (u64::from(width) * u64::from(height)) as f64).sqrt();
     wanted.min(allowed).max(1.0)
+}
+
+pub(crate) fn ink_runs(image: &GrayImage) -> Vec<Range<usize>> {
+    let levels = image.as_raw();
+    let threshold = otsu_threshold(&histogram(levels));
+    let inked: Vec<bool> = levels
+        .chunks_exact(image.width() as usize)
+        .map(|row| row.iter().any(|&level| u32::from(level) < threshold))
+        .collect();
+    let mut runs = Vec::new();
+    let mut start = 0;
+    for y in 0..=inked.len() {
+        if y < inked.len() && inked[y] {
+            continue;
+        }
+        if y - start >= MIN_INK_RUN_PIXELS {
+            runs.push(start..y);
+        }
+        start = y + 1;
+    }
+    runs
 }
 
 /// Whether the image is lit unevenly, as a photographed page in shadow is: whether the

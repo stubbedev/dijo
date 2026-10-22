@@ -31,7 +31,7 @@ pub use bitmap::{Bitmap, Density};
 pub(crate) use decode::{decode, jpeg, Decoded, Format, Undecoded};
 pub use pages::{read_pages, Learning, Outputs};
 pub(crate) use prepare::Orientation;
-pub use recognize::{Attempt, Image, OcrSettings, Recognized, Recognizer};
+pub use recognize::{Attempt, Image, LanguageHint, OcrSettings, Recognized, Recognizer};
 pub use render::{PdfPages, Resolution};
 pub use report::KEY as REPORT;
 pub use tesseract::{OcrError, Tesseract};
