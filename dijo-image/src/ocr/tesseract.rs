@@ -691,12 +691,7 @@ impl Tesseract {
             unsafe { (api.delete)(handle.as_ptr()) };
             return Err(unloadable());
         }
-        let variables: &[(&CStr, &CStr)] = if model == OSD_MODEL {
-            &[]
-        } else {
-            &[(c"page_separator", c"")]
-        };
-        for (name, value) in variables {
+        for (name, value) in engine_variables(model) {
             unsafe { (api.set_variable)(handle.as_ptr(), name.as_ptr(), value.as_ptr()) };
         }
         Ok(Engine(handle))
@@ -721,6 +716,14 @@ impl Drop for Tesseract {
         for idle in idle.into_values().flatten() {
             unsafe { (self.api.delete)(idle.engine.0.as_ptr()) };
         }
+    }
+}
+
+fn engine_variables(model: &str) -> &'static [(&'static CStr, &'static CStr)] {
+    if model == OSD_MODEL {
+        &[]
+    } else {
+        &[(c"page_separator", c""), (c"textord_all_prop", c"1")]
     }
 }
 
@@ -1167,6 +1170,21 @@ mod tests {
             tesseract.version(),
             kernels.iter().map(|(name, _)| name).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn reading_engines_skip_the_fixed_pitch_test() {
+        for model in ["eng", "script/Latin", "eng+deu"] {
+            assert!(
+                engine_variables(model).contains(&(c"textord_all_prop", c"1")),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_orientation_engine_keeps_tesseracts_defaults() {
+        assert!(engine_variables(OSD_MODEL).is_empty());
     }
 
     #[test]
