@@ -1259,6 +1259,13 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "prose-scan-100dpi-degraded.png": {
+    "character_error_rate": 0.018140589569160998,
+    "token_error_rate": 0.07868852459016394,
+    "recall": 0.921311475409836,
+    "spurious": 0.07868852459016394,
+    "reading_order": 0.8333333333333334
+  },
   "prose-scan-150dpi.png": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -1267,6 +1274,13 @@
     "reading_order": 1.0
   },
   "prose-scan-300dpi.png": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "prose-scan-600dpi.png": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,

@@ -213,6 +213,11 @@ magick "$corpus/danish-scan.png" \( "$corpus/french-scan.png" -flop -fill white 
     -compose multiply -composite -depth 8 "$corpus/danish-scan-bleed.png"
 pdftoppm -r 72 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-72"
 magick "$work/scan-72.png" -colorspace Gray -depth 8 "$corpus/prose-scan-72dpi.png"
+pdftoppm -r 100 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-100"
+magick "$work/scan-100.png" -colorspace Gray -blur 0x0.5 -seed 1 -attenuate 1.5 +noise Gaussian -threshold 55% \
+    -depth 8 "$corpus/prose-scan-100dpi-degraded.png"
+pdftoppm -r 600 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-600"
+magick "$work/scan-600.png" -colorspace Gray -depth 8 "$corpus/prose-scan-600dpi.png"
 pdftoppm -r 200 -png "$corpus/report.pdf" "$work/report-scan"
 magick "$work"/report-scan-*.png -colorspace Gray -depth 8 -compress lzw "$corpus/report-scan.tif"
 magick "$corpus/report-scan.tif" -background white -rotate 2 -depth 8 -compress lzw "$corpus/report-scan-skewed.tif"
