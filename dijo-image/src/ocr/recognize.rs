@@ -719,8 +719,8 @@ fn prepared<'b>(made: &'b Option<Arc<Bitmap>>, original: &'b Bitmap) -> &'b Bitm
 }
 
 /// Turns an oriented image by the quarter turns detection found, inverts light text on a dark
-/// ground, clears specks, whitens faint marks unless the lighting is uneven, corrects its skew
-/// and scales its text to a readable size.
+/// ground, clears specks, normalises the background when the lighting is uneven and whitens
+/// faint marks otherwise, corrects its skew and scales its text to a readable size.
 fn finish(
     image: &Image<'_>,
     oriented: &Oriented,
@@ -750,11 +750,11 @@ fn finish(
         )))));
     }
     let uneven_lighting = prepare::uneven_lighting(prepared(&made, original));
-    if !uneven_lighting {
-        made = Some(Arc::new(Bitmap::Gray(prepare::whiten_faint_marks(
-            prepared(&made, original),
-        ))));
-    }
+    made = Some(Arc::new(Bitmap::Gray(if uneven_lighting {
+        prepare::normalise_background(prepared(&made, original))
+    } else {
+        prepare::whiten_faint_marks(prepared(&made, original))
+    })));
     let skew_degrees = prepare::skew_degrees(prepared(&made, original));
     if skew_degrees != 0.0 {
         made = Some(Arc::new(prepared(&made, original).rotated(skew_degrees)));
@@ -892,5 +892,21 @@ mod tests {
             overlooked(Some("Cyrillic"), &["Latin"]),
             ["Cyrillic", "Armenian", "Georgian", "Hebrew"]
         );
+    }
+
+    #[test]
+    fn evens_out_the_lighting_of_a_page_in_shadow() {
+        let page = prepare::tests::shadowed_page(800, 600);
+        let image = Image::of(&page, None, 0, None, None);
+        let oriented = Oriented {
+            image: Upright::AsItIs,
+            exif_orientation: None,
+            flattened: false,
+        };
+        let prepared = finish(&image, &oriented, None, "eng".to_owned(), 0);
+        assert!(prepared.uneven_lighting);
+        assert_eq!(prepared.thresholding(), Thresholding::Sauvola);
+        let made = prepared.image.expect("a prepared image");
+        assert!(!prepare::uneven_lighting(&made));
     }
 }
