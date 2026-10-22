@@ -13,14 +13,16 @@
 # Its internal headers and the configuration it was built with are installed in
 # include/tesseract-internal, for code that reads its results while it recognizes a page.
 static:
-(static.tesseract5.passthru.tesseractBase.override {
-  pango = null;
-  icu = null;
-  curl = null;
-  libarchive = null;
-}).overrideAttrs
+(
+  (static.tesseract5.passthru.tesseractBase.override {
+    pango = null;
+    icu = null;
+    curl = null;
+    libarchive = null;
+  }).overrideAttrs
+    (import ./tesseract-build.nix)
+).overrideAttrs
   (old: {
-    patches = (old.patches or [ ]) ++ import ./tesseract-patches.nix;
     env = (old.env or { }) // {
       CXXFLAGS = "-O3";
     };
@@ -34,5 +36,6 @@ static:
       mkdir -p $out/include/tesseract-internal
       cp include/config_auto.h src/ccstruct/*.h src/ccutil/*.h src/viewer/*.h \
         $out/include/tesseract-internal/
+      echo '#define TESSERACT_IMAGEDATA_AS_PIX 1' >> $out/include/tesseract-internal/config_auto.h
     '';
   })

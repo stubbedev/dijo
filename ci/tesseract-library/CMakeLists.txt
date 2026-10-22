@@ -16,6 +16,7 @@ endforeach()
 foreach(option DISABLE_ARCHIVE DISABLE_CURL GRAPHICS_DISABLED)
   set(${option} ON CACHE BOOL "" FORCE)
 endforeach()
+add_compile_definitions(TESSERACT_IMAGEDATA_AS_PIX)
 add_subdirectory("${TESSERACT_SOURCE}" tesseract EXCLUDE_FROM_ALL)
 
 file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/exports.cc" CONTENT "")
