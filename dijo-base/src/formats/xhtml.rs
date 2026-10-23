@@ -31,8 +31,82 @@ pub const XHTML_NAMESPACE: &str = "http://www.w3.org/1999/xhtml";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpandedName {
     namespace: Cow<'static, str>,
-    name: String,
+    name: Cow<'static, str>,
 }
+
+/// The XHTML element names an `ExpandedName` borrows rather than copies, in byte order.
+const KNOWN_NAMES: &[&str] = &[
+    "a",
+    "abbr",
+    "address",
+    "b",
+    "base",
+    "blockquote",
+    "body",
+    "br",
+    "caption",
+    "cite",
+    "code",
+    "col",
+    "colgroup",
+    "dd",
+    "del",
+    "dfn",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "fieldset",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "hr",
+    "html",
+    "i",
+    "iframe",
+    "img",
+    "input",
+    "ins",
+    "kbd",
+    "li",
+    "link",
+    "meta",
+    "noframes",
+    "noscript",
+    "ol",
+    "option",
+    "p",
+    "pre",
+    "q",
+    "s",
+    "samp",
+    "script",
+    "select",
+    "span",
+    "strong",
+    "style",
+    "sub",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "textarea",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "u",
+    "ul",
+    "var",
+];
 
 impl ExpandedName {
     pub fn new(namespace: &str, name: &str) -> Self {
@@ -41,10 +115,11 @@ impl ExpandedName {
         } else {
             Cow::Owned(namespace.to_owned())
         };
-        Self {
-            namespace,
-            name: name.to_owned(),
-        }
+        let name = match KNOWN_NAMES.binary_search_by(|known| (*known).cmp(name)) {
+            Ok(index) => Cow::Borrowed(KNOWN_NAMES[index]),
+            Err(_) => Cow::Owned(name.to_owned()),
+        };
+        Self { namespace, name }
     }
 
     pub fn namespace(&self) -> &str {
@@ -1365,6 +1440,23 @@ mod tests {
                 })
                 .collect();
             assert_eq!(replace_invalid(text), replaced);
+        }
+    }
+
+    #[test]
+    fn borrows_known_names_as_it_copied_them() {
+        assert!(KNOWN_NAMES.windows(2).all(|pair| pair[0] < pair[1]));
+        let unknown = ["", "P", "Div", "x", "h7", "tbodyx", "w:p", "zz", "\u{e9}"];
+        for name in KNOWN_NAMES.iter().chain(unknown.iter()) {
+            for namespace in [XHTML_NAMESPACE, "", "urn:other"] {
+                let expanded = ExpandedName::new(namespace, name);
+                assert_eq!(expanded.name(), *name);
+                assert_eq!(expanded.namespace(), namespace);
+                assert_eq!(
+                    matches!(expanded.name, Cow::Borrowed(_)),
+                    KNOWN_NAMES.contains(name)
+                );
+            }
         }
     }
 }
