@@ -55,7 +55,7 @@ const READ_ONLY_OBJECT_DECLARATION2_LARGE_REF_COUNT_FND: i64 = 0xc5;
 const CHUNK_TERMINATOR_FND: i64 = 0xff;
 
 /// A `FileChunkReference`: where something is, and how long.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct Chunk {
     pub(super) stp: i64,
     pub(super) cb: i64,

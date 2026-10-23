@@ -2,6 +2,7 @@
 //! class `page`, its objects walked from its roots along the references of their properties,
 //! writing texts, links and the files objects hold, and collecting the authors and times.
 
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -106,13 +107,26 @@ struct ResourceInfo {
 }
 
 /// `PropertyAction`: a property of an object's property sets, flattened, with the object or
-/// object space it references.
+/// object space it references, and the author it names, decoded once.
 #[derive(Debug, Clone)]
 struct Action<'a> {
     id: PropertyId,
     property: Rc<PropertyValue<'a>>,
     child: Option<Option<ExGuid>>,
     space: Option<CellId>,
+    author: OnceCell<String>,
+}
+
+impl Action<'_> {
+    /// The author an `Author` property names, as `decodeOneNoteText` decodes it.
+    fn author(&self) -> Option<&str> {
+        match self.property.as_ref() {
+            PropertyValue::Data(bytes) if self.id.value == property::AUTHOR => {
+                Some(self.author.get_or_init(|| one_note_text(bytes)))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A property's value, kept for the actions that read it.
@@ -750,8 +764,8 @@ impl<'p, 'a> Walker<'p, 'a, '_, '_> {
                 self.xhtml.metadata_mut().set("dcterms:modified", value);
             }
             property::AUTHOR => {
-                if let PropertyValue::Data(bytes) = action.property.as_ref() {
-                    self.record_author(one_note_text(bytes), role);
+                if let Some(author) = action.author() {
+                    self.record_author(author, role);
                 }
             }
             _ => {
@@ -778,17 +792,15 @@ impl<'p, 'a> Walker<'p, 'a, '_, '_> {
         Ok(())
     }
 
-    fn record_author(&mut self, author: String, role: AuthorRole) {
-        match role {
-            AuthorRole::MostRecent => {
-                self.most_recent_authors.insert(author);
-            }
-            AuthorRole::Original => {
-                self.original_authors.insert(author.clone());
-                self.authors.insert(author);
-            }
-            AuthorRole::None => {
-                self.authors.insert(author);
+    fn record_author(&mut self, author: &str, role: AuthorRole) {
+        let sets = match role {
+            AuthorRole::MostRecent => [Some(&mut self.most_recent_authors), None],
+            AuthorRole::Original => [Some(&mut self.original_authors), Some(&mut self.authors)],
+            AuthorRole::None => [Some(&mut self.authors), None],
+        };
+        for authors in sets.into_iter().flatten() {
+            if !authors.contains(author) {
+                authors.insert(author.to_owned());
             }
         }
     }
@@ -799,10 +811,8 @@ impl<'p, 'a> Walker<'p, 'a, '_, '_> {
             return;
         }
         for action in self.object_actions(object).iter() {
-            if action.id.value == property::AUTHOR {
-                if let PropertyValue::Data(bytes) = action.property.as_ref() {
-                    self.record_author(one_note_text(bytes), role);
-                }
+            if let Some(author) = action.author() {
+                self.record_author(author, role);
             }
         }
     }
@@ -901,6 +911,7 @@ fn action<'a>(
         property: Rc::new(property),
         child,
         space,
+        author: OnceCell::new(),
     }
 }
 
@@ -1030,5 +1041,38 @@ mod tests {
         );
         assert_eq!(sanitized_name("a/b/.."), "");
         assert_eq!(sanitized_name("fil.txt"), "fil.txt");
+    }
+
+    /// An action's author is its data decoded as `decodeOneNoteText` decodes it, each time it is
+    /// asked for, and none for another property or an author of another type.
+    #[test]
+    fn decodes_an_actions_author_once_as_one_note_text() {
+        let author = PropertyId {
+            kind: kind::DATA,
+            value: property::AUTHOR,
+        };
+        let name = PropertyId {
+            kind: kind::DATA,
+            value: property::IMAGE_FILENAME,
+        };
+        for text in ["", "Kari", "K\0a\0ri", "\0", "Bølge 🌊"] {
+            let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            for bytes in [&bytes[..], &bytes[..bytes.len().saturating_sub(1)]] {
+                let decoded = action(author, &Property::Data(bytes), None, None);
+                let expected = one_note_text(bytes);
+                assert_eq!(decoded.author(), Some(expected.as_str()), "{bytes:?}");
+                assert_eq!(decoded.author(), Some(expected.as_str()), "{bytes:?}");
+                assert_eq!(
+                    action(name, &Property::Data(bytes), None, None).author(),
+                    None
+                );
+            }
+        }
+        let fixed = PropertyId {
+            kind: kind::FOUR_BYTES,
+            value: property::AUTHOR,
+        };
+        let scalar = action(fixed, &Property::Fixed(vec![1, 0, 0, 0]), None, None);
+        assert_eq!(scalar.author(), None);
     }
 }

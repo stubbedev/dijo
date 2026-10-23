@@ -265,6 +265,8 @@ pub(super) struct Walker<'w, 'a, 'x> {
     xhtml: &'w mut Xhtml<'x>,
     hyperlink: Regex,
     found: Found,
+    /// The author each property's data names, by where it is.
+    authors: HashMap<Chunk, String>,
     walked_spaces: HashSet<ExtendedGuid>,
     depth: usize,
     depth_warning_recorded: bool,
@@ -282,6 +284,7 @@ impl<'w, 'a, 'x> Walker<'w, 'a, 'x> {
             xhtml,
             hyperlink: Regex::new(HYPERLINK).expect("the hyperlink pattern is valid"),
             found: Found::default(),
+            authors: HashMap::new(),
             walked_spaces: HashSet::new(),
             depth: 0,
             depth_warning_recorded: false,
@@ -480,10 +483,7 @@ impl<'w, 'a, 'x> Walker<'w, 'a, 'x> {
                     self.found.last_modified = Some(modified);
                 }
             }
-            AUTHOR => {
-                let author = self.read_utf16(value.raw_data)?;
-                self.record_author(author, role);
-            }
+            AUTHOR => self.record_author(value.raw_data, role)?,
             _ if value.id.kind == DATA => self.process_data(value)?,
             _ => {}
         }
@@ -504,18 +504,25 @@ impl<'w, 'a, 'x> Walker<'w, 'a, 'x> {
         self.process_property_set(space, visited, &value.property_set, role)
     }
 
-    /// An author among the authors, and among those of `role`.
-    fn record_author(&mut self, author: String, role: AuthorRole) {
+    /// The author the property whose data is `raw_data` names, read once, among the authors, and
+    /// among those of `role`.
+    fn record_author(&mut self, raw_data: Chunk, role: AuthorRole) -> Result<(), Thrown> {
+        if !self.authors.contains_key(&raw_data) {
+            let author = self.read_utf16(raw_data)?;
+            self.authors.insert(raw_data, author);
+        }
+        let author = self.authors[&raw_data].as_str();
         let of_role = match role {
             AuthorRole::MostRecent => Some(&mut self.found.most_recent_authors),
             AuthorRole::Original => Some(&mut self.found.original_authors),
             AuthorRole::Unnamed => None,
         };
         for authors in of_role.into_iter().chain([&mut self.found.authors]) {
-            if !authors.contains(&author) {
-                authors.push(author.clone());
+            if !authors.iter().any(|known| known == author) {
+                authors.push(author.to_owned());
             }
         }
+        Ok(())
     }
 
     /// The authors the properties of an object walked before name, recorded for `role`.
@@ -525,8 +532,7 @@ impl<'w, 'a, 'x> Walker<'w, 'a, 'x> {
         role: AuthorRole,
     ) -> Result<(), Thrown> {
         for value in properties.iter().filter(|value| value.id.pid == AUTHOR) {
-            let author = self.read_utf16(value.raw_data)?;
-            self.record_author(author, role);
+            self.record_author(value.raw_data, role)?;
         }
         Ok(())
     }
