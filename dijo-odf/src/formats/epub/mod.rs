@@ -10,7 +10,7 @@
 mod content;
 mod package;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::compress::zip::file::{ZipEntry, ZipFile};
 use crate::config::ParserConfigs;
@@ -111,21 +111,29 @@ impl From<crate::formats::xhtml::Stop> for Thrown {
 struct Book<'p> {
     package: &'p ZipPackage<'p>,
     zip: ZipFile<'p>,
+    by_name: HashMap<String, usize>,
     undecoded: Option<(String, Undecoded)>,
 }
 
 impl<'p> Book<'p> {
     fn new(package: &'p ZipPackage<'p>) -> Self {
+        let zip = package.zip();
+        let mut by_name = HashMap::with_capacity(zip.entries().len());
+        for (index, entry) in zip.entries().iter().enumerate() {
+            by_name.entry(entry.name.clone()).or_insert(index);
+        }
         Self {
             package,
-            zip: package.zip(),
+            zip,
+            by_name,
             undecoded: None,
         }
     }
 
     /// `getEntry`: the first entry of `name`.
     fn named(&self, name: &str) -> Option<ZipEntry> {
-        self.zip.entry(name).cloned()
+        let &index = self.by_name.get(name)?;
+        Some(self.zip.entries()[index].clone())
     }
 
     /// The first entry of `name` that `canReadEntryData` lets Tika read.
@@ -297,52 +305,58 @@ fn embedded_metadata(item: &Item, path: &str, cover: bool) -> TikaMetadata {
     metadata
 }
 
+fn item_set(items: &[String]) -> HashSet<&str> {
+    items.iter().map(String::as_str).collect()
+}
+
 /// The manifest items outside the spine, but those `processed`, that Tika hands to its
-/// `handleEmbedded`, in manifest order, with whether each is the cover: those our `EpubEmbedded`
-/// admits, unless `encryption.xml` names them.
+/// `handleEmbedded`, in manifest order, with their paths and whether each is the cover: those
+/// our `EpubEmbedded` admits, unless `encryption.xml` names them.
 fn embedded_items<'c>(
     contents: &'c Contents,
     relative: &str,
     processed: &HashSet<&str>,
-    encrypted: &[String],
-) -> Vec<(&'c Item, bool)> {
+    encrypted: &HashSet<&str>,
+) -> Vec<(&'c Item, String, bool)> {
     let cover = contents.cover();
     contents
         .items
         .iter()
-        .filter(|(id, item)| {
-            !processed.contains(id.as_str())
-                && !encrypted.contains(&format!("{relative}{}", item.href))
-                && parses_as_embedded(item.media_type.as_deref())
+        .filter(|(id, _)| !processed.contains(id.as_str()))
+        .filter_map(|(id, item)| {
+            let path = format!("{relative}{}", item.href);
+            if encrypted.contains(path.as_str()) || !parses_as_embedded(item.media_type.as_deref())
+            {
+                return None;
+            }
+            Some((item, path, cover == Some(id.as_str())))
         })
-        .map(|(id, item)| (item, cover == Some(id.as_str())))
         .collect()
 }
 
-/// The entry of the manifest item `item` that `handleEmbedded` parses, with the metadata it
-/// gives it: one Tika can read, which the embedded document extractor parses.
+/// The entry of the manifest item `item` at `path` that `handleEmbedded` parses, with the
+/// metadata it gives it: one Tika can read, which the embedded document extractor parses.
 fn embedded_entry(
     book: &Book,
-    relative: &str,
     item: &Item,
+    path: &str,
     cover: bool,
 ) -> Option<(ZipEntry, TikaMetadata)> {
-    let path = format!("{relative}{}", item.href);
-    let entry = book.readable(&path)?;
-    let metadata = embedded_metadata(item, &path, cover);
+    let entry = book.readable(path)?;
+    let metadata = embedded_metadata(item, path, cover);
     embedded::is_parsed(&metadata).then_some((entry, metadata))
 }
 
-/// `handleEmbedded`: a manifest item outside the spine, parsed as an embedded document in an
-/// `embedded` div, wrapped as a package entry unless it is a font.
+/// `handleEmbedded`: a manifest item outside the spine at `path`, parsed as an embedded
+/// document in an `embedded` div, wrapped as a package entry unless it is a font.
 fn write_embedded(
     book: &mut Book,
-    relative: &str,
     item: &Item,
+    path: &str,
     cover: bool,
     xhtml: &mut Xhtml,
 ) -> Result<(), Thrown> {
-    let Some((entry, metadata)) = embedded_entry(book, relative, item, cover) else {
+    let Some((entry, metadata)) = embedded_entry(book, item, path, cover) else {
         return Ok(());
     };
     let input = book.read(&entry, Opened::Tagged).map_err(Thrown::Ending)?;
@@ -402,10 +416,11 @@ fn read_package(
     let relative = relative_path(&root.name).to_owned();
     book.extract_metadata(xhtml.metadata_mut())?;
     let encrypted_items = book.encrypted_items()?;
+    let encrypted_set = item_set(&encrypted_items);
     let mut processed: HashSet<&str> = HashSet::new();
     let mut missing = 0;
     for (id, path, entry) in spine_documents(book, &relative, contents) {
-        if encrypted_items.contains(&path) {
+        if encrypted_set.contains(path.as_str()) {
             return Err(Thrown::Other(encrypted(&encrypted_items)));
         }
         let Some(entry) = entry else {
@@ -429,8 +444,8 @@ fn read_package(
             );
         }
     }
-    for (item, cover) in embedded_items(contents, &relative, &processed, &encrypted_items) {
-        write_embedded(book, &relative, item, cover, xhtml)?;
+    for (item, path, cover) in embedded_items(contents, &relative, &processed, &encrypted_set) {
+        write_embedded(book, item, &path, cover, xhtml)?;
     }
     if missing > 0 {
         return Err(Thrown::Ending(Failure::Malformed(format!(
@@ -492,8 +507,11 @@ fn check(book: &mut Book, reading: &Reading) {
                     }
                 }
             }
-            for (item, cover) in embedded_items(contents, relative, &processed, &encrypted_items) {
-                if let Some((entry, _)) = embedded_entry(book, relative, item, cover) {
+            let encrypted_set = item_set(&encrypted_items);
+            for (item, path, cover) in
+                embedded_items(contents, relative, &processed, &encrypted_set)
+            {
+                if let Some((entry, _)) = embedded_entry(book, item, &path, cover) {
                     if book.read_ahead(&entry, Opened::Tagged).is_err() {
                         return;
                     }
@@ -1031,6 +1049,31 @@ mod tests {
         let (text, metadata) = read(&cut_book());
         assert!(text.contains("Bevaret"), "{text}");
         assert_eq!(metadata["zip:salvaged"], ["true"]);
+    }
+
+    #[test]
+    fn finds_the_first_entry_of_each_name_as_zip_file_does() {
+        let input = duplicated_book();
+        let Ok(package) =
+            ZipPackage::open(&input, Pages::IN_MEMORY, &TikaMetadata::new(), TIKA_NAME)
+        else {
+            panic!("an archive");
+        };
+        let book = Book::new(&package);
+        let zip = package.zip();
+        let duplicates = |name: &str| zip.entries().iter().filter(|e| e.name == name).count();
+        assert_eq!(
+            (duplicates("mimetype"), duplicates("OEBPS/a.xhtml")),
+            (2, 2)
+        );
+        let names = zip
+            .entries()
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .chain(["", "OEBPS", "OEBPS/", "a.xhtml", "MIMETYPE", "OEBPS/a.xhtm"]);
+        for name in names {
+            assert_eq!(book.named(name), zip.entry(name).cloned(), "{name}");
+        }
     }
 
     #[test]
