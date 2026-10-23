@@ -1257,17 +1257,15 @@ impl<'h> Xhtml<'h> {
     }
 
     fn safe_text(&mut self, text: &str, kind: Text) -> Result<(), Stop> {
-        let mut start = 0;
-        for (index, character) in text.char_indices() {
-            if is_invalid(character) {
-                if index > start {
-                    self.write_text(&text[start..index], kind)?;
-                }
-                self.write_text(REPLACEMENT.encode_utf8(&mut [0; 4]), kind)?;
-                start = index + character.len_utf8();
+        let mut rest = text;
+        while let Some((index, length)) = find_invalid(rest) {
+            if index > 0 {
+                self.write_text(&rest[..index], kind)?;
             }
+            self.write_text(REPLACEMENT.encode_utf8(&mut [0; 4]), kind)?;
+            rest = &rest[index + length..];
         }
-        self.write_text(&text[start..], kind)
+        self.write_text(rest, kind)
     }
 
     fn write_text(&mut self, text: &str, kind: Text) -> Result<(), Stop> {
@@ -1292,18 +1290,81 @@ fn is_invalid(character: char) -> bool {
         | '\u{fffe}' | '\u{ffff}')
 }
 
+fn find_invalid(text: &str) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    bytes.iter().enumerate().find_map(|(index, &byte)| {
+        let length = match byte {
+            0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F => 1,
+            0xC2 if bytes[index + 1] <= 0x9F => 2,
+            0xEF if bytes[index + 1] == 0xBF && bytes[index + 2] >= 0xBE => 3,
+            _ => return None,
+        };
+        Some((index, length))
+    })
+}
+
 fn has_invalid(text: &str) -> bool {
-    text.chars().any(is_invalid)
+    find_invalid(text).is_some()
 }
 
 fn replace_invalid(text: &str) -> String {
-    text.chars()
-        .map(|character| {
-            if is_invalid(character) {
-                REPLACEMENT
-            } else {
-                character
+    let mut cleaned = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((index, length)) = find_invalid(rest) {
+        cleaned.push_str(&rest[..index]);
+        cleaned.push(REPLACEMENT);
+        rest = &rest[index + length..];
+    }
+    cleaned.push_str(rest);
+    cleaned
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_invalid_characters_from_bytes_as_from_chars() {
+        let mut every = String::new();
+        for code in (0..0x3000).chain(0xFFF0..0x10010) {
+            if let Some(character) = char::from_u32(code) {
+                every.push(character);
             }
-        })
-        .collect()
+        }
+        for text in [
+            "",
+            "plain\t\n\r text",
+            "\0\u{8}\u{B}\u{C}\u{E}\u{1F}\u{20}\u{7E}\u{7F}",
+            "\u{80}\u{9F}\u{A0}\u{BF}\u{C0}",
+            "\u{FFFD}\u{FFFE}\u{FFFF}\u{10000}\u{EFBF}",
+            "\u{E9}\u{1F600}\u{85}x\u{FFFE}",
+            "\u{FFFF}",
+            every.as_str(),
+        ] {
+            let expected: Vec<(usize, usize)> = text
+                .char_indices()
+                .filter(|(_, character)| is_invalid(*character))
+                .map(|(index, character)| (index, character.len_utf8()))
+                .collect();
+            let mut found = Vec::new();
+            let mut start = 0;
+            while let Some((index, length)) = find_invalid(&text[start..]) {
+                found.push((start + index, length));
+                start += index + length;
+            }
+            assert_eq!(found, expected);
+            assert_eq!(has_invalid(text), !expected.is_empty());
+            let replaced: String = text
+                .chars()
+                .map(|character| {
+                    if is_invalid(character) {
+                        REPLACEMENT
+                    } else {
+                        character
+                    }
+                })
+                .collect();
+            assert_eq!(replace_invalid(text), replaced);
+        }
+    }
 }

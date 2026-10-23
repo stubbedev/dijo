@@ -545,7 +545,13 @@ impl PartialOrd for JavaString {
 
 /// Java's `String.length()`: the number of UTF-16 code units.
 pub fn utf16_length(text: &str) -> usize {
-    text.chars().map(char::len_utf16).sum()
+    text.bytes()
+        .map(|byte| match byte {
+            0x80..=0xBF => 0,
+            0xF0..=0xFF => 2,
+            _ => 1,
+        })
+        .sum()
 }
 
 /// Java's `String.isBlank`: empty or only whitespace as `Character.isWhitespace` defines it.
@@ -715,5 +721,22 @@ mod tests {
         assert_eq!(compare("\u{FFFF}", "\u{1F600}"), Ordering::Greater);
         assert_eq!(compare("a", "b"), Ordering::Less);
         assert_eq!(utf16_length("a\u{1F600}"), 3);
+    }
+
+    #[test]
+    fn counts_utf16_units_from_bytes_as_from_chars() {
+        for text in [
+            "",
+            "a",
+            "\u{7F}\u{80}\u{7FF}\u{800}\u{FFFF}\u{10000}\u{10FFFF}",
+            "h\u{E9}llo w\u{F6}rld \u{4E2D}\u{6587} \u{1F600}\u{1F601} \u{FFFE}",
+            "\u{1F600}",
+            "\0\t\u{9F}",
+        ] {
+            assert_eq!(
+                utf16_length(text),
+                text.chars().map(char::len_utf16).sum::<usize>()
+            );
+        }
     }
 }

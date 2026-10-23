@@ -784,20 +784,27 @@ impl<W: Write> ToXml<W> {
     }
 
     fn write_escaped(&mut self, text: &str, attribute: bool) -> Result<(), Stop> {
-        let mut start = 0;
-        for (index, character) in text.char_indices() {
-            let entity = match character {
-                '<' => "&lt;",
-                '>' => "&gt;",
-                '&' => "&amp;",
-                '"' if attribute => "&quot;",
-                _ => continue,
+        let special = |rest: &str| {
+            if attribute {
+                rest.bytes()
+                    .position(|byte| matches!(byte, b'<' | b'>' | b'&' | b'"'))
+            } else {
+                memchr::memchr3(b'<', b'>', b'&', rest.as_bytes())
+            }
+        };
+        let mut rest = text;
+        while let Some(index) = special(rest) {
+            let entity = match rest.as_bytes()[index] {
+                b'<' => "&lt;",
+                b'>' => "&gt;",
+                b'&' => "&amp;",
+                _ => "&quot;",
             };
-            self.out.write(&text[start..index])?;
+            self.out.write(&rest[..index])?;
             self.out.write(entity)?;
-            start = index + 1;
+            rest = &rest[index + 1..];
         }
-        self.out.write(&text[start..])
+        self.out.write(rest)
     }
 
     fn write_name(&mut self, prefix: &str, name: &str) -> Result<(), Stop> {
@@ -1340,6 +1347,39 @@ mod tests {
              <xhtml:p>text</xhtml:p></xhtml:div>\
              <h:p xmlns=\"urn:other\" xmlns:h=\"http://www.w3.org/1999/xhtml\" /></html>"
         );
+    }
+
+    #[test]
+    fn escapes_as_a_char_by_char_scan_does() {
+        use super::ToXml;
+        for text in [
+            "",
+            "plain",
+            "<",
+            "a<b>c&d\"e",
+            "&&<<>>\"\"",
+            "\u{E9}<\u{1F600}>&\u{4E2D}\"\u{FFFF}",
+            "<tail",
+            "head>",
+        ] {
+            for attribute in [false, true] {
+                let mut expected = String::new();
+                for character in text.chars() {
+                    match character {
+                        '<' => expected.push_str("&lt;"),
+                        '>' => expected.push_str("&gt;"),
+                        '&' => expected.push_str("&amp;"),
+                        '"' if attribute => expected.push_str("&quot;"),
+                        _ => expected.push(character),
+                    }
+                }
+                let mut out = StringOut::default();
+                ToXml::new(&mut out, None)
+                    .write_escaped(text, attribute)
+                    .unwrap();
+                assert_eq!(out.0, expected);
+            }
+        }
     }
 
     /// Blocks held in a paragraph are written before the innermost element that holds blocks
