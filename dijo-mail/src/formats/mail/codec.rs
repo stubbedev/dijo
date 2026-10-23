@@ -19,16 +19,23 @@ pub(super) fn lookup(name: &str) -> Option<Charset> {
     Charset::for_name(name)
 }
 
-fn base64_value(byte: u8) -> Option<u32> {
-    match byte {
-        b'A'..=b'Z' => Some(u32::from(byte - b'A')),
-        b'a'..=b'z' => Some(u32::from(byte - b'a') + 26),
-        b'0'..=b'9' => Some(u32::from(byte - b'0') + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
+/// What [`BASE64_VALUES`] holds for a byte outside the alphabet.
+const BASE64_SKIPPED: u8 = 0x80;
+/// What [`BASE64_VALUES`] holds for the pad.
+const BASE64_PADDING: u8 = 0x40;
+/// The sextet of each byte of the base64 alphabet, [`BASE64_PADDING`] for the pad and
+/// [`BASE64_SKIPPED`] for every other byte.
+const BASE64_VALUES: [u8; 256] = {
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut values = [BASE64_SKIPPED; 256];
+    let mut sextet = 0;
+    while sextet < alphabet.len() {
+        values[alphabet[sextet] as usize] = sextet as u8;
+        sextet += 1;
     }
-}
+    values[BASE64_PAD as usize] = BASE64_PADDING;
+    values
+};
 
 /// A body's transfer encoding, decoded a chunk of the body at a time, as [`decode_base64`]
 /// decodes a whole one.
@@ -76,26 +83,43 @@ impl BodyDecoder {
         match self {
             BodyDecoder::Identity => out.extend_from_slice(chunk),
             BodyDecoder::Base64 { data, sextets } => {
-                for &byte in chunk {
-                    if byte == BASE64_PAD {
-                        flush_base64(out, *data, *sextets);
-                        *data = 0;
-                        *sextets = 0;
-                        continue;
+                let mut rest = chunk;
+                loop {
+                    if *sextets == 0 {
+                        while let [first, second, third, fourth, tail @ ..] = rest {
+                            let [a, b, c, d] = [first, second, third, fourth]
+                                .map(|&byte| BASE64_VALUES[usize::from(byte)]);
+                            if (a | b | c | d) >= BASE64_PADDING {
+                                break;
+                            }
+                            let quantum = (u32::from(a) << 18)
+                                | (u32::from(b) << 12)
+                                | (u32::from(c) << 6)
+                                | u32::from(d);
+                            push_base64(out, quantum);
+                            rest = tail;
+                        }
                     }
-                    let Some(value) = base64_value(byte) else {
-                        continue;
+                    let Some((&byte, tail)) = rest.split_first() else {
+                        break;
                     };
-                    *data = (*data << 6) | value;
-                    *sextets += 1;
-                    if *sextets == 4 {
-                        out.extend_from_slice(&[
-                            (*data >> 16) as u8,
-                            (*data >> 8) as u8,
-                            *data as u8,
-                        ]);
-                        *data = 0;
-                        *sextets = 0;
+                    rest = tail;
+                    match BASE64_VALUES[usize::from(byte)] {
+                        BASE64_SKIPPED => {}
+                        BASE64_PADDING => {
+                            flush_base64(out, *data, *sextets);
+                            *data = 0;
+                            *sextets = 0;
+                        }
+                        value => {
+                            *data = (*data << 6) | u32::from(value);
+                            *sextets += 1;
+                            if *sextets == 4 {
+                                push_base64(out, *data);
+                                *data = 0;
+                                *sextets = 0;
+                            }
+                        }
                     }
                 }
             }
@@ -119,6 +143,11 @@ impl BodyDecoder {
             BodyDecoder::QuotedPrintable { line } => decode_quoted_printable_line(&line, out),
         }
     }
+}
+
+/// The three bytes of a whole base64 quantum in `data`.
+fn push_base64(out: &mut Vec<u8>, data: u32) {
+    out.extend_from_slice(&[(data >> 16) as u8, (data >> 8) as u8, data as u8]);
 }
 
 /// The bytes of a base64 quantum of `sextets` sextets in `data` that ends early.
@@ -402,6 +431,65 @@ mod tests {
         assert_eq!(decode_base64(b"aGVsbA"), b"hell");
         assert_eq!(decode_base64(b"a*G=Vs"), b"hV");
         assert_eq!(decode_base64(b"aGk=\r\naGk="), b"hihi");
+    }
+
+    fn decode_base64_bytewise(input: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let (mut data, mut sextets) = (0u32, 0);
+        for &byte in input {
+            if byte == BASE64_PAD {
+                flush_base64(&mut out, data, sextets);
+                data = 0;
+                sextets = 0;
+                continue;
+            }
+            let value = match byte {
+                b'A'..=b'Z' => u32::from(byte - b'A'),
+                b'a'..=b'z' => u32::from(byte - b'a') + 26,
+                b'0'..=b'9' => u32::from(byte - b'0') + 52,
+                b'+' => 62,
+                b'/' => 63,
+                _ => continue,
+            };
+            data = (data << 6) | value;
+            sextets += 1;
+            if sextets == 4 {
+                out.extend_from_slice(&[(data >> 16) as u8, (data >> 8) as u8, data as u8]);
+                data = 0;
+                sextets = 0;
+            }
+        }
+        flush_base64(&mut out, data, sextets);
+        out
+    }
+
+    #[test]
+    fn decodes_base64_through_the_table_as_byte_by_byte() {
+        let every_byte: Vec<u8> = (0..=255).collect();
+        let bodies: [&[u8]; 9] = [
+            b"",
+            b"QUJD",
+            b"QUJDRA==QUI=QQ",
+            b"QU\r\nJD RE VG\tR0g=",
+            b"Q=U=J=D",
+            b"====QUJDREVG",
+            b"QUJD\x80\xffREVG+/+/-_",
+            b"aGVsbG8gd29ybGQ",
+            &every_byte,
+        ];
+        for body in bodies {
+            let expected = decode_base64_bytewise(body);
+            assert_eq!(decode_base64(body), expected, "{body:?}");
+            for size in 1..body.len() {
+                let mut decoder = BodyDecoder::of("base64");
+                let mut out = Vec::new();
+                for chunk in body.chunks(size) {
+                    decoder.feed(chunk, &mut out);
+                }
+                decoder.finish(&mut out);
+                assert_eq!(out, expected, "{body:?} in chunks of {size}");
+            }
+        }
     }
 
     #[test]
