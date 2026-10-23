@@ -84,10 +84,9 @@ impl CodespaceRange {
         self.end.len()
     }
 
-    fn is_full_match(&self, code: &[u8]) -> bool {
+    fn is_full_match<'a>(&self, code: impl ExactSizeIterator<Item = &'a u8>) -> bool {
         code.len() == self.len()
             && code
-                .iter()
                 .zip(self.start.iter().zip(&self.end))
                 .all(|(&byte, (&start, &end))| byte >= start && byte <= end)
     }
@@ -218,30 +217,26 @@ impl CMap {
         if self.min_code_length == 0 || self.min_code_length > self.max_code_length {
             return None;
         }
-        let mut code = vec![0u8; self.max_code_length];
-        let first = self.min_code_length.min(bytes.len());
-        code[..first].copy_from_slice(&bytes[..first]);
-        let mut consumed = first;
-        for index in self.min_code_length - 1..self.max_code_length {
-            let count = index + 1;
+        let code = |count: usize| {
+            (0..count).map(move |index| match bytes.get(index) {
+                Some(byte) => byte,
+                None if index < self.min_code_length => &0,
+                None => &0xFF,
+            })
+        };
+        for count in self.min_code_length..=self.max_code_length {
             if self
                 .codespace_ranges
                 .iter()
-                .any(|range| range.is_full_match(&code[..count]))
+                .any(|range| range.is_full_match(code(count)))
             {
-                return Some((to_int(&code[..count]), consumed));
-            }
-            if count < self.max_code_length {
-                match bytes.get(consumed) {
-                    Some(&byte) => {
-                        code[count] = byte;
-                        consumed += 1;
-                    }
-                    None => code[count] = 0xFF,
-                }
+                return Some((to_int(code(count)), count.min(bytes.len())));
             }
         }
-        Some((to_int(&code[..self.min_code_length]), first))
+        Some((
+            to_int(code(self.min_code_length)),
+            self.min_code_length.min(bytes.len()),
+        ))
     }
 
     /// `CMap.toCID(int)`.
@@ -357,9 +352,9 @@ impl CMap {
 }
 
 /// `CMap.toInt`, unsigned.
-fn to_int(bytes: &[u8]) -> u32 {
+fn to_int<'a>(bytes: impl IntoIterator<Item = &'a u8>) -> u32 {
     bytes
-        .iter()
+        .into_iter()
         .fold(0u32, |code, &byte| (code << 8) | u32::from(byte))
 }
 
@@ -980,6 +975,77 @@ endcmap CMapName currentdict /CMap defineresource pop end end";
         using.use_cmap(&used);
         assert_eq!(using.codes_from_unicode("y"), Some(&[0xFF][..]));
         assert_eq!(using.to_unicode_length(0xFF, 1), Some("y"));
+    }
+
+    /// `CMap.readCode` as FontBox writes it, reading into a buffer of the longest code's length.
+    fn read_code_into_buffer(cmap: &CMap, bytes: &[u8]) -> Option<(u32, usize)> {
+        if cmap.min_code_length == 0 || cmap.min_code_length > cmap.max_code_length {
+            return None;
+        }
+        let mut code = vec![0u8; cmap.max_code_length];
+        let first = cmap.min_code_length.min(bytes.len());
+        code[..first].copy_from_slice(&bytes[..first]);
+        let mut consumed = first;
+        for index in cmap.min_code_length - 1..cmap.max_code_length {
+            let count = index + 1;
+            if cmap
+                .codespace_ranges
+                .iter()
+                .any(|range| range.is_full_match(code[..count].iter()))
+            {
+                return Some((to_int(&code[..count]), consumed));
+            }
+            if count < cmap.max_code_length {
+                match bytes.get(consumed) {
+                    Some(&byte) => {
+                        code[count] = byte;
+                        consumed += 1;
+                    }
+                    None => code[count] = 0xFF,
+                }
+            }
+        }
+        Some((to_int(&code[..cmap.min_code_length]), first))
+    }
+
+    #[test]
+    fn reads_codes_as_a_buffer_of_the_longest_code_reads_them() {
+        let maps: [&[u8]; 6] = [
+            b"",
+            b"1 begincodespacerange <00> <80> endcodespacerange",
+            b"2 begincodespacerange <00> <80> <8140> <9FFC> endcodespacerange",
+            b"2 begincodespacerange <0000> <FFFF> <00> <FF> endcodespacerange",
+            b"2 begincodespacerange <A1> <FE> <8EA1A1A1> <8EFEFEFE> endcodespacerange",
+            b"2 begincodespacerange <000000> <0000FF> <0000000000> <FFFFFFFFFF> \
+               endcodespacerange",
+        ];
+        let inputs: [&[u8]; 12] = [
+            &[],
+            &[0x00],
+            &[0x41, 0x42],
+            &[0x81],
+            &[0x81, 0x40],
+            &[0x8E, 0xA1],
+            &[0x8E, 0xA1, 0xA1, 0xA1, 0x20],
+            &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF],
+            &[0x00, 0x00],
+            &[0x00, 0x00, 0x12, 0x34, 0x56],
+            &[0xA1, 0xFE, 0xFF],
+            &[0x90, 0x00, 0x00],
+        ];
+        let mut cmaps: Vec<&CMap> = vec![predefined("Identity-H").unwrap()];
+        let parsed: Vec<CMap> = maps.iter().map(|map| parse(map).unwrap()).collect();
+        cmaps.extend(&parsed);
+        cmaps.push(predefined("UniJIS-UCS2-H").unwrap());
+        for cmap in cmaps {
+            for bytes in inputs {
+                assert_eq!(
+                    cmap.read_code(bytes),
+                    read_code_into_buffer(cmap, bytes),
+                    "{bytes:?}"
+                );
+            }
+        }
     }
 
     #[test]
