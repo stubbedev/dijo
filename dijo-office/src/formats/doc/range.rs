@@ -76,9 +76,49 @@ impl Document<'_> {
     /// `text`: the text of a range, read from the main stream, failing where it runs past the
     /// text.
     pub(super) fn text_of(&self, span: Span) -> Read<Vec<u16>> {
+        let mut text = Vec::new();
+        self.text_into(span, &mut text)?;
+        Ok(text)
+    }
+
+    /// The text of a range, read from the main stream onto the end of `text`, failing where it
+    /// runs past the text.
+    pub(super) fn text_into(&self, span: Span, text: &mut Vec<u16>) -> Read<()> {
         self.text
-            .read(self.main, span.start as usize..span.end as usize)
+            .read_into(self.main, span.start as usize..span.end as usize, text)
+            .then_some(())
             .ok_or_else(|| self.past_the_text(span))
+    }
+
+    /// The text of a range, read from the main stream and handed to `each` a character at a
+    /// time, failing where it runs past the text.
+    fn decode(&self, span: Span, each: impl FnMut(u16)) -> Read<()> {
+        self.text
+            .decode(self.main, span.start as usize..span.end as usize, each)
+            .then_some(())
+            .ok_or_else(|| self.past_the_text(span))
+    }
+
+    /// The character at `at` of the text, failing where it lies past the text.
+    pub(super) fn unit_at(&self, at: i32) -> Read<u16> {
+        let mut found = None;
+        self.decode(
+            Span {
+                start: at,
+                end: at + 1,
+            },
+            |unit| found = Some(unit),
+        )?;
+        Ok(found.expect("a character of the text lies in a piece"))
+    }
+
+    /// Whether each character of a range is one of `units`, ASCII characters, read without
+    /// decoding, failing where it runs past the text.
+    pub(super) fn consists_of(&self, span: Span, units: &[u8]) -> Read<bool> {
+        self.check_span(span)?;
+        Ok(self
+            .text
+            .consists_of(self.main, span.start as usize..span.end as usize, units))
     }
 
     /// Fails where a range runs past the text, as reading its text does.
@@ -104,7 +144,10 @@ impl Document<'_> {
         if (span.end - span.start) as usize != units.len() {
             return Ok(false);
         }
-        Ok(self.text_of(span)? == units)
+        let mut expected = units.iter();
+        let mut equal = true;
+        self.decode(span, |unit| equal &= expected.next() == Some(&unit))?;
+        Ok(equal)
     }
 
     /// The text of a range a piece at a time, each at most `CHUNK` characters, a surrogate
@@ -112,14 +155,16 @@ impl Document<'_> {
     pub(super) fn chunks_of(
         &self,
         span: Span,
-        mut each: impl FnMut(Vec<u16>) -> Read<bool>,
+        mut each: impl FnMut(&[u16]) -> Read<bool>,
     ) -> Read<()> {
         const CHUNK: i32 = 1 << 16;
         self.check_span(span)?;
+        let mut units = Vec::new();
         let mut at = span.start;
         while at < span.end {
             let mut to = at.saturating_add(CHUNK).min(span.end);
-            let mut units = self.text_of(Span { start: at, end: to })?;
+            units.clear();
+            self.text_into(Span { start: at, end: to }, &mut units)?;
             if to < span.end
                 && units
                     .last()
@@ -128,7 +173,7 @@ impl Document<'_> {
                 units.pop();
                 to -= 1;
             }
-            if !each(units)? {
+            if !each(&units)? {
                 return Ok(());
             }
             at = to;

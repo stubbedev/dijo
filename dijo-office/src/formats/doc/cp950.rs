@@ -38,15 +38,13 @@ const ROW_F9: [u16; 157] = [
     0x2593,
 ];
 
-/// `DoubleByteUtil.cp950ToString`: a character of each pair of `bytes`, a last odd byte left out.
-pub(super) fn decode(bytes: &[u8]) -> Vec<u16> {
+/// `DoubleByteUtil.cp950ToString`: a character of each pair of `bytes`, handed to `each` in
+/// order, a last odd byte left out.
+pub(super) fn decode(bytes: &[u8], mut each: impl FnMut(u16)) {
     let big5 = Charset::named("Big5");
-    bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .map(|&[trailing, leading]| character(big5, trailing, leading))
-        .collect()
+    for &[trailing, leading] in bytes.as_chunks::<2>().0 {
+        each(character(big5, trailing, leading));
+    }
 }
 
 /// Whether the pair `trailing`, `leading` is the character `unit`, below 0x80.
@@ -97,18 +95,24 @@ fn character(big5: Charset, trailing: u8, leading: u8) -> u16 {
 mod tests {
     use super::*;
 
+    fn decoded(bytes: &[u8]) -> Vec<u16> {
+        let mut units = Vec::new();
+        decode(bytes, |unit| units.push(unit));
+        units
+    }
+
     /// Pairs decode as POI's reader decodes them: ASCII padded with a zero byte, Big5, row 0xF9
     /// and the user-defined areas of code page 950, and U+FFFD where Big5 has no character.
     /// POI writes `?` for those.
     #[test]
     fn decodes_pairs_as_pois_reader_does() {
-        assert_eq!(decode(b"a\0b\0c"), [0x61, 0x62]);
-        assert_eq!(decode(&[0x40, 0xA4]), [0x4E00]);
-        assert_eq!(decode(&[0x40, 0xF9, 0xFE, 0xF9]), [0x7E98, 0x2593]);
-        assert_eq!(decode(&[0x40, 0x81, 0xA1, 0x81]), [0xEEB8, 0xEEF7]);
-        assert_eq!(decode(&[0x40, 0xFA]), [0xE000]);
-        assert_eq!(decode(&[0x30, 0xF9]), [0xFFFD]);
-        assert_eq!(decode(&[0xFF, 0xA3]), [0xFFFD]);
+        assert_eq!(decoded(b"a\0b\0c"), [0x61, 0x62]);
+        assert_eq!(decoded(&[0x40, 0xA4]), [0x4E00]);
+        assert_eq!(decoded(&[0x40, 0xF9, 0xFE, 0xF9]), [0x7E98, 0x2593]);
+        assert_eq!(decoded(&[0x40, 0x81, 0xA1, 0x81]), [0xEEB8, 0xEEF7]);
+        assert_eq!(decoded(&[0x40, 0xFA]), [0xE000]);
+        assert_eq!(decoded(&[0x30, 0xF9]), [0xFFFD]);
+        assert_eq!(decoded(&[0xFF, 0xA3]), [0xFFFD]);
         assert!(is_ascii_unit(0x0D, 0x00, 0x0D));
         assert!(is_ascii_unit(0x0D, 0x80, 0x0D));
         assert!(!is_ascii_unit(0x0D, 0x81, 0x0D));

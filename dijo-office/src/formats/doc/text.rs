@@ -7,6 +7,7 @@
 //! stream, where it lies, when it is needed.
 
 use std::ops::Range;
+use std::sync::LazyLock;
 
 use super::bytes::{index, safely_clone};
 use crate::formats::poi::{i16_at, i32_at, safely_borrow, u8_at, Read, Thrown};
@@ -17,6 +18,20 @@ const MAX_GRPPRL_LENGTH: i64 = 500_000_000;
 pub(super) const MAX_PIECE_LENGTH: i64 = 100_000_000;
 const MAX_PLEX_STRUCT: i64 = 10_485_760;
 const MAX_PROPERTIES: i64 = 100_000;
+const REPLACEMENT: u16 = 0xFFFD;
+
+/// The characters of the bytes of code page 1252, as Java decodes them.
+static WINDOWS_1252: LazyLock<[u16; 256]> = LazyLock::new(|| {
+    let bytes: Vec<u8> = (0..=u8::MAX).collect();
+    let decoded = Charset::named("windows-1252")
+        .decode(&bytes)
+        .expect("the JDK decodes windows-1252");
+    let mut table = [0; 256];
+    for (slot, unit) in table.iter_mut().zip(decoded.encode_utf16()) {
+        *slot = unit;
+    }
+    table
+});
 
 /// How a piece's bytes are its characters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,19 +66,65 @@ impl Encoding {
         }
     }
 
-    /// The characters of `bytes`, as Java decodes them.
-    fn decode(self, bytes: &[u8]) -> Vec<u16> {
-        let charset = match self {
-            Encoding::Unicode => Charset::named("UTF-16LE"),
-            Encoding::Windows1252 => Charset::named("windows-1252"),
-            Encoding::Bytes => return bytes.iter().map(|&byte| u16::from(byte)).collect(),
-            Encoding::Cp950 => return super::cp950::decode(bytes),
-        };
-        charset
-            .decode(bytes)
-            .expect("the JDK decodes UTF-16LE and windows-1252")
-            .encode_utf16()
-            .collect()
+    /// The characters of `bytes`, as Java decodes them, handed to `each` in order.
+    fn decode(self, bytes: &[u8], mut each: impl FnMut(u16)) {
+        match self {
+            Encoding::Unicode => decode_utf16le(bytes, each),
+            Encoding::Windows1252 => {
+                let table = &*WINDOWS_1252;
+                bytes
+                    .iter()
+                    .for_each(|&byte| each(table[usize::from(byte)]));
+            }
+            Encoding::Bytes => bytes.iter().for_each(|&byte| each(u16::from(byte))),
+            Encoding::Cp950 => super::cp950::decode(bytes, each),
+        }
+    }
+
+    /// Whether `character`, the bytes of a character, is one of `units`, ASCII characters Java
+    /// decodes as they are.
+    fn is_one_of(self, character: &[u8], units: &[u8]) -> bool {
+        match (self, character) {
+            (Encoding::Cp950, &[trailing, leading]) => units
+                .iter()
+                .any(|&unit| super::cp950::is_ascii_unit(trailing, leading, unit)),
+            (_, [low, 0] | [low]) => units.contains(low),
+            _ => false,
+        }
+    }
+}
+
+/// The characters of `bytes` in UTF-16LE, handed to `each` in order, as the JDK's charset
+/// decodes them here, as WHATWG specifies: a surrogate without its other half and an odd byte at
+/// the end each U+FFFD, a high surrogate before an odd byte at the end one U+FFFD with it.
+fn decode_utf16le(bytes: &[u8], mut each: impl FnMut(u16)) {
+    let (pairs, odd) = bytes.as_chunks::<2>();
+    let mut high = None;
+    for &pair in pairs {
+        let unit = u16::from_le_bytes(pair);
+        match unit & 0xFC00 {
+            0xD800 => {
+                if high.replace(unit).is_some() {
+                    each(REPLACEMENT);
+                }
+            }
+            0xDC00 => match high.take() {
+                Some(high) => {
+                    each(high);
+                    each(unit);
+                }
+                None => each(REPLACEMENT),
+            },
+            _ => {
+                if high.take().is_some() {
+                    each(REPLACEMENT);
+                }
+                each(unit);
+            }
+        }
+    }
+    if high.is_some() || !odd.is_empty() {
+        each(REPLACEMENT);
     }
 }
 
@@ -117,16 +178,40 @@ impl TextPiece {
 
     /// The piece's text, read from `main`.
     pub(super) fn text(&self, main: &[u8]) -> Vec<u16> {
-        self.characters(main, 0..self.len())
+        let mut text = Vec::with_capacity(self.len());
+        self.characters(main, 0..self.len(), |unit| text.push(unit));
+        text
     }
 
-    /// The piece's characters `range`, counted from its start, read from `main`: a surrogate
-    /// is read with its neighbours in the piece, as Java decodes the piece whole.
-    fn characters(&self, main: &[u8], range: Range<usize>) -> Vec<u16> {
+    /// The piece's characters `range`, counted from its start, read from `main` and handed to
+    /// `each` in order: a surrogate is read with its neighbours in the piece, as Java decodes
+    /// the piece whole.
+    fn characters(&self, main: &[u8], range: Range<usize>, mut each: impl FnMut(u16)) {
         let from = range.start.saturating_sub(1);
         let to = (range.end + 1).min(self.len());
-        let decoded = self.encoding.decode(self.bytes(main, from..to));
-        decoded[range.start - from..range.end - from].to_vec()
+        let wanted = range.start - from..range.end - from;
+        let mut at = 0;
+        self.encoding.decode(self.bytes(main, from..to), |unit| {
+            if wanted.contains(&at) {
+                each(unit);
+            }
+            at += 1;
+        });
+        assert!(
+            at >= wanted.end,
+            "range end index {} out of range for slice of length {at}",
+            wanted.end
+        );
+    }
+
+    /// Whether each of the piece's characters `range`, counted from its start, is one of
+    /// `units`, read from `main` without decoding.
+    fn consists_of(&self, main: &[u8], range: Range<usize>, units: &[u8]) -> bool {
+        let mut characters = self
+            .bytes(main, range)
+            .chunks_exact(self.encoding.width() as usize);
+        characters.remainder().is_empty()
+            && characters.all(|character| self.encoding.is_one_of(character, units))
     }
 
     /// The bytes of the piece's characters `range`, counted from its start, in `main`, as far
@@ -135,7 +220,7 @@ impl TextPiece {
         let width = self.encoding.width() as usize;
         let at = self.fc as usize;
         let end = (at + range.end * width).min(main.len());
-        &main[at + range.start * width..end]
+        &main[(at + range.start * width).min(end)..end]
     }
 
     fn bytes_length(&self) -> i32 {
@@ -402,17 +487,44 @@ impl Text {
             })
     }
 
+    /// The characters `range` of the text, read from `main` and handed to `each` in order, as
+    /// `getText` decodes them; `false` where the range runs past the text.
+    pub(super) fn decode(
+        &self,
+        main: &[u8],
+        range: Range<usize>,
+        mut each: impl FnMut(u16),
+    ) -> bool {
+        if range.start > range.end || range.end > self.length {
+            return false;
+        }
+        for (piece, within) in self.covering(range) {
+            piece.characters(main, within, &mut each);
+        }
+        true
+    }
+
+    /// The characters `range` of the text, read from `main` onto the end of `text`, as
+    /// `getText` decodes them; `false` where the range runs past the text.
+    pub(super) fn read_into(&self, main: &[u8], range: Range<usize>, text: &mut Vec<u16>) -> bool {
+        text.reserve(range.len().min(self.length));
+        self.decode(main, range, |unit| text.push(unit))
+    }
+
     /// The characters `range` of the text, read from `main`, as `getText` decodes them;
     /// `None` where the range runs past the text.
     pub(super) fn read(&self, main: &[u8], range: Range<usize>) -> Option<Vec<u16>> {
-        if range.start > range.end || range.end > self.length {
-            return None;
-        }
-        let mut text = Vec::with_capacity(range.len());
-        for (piece, within) in self.covering(range) {
-            text.extend(piece.characters(main, within));
-        }
-        Some(text)
+        let mut text = Vec::new();
+        self.read_into(main, range, &mut text).then_some(text)
+    }
+
+    /// Whether each character of `range` of the text is one of `units`, read from `main`
+    /// without decoding: each of them is an ASCII character Java decodes as it is.
+    pub(super) fn consists_of(&self, main: &[u8], range: Range<usize>, units: &[u8]) -> bool {
+        range.is_empty()
+            || self
+                .covering(range)
+                .all(|(piece, within)| piece.consists_of(main, within, units))
     }
 
     /// The positions of the characters of `units` in the text, in order, read from `main`
@@ -425,18 +537,102 @@ impl Text {
             let bytes = piece.bytes(main, segment.start - base..segment.end - base);
             let width = piece.encoding.width() as usize;
             for (at, character) in bytes.chunks_exact(width).enumerate() {
-                let is_unit = match (piece.encoding, character) {
-                    (Encoding::Cp950, &[trailing, leading]) => units
-                        .iter()
-                        .any(|&unit| super::cp950::is_ascii_unit(trailing, leading, unit)),
-                    (_, [low, 0] | [low]) => units.contains(low),
-                    _ => false,
-                };
-                if is_unit {
+                if piece.encoding.is_one_of(character, units) {
                     positions.push((segment.start + at) as i32);
                 }
             }
         }
         positions
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bytes of UTF-16LE text rich in surrogates, lone and paired, and in odd lengths.
+    fn samples() -> Vec<Vec<u8>> {
+        let units: [u16; 8] = [0x41, 0x0D, 0xD83D, 0xDE00, 0xDBFF, 0xDC00, 0x20AC, 0xFFFF];
+        let mut samples = vec![
+            Vec::new(),
+            vec![0x41],
+            vec![0x3D, 0xD8],
+            vec![0x3D, 0xD8, 0x41],
+            vec![0x00, 0xDE, 0x3D, 0xD8],
+            vec![0x3D, 0xD8, 0x3D, 0xD8, 0x00, 0xDE],
+            vec![0x3D, 0xD8, 0x41, 0x00, 0x00, 0xDE],
+            vec![0x41, 0x00, 0x3D, 0xD8, 0x00],
+        ];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        for length in 0..40 {
+            let mut bytes = Vec::new();
+            for _ in 0..length {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                bytes.extend(units[(state % 8) as usize].to_le_bytes());
+            }
+            if state.is_multiple_of(3) {
+                bytes.push((state >> 8) as u8);
+            }
+            samples.push(bytes);
+        }
+        samples
+    }
+
+    fn decoded(encoding: Encoding, bytes: &[u8]) -> Vec<u16> {
+        let mut units = Vec::new();
+        encoding.decode(bytes, |unit| units.push(unit));
+        units
+    }
+
+    /// UTF-16LE and code page 1252 decode as the JDK's charsets decode them.
+    #[test]
+    fn decodes_as_the_charsets_do() {
+        let utf16 = Charset::named("UTF-16LE");
+        for bytes in samples() {
+            let expected: Vec<u16> = utf16.decode(&bytes).unwrap().encode_utf16().collect();
+            assert_eq!(decoded(Encoding::Unicode, &bytes), expected, "{bytes:?}");
+        }
+        let bytes: Vec<u8> = (0..=u8::MAX).collect();
+        let expected: Vec<u16> = Charset::named("windows-1252")
+            .decode(&bytes)
+            .unwrap()
+            .encode_utf16()
+            .collect();
+        assert_eq!(decoded(Encoding::Windows1252, &bytes), expected);
+    }
+
+    /// Each range of a piece's characters reads as the same range of the piece decoded whole,
+    /// and is of `units` where each of its decoded characters is.
+    #[test]
+    fn reads_ranges_as_the_piece_decoded_whole() {
+        for bytes in samples() {
+            let piece = TextPiece {
+                start: 0,
+                end: bytes.len().div_ceil(2) as i32,
+                fc: 0,
+                encoding: Encoding::Unicode,
+                prm: 0,
+            };
+            let whole: Vec<u16> = Charset::named("UTF-16LE")
+                .decode(&bytes)
+                .unwrap()
+                .encode_utf16()
+                .collect();
+            if whole.len() != piece.len() {
+                continue;
+            }
+            assert_eq!(piece.text(&bytes), whole);
+            for start in 0..=piece.len() {
+                for end in start..=piece.len() {
+                    let mut read = Vec::new();
+                    piece.characters(&bytes, start..end, |unit| read.push(unit));
+                    assert_eq!(read, whole[start..end], "{bytes:?} {start}..{end}");
+                    let blank = whole[start..end].iter().all(|&unit| unit == 0x0D);
+                    assert_eq!(piece.consists_of(&bytes, start..end, b"\r"), blank);
+                }
+            }
+        }
     }
 }

@@ -38,6 +38,8 @@ const FIELD_END: u16 = 0x15;
 const CELL_MARK: u16 = 0x07;
 const PICTURE_MARK: u16 = 0x08;
 const CARRIAGE_RETURN: u16 = 0x0D;
+/// The characters `isBlankParagraph` takes as blank, which a paragraph of no others is.
+const BLANK: &[u8] = b"\r\n \t\x0B\x0C";
 const OBJECT_POOL: &str = "ObjectPool";
 /// The field types of embedded objects: `EMBED` and `IMPORT`.
 const EMBEDDING_FIELDS: [i8; 2] = [58, 56];
@@ -164,12 +166,6 @@ fn tag_and_style(name: &[u16], in_table: bool) -> TagAndStyle {
         tag: "p".to_owned(),
         class: Some(first + &String::from_utf16_lossy(&replaced[1..])),
     }
-}
-
-/// `isBlankParagraph`.
-fn is_blank_paragraph(text: &[u16]) -> bool {
-    text.iter()
-        .all(|&unit| matches!(unit, 0x0D | 0x0A | 0x20 | 0x09 | 0x0B | 0x0C))
 }
 
 /// `StringUtils.isBlank` over UTF-16 units.
@@ -576,17 +572,6 @@ impl<'d, E> Extractor<'_, 'd, E> {
         self.end("div")
     }
 
-    /// `isBlankParagraph` of a paragraph's text, read a piece at a time as far as the first
-    /// character that is not blank.
-    fn is_blank_paragraph(&self, span: Span) -> Read<bool> {
-        let mut blank = true;
-        self.document.chunks_of(span, |units| {
-            blank = is_blank_paragraph(&units);
-            Ok(blank)
-        })?;
-        Ok(blank)
-    }
-
     /// `handleParagraph`: a table, a paragraph of runs, or nothing for a blank paragraph; the
     /// paragraphs past this one it took in.
     fn paragraph(
@@ -618,7 +603,7 @@ impl<'d, E> Extractor<'_, 'd, E> {
             self.end("table")?;
             return Ok(document.paragraph_count(table.span)? - 1);
         }
-        if self.is_blank_paragraph(paragraph.span)? {
+        if document.consists_of(paragraph.span, BLANK)? {
             return Ok(0);
         }
         let mut numbering = None;
@@ -656,10 +641,7 @@ impl<'d, E> Extractor<'_, 'd, E> {
             if length == 0 {
                 return Err(Thrown::new("Index 0 out of bounds for length 0").into());
             }
-            let first = document.text_of(Span {
-                start: run.span.start,
-                end: run.span.start + 1,
-            })?[0];
+            let first = document.unit_at(run.span.start)?;
             if first == FIELD_BEGIN {
                 // The fields of the headers count from the start of their story; Tika looks
                 // them up by the position in the whole text (#111).
@@ -737,17 +719,12 @@ impl<'d, E> Extractor<'_, 'd, E> {
             self.ensure_formatting(&desired)?;
         }
         let mut span = run.span;
-        if span.end > span.start
-            && document.text_of(Span {
-                start: span.end - 1,
-                end: span.end,
-            })? == [CELL_MARK]
-        {
+        if span.end > span.start && document.unit_at(span.end - 1)? == CELL_MARK {
             span.end -= 1;
         }
         let mut written = Ok(());
         document.chunks_of(span, |units| {
-            written = self.text(clean(&units));
+            written = self.text(clean(units));
             Ok(written.is_ok())
         })?;
         written
@@ -820,7 +797,7 @@ impl<'d, E> Extractor<'_, 'd, E> {
         }
         let mut code: Vec<u16> = Vec::new();
         for run in &controls {
-            code.extend(document.text_of(run.span)?);
+            document.text_into(run.span, &mut code)?;
         }
         let quote = u16::from(b'"');
         let hyperlink: Vec<u16> = "HYPERLINK".encode_utf16().collect();
