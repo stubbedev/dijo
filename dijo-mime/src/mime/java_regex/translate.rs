@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 
 use fancy_regex::Expr;
 
-use super::JavaRegex;
+use super::{JavaRegex, Starts};
 
 /// How much of the haystack a match must cover: a prefix, as `Matcher.lookingAt` over a region
 /// does, or all of it, as `Matcher.matches`.
@@ -29,7 +29,7 @@ impl JavaRegex {
     /// The regex of a Java `source`, translated and checked, with its pattern and its cache
     /// leaked for the life of the generator.
     pub(crate) fn compile(source: &str, anchor: Anchor, text: Text) -> Result<JavaRegex, String> {
-        let Translation { translated, first } = Translator::new(source, text).translate()?;
+        let Translation { translated, starts } = Translator::new(source, text).translate()?;
         let end = match anchor {
             Anchor::LookingAt => "",
             Anchor::Matches => "\\z",
@@ -39,7 +39,7 @@ impl JavaRegex {
             .map_err(|error| format!("{source} translated to {translated}: {error}"))?;
         Ok(JavaRegex::new(
             Box::leak(pattern.into_boxed_str()),
-            first,
+            starts,
             Box::leak(Box::new(OnceLock::new())),
         ))
     }
@@ -65,21 +65,146 @@ struct Scope {
     ignore_case: bool,
 }
 
-/// A Java regex in the target syntax, and the character every match starts with, if one does.
+/// A Java regex in the target syntax, and the characters a match may start with.
 struct Translation {
     translated: String,
-    first: Option<char>,
+    starts: Starts,
 }
 
-/// What the translation knows of the character a match starts with, from the top-level atoms read
-/// so far.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum First {
-    /// Only zero-width atoms: `^`, `\A` and flags.
-    Unseen,
-    /// A literal character, if the atom after it does not make it optional.
-    Literal(char),
-    Known(Option<char>),
+impl Starts {
+    const NONE: Starts = Starts::new(&[], false);
+    const ANY: Starts = Starts::new(&[(0, 0xFF)], true);
+
+    /// The characters of `ranges`, or, if `negated`, at least those of none of them.
+    fn of(ranges: &[(char, char)], negated: bool) -> Self {
+        let mut starts = Starts::NONE;
+        for &(low, high) in ranges {
+            for code in u32::from(low)..=u32::from(high).min(0xFF) {
+                starts.latin1[(code >> 7) as usize] |= 1u128 << (code & 0x7F);
+            }
+            starts.beyond |= u32::from(high) > 0xFF;
+        }
+        if negated {
+            starts = Starts {
+                latin1: starts.latin1.map(|bits| !bits),
+                beyond: true,
+            };
+        }
+        starts
+    }
+
+    fn union(self, other: Starts) -> Starts {
+        Starts {
+            latin1: [
+                self.latin1[0] | other.latin1[0],
+                self.latin1[1] | other.latin1[1],
+            ],
+            beyond: self.beyond || other.beyond,
+        }
+    }
+
+    /// The ranges of U+0000 to U+00FF the set holds, and whether it holds those above.
+    pub(crate) fn ranges(self) -> (Vec<(u8, u8)>, bool) {
+        let mut ranges: Vec<(u8, u8)> = Vec::new();
+        for code in 0..=0xFF {
+            if !self.contains(char::from(code)) {
+                continue;
+            }
+            match ranges.last_mut() {
+                Some((_, high)) if *high + 1 == code => *high = code,
+                _ => ranges.push((code, code)),
+            }
+        }
+        (ranges, self.beyond)
+    }
+}
+
+/// What a part of a regex may start with, and whether it may match nothing.
+#[derive(Debug, Clone, Copy)]
+struct Part {
+    starts: Starts,
+    empty: bool,
+}
+
+impl Part {
+    /// What matches only where it is, as an assertion does.
+    const EMPTY: Part = Part {
+        starts: Starts::NONE,
+        empty: true,
+    };
+
+    /// This part followed by `next`.
+    fn then(self, next: Part) -> Part {
+        if !self.empty {
+            return self;
+        }
+        Part {
+            starts: self.starts.union(next.starts),
+            empty: next.empty,
+        }
+    }
+
+    /// Either this part or `other`.
+    fn or(self, other: Part) -> Part {
+        Part {
+            starts: self.starts.union(other.starts),
+            empty: self.empty || other.empty,
+        }
+    }
+}
+
+/// The parts of a group read so far: the alternatives before the last `|`, the atoms of the
+/// current alternative before its last, and its last, which a quantifier applies to.
+#[derive(Debug)]
+struct Sequence {
+    /// A lookaround, which matches only where it is whatever its parts.
+    lookaround: bool,
+    alternatives: Option<Part>,
+    before: Part,
+    last: Option<Part>,
+}
+
+impl Sequence {
+    fn new(lookaround: bool) -> Self {
+        Sequence {
+            lookaround,
+            alternatives: None,
+            before: Part::EMPTY,
+            last: None,
+        }
+    }
+
+    fn current(&self) -> Part {
+        self.last.map_or(self.before, |last| self.before.then(last))
+    }
+
+    fn push(&mut self, atom: Part) {
+        self.before = self.current();
+        self.last = Some(atom);
+    }
+
+    /// A quantifier that allows no repetition of the last atom.
+    fn optional(&mut self) {
+        if let Some(last) = &mut self.last {
+            last.empty = true;
+        }
+    }
+
+    fn alternate(&mut self) {
+        let current = self.current();
+        self.alternatives = Some(self.alternatives.map_or(current, |done| done.or(current)));
+        self.before = Part::EMPTY;
+        self.last = None;
+    }
+
+    /// The group as a whole.
+    fn finish(self) -> Part {
+        if self.lookaround {
+            return Part::EMPTY;
+        }
+        let current = self.current();
+        self.alternatives.map_or(current, |done| done.or(current))
+    }
 }
 
 struct Translator<'a> {
@@ -88,9 +213,11 @@ struct Translator<'a> {
     position: usize,
     out: String,
     scopes: Vec<Scope>,
+    /// The parts read of each open group, the whole regex first.
+    sequences: Vec<Sequence>,
     text: Text,
-    /// The plain character the last [`Translator::literal`] wrote, if it wrote one.
-    literal: Option<char>,
+    /// The atom the last escape, class or literal wrote, if it wrote one that matches a character.
+    atom: Option<Part>,
 }
 
 /// A character range as the target syntax writes it inside a class.
@@ -161,8 +288,9 @@ impl<'a> Translator<'a> {
                 dotall: false,
                 ignore_case: false,
             }],
+            sequences: vec![Sequence::new(false)],
             text,
-            literal: None,
+            atom: None,
         }
     }
 
@@ -197,25 +325,32 @@ impl<'a> Translator<'a> {
     }
 
     fn translate(mut self) -> Result<Translation, String> {
-        let mut first = First::Unseen;
-        let mut alternation = false;
         while let Some(c) = self.next() {
-            let top_level = self.scopes.len() == 1;
-            let written = self.out.len();
-            self.literal = None;
+            self.atom = None;
             match c {
                 '\\' => self.escape()?,
                 '[' => self.class()?,
-                '(' => self.group()?,
+                '(' => {
+                    self.group()?;
+                    continue;
+                }
                 ')' => {
                     if self.scopes.len() == 1 {
                         return self.fail("an unbalanced )");
                     }
                     self.scopes.pop();
                     self.out.push(')');
+                    let group = self.sequences.pop().expect("a group is open");
+                    self.atom = Some(group.finish());
                 }
                 '.' => match (self.scope().dotall, self.text) {
-                    (true, Text::Unicode) => self.out.push_str(r"(?s:.)"),
+                    (true, Text::Unicode) => {
+                        self.out.push_str(r"(?s:.)");
+                        self.atom = Some(Part {
+                            starts: Starts::ANY,
+                            empty: false,
+                        });
+                    }
                     (true, Text::Latin1) => self.set(&[LATIN1], false),
                     (false, _) => self.set(LINE_TERMINATORS, true),
                 },
@@ -226,9 +361,14 @@ impl<'a> Translator<'a> {
                 '*' | '+' | '?' => {
                     self.out.push(c);
                     self.quantifier_suffix()?;
+                    if c != '+' {
+                        self.sequence().optional();
+                    }
+                    continue;
                 }
                 '{' => {
                     self.out.push('{');
+                    let bounds = self.out.len();
                     loop {
                         match self.next() {
                             Some('}') => break,
@@ -236,44 +376,41 @@ impl<'a> Translator<'a> {
                             _ => return self.fail("a malformed {} quantifier"),
                         }
                     }
+                    let minimum = self.out[bounds..].split(',').next().unwrap_or_default();
+                    let optional = minimum.bytes().all(|d| d == b'0');
                     self.out.push('}');
                     self.quantifier_suffix()?;
+                    if optional {
+                        self.sequence().optional();
+                    }
+                    continue;
                 }
-                '|' => self.out.push('|'),
+                '|' => {
+                    self.out.push('|');
+                    self.sequence().alternate();
+                    continue;
+                }
                 c => self.literal(c),
             }
-            if !top_level {
-                continue;
-            }
-            alternation |= c == '|';
-            first = match first {
-                First::Unseen => {
-                    let atom = &self.out[written..];
-                    match self.literal {
-                        _ if atom.is_empty() || atom == r"\A" => First::Unseen,
-                        Some(literal) => First::Literal(literal),
-                        None => First::Known(None),
-                    }
-                }
-                First::Literal(literal) => {
-                    First::Known((!matches!(c, '*' | '?' | '{')).then_some(literal))
-                }
-                known => known,
-            };
+            let atom = self.atom.unwrap_or(Part::EMPTY);
+            self.sequence().push(atom);
         }
         if self.scopes.len() != 1 {
             return self.fail("an unclosed group");
         }
-        let first = match first {
-            _ if alternation => None,
-            First::Unseen => None,
-            First::Literal(literal) => Some(literal),
-            First::Known(known) => known,
-        };
+        let whole = self.sequences.pop().expect("the regex is open").finish();
         Ok(Translation {
             translated: self.out,
-            first,
+            starts: if whole.empty {
+                Starts::ANY
+            } else {
+                whole.starts
+            },
         })
+    }
+
+    fn sequence(&mut self) -> &mut Sequence {
+        self.sequences.last_mut().expect("a group is open")
     }
 
     fn quantifier_suffix(&mut self) -> Result<(), String> {
@@ -290,6 +427,7 @@ impl<'a> Translator<'a> {
         if !self.eat('?') {
             self.out.push('(');
             self.scopes.push(inherited);
+            self.sequences.push(Sequence::new(false));
             return Ok(());
         }
         let opener = match self.peek() {
@@ -310,6 +448,10 @@ impl<'a> Translator<'a> {
         self.position += 1;
         self.out.push_str(opener);
         self.scopes.push(inherited);
+        self.sequences.push(Sequence::new(matches!(
+            opener,
+            "(?=" | "(?!" | "(?<=" | "(?<!"
+        )));
         Ok(())
     }
 
@@ -329,6 +471,7 @@ impl<'a> Translator<'a> {
                 Some(':') => {
                     self.out.push_str("(?:");
                     self.scopes.push(scope);
+                    self.sequences.push(Sequence::new(false));
                     return Ok(());
                 }
                 _ => return self.fail("an unsupported flag"),
@@ -351,6 +494,10 @@ impl<'a> Translator<'a> {
             class_range(&mut self.out, range);
         }
         self.out.push(']');
+        self.atom = Some(Part {
+            starts: Starts::of(ranges, negated),
+            empty: false,
+        });
     }
 
     fn escape(&mut self) -> Result<(), String> {
@@ -371,6 +518,10 @@ impl<'a> Translator<'a> {
                 }
                 self.out.push('\\');
                 self.out.push(c);
+                self.atom = Some(Part {
+                    starts: Starts::ANY,
+                    empty: true,
+                });
             }
             'A' => self.out.push_str(r"\A"),
             'z' => self.out.push_str(r"\z"),
@@ -409,7 +560,10 @@ impl<'a> Translator<'a> {
             self.set(&folded(&[(c, c)], true), false);
         } else {
             self.out.push_str(&encode(c));
-            self.literal = Some(c);
+            self.atom = Some(Part {
+                starts: Starts::of(&[(c, c)], false),
+                empty: false,
+            });
         }
     }
 

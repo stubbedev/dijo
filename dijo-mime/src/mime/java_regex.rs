@@ -18,15 +18,48 @@ pub(crate) mod translate;
 #[derive(Debug)]
 pub(crate) struct JavaRegex {
     pattern: &'static str,
-    /// The character every match starts with, if the regex has one: a region that starts
-    /// otherwise does not match, without the regex compiled.
-    first: Option<char>,
+    /// The characters a match may start with: a region that starts otherwise does not match,
+    /// without the regex compiled.
+    starts: Starts,
     regex: &'static OnceLock<Regex>,
 }
 
 impl PartialEq for JavaRegex {
     fn eq(&self, other: &Self) -> bool {
-        self.pattern == other.pattern && self.first == other.first
+        self.pattern == other.pattern && self.starts == other.starts
+    }
+}
+
+/// A set of the characters a match may start with: a bit for each of U+0000 to U+00FF, and
+/// whether any character above them may.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Starts {
+    latin1: [u128; 2],
+    beyond: bool,
+}
+
+impl Starts {
+    /// The characters of the inclusive `ranges` of U+0000 to U+00FF, and those above if `beyond`.
+    pub(crate) const fn new(ranges: &[(u8, u8)], beyond: bool) -> Self {
+        let mut latin1 = [0u128; 2];
+        let mut i = 0;
+        while i < ranges.len() {
+            let (low, high) = ranges[i];
+            let mut code = low as usize;
+            while code <= high as usize {
+                latin1[code >> 7] |= 1u128 << (code & 0x7F);
+                code += 1;
+            }
+            i += 1;
+        }
+        Starts { latin1, beyond }
+    }
+
+    fn contains(self, c: char) -> bool {
+        match u8::try_from(c) {
+            Ok(code) => (self.latin1[usize::from(code >> 7)] >> (code & 0x7F)) & 1 != 0,
+            Err(_) => self.beyond,
+        }
     }
 }
 
@@ -34,12 +67,12 @@ impl JavaRegex {
     /// The regex of a translated `pattern`, compiled into `regex` when it first matches.
     pub(crate) const fn new(
         pattern: &'static str,
-        first: Option<char>,
+        starts: Starts,
         regex: &'static OnceLock<Regex>,
     ) -> Self {
         JavaRegex {
             pattern,
-            first,
+            starts,
             regex,
         }
     }
@@ -56,12 +89,16 @@ impl JavaRegex {
     /// Whether a match may start with `c`, which rules out a region that starts otherwise without
     /// compiling the regex or decoding the region.
     pub(crate) fn may_start_with(&self, c: char) -> bool {
-        self.first.is_none_or(|first| first == c)
+        self.starts.contains(c)
     }
 
     /// Whether a region matches.
     pub(crate) fn is_match(&self, region: &str) -> bool {
-        if self.first.is_some_and(|first| !region.starts_with(first)) {
+        if region
+            .chars()
+            .next()
+            .is_some_and(|c| !self.may_start_with(c))
+        {
             return false;
         }
         self.regex()
@@ -75,10 +112,10 @@ impl JavaRegex {
         self.pattern
     }
 
-    /// The character every match starts with, if one does.
+    /// The characters a match may start with.
     #[cfg(test)]
-    pub(crate) fn first(&self) -> Option<char> {
-        self.first
+    pub(crate) fn starts(&self) -> Starts {
+        self.starts
     }
 
     /// Compiles the regex now, as its first match would.
@@ -113,32 +150,113 @@ mod tests {
             .collect()
     }
 
-    fn first(pattern: &str) -> Option<char> {
+    fn starts(pattern: &str) -> (Vec<(u8, u8)>, bool) {
         JavaRegex::compile(pattern, Anchor::LookingAt, Text::Latin1)
             .unwrap()
-            .first()
+            .starts()
+            .ranges()
     }
 
     #[test]
-    fn knows_the_character_a_match_starts_with() {
-        assert_eq!(first("(?s)\\xFF[\\xF0\\xF1].{2}"), Some('\u{FF}'));
-        assert_eq!(first("^BZh[1-9]"), Some('B'));
-        assert_eq!(first("\\Aowl"), Some('o'));
-        assert_eq!(first("a+b"), Some('a'));
-        assert_eq!(first("a"), Some('a'));
-        assert_eq!(first("a*b"), None);
-        assert_eq!(first("a?b"), None);
-        assert_eq!(first("a{0,2}b"), None);
-        assert_eq!(first("ab|c"), None);
-        assert_eq!(first("(?i)ab"), None);
-        assert_eq!(first("[ab]c"), None);
-        assert_eq!(first("(?:a)b"), None);
-        assert_eq!(first(".a"), None);
-        assert_eq!(first("\\da"), None);
-        assert_eq!(first("\\ba"), None);
-        assert_eq!(first("^"), None);
+    fn knows_the_characters_a_match_starts_with() {
+        let any = (vec![(0, 0xFF)], true);
+        assert_eq!(
+            starts("(?s)\\xFF[\\xF0\\xF1].{2}"),
+            (vec![(0xFF, 0xFF)], false)
+        );
+        assert_eq!(starts("^BZh[1-9]"), (vec![(b'B', b'B')], false));
+        assert_eq!(starts("\\Aowl"), (vec![(b'o', b'o')], false));
+        assert_eq!(starts("a+b"), (vec![(b'a', b'a')], false));
+        assert_eq!(starts("a"), (vec![(b'a', b'a')], false));
+        assert_eq!(starts("a*b"), (vec![(b'a', b'b')], false));
+        assert_eq!(starts("a?b"), (vec![(b'a', b'b')], false));
+        assert_eq!(starts("a{0,2}b"), (vec![(b'a', b'b')], false));
+        assert_eq!(starts("a{1,2}b"), (vec![(b'a', b'a')], false));
+        assert_eq!(starts("ab|c"), (vec![(b'a', b'a'), (b'c', b'c')], false));
+        assert_eq!(starts("(?i)ab"), (vec![(b'A', b'A'), (b'a', b'a')], false));
+        assert_eq!(starts("[ab]c"), (vec![(b'a', b'b')], false));
+        assert_eq!(starts("(?:a)b"), (vec![(b'a', b'a')], false));
+        assert_eq!(starts("(a|)b"), (vec![(b'a', b'b')], false));
+        assert_eq!(starts("(?=b)a"), (vec![(b'a', b'a')], false));
+        assert_eq!(starts("(a)\\1b"), (vec![(b'a', b'a')], false));
+        assert_eq!(
+            starts(".a"),
+            (vec![(0, 9), (11, 12), (14, 0x84), (0x86, 0xFF)], false)
+        );
+        assert_eq!(
+            starts("[^a]"),
+            (vec![(0, b'a' - 1), (b'a' + 1, 0xFF)], false)
+        );
+        assert_eq!(starts("\\da"), (vec![(b'0', b'9')], false));
+        assert_eq!(starts("\\ba"), (vec![(b'a', b'a')], false));
+        assert_eq!(starts("^"), any);
+        assert_eq!(starts("a*"), any);
+        assert_eq!(starts("(?=a)"), any);
+        let unicode = |pattern: &str| {
+            JavaRegex::compile(pattern, Anchor::LookingAt, Text::Unicode)
+                .unwrap()
+                .starts()
+                .ranges()
+        };
+        assert_eq!(
+            unicode("[^a]"),
+            (vec![(0, b'a' - 1), (b'a' + 1, 0xFF)], true)
+        );
+        assert_eq!(unicode("\\u0100a"), (vec![], true));
         assert!(!looks("(?s)\\xFF.", b"\xFE\xFF"));
         assert!(looks("(?s)\\xFF.", b"\xFF\xFE"));
+    }
+
+    #[test]
+    fn rules_out_only_regions_that_do_not_match() {
+        let mut haystacks = latin1_haystacks();
+        haystacks.extend(
+            [
+                "\r%AI5_FileFormat 3\n",
+                "\n%AI5_FileFormat 9\n",
+                "999\r\nx \n0\nSECTION\n",
+                "0\r\nSECTION\r\n",
+                "aab",
+                "abab",
+                "\u{0}\u{0}ID3",
+                "%%x\n%PDF-1.",
+            ]
+            .map(str::to_owned),
+        );
+        for pattern in [
+            "a*b",
+            "a?b",
+            "a{0,2}b",
+            "ab|c",
+            "(?i)ab",
+            "[ab]c",
+            "(a|)b",
+            "(?=b)a",
+            "(?!a).",
+            "(?<=a)b",
+            "(a)\\1b",
+            "(a*)\\1b",
+            ".a",
+            "[^a]",
+            "\\ba",
+            "a$",
+            "^",
+            "a*",
+            "(?>a|ab)b",
+            "[\r\n]%AI5_FileFormat [1-4][\r\n]",
+            "(999\r?\n[^\r\n]{0,64}\\s+)?0\r?\nSECTION\r?\n",
+            "(?:\\x0D\\x0A|\\x00{1,1024})(?:\\xff[\\xe3\\xf2]|ID3)",
+            "(?>(?:%%[^\\r\\n]{0,148})?(?:\\r\\n|[\\r\\n])){1,50}%PDF-[12]\\.",
+        ] {
+            let regex = JavaRegex::compile(pattern, Anchor::LookingAt, Text::Latin1).unwrap();
+            for haystack in &haystacks {
+                assert_eq!(
+                    regex.is_match(haystack),
+                    regex.regex().is_match(haystack).unwrap(),
+                    "{pattern:?} on {haystack:?}"
+                );
+            }
+        }
     }
 
     #[test]

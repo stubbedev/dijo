@@ -550,7 +550,7 @@ fn emit(types: &MimeTypes) -> String {
     out.line("use memchr::memmem::Finder;");
     out.line("");
     out.line("use super::{Magic, MimeType, MimeTypes, Patterns};");
-    out.line("use crate::mime::java_regex::JavaRegex;");
+    out.line("use crate::mime::java_regex::{JavaRegex, Starts};");
     out.line("use crate::mime::magic::{Anchor, Clause, Kind, MagicMatch, Run};");
     out.line("use crate::mime::registry::Registry;");
     out.line("");
@@ -709,10 +709,10 @@ fn clause(clause: &Clause, regex: &mut usize, finder: &mut usize) -> String {
 
 /// A regex as a Rust expression, compiled into the next of `REGEXES`.
 fn java_regex(found: &JavaRegex, regex: &mut usize) -> String {
+    let (ranges, beyond) = found.starts().ranges();
     let expression = format!(
-        "JavaRegex::new({:?}, {:?}, &REGEXES[{regex}])",
-        found.pattern(),
-        found.first()
+        "JavaRegex::new({:?}, Starts::new(&{ranges:?}, {beyond}), &REGEXES[{regex}])",
+        found.pattern()
     );
     *regex += 1;
     expression
