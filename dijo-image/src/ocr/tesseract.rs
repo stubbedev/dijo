@@ -12,7 +12,7 @@
 //! their own, a page each, rather than each dividing its work among a team of tesseract's.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::ffi::{c_char, c_float, c_int, CStr, CString};
 use std::fmt;
 use std::ptr::NonNull;
@@ -359,10 +359,59 @@ struct Engine(NonNull<BaseApi>);
 // SAFETY: an engine is used by one thread at a time, the one the pool hands it to.
 unsafe impl Send for Engine {}
 
-/// An engine no reading is using, and since when.
-struct Idle {
-    engine: Engine,
+/// An engine no reading is using, the model it loaded, and since when.
+struct Idle<E> {
+    model: String,
+    engine: E,
     since: Instant,
+}
+
+/// The engines no reading is using, the one released last at the end: as many as readings run
+/// side by side at most, whichever their models, so that what they hold does not grow with the
+/// models a long-running process has read with.
+struct IdleEngines<E> {
+    capacity: usize,
+    engines: Vec<Idle<E>>,
+}
+
+impl<E> IdleEngines<E> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            engines: Vec::with_capacity(capacity + 1),
+        }
+    }
+
+    /// The idle engine for `model` released last, if any, and the engines to free: those idle
+    /// for [`IDLE`] by `now`.
+    fn take(&mut self, model: &str, now: Instant) -> (Option<E>, Vec<E>) {
+        let expired = self
+            .engines
+            .extract_if(.., |idle| now.duration_since(idle.since) >= IDLE)
+            .map(|idle| idle.engine)
+            .collect();
+        let taken = self
+            .engines
+            .iter()
+            .rposition(|idle| idle.model == model)
+            .map(|index| self.engines.remove(index).engine);
+        (taken, expired)
+    }
+
+    /// Keeps `engine` for `model` idle from `now` on, and returns the engine to free when that
+    /// leaves more idle than the capacity: the one idle the longest.
+    fn release(&mut self, model: &str, engine: E, now: Instant) -> Option<E> {
+        self.engines.push(Idle {
+            model: model.to_owned(),
+            engine,
+            since: now,
+        });
+        (self.engines.len() > self.capacity).then(|| self.engines.remove(0).engine)
+    }
+
+    fn drain(&mut self) -> impl Iterator<Item = E> + '_ {
+        self.engines.drain(..).map(|idle| idle.engine)
+    }
 }
 
 /// Tesseract in this process, and its engines.
@@ -370,7 +419,7 @@ pub struct Tesseract {
     api: Api,
     /// Where the models are, or none for where tesseract looks by itself.
     datapath: Option<CString>,
-    idle: Mutex<BTreeMap<String, Vec<Idle>>>,
+    idle: Mutex<IdleEngines<Engine>>,
     languages: Mutex<Option<Arc<BTreeSet<String>>>>,
     #[cfg(not(feature = "static"))]
     _library: libloading::Library,
@@ -420,7 +469,7 @@ impl Tesseract {
         Self {
             api,
             datapath,
-            idle: Mutex::new(BTreeMap::new()),
+            idle: Mutex::new(IdleEngines::new(crate::process::processors())),
             languages: Mutex::new(None),
             #[cfg(not(feature = "static"))]
             _library: library,
@@ -647,24 +696,20 @@ impl Tesseract {
     /// Engines idle for longer than [`IDLE`] are freed first, so that a long-running process
     /// does not keep a model it read with once.
     fn take(&self, model: &str) -> Result<Engine, OcrError> {
-        let now = Instant::now();
-        let reused = {
-            let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
-            for engines in idle.values_mut() {
-                engines.retain(|idle| {
-                    let keep = now.duration_since(idle.since) < IDLE;
-                    if !keep {
-                        unsafe { (self.api.delete)(idle.engine.0.as_ptr()) };
-                    }
-                    keep
-                });
-            }
-            idle.get_mut(model).and_then(Vec::pop)
-        };
+        let (reused, expired) = self.idle().take(model, Instant::now());
+        expired.into_iter().for_each(|engine| self.delete(engine));
         match reused {
-            Some(idle) => Ok(idle.engine),
+            Some(engine) => Ok(engine),
             None => self.create(model),
         }
+    }
+
+    fn idle(&self) -> std::sync::MutexGuard<'_, IdleEngines<Engine>> {
+        self.idle.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn delete(&self, engine: Engine) {
+        unsafe { (self.api.delete)(engine.0.as_ptr()) };
     }
 
     /// A new engine for a model, set up as readings with it need it.
@@ -698,24 +743,22 @@ impl Tesseract {
     }
 
     fn release(&self, model: &str, engine: Engine) {
-        self.idle
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(model.to_owned())
-            .or_default()
-            .push(Idle {
-                engine,
-                since: Instant::now(),
-            });
+        let evicted = self.idle().release(model, engine, Instant::now());
+        if let Some(engine) = evicted {
+            self.delete(engine);
+        }
     }
 }
 
 impl Drop for Tesseract {
     fn drop(&mut self) {
-        let idle = std::mem::take(self.idle.get_mut().unwrap_or_else(|e| e.into_inner()));
-        for idle in idle.into_values().flatten() {
-            unsafe { (self.api.delete)(idle.engine.0.as_ptr()) };
-        }
+        let engines: Vec<Engine> = self
+            .idle
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+            .collect();
+        engines.into_iter().for_each(|engine| self.delete(engine));
     }
 }
 
@@ -968,6 +1011,43 @@ mod tests {
         let heading = block(100, 100, 1400, 250);
         let footer = block(100, 2100, 1400, 2200);
         assert_eq!(reading_order(&[left, right, footer, heading]), [3, 0, 1, 2]);
+    }
+
+    /// Engines of many models released one after another, as a long-running server reading
+    /// documents in many languages releases them (#305): no more stay idle than readings run side
+    /// by side, and the one idle the longest is freed for each beyond them.
+    #[test]
+    fn keeps_no_more_engines_idle_than_readings_run_side_by_side() {
+        let now = Instant::now();
+        let mut idle = IdleEngines::new(2);
+        assert_eq!(idle.release("eng", 1, now), None);
+        assert_eq!(idle.release("deu", 2, now), None);
+        assert_eq!(idle.release("fra", 3, now), Some(1));
+        assert_eq!(idle.release("eng", 4, now), Some(2));
+        assert_eq!(idle.drain().collect::<Vec<_>>(), [3, 4]);
+    }
+
+    #[test]
+    fn reuses_the_engine_of_a_model_released_last() {
+        let now = Instant::now();
+        let mut idle = IdleEngines::new(4);
+        for (model, engine) in [("eng", 1), ("deu", 2), ("eng", 3)] {
+            assert_eq!(idle.release(model, engine, now), None);
+        }
+        assert_eq!(idle.take("eng", now), (Some(3), Vec::new()));
+        assert_eq!(idle.take("eng", now), (Some(1), Vec::new()));
+        assert_eq!(idle.take("eng", now), (None, Vec::new()));
+        assert_eq!(idle.take("deu", now), (Some(2), Vec::new()));
+    }
+
+    #[test]
+    fn frees_the_engines_idle_too_long_when_one_is_taken() {
+        let start = Instant::now();
+        let mut idle = IdleEngines::new(4);
+        assert_eq!(idle.release("eng", 1, start), None);
+        assert_eq!(idle.release("deu", 2, start + IDLE / 2), None);
+        assert_eq!(idle.take("fra", start + IDLE), (None, vec![1]));
+        assert_eq!(idle.take("deu", start + IDLE), (Some(2), Vec::new()));
     }
 
     #[test]
