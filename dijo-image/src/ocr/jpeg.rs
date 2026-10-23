@@ -163,12 +163,19 @@ struct TableSpec {
     values: [u8; 256],
 }
 
-/// A Huffman table derived for decoding a code bit by bit (`d_derived_tbl`).
+/// A Huffman table derived for decoding (`d_derived_tbl`): a code bit by bit, or a code of
+/// up to [`LOOKAHEAD`] bits at once from as many bits.
 struct Huffman {
     max_code: [i32; 18],
     value_offset: [i32; 17],
     values: [u8; 256],
+    /// For each value of the next [`LOOKAHEAD`] bits, the length and the symbol of the code
+    /// they start with, or a length of 0 where the code is longer.
+    lookahead: [(u8, u8); 1 << LOOKAHEAD],
 }
+
+/// `HUFF_LOOKAHEAD`: the bits a Huffman code is looked up by at once.
+const LOOKAHEAD: u32 = 8;
 
 impl Huffman {
     /// `jpeg_make_d_derived_tbl`.
@@ -214,11 +221,29 @@ impl Huffman {
         if dc && spec.values[..symbols].iter().any(|&symbol| symbol > 15) {
             return Err(bad());
         }
-        Ok(Self {
+        let mut table = Self {
             max_code,
             value_offset,
             values: spec.values,
-        })
+            lookahead: [(0, 0); 1 << LOOKAHEAD],
+        };
+        for peek in 0..1usize << LOOKAHEAD {
+            let mut code = 0i32;
+            for length in 1..=LOOKAHEAD {
+                code = (code << 1) | ((peek >> (LOOKAHEAD - length)) & 1) as i32;
+                if let Some(symbol) = table.symbol(code, length as usize) {
+                    table.lookahead[peek] = (length as u8, symbol);
+                    break;
+                }
+            }
+        }
+        Ok(table)
+    }
+
+    /// The symbol of `code`, if it is one of `length` bits.
+    fn symbol(&self, code: i32, length: usize) -> Option<u8> {
+        (code <= self.max_code[length])
+            .then(|| self.values[(code + self.value_offset[length]) as usize & 0xFF])
     }
 }
 
@@ -301,7 +326,7 @@ struct Decoder<'a> {
     icc_markers: Vec<Vec<u8>>,
     in_headers: bool,
     frame: Option<Frame>,
-    bits: u32,
+    bits: u64,
     bits_left: u32,
     insufficient: bool,
     next_restart: u8,
@@ -1009,24 +1034,36 @@ impl<'a> Decoder<'a> {
     /// The next bit of entropy-coded data, or a zero where the data has run out before a
     /// marker, which marks the rest of the restart interval as insufficient.
     fn bit(&mut self) -> u32 {
-        if self.bits_left == 0 {
-            match self.data_byte() {
-                Some(byte) => {
-                    self.bits = u32::from(byte);
-                    self.bits_left = 8;
-                }
-                None => {
-                    self.insufficient = true;
-                    return 0;
-                }
-            }
-        }
-        self.bits_left -= 1;
-        (self.bits >> self.bits_left) & 1
+        self.get_bits(1) as u32
     }
 
+    /// The next `count` bits of entropy-coded data, of at most 16, zeros for those past where
+    /// the data runs out before a marker, which marks the rest of the restart interval as
+    /// insufficient.
     fn get_bits(&mut self, count: u32) -> i32 {
-        (0..count).fold(0, |value, _| (value << 1) | self.bit() as i32)
+        if self.bits_left < count {
+            self.fill_bits();
+        }
+        let mask = (1u64 << count) - 1;
+        if self.bits_left >= count {
+            self.bits_left -= count;
+            return ((self.bits >> self.bits_left) & mask) as i32;
+        }
+        let value = (self.bits << (count - self.bits_left)) & mask;
+        self.bits_left = 0;
+        self.insufficient = true;
+        value as i32
+    }
+
+    /// `jpeg_fill_bit_buffer`: the bit buffer filled with whole bytes up to a marker.
+    fn fill_bits(&mut self) {
+        while self.bits_left <= u64::BITS - 16 {
+            let Some(byte) = self.data_byte() else {
+                return;
+            };
+            self.bits = (self.bits << 8) | u64::from(byte);
+            self.bits_left += 8;
+        }
     }
 
     /// The next byte of entropy-coded data, unstuffed, or none at a marker, which is kept.
@@ -1058,8 +1095,25 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// `jpeg_huff_decode`, bit by bit.
+    /// `HUFF_DECODE`: a code looked up by its next [`LOOKAHEAD`] bits where they are in the
+    /// data and start a code that short, else decoded bit by bit.
     fn huffman(&mut self, table: &Huffman) -> i32 {
+        if self.bits_left < LOOKAHEAD {
+            self.fill_bits();
+        }
+        if self.bits_left >= LOOKAHEAD {
+            let peek = (self.bits >> (self.bits_left - LOOKAHEAD)) as usize & 0xFF;
+            let (length, symbol) = table.lookahead[peek];
+            if length != 0 {
+                self.bits_left -= u32::from(length);
+                return i32::from(symbol);
+            }
+        }
+        self.huffman_bit_by_bit(table)
+    }
+
+    /// `jpeg_huff_decode`, bit by bit.
+    fn huffman_bit_by_bit(&mut self, table: &Huffman) -> i32 {
         let mut code = 0i32;
         let mut length = 0;
         loop {
@@ -1068,10 +1122,8 @@ impl<'a> Decoder<'a> {
             if length > 16 {
                 return 0;
             }
-            if code <= table.max_code[length] {
-                return i32::from(
-                    table.values[(code + table.value_offset[length]) as usize & 0xFF],
-                );
+            if let Some(symbol) = table.symbol(code, length) {
+                return i32::from(symbol);
             }
         }
     }
@@ -1792,6 +1844,120 @@ mod tests {
             other => panic!("decoded to {other:?}"),
         };
         assert_eq!(samples(&transformed), samples(&ycbcr));
+    }
+
+    /// Entropy-coded data read as it was first read here: a byte at a time, bit by bit.
+    struct BitByBit<'a> {
+        decoder: Decoder<'a>,
+        bits: u32,
+        bits_left: u32,
+        insufficient: bool,
+    }
+
+    impl BitByBit<'_> {
+        fn bit(&mut self) -> u32 {
+            if self.bits_left == 0 {
+                match self.decoder.data_byte() {
+                    Some(byte) => {
+                        self.bits = u32::from(byte);
+                        self.bits_left = 8;
+                    }
+                    None => {
+                        self.insufficient = true;
+                        return 0;
+                    }
+                }
+            }
+            self.bits_left -= 1;
+            (self.bits >> self.bits_left) & 1
+        }
+
+        fn get_bits(&mut self, count: u32) -> i32 {
+            (0..count).fold(0, |value, _| (value << 1) | self.bit() as i32)
+        }
+
+        fn huffman(&mut self, table: &Huffman) -> i32 {
+            let mut code = 0i32;
+            for length in 1..=16 {
+                code = (code << 1) | self.bit() as i32;
+                if code <= table.max_code[length] {
+                    return i32::from(
+                        table.values[(code + table.value_offset[length]) as usize & 0xFF],
+                    );
+                }
+            }
+            self.bit();
+            0
+        }
+    }
+
+    #[test]
+    fn reads_entropy_coded_data_as_bit_by_bit() {
+        let table = |bits: [u8; 17]| {
+            let mut values = [0u8; 256];
+            for (i, value) in values.iter_mut().enumerate() {
+                *value = (i * 37 + 11) as u8;
+            }
+            Huffman::derive(&TableSpec { bits, values }, false).unwrap()
+        };
+        let tables = [
+            table([0, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]),
+            table([0, 0, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]),
+            table([0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            table([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]),
+        ];
+        let mut seed = 0x1234_5678u32;
+        let mut random = move |bound: u32| {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (seed >> 8) % bound
+        };
+        for case in 0..400 {
+            let mut data = Vec::new();
+            for _ in 0..random(48) {
+                match random(12) {
+                    0 => data.extend_from_slice(&[0xFF, 0x00]),
+                    1 => data.extend_from_slice(&[0xFF, 0xFF, 0x00]),
+                    2 => data.push(0x00),
+                    _ => data.push(random(256) as u8),
+                }
+            }
+            match random(4) {
+                0 => data.extend_from_slice(&[0xFF, EOI]),
+                1 => data.extend_from_slice(&[0xFF, 0xFF, RST0 + 3, 0x12]),
+                2 => data.extend_from_slice(&[0xFF, DHT]),
+                _ => {}
+            }
+            let mut decoder = Decoder::new(&data);
+            let mut reference = BitByBit {
+                decoder: Decoder::new(&data),
+                bits: 0,
+                bits_left: 0,
+                insufficient: false,
+            };
+            for step in 0..120 {
+                let (read, expected) = match random(3) {
+                    0 => {
+                        let table = &tables[random(tables.len() as u32) as usize];
+                        (decoder.huffman(table), reference.huffman(table))
+                    }
+                    1 => {
+                        let count = 1 + random(16);
+                        (decoder.get_bits(count), reference.get_bits(count))
+                    }
+                    _ => (decoder.bit() as i32, reference.bit() as i32),
+                };
+                assert_eq!(read, expected, "case {case}, step {step}");
+                assert_eq!(
+                    decoder.insufficient, reference.insufficient,
+                    "case {case}, step {step}"
+                );
+            }
+            assert_eq!(
+                decoder.take_marker(),
+                reference.decoder.take_marker(),
+                "case {case}"
+            );
+        }
     }
 
     /// libjpeg's upsampling as it was first written here: each output row built apart, from
