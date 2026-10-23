@@ -469,27 +469,30 @@ fn capacity(capacity: i32) -> Result<(), Thrown> {
 fn read_sparse(buffer: &mut Buffer, array: &Array) -> Result<(), Thrown> {
     let rows = Tag::read(buffer)?.pass_ints(buffer)?;
     let columns = Tag::read(buffer)?.ints(buffer)?;
-    let place = |values: usize| -> Result<(), Thrown> {
-        let mut count = 0usize;
-        for column in 0..usize::try_from(array.n()).unwrap_or(0) {
-            let end = *columns
-                .get(column + 1)
-                .ok_or_else(|| out_of_bounds(column + 1, columns.len()))?;
-            while to_i64(count) < i64::from(end) {
-                if count >= values {
-                    return Err(out_of_bounds(count, values));
-                }
-                if count >= rows {
-                    return Err(out_of_bounds(count, rows));
-                }
-                count += 1;
-            }
-        }
-        Ok(())
-    };
-    place(Tag::read(buffer)?.doubles(buffer)?)?;
+    let n = usize::try_from(array.n()).unwrap_or(0);
+    place(&columns, n, rows, Tag::read(buffer)?.doubles(buffer)?)?;
     if array.is_complex() {
-        place(Tag::read(buffer)?.doubles(buffer)?)?;
+        place(&columns, n, rows, Tag::read(buffer)?.doubles(buffer)?)?;
+    }
+    Ok(())
+}
+
+/// Places `values` values by the starts of `n` columns among `rows` row indices, a column at a
+/// time, failing at the first place either does not reach: the values before the rows.
+fn place(columns: &[i32], n: usize, rows: usize, values: usize) -> Result<(), Thrown> {
+    let reached = values.min(rows);
+    let mut count = 0usize;
+    for column in 0..n {
+        let end = *columns
+            .get(column + 1)
+            .ok_or_else(|| out_of_bounds(column + 1, columns.len()))?;
+        if to_i64(count) < i64::from(end) {
+            if to_i64(reached) < i64::from(end) {
+                let length = if reached >= values { values } else { rows };
+                return Err(out_of_bounds(reached, length));
+            }
+            count = usize::try_from(end).expect("past a count");
+        }
     }
     Ok(())
 }
@@ -1693,6 +1696,59 @@ mod tests {
                                 assert_eq!((read, buffer.at - START), expected, "{case:?}");
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /// What placing the values of a sparse array one at a time gives.
+    fn place_one_at_a_time(
+        columns: &[i32],
+        n: usize,
+        rows: usize,
+        values: usize,
+    ) -> Result<(), Thrown> {
+        let mut count = 0usize;
+        for column in 0..n {
+            let end = *columns
+                .get(column + 1)
+                .ok_or_else(|| out_of_bounds(column + 1, columns.len()))?;
+            while to_i64(count) < i64::from(end) {
+                if count >= values {
+                    return Err(out_of_bounds(count, values));
+                }
+                if count >= rows {
+                    return Err(out_of_bounds(count, rows));
+                }
+                count += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// A sparse array's values placed a column at a time fail or not as one at a time, at the
+    /// same place, whichever of the values, rows and column starts runs short.
+    #[test]
+    fn places_sparse_values_a_column_at_a_time_as_one_at_a_time() {
+        let starts: [&[i32]; 7] = [
+            &[],
+            &[0],
+            &[0, 2, 5],
+            &[0, 0, 0, 3],
+            &[0, 4, 2, 6],
+            &[0, -3, 1, -1, 7],
+            &[5, 1, 1, 9, 9, 12],
+        ];
+        for columns in starts {
+            for n in 0..=columns.len() + 1 {
+                for rows in 0..14 {
+                    for values in 0..14 {
+                        assert_eq!(
+                            place(columns, n, rows, values),
+                            place_one_at_a_time(columns, n, rows, values),
+                            "{columns:?} {n} {rows} {values}"
+                        );
                     }
                 }
             }
