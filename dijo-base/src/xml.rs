@@ -16,6 +16,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::hash::FastMap;
 use crate::input::{Pages, Paging};
 use crate::text::charset::{Charset, Pieces};
 
@@ -951,7 +952,11 @@ struct Parser<'a> {
 
 /// The namespace scopes of the open elements.
 struct Scopes {
-    bindings: Vec<(String, Rc<str>)>,
+    /// The namespaces each prefix is bound to, the innermost last.
+    bindings: FastMap<String, Vec<Rc<str>>>,
+    /// The prefixes bound, in the order they were bound, for their scopes to undo.
+    declared: Vec<String>,
+    /// How many prefixes were bound before each open element's scope.
     marks: Vec<usize>,
     /// The namespace of a name without one.
     none: Rc<str>,
@@ -959,19 +964,43 @@ struct Scopes {
 
 impl Scopes {
     fn new() -> Scopes {
-        Scopes {
-            bindings: vec![("xml".to_owned(), Rc::from(XML_NAMESPACE))],
+        let mut scopes = Scopes {
+            bindings: FastMap::default(),
+            declared: Vec::new(),
             marks: Vec::new(),
             none: Rc::from(""),
+        };
+        scopes.bind("xml", Rc::from(XML_NAMESPACE));
+        scopes
+    }
+
+    /// Opens the scope of an element, which the prefixes bound next are bound in.
+    fn open(&mut self) {
+        self.marks.push(self.declared.len());
+    }
+
+    fn bind(&mut self, prefix: &str, uri: Rc<str>) {
+        match self.bindings.get_mut(prefix) {
+            Some(uris) => uris.push(uri),
+            None => {
+                self.bindings.insert(prefix.to_owned(), vec![uri]);
+            }
+        }
+        self.declared.push(prefix.to_owned());
+    }
+
+    /// Closes the innermost open scope, undoing the prefixes bound in it.
+    fn close(&mut self) {
+        let mark = self.marks.pop().expect("a scope is open");
+        for prefix in self.declared.drain(mark..) {
+            if let Some(uris) = self.bindings.get_mut(prefix.as_str()) {
+                uris.pop();
+            }
         }
     }
 
     fn resolve(&self, prefix: &str) -> Option<&Rc<str>> {
-        self.bindings
-            .iter()
-            .rev()
-            .find(|(p, _)| p == prefix)
-            .map(|(_, uri)| uri)
+        self.bindings.get(prefix).and_then(|uris| uris.last())
     }
 }
 
@@ -1790,8 +1819,7 @@ impl Parser<'_> {
         handler: &mut dyn FnMut(Event<'_>) -> Flow,
     ) -> std::result::Result<(), Stop> {
         let flow = handler(Event::End(name));
-        let mark = scopes.marks.pop().expect("a scope is open");
-        scopes.bindings.truncate(mark);
+        scopes.close();
         match flow {
             Flow::Continue => Ok(()),
             Flow::Stop => Err(Stop::Handler),
@@ -2074,7 +2102,7 @@ impl Parser<'_> {
                 count += 1;
             }
         }
-        scopes.marks.push(scopes.bindings.len());
+        scopes.open();
         for attribute in &slots[..count] {
             let declared = match (
                 attribute_prefix(attribute),
@@ -2100,7 +2128,7 @@ impl Parser<'_> {
             if !declared.is_empty() && value.is_empty() {
                 return fatal(format!("the prefix {declared} cannot be unbound"));
             }
-            scopes.bindings.push((declared.to_owned(), Rc::from(value)));
+            scopes.bind(declared, Rc::from(value));
         }
         let namespace = Self::element_namespace(element, scopes)?;
         for index in 0..count {
@@ -2469,6 +2497,51 @@ mod tests {
                 .collect();
             assert_eq!(tags(document, AttributeOrder::DeclarationsFirst), expected);
         }
+    }
+
+    #[test]
+    fn resolves_prefixes_as_a_scan_of_the_bindings_does() {
+        let mut scopes = Scopes::new();
+        let mut bindings: Vec<(String, Rc<str>)> =
+            vec![("xml".to_owned(), Rc::from(XML_NAMESPACE))];
+        let mut marks = Vec::new();
+        let bound = ["", "a", "b", "w"];
+        let resolved = ["", "a", "b", "w", "xml", "unbound"];
+        let check = |scopes: &Scopes, bindings: &[(String, Rc<str>)], step: usize| {
+            for prefix in resolved {
+                let scanned = bindings
+                    .iter()
+                    .rev()
+                    .find(|(p, _)| p == prefix)
+                    .map(|(_, uri)| uri);
+                assert_eq!(scopes.resolve(prefix), scanned, "{prefix:?} at {step}");
+            }
+        };
+        let mut state = 1u32;
+        for step in 0..2000 {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            if (state >> 16).is_multiple_of(4) && !marks.is_empty() {
+                scopes.close();
+                bindings.truncate(marks.pop().unwrap());
+            } else {
+                scopes.open();
+                marks.push(bindings.len());
+                for (index, prefix) in bound.into_iter().enumerate() {
+                    if (state >> (20 + index)) & 1 == 1 {
+                        let uri: Rc<str> = Rc::from(format!("urn:{prefix}:{step}"));
+                        scopes.bind(prefix, uri.clone());
+                        bindings.push((prefix.to_owned(), uri));
+                    }
+                }
+            }
+            check(&scopes, &bindings, step);
+        }
+        while let Some(mark) = marks.pop() {
+            scopes.close();
+            bindings.truncate(mark);
+            check(&scopes, &bindings, 2000);
+        }
+        assert_eq!(bindings.len(), 1);
     }
 
     /// The events of a parse and how it ended.
