@@ -60,6 +60,16 @@ pub(crate) enum Factory {
     Slides,
 }
 
+/// How the data of a compressed metafile picture is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Metafiles {
+    /// Inflated, as POI gives it.
+    Inflated,
+    /// Left as it is, where the records are only read for whether POI throws, which inflating
+    /// never does.
+    Compressed,
+}
+
 /// A picture: the type of its blip record and its data, as `getPicturedata` gives it, in place
 /// where it is stored as it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,7 +264,24 @@ pub(crate) fn record_at(data: &[u8], offset: usize) -> Read<(Escher<'_>, isize)>
 
 /// `createRecord` and `fillFields` at `offset`, by `factory`.
 pub(crate) fn made_at(data: &[u8], offset: usize, factory: Factory) -> Read<(Escher<'_>, isize)> {
-    fill(data, offset, create(data, offset, factory)?, factory)
+    made_as(data, offset, factory, Metafiles::Inflated)
+}
+
+/// `createRecord` and `fillFields` at `offset`, by `factory`, the compressed metafile pictures
+/// read as `metafiles` says.
+fn made_as(
+    data: &[u8],
+    offset: usize,
+    factory: Factory,
+    metafiles: Metafiles,
+) -> Read<(Escher<'_>, isize)> {
+    fill(
+        data,
+        offset,
+        create(data, offset, factory)?,
+        factory,
+        metafiles,
+    )
 }
 
 /// `new EscherContainerRecord().fillFields` at `offset`: the record read as a container
@@ -269,15 +296,25 @@ pub(crate) fn container_made_at(
     offset: usize,
     factory: Factory,
 ) -> Read<(Escher<'_>, isize)> {
-    fill(data, offset, Class::Container, factory)
+    fill(data, offset, Class::Container, factory, Metafiles::Inflated)
 }
 
 /// `AbstractEscherHolderRecord.decode`: the records of a drawing group's data.
 pub(crate) fn decode(data: &[u8]) -> Read<Vec<Escher<'_>>> {
+    decode_as(data, Metafiles::Inflated)
+}
+
+/// Fails where [`decode`] fails, without inflating the compressed metafile pictures.
+pub(crate) fn validate(data: &[u8]) -> Read<()> {
+    decode_as(data, Metafiles::Compressed).map(drop)
+}
+
+/// [`decode`], the compressed metafile pictures read as `metafiles` says.
+fn decode_as(data: &[u8], metafiles: Metafiles) -> Read<Vec<Escher<'_>>> {
     let mut records = Vec::new();
     let mut position = 0;
     while position < data.len() {
-        let (record, length) = record_at(data, position)?;
+        let (record, length) = made_as(data, position, Factory::Default, metafiles)?;
         records.push(record);
         position = position
             .checked_add_signed(length)
@@ -356,8 +393,14 @@ fn header(data: &[u8], offset: usize) -> Read<(u16, u16, i64)> {
 ///
 /// POI recurses into the records a record holds, as deep as 1000 levels; this reads them
 /// with a stack of the records still being filled instead, so that any nesting POI reads fits.
-fn fill(data: &[u8], offset: usize, class: Class, factory: Factory) -> Read<(Escher<'_>, isize)> {
-    let mut innermost = match open(data, offset, class, 0, factory)? {
+fn fill(
+    data: &[u8],
+    offset: usize,
+    class: Class,
+    factory: Factory,
+    metafiles: Metafiles,
+) -> Read<(Escher<'_>, isize)> {
+    let mut innermost = match open(data, offset, class, 0, factory, metafiles)? {
         Opened::Filled(record, consumed) => return Ok((record, consumed)),
         Opened::Filling(holder) => holder,
     };
@@ -366,7 +409,7 @@ fn fill(data: &[u8], offset: usize, class: Class, factory: Factory) -> Read<(Esc
         match innermost.next_child(data.len())? {
             Some(at) => {
                 let class = create(data, at, factory)?;
-                match open(data, at, class, outer.len() + 1, factory)? {
+                match open(data, at, class, outer.len() + 1, factory, metafiles)? {
                     Opened::Filled(child, consumed) => innermost.add(child, consumed)?,
                     Opened::Filling(holder) => {
                         outer.push(std::mem::replace(&mut innermost, holder))
@@ -469,10 +512,11 @@ fn open(
     class: Class,
     nesting: usize,
     factory: Factory,
+    metafiles: Metafiles,
 ) -> Read<Opened<'_>> {
     let holding = match class {
         Class::Leaf(leaf) => {
-            let (record, consumed) = fill_leaf(data, offset, leaf, factory)?;
+            let (record, consumed) = fill_leaf(data, offset, leaf, factory, metafiles)?;
             return Ok(Opened::Filled(record, consumed));
         }
         Class::Container => Holding::Container,
@@ -489,7 +533,7 @@ fn open(
             let remaining = length.min(data.len() as i64 - body as i64);
             if options & 0x000F != 0x000F {
                 let remaining = remaining.max(0);
-                clone(data, body, remaining, MAX_LARGE_RECORD)?;
+                borrow(data, body, remaining, MAX_LARGE_RECORD)?;
                 return Ok(Opened::Filled(
                     Escher::other(record_id),
                     (remaining + 8) as isize,
@@ -514,6 +558,7 @@ fn fill_leaf(
     offset: usize,
     class: Leaf,
     factory: Factory,
+    metafiles: Metafiles,
 ) -> Read<(Escher<'_>, isize)> {
     let (options, record_id, length) = header(data, offset)?;
     let body = offset + 8;
@@ -561,12 +606,12 @@ fn fill_leaf(
                     }
                     _ => return thrown("Did not have a EscherBlipRecord"),
                 };
-                let (found, read_length, size) = fill_blip(data, body + 36, blip_class)?;
+                let (found, read_length, size) = fill_blip(data, body + 36, blip_class, metafiles)?;
                 remaining -= read_length;
                 blip_size = size;
                 blip = Some(found);
             }
-            safely_clone(
+            safely_borrow(
                 data,
                 body as i64 + 36 + length - 36 - remaining,
                 remaining,
@@ -587,7 +632,7 @@ fn fill_leaf(
             )
         }
         Leaf::Blip | Leaf::BitmapBlip | Leaf::MetafileBlip => {
-            let (blip, read_length, _) = fill_blip(data, offset, class)?;
+            let (blip, read_length, _) = fill_blip(data, offset, class, metafiles)?;
             (
                 Escher {
                     record_id,
@@ -662,12 +707,12 @@ fn fill_leaf(
                 let [flag, col1, dx1, row1] = [0, 2, 4, 6].map(|at| i16_at(data, body + at));
                 corners = Some([flag?, col1?, dx1?, row1?]);
             }
-            clone(data, body + size as usize, length - size, MAX_SMALL_RECORD)?;
+            borrow(data, body + size as usize, length - size, MAX_SMALL_RECORD)?;
             (with(Content::ClientAnchor(corners)), read(8 + length))
         }
         Leaf::ClientData => {
             if length != 0 {
-                clone(data, body, length, MAX_SMALL_RECORD)?;
+                borrow(data, body, length, MAX_SMALL_RECORD)?;
             }
             (other(), read(8 + length))
         }
@@ -683,8 +728,14 @@ fn fill_leaf(
     })
 }
 
-/// A blip record's `fillFields`: the blip, the length POI says it read, and its record size.
-fn fill_blip(data: &[u8], offset: usize, class: Leaf) -> Read<(Blip<'_>, i64, i64)> {
+/// A blip record's `fillFields`: the blip, its compressed metafile data read as `metafiles`
+/// says, the length POI says it read, and its record size.
+fn fill_blip(
+    data: &[u8],
+    offset: usize,
+    class: Leaf,
+    metafiles: Metafiles,
+) -> Read<(Blip<'_>, i64, i64)> {
     let options = i16_at(data, offset)? as u16;
     let record_id = i16_at(data, offset + 2)? as u16;
     let length = i64::from(i32_at(data, offset + 4)?);
@@ -729,7 +780,7 @@ fn fill_blip(data: &[u8], offset: usize, class: Leaf) -> Read<(Blip<'_>, i64, i6
                 .ok_or_else(|| Thrown::new("metafile blip ends before its fields"))?;
             position += 34;
             let raw = borrow(data, position, saved, MAX_LARGE_RECORD)?;
-            let picture = if compression == 0 {
+            let picture = if compression == 0 && metafiles == Metafiles::Inflated {
                 Cow::Owned(inflate(raw))
             } else {
                 Cow::Borrowed(raw)
@@ -737,7 +788,7 @@ fn fill_blip(data: &[u8], offset: usize, class: Leaf) -> Read<(Blip<'_>, i64, i6
             let end = position as i64 + saved;
             let remaining = length - end + offset as i64 + 8;
             let rest = if remaining > 0 {
-                safely_clone(data, end, remaining, MAX_LARGE_RECORD)?.len() as i64
+                safely_borrow(data, end, remaining, MAX_LARGE_RECORD)?.len() as i64
             } else {
                 0
             };
@@ -1004,6 +1055,53 @@ pub(crate) mod tests {
         assert!(decode(&record(0, kind::DGG, &[0; 15])).is_err());
         assert!(decode(&record(0, kind::SPLIT_MENU_COLORS, &[0; 12])).is_err());
         assert!(decode(&record(0x000F, 0xF000, &[0; 4])).is_err());
+    }
+
+    /// An EMF metafile blip of the picture compressed, with `trailing` bytes past its data.
+    fn compressed_emf(picture: &[u8], trailing: usize) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(picture).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut body = vec![0; 16 + 34];
+        body[16 + 28..16 + 32].copy_from_slice(&(compressed.len() as i32).to_le_bytes());
+        body.extend(&compressed);
+        body.extend(vec![7; trailing]);
+        record(0x3D40, kind::BLIP_EMF, &body)
+    }
+
+    /// Validating a drawing group fails where decoding it does, and with the same exception,
+    /// though it leaves its compressed metafiles as they are.
+    #[test]
+    fn validates_as_decoding_fails() {
+        let emf = compressed_emf(b"an EMF picture", 0);
+        let mut stored = vec![0; 36];
+        stored.extend(&emf);
+        let bse = record(0x0062, kind::BSE, &stored);
+        let store = record(0x000F, 0xF001, &[bse, emf.clone()].concat());
+        let group = record(0x000F, 0xF000, &store);
+        let decoded = decode(&group).unwrap();
+        let Content::Stored(Stored {
+            blip: Some(blip), ..
+        }) = &decoded[0].children[0].children[0].content
+        else {
+            panic!("a stored picture");
+        };
+        assert_eq!(&*blip.data, b"an EMF picture");
+        let cases = [
+            group[..group.len() - 1].to_vec(),
+            group,
+            emf,
+            compressed_emf(b"trailed", 3),
+            record(0, kind::DGG, &[0; 15]),
+            record(0, kind::SPLIT_MENU_COLORS, &[0; 12]),
+            record(0x000F, 0xF000, &[0; 4]),
+            record(0, 0xF0FF, &[0; 4]),
+        ];
+        for case in &cases {
+            assert_eq!(validate(case), decode(case).map(drop), "{case:?}");
+        }
     }
 
     /// `levels` containers, each holding the next, the innermost holding a shape.

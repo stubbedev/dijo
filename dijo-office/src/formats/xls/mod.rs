@@ -585,7 +585,7 @@ fn plan(
                     unreachable!("spooling a drawing group fails only to write: {failure:?}")
                 }
             })?;
-        escher::decode(&group)?;
+        escher::validate(&group)?;
     }
     Ok(Planned {
         found,
