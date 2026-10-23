@@ -2,7 +2,7 @@
 //! class `page`, its objects walked from its roots along the references of their properties,
 //! writing texts, links and the files objects hold, and collecting the authors and times.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -180,6 +180,24 @@ struct Objects<'a> {
     /// The IDs in the order the cell declares them, where Tika iterates them in its `HashMap`'s
     /// order (#129).
     order: Vec<GuidKey>,
+    /// What the objects scanned so far give the files they hold as pictures or files.
+    referencing: RefCell<Referencing>,
+}
+
+/// The name and type the objects first in order that hold each file as a picture or file give
+/// it, of the objects scanned so far, in order.
+#[derive(Default)]
+struct Referencing {
+    scanned: usize,
+    by_target: HashMap<GuidKey, Referenced>,
+}
+
+/// The name and type the first object holding a file that names it gives it, and the type of the
+/// first reference to it.
+#[derive(Default)]
+struct Referenced {
+    named: Option<ResourceInfo>,
+    type_only: Option<ResourceInfo>,
 }
 
 impl<'a> Objects<'a> {
@@ -193,11 +211,70 @@ impl<'a> Objects<'a> {
                 }
             }
         }
-        Objects { by_id, order }
+        Objects {
+            by_id,
+            order,
+            referencing: RefCell::default(),
+        }
     }
 
     fn get(&self, id: ExGuid) -> Option<&Rc<Object<'a>>> {
         self.by_id.get(&id.key())
+    }
+
+    /// `resourceInfoFromReferencingObject`: the name and type the object that holds `target`
+    /// as a picture or file gives it, in the order Java iterates the objects, or the type of
+    /// the first such reference. The objects are scanned, their actions taken by `actions_of`,
+    /// only as far as the first that names `target`, each once over all targets.
+    fn referencing_info(
+        &self,
+        target: ExGuid,
+        mut actions_of: impl FnMut(&Object<'a>) -> Rc<Vec<Action<'a>>>,
+    ) -> Option<ResourceInfo> {
+        let key = target.key();
+        let mut referencing = self.referencing.borrow_mut();
+        while referencing
+            .by_target
+            .get(&key)
+            .is_none_or(|referenced| referenced.named.is_none())
+        {
+            let Some(id) = self.order.get(referencing.scanned) else {
+                break;
+            };
+            referencing.scanned += 1;
+            let candidate = &self.by_id[id];
+            if candidate.property_set.is_none() {
+                continue;
+            }
+            let actions = actions_of(candidate);
+            let mut named = None;
+            for action in actions.iter() {
+                let Some(Some(reference)) = action.child else {
+                    continue;
+                };
+                let container = matches!(
+                    action.id.value,
+                    property::PICTURE_CONTAINER
+                        | property::EMBEDDED_FILE_CONTAINER
+                        | property::WEB_PICTURE_CONTAINER_14
+                );
+                if !container {
+                    continue;
+                }
+                let referenced = referencing.by_target.entry(reference.key()).or_default();
+                if referenced.named.is_none() {
+                    referenced.named = named.get_or_insert_with(|| resource_info(&actions)).clone();
+                }
+                if referenced.type_only.is_none() {
+                    referenced.type_only = info_for_child(action, None);
+                }
+            }
+        }
+        let referenced = referencing.by_target.get(&key)?;
+        referenced
+            .named
+            .clone()
+            .or_else(|| referenced.type_only.clone())
     }
 }
 
@@ -443,7 +520,7 @@ impl<'p, 'a> Walker<'p, 'a, '_, '_> {
         let mut info = resource_info(&actions).or(inherited);
         if info.is_none() && object.file_data.is_some() {
             if let Some(id) = object.id {
-                info = self.info_from_referencing_object(id, objects, depth);
+                info = objects.referencing_info(id, |object| self.object_actions(object));
             }
         }
         if let Some(data) = &object.file_data {
@@ -511,49 +588,6 @@ impl<'p, 'a> Walker<'p, 'a, '_, '_> {
             }
         }
         false
-    }
-
-    /// `resourceInfoFromReferencingObject`: the name and type the object that holds `target`
-    /// as a picture or file gives it, in the order Java iterates the objects, or the type of
-    /// the first such reference.
-    fn info_from_referencing_object(
-        &mut self,
-        target: ExGuid,
-        objects: &Objects<'a>,
-        depth: usize,
-    ) -> Option<ResourceInfo> {
-        if depth >= MAX_DEPTH {
-            return None;
-        }
-        let mut type_only = None;
-        for key in &objects.order {
-            let candidate = objects.by_id[key].clone();
-            if candidate.property_set.is_none() {
-                continue;
-            }
-            let actions = self.object_actions(&candidate);
-            for action in actions.iter() {
-                let Some(Some(reference)) = action.child else {
-                    continue;
-                };
-                let container = matches!(
-                    action.id.value,
-                    property::PICTURE_CONTAINER
-                        | property::EMBEDDED_FILE_CONTAINER
-                        | property::WEB_PICTURE_CONTAINER_14
-                );
-                if !(reference.same(target) && container) {
-                    continue;
-                }
-                if let Some(info) = resource_info(&actions) {
-                    return Some(info);
-                }
-                if type_only.is_none() {
-                    type_only = info_for_child(action, None);
-                }
-            }
-        }
-        type_only
     }
 
     /// `collectObjectActions`, once for each object.
@@ -1007,6 +1041,167 @@ mod tests {
         assert_eq!(up_to_nul(&utf16("Havn\0rest")), utf16("Havn"));
         assert_eq!(up_to_nul(&utf16("Bølge")), utf16("Bølge"));
         assert_eq!(up_to_nul(&utf16("\0")), b"");
+    }
+
+    /// What `resourceInfoFromReferencingObject` gives, scanning every object from the first.
+    fn referencing_info_from_the_first<'a>(
+        objects: &Objects<'a>,
+        target: ExGuid,
+        mut actions_of: impl FnMut(&Object<'a>) -> Rc<Vec<Action<'a>>>,
+    ) -> Option<ResourceInfo> {
+        let mut type_only = None;
+        for key in &objects.order {
+            let candidate = objects.by_id[key].clone();
+            if candidate.property_set.is_none() {
+                continue;
+            }
+            let actions = actions_of(&candidate);
+            for action in actions.iter() {
+                let Some(Some(reference)) = action.child else {
+                    continue;
+                };
+                let container = matches!(
+                    action.id.value,
+                    property::PICTURE_CONTAINER
+                        | property::EMBEDDED_FILE_CONTAINER
+                        | property::WEB_PICTURE_CONTAINER_14
+                );
+                if !(reference.same(target) && container) {
+                    continue;
+                }
+                if let Some(info) = resource_info(&actions) {
+                    return Some(info);
+                }
+                if type_only.is_none() {
+                    type_only = info_for_child(action, None);
+                }
+            }
+        }
+        type_only
+    }
+
+    /// The name and type the objects referencing a file give it are those found scanning every
+    /// object from the first, whatever files were asked for before, and the objects whose
+    /// actions are taken are those that scan takes, in the same order.
+    #[test]
+    fn finds_referencing_infos_as_scanning_from_the_first() {
+        let guid = |kind: i32, value: i32| ExGuid {
+            kind,
+            value,
+            guid: super::super::Uuid([7; 16]),
+        };
+        let object = |value: i32, properties: bool| {
+            Rc::new(Object {
+                id: Some(guid(32, value)),
+                property_set: properties.then_some(PropertySet {
+                    properties: Vec::new(),
+                }),
+                references: Vec::new(),
+                space_references: Vec::new(),
+                file_data: None,
+            })
+        };
+        let utf16 =
+            |text: &str| -> Vec<u8> { text.encode_utf16().flat_map(u16::to_le_bytes).collect() };
+        let (blank, file, a, b) = (
+            utf16(""),
+            utf16("C:\\x\\fil.txt"),
+            utf16("a.png"),
+            utf16("b.png"),
+        );
+        let holds = |value: u32, target: i32| {
+            let id = PropertyId {
+                kind: kind::OBJECT_ID,
+                value,
+            };
+            action(id, &Property::NoData, Some(Some(guid(32, target))), None)
+        };
+        fn named(value: u32, name: &[u8]) -> Action<'_> {
+            let id = PropertyId {
+                kind: kind::DATA,
+                value,
+            };
+            action(id, &Property::Data(name), None, None)
+        }
+        let actions: HashMap<i32, Rc<Vec<Action<'_>>>> = [
+            (1, vec![holds(property::PICTURE_CONTAINER, 100)]),
+            (
+                2,
+                vec![
+                    holds(property::STRUCTURE_ELEMENT_CHILD_NODES, 101),
+                    holds(property::EMBEDDED_FILE_CONTAINER, 101),
+                    named(property::IMAGE_FILENAME, &blank),
+                ],
+            ),
+            (
+                3,
+                vec![
+                    holds(property::WEB_PICTURE_CONTAINER_14, 100),
+                    named(property::EMBEDDED_FILE_NAME, &file),
+                ],
+            ),
+            (
+                5,
+                vec![
+                    holds(property::PICTURE_CONTAINER, 102),
+                    named(property::IMAGE_FILENAME, &a),
+                    holds(property::EMBEDDED_FILE_CONTAINER, 101),
+                ],
+            ),
+            (
+                6,
+                vec![
+                    holds(property::PICTURE_CONTAINER, 101),
+                    named(property::IMAGE_FILENAME, &b),
+                ],
+            ),
+            (7, vec![holds(property::EMBEDDED_FILE_CONTAINER, 102)]),
+        ]
+        .into_iter()
+        .map(|(value, actions)| (value, Rc::new(actions)))
+        .collect();
+        let groups = [
+            vec![object(1, true), object(2, true), object(3, true)],
+            vec![
+                object(4, false),
+                object(5, true),
+                object(6, true),
+                object(7, true),
+            ],
+        ];
+        let seen = |info: Option<ResourceInfo>| info.map(|info| (info.name, info.kind));
+        for targets in [
+            [100, 101, 102, 103, 104],
+            [103, 102, 100, 101, 104],
+            [102, 104, 101, 101, 100],
+            [101, 100, 103, 102, 102],
+        ] {
+            let objects = Objects::of(&groups);
+            let (mut taken, mut taken_from_the_first) = (Vec::new(), Vec::new());
+            for target in targets {
+                let target = if target == 104 {
+                    guid(0, 100)
+                } else {
+                    guid(32, target)
+                };
+                let found = objects.referencing_info(target, |object| {
+                    let value = object.id.unwrap().value;
+                    if !taken.contains(&value) {
+                        taken.push(value);
+                    }
+                    actions[&value].clone()
+                });
+                let expected = referencing_info_from_the_first(&objects, target, |object| {
+                    let value = object.id.unwrap().value;
+                    if !taken_from_the_first.contains(&value) {
+                        taken_from_the_first.push(value);
+                    }
+                    actions[&value].clone()
+                });
+                assert_eq!(seen(found), seen(expected), "{targets:?} {target}");
+                assert_eq!(taken, taken_from_the_first, "{targets:?} {target}");
+            }
+        }
     }
 
     #[test]
