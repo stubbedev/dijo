@@ -12,6 +12,8 @@
 //! kept, the long s of early modern print, which tesseract reads as f, is restored by the
 //! dictionary of the language's model.
 
+use std::borrow::Cow;
+use std::cell::OnceCell;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
@@ -381,11 +383,13 @@ impl Prepared {
 }
 
 /// An image turned upright by its EXIF orientation and, when photographed at an angle, made
-/// flat: the first steps of preparing it, which come before orientation detection.
+/// flat: the first steps of preparing it, which come before orientation detection. It keeps the
+/// steps of preparing it that do not depend on the script it is read in, once made for a turn.
 struct Oriented {
     image: Upright,
     exif_orientation: Option<Orientation>,
     flattened: bool,
+    unscaled: [OnceCell<Unscaled>; 4],
 }
 
 /// The image as preparing it starts.
@@ -405,6 +409,7 @@ impl Oriented {
                 image: Upright::Unprepared,
                 exif_orientation: None,
                 flattened: false,
+                unscaled: Default::default(),
             };
         }
         let upright = image
@@ -417,6 +422,63 @@ impl Oriented {
             image: flat
                 .or(upright)
                 .map_or(Upright::AsItIs, |made| Upright::Made(Arc::new(made))),
+            unscaled: Default::default(),
+        }
+    }
+}
+
+/// An upright image turned by the quarter turns detection found, its light text on a dark
+/// ground inverted, its specks cleared, its background normalised when the lighting is uneven
+/// and its faint marks whitened otherwise, and its skew corrected: prepared up to scaling it,
+/// which depends on the script it is read in.
+struct Unscaled {
+    image: Arc<Bitmap>,
+    inverted: bool,
+    despeckled: bool,
+    uneven_lighting: bool,
+    skew_degrees: f64,
+}
+
+impl Unscaled {
+    fn of(upright: &Bitmap, quarter_turns: u8) -> Self {
+        let turned = upright.turned_clockwise(quarter_turns);
+        let turned = turned.as_ref().unwrap_or(upright);
+        let analysis = prepare::analysis(turned);
+        let inverted = prepare::inverted(&analysis);
+        let mut gray = turned.gray();
+        if inverted {
+            gray = Cow::Owned(prepare::invert(gray.into_owned()));
+        }
+        let despeckled = prepare::speckled(&gray);
+        if despeckled {
+            gray = Cow::Owned(prepare::despeckle(&gray));
+        }
+        let (analysis, uneven_lighting, gray) = if inverted || despeckled {
+            let made = Bitmap::Gray(gray.into_owned());
+            let analysis = prepare::analysis(&made);
+            let uneven_lighting = prepare::uneven_lighting(&made, &analysis);
+            (analysis, uneven_lighting, Cow::Owned(made.into_gray()))
+        } else {
+            let uneven_lighting = prepare::uneven_lighting(turned, &analysis);
+            (analysis, uneven_lighting, gray)
+        };
+        let evened = Bitmap::Gray(if uneven_lighting {
+            prepare::normalise_background(gray.into_owned())
+        } else {
+            prepare::whiten_faint_marks(&analysis, gray.into_owned())
+        });
+        let skew_degrees = prepare::skew_degrees(&prepare::analysis(&evened));
+        let image = if skew_degrees != 0.0 {
+            evened.rotated(skew_degrees)
+        } else {
+            evened
+        };
+        Self {
+            image: Arc::new(image),
+            inverted,
+            despeckled,
+            uneven_lighting,
+            skew_degrees,
         }
     }
 }
@@ -895,14 +957,9 @@ fn prepare_again(
     finish(image, oriented, script, model, quarter_turns)
 }
 
-/// The image as preparing it has made it so far, or the `original` while it has made none.
-fn prepared<'b>(made: &'b Option<Arc<Bitmap>>, original: &'b Bitmap) -> &'b Bitmap {
-    made.as_deref().unwrap_or(original)
-}
-
-/// Turns an oriented image by the quarter turns detection found, inverts light text on a dark
-/// ground, clears specks, normalises the background when the lighting is uneven and whitens
-/// faint marks otherwise, corrects its skew and scales its text to a readable size.
+/// Prepares an oriented image turned by the quarter turns detection found to read in a script
+/// with a model: scales its text to a readable size for the script once the image is
+/// [`Unscaled`], which it is once for each turn.
 fn finish(
     image: &Image<'_>,
     oriented: &Oriented,
@@ -910,56 +967,27 @@ fn finish(
     model: String,
     quarter_turns: u8,
 ) -> Prepared {
-    let mut made = match &oriented.image {
+    let upright: &Bitmap = match &oriented.image {
         Upright::Unprepared => return Prepared::unprepared(script, model, image.density),
-        Upright::AsItIs => None,
-        Upright::Made(upright) => Some(Arc::clone(upright)),
+        Upright::AsItIs => image.bitmap,
+        Upright::Made(upright) => upright,
     };
-    let original = image.bitmap;
-    if let Some(turned) = prepared(&made, original).turned_clockwise(quarter_turns) {
-        made = Some(Arc::new(turned));
-    }
-    let inverted = prepare::inverted(prepared(&made, original));
-    if inverted {
-        made = Some(Arc::new(Bitmap::Gray(prepare::invert(prepared(
-            &made, original,
-        )))));
-    }
-    let despeckled = prepare::speckled(prepared(&made, original));
-    if despeckled {
-        made = Some(Arc::new(Bitmap::Gray(prepare::despeckle(prepared(
-            &made, original,
-        )))));
-    }
-    let uneven_lighting = prepare::uneven_lighting(prepared(&made, original));
-    made = Some(Arc::new(Bitmap::Gray(if uneven_lighting {
-        prepare::normalise_background(prepared(&made, original))
+    let unscaled = oriented.unscaled[usize::from(quarter_turns % 4)]
+        .get_or_init(|| Unscaled::of(upright, quarter_turns));
+    let scale = prepare::scale_factor(&unscaled.image, MAX_PIXELS, reducible(script.as_deref()));
+    let made = if scale != 1.0 {
+        Arc::new(Bitmap::Gray(prepare::scale(&unscaled.image, scale)))
     } else {
-        prepare::whiten_faint_marks(prepared(&made, original))
-    })));
-    let skew_degrees = prepare::skew_degrees(prepared(&made, original));
-    if skew_degrees != 0.0 {
-        made = Some(Arc::new(prepared(&made, original).rotated(skew_degrees)));
-    }
-    let scale = prepare::scale_factor(
-        prepared(&made, original),
-        MAX_PIXELS,
-        reducible(script.as_deref()),
-    );
-    if scale != 1.0 {
-        made = Some(Arc::new(Bitmap::Gray(prepare::scale(
-            prepared(&made, original),
-            scale,
-        ))));
-    }
+        Arc::clone(&unscaled.image)
+    };
     let sideways = oriented
         .exif_orientation
         .is_some_and(Orientation::swaps_sides)
         != (quarter_turns % 2 == 1);
     Prepared {
-        image: made,
+        image: Some(made),
         model,
-        uneven_lighting,
+        uneven_lighting: unscaled.uneven_lighting,
         script,
         density: image
             .density
@@ -967,10 +995,10 @@ fn finish(
         exif_orientation: oriented.exif_orientation,
         decoded: true,
         flattened: oriented.flattened,
-        inverted,
-        despeckled,
+        inverted: unscaled.inverted,
+        despeckled: unscaled.despeckled,
         quarter_turns,
-        skew_degrees,
+        skew_degrees: unscaled.skew_degrees,
         scale,
     }
 }
@@ -1084,12 +1112,134 @@ mod tests {
             image: Upright::AsItIs,
             exif_orientation: None,
             flattened: false,
+            unscaled: Default::default(),
         };
         let prepared = finish(&image, &oriented, None, "eng".to_owned(), 0);
         assert!(prepared.uneven_lighting);
         assert_eq!(prepared.thresholding(), Thresholding::Sauvola);
         let made = prepared.image.expect("a prepared image");
-        assert!(!prepare::uneven_lighting(&made));
+        assert!(!prepare::uneven_lighting(&made, &prepare::analysis(&made)));
+    }
+
+    /// An image prepared as it was before the steps that do not depend on the script were kept:
+    /// every step from the image the one before made, each judging it afresh.
+    fn prepared_step_by_step(upright: &Bitmap, quarter_turns: u8, reduce: bool) -> Prepared {
+        let mut image = upright
+            .turned_clockwise(quarter_turns)
+            .unwrap_or_else(|| upright.clone());
+        let inverted = prepare::inverted(&prepare::analysis(&image));
+        if inverted {
+            image = Bitmap::Gray(prepare::invert(image.gray().into_owned()));
+        }
+        let despeckled = prepare::speckled(&image.gray());
+        if despeckled {
+            image = Bitmap::Gray(prepare::despeckle(&image.gray()));
+        }
+        let uneven_lighting = prepare::uneven_lighting(&image, &prepare::analysis(&image));
+        image = Bitmap::Gray(if uneven_lighting {
+            prepare::normalise_background(image.gray().into_owned())
+        } else {
+            prepare::whiten_faint_marks(&prepare::analysis(&image), image.gray().into_owned())
+        });
+        let skew_degrees = prepare::skew_degrees(&prepare::analysis(&image));
+        if skew_degrees != 0.0 {
+            image = image.rotated(skew_degrees);
+        }
+        let scale = prepare::scale_factor(&image, MAX_PIXELS, reduce);
+        if scale != 1.0 {
+            image = Bitmap::Gray(prepare::scale(&image, scale));
+        }
+        Prepared {
+            image: Some(Arc::new(image)),
+            uneven_lighting,
+            inverted,
+            despeckled,
+            quarter_turns,
+            skew_degrees,
+            scale,
+            ..Prepared::unprepared(None, String::new(), None)
+        }
+    }
+
+    #[test]
+    fn prepares_each_turn_once_as_step_by_step() {
+        let small_text = Bitmap::Rgb(image::RgbImage::from_fn(300, 200, |x, y| {
+            let inked = y % 14 < 6 && (20..280).contains(&x) && x % 9 < 7;
+            let speck = (x * 31 + y * 17) % 97 == 0;
+            image::Rgb(match (inked, speck) {
+                (true, _) => [20, 40, 160],
+                (false, true) => [0, 0, 0],
+                (false, false) => [250, 245, 230],
+            })
+        }));
+        let negative = Bitmap::Gray(GrayImage::from_fn(240, 180, |x, y| {
+            image::Luma([if y % 30 < 12 && x % 11 < 8 { 255 } else { 10 }])
+        }));
+        let large_text = Bitmap::Gray(lines(1000, (0..12).map(|line| 60 + line * 70)));
+        let tiny = Bitmap::Gray(GrayImage::from_fn(6, 5, |x, y| {
+            image::Luma([((x * 40 + y * 30) % 256) as u8])
+        }));
+        let pages = [
+            prepare::tests::shadowed_page(400, 300),
+            small_text,
+            negative,
+            large_text,
+            tiny,
+        ];
+        let readings = [
+            (Some("Latin"), 0),
+            (Some("Arabic"), 0),
+            (None, 1),
+            (Some("Latin"), 1),
+            (Some("Cyrillic"), 2),
+            (Some("Han"), 3),
+            (Some("Greek"), 0),
+            (Some("Latin"), 3),
+        ];
+        for page in &pages {
+            let image = Image::of(page, None, 0, None, None);
+            let oriented = Oriented {
+                image: Upright::AsItIs,
+                exif_orientation: None,
+                flattened: false,
+                unscaled: Default::default(),
+            };
+            for (script, quarter_turns) in readings {
+                let prepared = finish(
+                    &image,
+                    &oriented,
+                    script.map(str::to_owned),
+                    String::new(),
+                    quarter_turns,
+                );
+                let expected = prepared_step_by_step(page, quarter_turns, reducible(script));
+                let gray = |prepared: &Prepared| {
+                    prepared
+                        .image
+                        .as_deref()
+                        .map(|image| image.gray().into_owned())
+                };
+                let context = format!("{:?}, {script:?}, {quarter_turns}", page.dimensions());
+                assert_eq!(gray(&prepared), gray(&expected), "{context}");
+                assert_eq!(
+                    (
+                        prepared.inverted,
+                        prepared.despeckled,
+                        prepared.uneven_lighting,
+                        prepared.skew_degrees,
+                        prepared.scale,
+                    ),
+                    (
+                        expected.inverted,
+                        expected.despeckled,
+                        expected.uneven_lighting,
+                        expected.skew_degrees,
+                        expected.scale,
+                    ),
+                    "{context}"
+                );
+            }
+        }
     }
 
     fn german(word: &str) -> bool {

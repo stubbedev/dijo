@@ -99,11 +99,11 @@ impl Orientation {
     }
 }
 
-/// The angle, in degrees, by which the lines of text in the image are rotated, or 0 when no
-/// rotation clearly lines them up better. Found by projecting the dark pixels of a reduced copy
-/// onto the vertical axis at candidate angles: text lines give the sharpest profile when level.
-pub(crate) fn skew_degrees(image: &Bitmap) -> f64 {
-    let analysis = analysis(image, 1);
+/// The angle, in degrees, by which the lines of text in an image are rotated, or 0 when no
+/// rotation clearly lines them up better, from its [`analysis`] copy. Found by projecting the
+/// dark pixels of that reduced copy onto the vertical axis at candidate angles: text lines give
+/// the sharpest profile when level.
+pub(crate) fn skew_degrees(analysis: &GrayImage) -> f64 {
     let width = analysis.width() as i64;
     let height = analysis.height() as i64;
     let levels = analysis.as_raw();
@@ -227,8 +227,18 @@ pub(crate) fn ink_runs(image: &GrayImage) -> Vec<Range<usize>> {
 /// Whether the image is lit unevenly, as a photographed page in shadow is: whether the
 /// background brightness of its regions differs by [`UNEVEN_BACKGROUND_LEVELS`] grey levels or
 /// more. The background of a region is the brightness its lightest tenth of pixels reaches.
-pub(crate) fn uneven_lighting(image: &Bitmap) -> bool {
-    let analysis = analysis(image, LIGHTING_TILES);
+/// `analysis` is the image's [`analysis`] copy, which serves unless it is too small to cut into
+/// the regions.
+pub(crate) fn uneven_lighting(image: &Bitmap, analysis: &GrayImage) -> bool {
+    if analysis.width() < LIGHTING_TILES || analysis.height() < LIGHTING_TILES {
+        return lit_unevenly(&reduced(image, LIGHTING_TILES));
+    }
+    lit_unevenly(analysis)
+}
+
+/// [`uneven_lighting`] of a reduced copy of an image at least [`LIGHTING_TILES`] pixels on
+/// either side.
+fn lit_unevenly(analysis: &GrayImage) -> bool {
     let (width, height) = analysis.dimensions();
     let mut lightest = 0;
     let mut darkest = u32::from(WHITE);
@@ -250,8 +260,7 @@ pub(crate) fn uneven_lighting(image: &Bitmap) -> bool {
     lightest - darkest >= UNEVEN_BACKGROUND_LEVELS
 }
 
-pub(crate) fn normalise_background(image: &Bitmap) -> GrayImage {
-    let mut normalised = image.gray().into_owned();
+pub(crate) fn normalise_background(mut normalised: GrayImage) -> GrayImage {
     let (width, height) = normalised.dimensions();
     let background = resized(&block_background(&normalised), width, height);
     for (level, &paper) in normalised.iter_mut().zip(background.as_raw()) {
@@ -417,9 +426,14 @@ impl Taps {
     }
 }
 
-/// The image in grey, reduced to at most [`ANALYSIS_SIZE`] pixels on its longer side, and to no
-/// fewer than `min_side` on either, sampled bilinearly as Java2D draws it.
-fn analysis(image: &Bitmap, min_side: u32) -> GrayImage {
+/// The image in grey, reduced to at most [`ANALYSIS_SIZE`] pixels on its longer side, sampled
+/// bilinearly as Java2D draws it: the copy the corrections judge the image by.
+pub(crate) fn analysis(image: &Bitmap) -> GrayImage {
+    reduced(image, 1)
+}
+
+/// [`analysis`], and to no fewer than `min_side` pixels on either side.
+fn reduced(image: &Bitmap, min_side: u32) -> GrayImage {
     let (width, height) = image.dimensions();
     let scale = 1.0_f64.min(f64::from(ANALYSIS_SIZE) / f64::from(width.max(height)));
     let to_width = ((f64::from(width) * scale).round() as u32).max(min_side);
@@ -427,11 +441,11 @@ fn analysis(image: &Bitmap, min_side: u32) -> GrayImage {
     image.gray_resized(to_width, to_height)
 }
 
-/// Whether the image is light text on a dark ground, as a negative or a slide is: whether more
-/// than [`MIN_INVERTED_DARK_PERCENT`]% of it is darker than its Otsu threshold. Pages
-/// photographed on a dark table or lying in shadow are dark in part, up to about 70%.
-pub(crate) fn inverted(image: &Bitmap) -> bool {
-    let analysis = analysis(image, 1);
+/// Whether an image is light text on a dark ground, as a negative or a slide is, from its
+/// [`analysis`] copy: whether more than [`MIN_INVERTED_DARK_PERCENT`]% of it is darker than its
+/// Otsu threshold. Pages photographed on a dark table or lying in shadow are dark in part, up to
+/// about 70%.
+pub(crate) fn inverted(analysis: &GrayImage) -> bool {
     let levels = analysis.as_raw();
     let threshold = otsu_threshold(&histogram(levels));
     let dark = levels
@@ -441,21 +455,19 @@ pub(crate) fn inverted(image: &Bitmap) -> bool {
     dark * 100 > levels.len() as u64 * MIN_INVERTED_DARK_PERCENT
 }
 
-/// The image in grey with every level inverted, dark for light.
-pub(crate) fn invert(image: &Bitmap) -> GrayImage {
-    let mut image = image.gray().into_owned();
+/// The grey levels of an image, every level inverted, dark for light.
+pub(crate) fn invert(mut image: GrayImage) -> GrayImage {
     for level in image.iter_mut() {
         *level = !*level;
     }
     image
 }
 
-/// Whether the image is speckled, as a fax or a noisy scan is: whether more than
-/// [`MIN_SPECKLE_PERCENT`]% of its pixels darker than its Otsu threshold have no dark
+/// Whether the grey levels of an image are speckled, as a fax or a noisy scan is: whether more
+/// than [`MIN_SPECKLE_PERCENT`]% of its pixels darker than its Otsu threshold have no dark
 /// neighbour. Clean scans down to 72 dpi have under 0.3% such pixels, and a fax-like scan 30% or
 /// more, whose specks tesseract's Latin model reads as diacritics.
-pub(crate) fn speckled(image: &Bitmap) -> bool {
-    let image = image.gray();
+pub(crate) fn speckled(image: &GrayImage) -> bool {
     let (width, height) = image.dimensions();
     if width < 3 || height < 3 {
         return false;
@@ -487,10 +499,9 @@ pub(crate) fn speckled(image: &Bitmap) -> bool {
     isolated * 100 > dark_pixels * MIN_SPECKLE_PERCENT
 }
 
-/// The image in grey with each pixel the median of its 3×3 neighbourhood, edges repeated, which
-/// removes isolated specks and keeps strokes two pixels wide or more.
-pub(crate) fn despeckle(image: &Bitmap) -> GrayImage {
-    let image = image.gray();
+/// The grey levels of an image with each pixel the median of its 3×3 neighbourhood, edges
+/// repeated, which removes isolated specks and keeps strokes two pixels wide or more.
+pub(crate) fn despeckle(image: &GrayImage) -> GrayImage {
     let (width, height) = image.dimensions();
     let levels = image.as_raw();
     let row_of = |y: i64| {
@@ -515,19 +526,17 @@ pub(crate) fn despeckle(image: &Bitmap) -> GrayImage {
     despeckled
 }
 
-/// The image in grey with every pixel lighter than [`FAINT_PERCENT`]% of the way from its ink to
-/// its paper made white: faint marks, such as text showing through from the back of the page,
-/// that tesseract's single threshold takes for ink between the words. Its ink is its darkest
-/// half percent and its paper its 90th percentile.
-pub(crate) fn whiten_faint_marks(image: &Bitmap) -> GrayImage {
-    let analysis = analysis(image, 1);
+/// The grey levels of an image with every pixel lighter than [`FAINT_PERCENT`]% of the way from
+/// its ink to its paper made white: faint marks, such as text showing through from the back of
+/// the page, that tesseract's single threshold takes for ink between the words. Its ink is the
+/// darkest half percent of its [`analysis`] copy and its paper the 90th percentile.
+pub(crate) fn whiten_faint_marks(analysis: &GrayImage, mut image: GrayImage) -> GrayImage {
     let levels = analysis.as_raw();
     let histogram = histogram(levels);
     let count = levels.len() as u64;
     let ink = percentile(&histogram, count, INK_PERCENTILE);
     let paper = percentile(&histogram, count, BACKGROUND_PERCENTILE);
     let faint = (ink as i64 + (paper as i64 - ink as i64) * i64::from(FAINT_PERCENT) / 100) as u32;
-    let mut image = image.gray().into_owned();
     for level in image.iter_mut() {
         if u32::from(*level) >= faint {
             *level = WHITE;
@@ -603,19 +612,57 @@ pub(crate) mod tests {
     #[test]
     fn normalises_the_background_of_a_page_in_shadow() {
         let page = shadowed_page(800, 600);
-        assert!(uneven_lighting(&page));
-        let normalised = normalise_background(&page);
+        assert!(uneven_lighting(&page, &analysis(&page)));
+        let normalised = normalise_background(page.gray().into_owned());
         let paper_in_shadow = normalised.get_pixel(700, 20).0[0];
         let ink_in_shadow = normalised.get_pixel(700, 2).0[0];
         assert!(paper_in_shadow >= 250, "{paper_in_shadow}");
         assert_eq!(ink_in_shadow, 0);
-        assert!(!uneven_lighting(&Bitmap::Gray(normalised)));
+        let normalised = Bitmap::Gray(normalised);
+        assert!(!uneven_lighting(&normalised, &analysis(&normalised)));
+    }
+
+    #[test]
+    fn judges_the_lighting_by_the_analysis_copy_as_by_its_own() {
+        for (width, height) in [
+            (800, 600),
+            (3000, 7),
+            (7, 3000),
+            (2400, 16),
+            (1300, 9),
+            (5, 3),
+            (8, 8),
+            (9, 7),
+            (1, 1),
+        ] {
+            let page = Bitmap::Gray(GrayImage::from_fn(width, height, |x, y| {
+                Luma([match (x * 5 > width * 3, (x + y) % 9 == 0) {
+                    (_, true) => 0,
+                    (true, false) => SHADOWED_PAPER,
+                    (false, false) => WHITE,
+                }])
+            }));
+            let colour = Bitmap::Rgb(image::RgbImage::from_fn(width, height, |x, y| {
+                image::Rgb([
+                    (x * 7 % 256) as u8,
+                    (y * 3 % 256) as u8,
+                    ((x + y) % 256) as u8,
+                ])
+            }));
+            for image in [page, colour] {
+                assert_eq!(
+                    uneven_lighting(&image, &analysis(&image)),
+                    lit_unevenly(&reduced(&image, LIGHTING_TILES)),
+                    "{width}x{height}"
+                );
+            }
+        }
     }
 
     #[test]
     fn keeps_an_evenly_lit_page_as_it_is() {
         let page = rows(800, 400, &[(50, 10), (90, 10), (130, 10)]);
-        assert_eq!(normalise_background(&page), *page.gray());
+        assert_eq!(normalise_background(page.gray().into_owned()), *page.gray());
     }
 
     #[test]
@@ -682,9 +729,9 @@ pub(crate) mod tests {
             }
         }
         let image = Bitmap::Gray(image);
-        let skew = skew_degrees(&image);
+        let skew = skew_degrees(&analysis(&image));
         assert!((skew - 3.0).abs() < 0.2, "{skew}");
         let level = image.rotated(skew);
-        assert!(skew_degrees(&level).abs() < MIN_CORRECTION_DEGREES);
+        assert!(skew_degrees(&analysis(&level)).abs() < MIN_CORRECTION_DEGREES);
     }
 }

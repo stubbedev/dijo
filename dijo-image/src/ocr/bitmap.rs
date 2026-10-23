@@ -112,6 +112,14 @@ impl Bitmap {
         }
     }
 
+    /// [`Bitmap::gray`], a grey image taken as it is.
+    pub(crate) fn into_gray(self) -> GrayImage {
+        match self {
+            Self::Gray(image) => image,
+            other => other.gray().into_owned(),
+        }
+    }
+
     /// The image drawn through `transform` as [`java2d::draw`] draws it, each pixel read as Java2D
     /// reads it to interpolate: alpha, red, green and blue, the colours premultiplied by the
     /// alpha. The kind of image is matched once rather than for each of the pixels an
