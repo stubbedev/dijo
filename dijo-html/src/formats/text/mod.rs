@@ -69,7 +69,7 @@ use csv::{Excel, Records};
 use sniffer::Delimiter;
 
 use crate::config::ParserConfigs;
-use crate::formats::auto_detect_reader::{self, AutoDetectReader};
+use crate::formats::auto_detect_reader::{self, owned_chars, AutoDetectReader};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
@@ -304,16 +304,6 @@ fn for_each_chunk<E>(
     emit(carried.as_str())
 }
 
-/// The characters of `piece`, which the iterator owns.
-fn owned_chars(piece: String) -> impl Iterator<Item = char> {
-    let mut at = 0;
-    std::iter::from_fn(move || {
-        let c = piece[at..].chars().next()?;
-        at += c.len_utf8();
-        Some(c)
-    })
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -410,8 +400,6 @@ mod tests {
                 pieces.push(&text[start..]);
                 assert!(chunks(&pieces) == expected, "step {step}");
             }
-            let owned: String = owned_chars(text.clone()).collect();
-            assert_eq!(&owned, text);
         }
     }
 

@@ -17,7 +17,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::auto_detect_reader::{self, AutoDetectReader};
+use crate::formats::auto_detect_reader::{self, owned_chars, AutoDetectReader, OwnedChars};
 use crate::formats::embedded::RESOURCE_NAME;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
@@ -132,7 +132,7 @@ struct File<'a> {
 
 /// The records of a file, read as they are decoded.
 type FileRecords<'a> = Records<
-    std::iter::FlatMap<auto_detect_reader::Text<'a>, Vec<char>, fn(String) -> Vec<char>>,
+    std::iter::FlatMap<auto_detect_reader::Text<'a>, OwnedChars, fn(String) -> OwnedChars>,
     TabDelimited,
 >;
 
@@ -142,7 +142,7 @@ impl<'a> File<'a> {
         let (detection, text) =
             AutoDetectReader::stream(self.input, self.content_type.as_deref(), self.pages);
         auto_detect_reader::set_metadata(&detection, xhtml.metadata_mut());
-        let chars: fn(String) -> Vec<char> = |piece| piece.chars().collect();
+        let chars: fn(String) -> OwnedChars = owned_chars;
         Ok(Records::new(text.flat_map(chars), TabDelimited))
     }
 }

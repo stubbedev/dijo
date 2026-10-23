@@ -167,6 +167,27 @@ impl Iterator for Lines<'_> {
     }
 }
 
+/// The characters of a piece of [`Text`], which the iterator owns.
+pub struct OwnedChars {
+    piece: String,
+    at: usize,
+}
+
+impl Iterator for OwnedChars {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        let c = self.piece[self.at..].chars().next()?;
+        self.at += c.len_utf8();
+        Some(c)
+    }
+}
+
+/// The characters of `piece`, which the iterator owns.
+pub fn owned_chars(piece: String) -> OwnedChars {
+    OwnedChars { piece, at: 0 }
+}
+
 /// Sets the metadata an `AutoDetectReader`'s detection sets, in Tika's order: the detected
 /// charset, the detector that won, the trace, and the decoding charset (`getCharset`) when it is a
 /// superset of the detected one.
@@ -266,5 +287,21 @@ mod tests {
             |input: &[u8]| AutoDetectReader::read(input, Some("text/plain; charset=UTF-16")).text;
         assert_eq!(read(b"\xFE\xFF\x00a\x00b"), "ab");
         assert_eq!(read(b"\xFE\xFF\xFE\xFF\x00a\x00b"), "\u{FEFF}ab");
+    }
+
+    /// A piece's characters taken by the iterator that owns it are those collected from it.
+    #[test]
+    fn owns_the_characters_of_a_piece() {
+        for piece in [
+            "",
+            "a",
+            "plain text",
+            "æøå\t\u{FEFF}",
+            "\u{1F600}\r\n\u{10FFFF}",
+            "\0x\u{80}",
+        ] {
+            let owned: Vec<char> = owned_chars(piece.to_owned()).collect();
+            assert_eq!(owned, piece.chars().collect::<Vec<char>>(), "{piece:?}");
+        }
     }
 }
