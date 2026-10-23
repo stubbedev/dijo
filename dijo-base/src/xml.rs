@@ -22,6 +22,15 @@ use crate::text::charset::{Charset, Pieces};
 const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
 const XMLNS_NAMESPACE: &str = "http://www.w3.org/2000/xmlns/";
 
+/// The entities XML predefines, by name, and the characters they stand for.
+const PREDEFINED: [(&str, char); 5] = [
+    ("lt", '<'),
+    ("gt", '>'),
+    ("amp", '&'),
+    ("apos", '\''),
+    ("quot", '"'),
+];
+
 /// Why a parse stopped short.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum XmlError {
@@ -1104,25 +1113,9 @@ impl Parser<'_> {
     /// window: at the window's end, at a character it rejects, or at an ASCII byte `stops`
     /// picks.
     fn scan_buffered(&mut self, stops: impl Fn(u8) -> bool) {
-        let text = self.rest();
-        let bytes = text.as_bytes();
-        let mut at = 0;
-        while at < bytes.len() {
-            let byte = bytes[at];
-            if byte.is_ascii() {
-                if stops(byte) || (byte < 0x20 && !is_space(char::from(byte))) {
-                    break;
-                }
-                at += 1;
-            } else {
-                let c = text[at..].chars().next().expect("a character starts here");
-                if !is_char(c) {
-                    break;
-                }
-                at += c.len_utf8();
-            }
-        }
-        self.position += at;
+        self.position += char_run(self.rest(), |byte| {
+            !stops(byte) && (byte >= 0x20 || is_space(char::from(byte)))
+        });
     }
 
     /// Moves the position to where the run of characters Xerces accepts from it ends: at the
@@ -1575,13 +1568,9 @@ impl Parser<'_> {
         };
         value.clear();
         loop {
-            let plain = self
-                .rest()
-                .bytes()
-                .take_while(|&b| {
-                    b.is_ascii() && b >= 0x20 && b != quote as u8 && b != b'<' && b != b'&'
-                })
-                .count();
+            let plain = char_run(self.rest(), |byte| {
+                byte >= 0x20 && byte != quote as u8 && byte != b'<' && byte != b'&'
+            });
             value.push_str(&self.rest()[..plain]);
             self.position += plain;
             let c = self.expect_char("an attribute value")?;
@@ -1627,20 +1616,24 @@ impl Parser<'_> {
                 _ => malformed("a character reference to an invalid character"),
             };
         }
+        for &(name, c) in &PREDEFINED {
+            self.buffer(name.len() + 1);
+            let rest = self.rest().as_bytes();
+            if rest.starts_with(name.as_bytes()) && rest.get(name.len()) == Some(&b';') {
+                self.position += name.len() + 1;
+                return Ok(Reference::Char(c));
+            }
+        }
         let name = self.name("an entity reference")?;
         self.require(";", "; after an entity reference")?;
         Ok(Reference::Entity(name))
     }
 
     fn predefined(name: &str) -> Option<char> {
-        match name {
-            "lt" => Some('<'),
-            "gt" => Some('>'),
-            "amp" => Some('&'),
-            "apos" => Some('\''),
-            "quot" => Some('"'),
-            _ => None,
-        }
+        PREDEFINED
+            .iter()
+            .find(|&&(predefined, _)| predefined == name)
+            .map(|&(_, c)| c)
     }
 
     /// Whether an undeclared entity is a fatal error: only when every declaration it could
@@ -1826,11 +1819,17 @@ impl Parser<'_> {
                 Some('&') => {
                     emit_text(handler, self.text.slice(data), TextKind::Data)?;
                     self.position += 1;
-                    let reference = self.reference()?;
-                    let mut expansion = String::new();
-                    let expanded = self.expand_in_content(reference, &mut expansion, 0);
-                    emit_text(handler, &expansion, TextKind::Reference)?;
-                    expanded?;
+                    match self.reference()? {
+                        Reference::Char(c) => {
+                            emit_text(handler, c.encode_utf8(&mut [0; 4]), TextKind::Reference)?;
+                        }
+                        reference => {
+                            let mut expansion = String::new();
+                            let expanded = self.expand_in_content(reference, &mut expansion, 0);
+                            emit_text(handler, &expansion, TextKind::Reference)?;
+                            expanded?;
+                        }
+                    }
                 }
                 Some(_) => unreachable!("character data runs up to markup or a reference"),
             }
@@ -2134,6 +2133,28 @@ fn emit_text(
     }
 }
 
+/// The length in bytes of the run `text` starts with of characters [`is_char`] accepts that are
+/// not ASCII or are ASCII bytes `plain` picks. Of the characters not ASCII it rejects, a `str`
+/// holds only U+FFFE and U+FFFF, whose UTF-8 is EF BF BE and EF BF BF, so the run steps over the
+/// bytes of the others one at a time.
+fn char_run(text: &str, plain: impl Fn(u8) -> bool) -> usize {
+    let bytes = text.as_bytes();
+    let mut length = 0;
+    while length < bytes.len() {
+        let byte = bytes[length];
+        let accepted = if byte.is_ascii() {
+            plain(byte)
+        } else {
+            byte != 0xEF || bytes[length + 1] != 0xBF || !matches!(bytes[length + 2], 0xBE | 0xBF)
+        };
+        if !accepted {
+            break;
+        }
+        length += 1;
+    }
+    length
+}
+
 /// The length in bytes of the run of name characters `text` starts with, and whether a
 /// character other than a name character ends it, rather than the end of `text`.
 fn name_run(text: &str) -> (usize, bool) {
@@ -2387,6 +2408,87 @@ mod tests {
             Flow::Continue
         });
         (events, result)
+    }
+
+    fn char_by_char_run(text: &str, plain: impl Fn(u8) -> bool) -> usize {
+        text.char_indices()
+            .find(|&(_, c)| {
+                if c.is_ascii() {
+                    !plain(c as u8)
+                } else {
+                    !is_char(c)
+                }
+            })
+            .map_or(text.len(), |(at, _)| at)
+    }
+
+    #[test]
+    fn runs_over_characters_as_a_check_of_each_does() {
+        let content = |byte: u8| byte != b'<' && (byte >= 0x20 || is_space(char::from(byte)));
+        let attribute = |byte: u8| byte >= 0x20 && byte != b'\'' && byte != b'&';
+        for text in [
+            "",
+            "abc",
+            "é",
+            "a\u{FFFE}b",
+            "\u{FFFF}",
+            "é\u{FFFF}",
+            "\u{FFFD}\u{FFFD}<",
+            "\u{FEFF}\u{EFFF}\u{F7BF}\u{FFBE}x",
+            "日本語<x",
+            "a\u{10000}b\u{FFFE}",
+            "\u{10FFFF}'",
+            "\u{1}",
+            "x\ty\n\r&",
+            "\u{7F}\u{80}\u{7FF}\u{800}\u{FFFC}",
+        ] {
+            assert_eq!(
+                char_run(text, content),
+                char_by_char_run(text, content),
+                "{text:?}"
+            );
+            assert_eq!(
+                char_run(text, attribute),
+                char_by_char_run(text, attribute),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_references_and_characters_beyond_ascii() {
+        let mut values = Vec::new();
+        let mut texts = Vec::new();
+        let result = parse(
+            "<a b='&lt;&gt;&amp;&apos;&quot; é&#233;\u{FFFD}\u{FEFF}日\t&lt;z'>&lt;x&gt;&amp;&apos;&quot;é\u{FFFD}</a>"
+                .as_bytes(),
+            &mut |event| {
+                match event {
+                    Event::Start(_, found) => values.extend(found.iter().map(|a| a.value.clone())),
+                    Event::Text(text, _) => texts.push(text.to_owned()),
+                    _ => {}
+                }
+                Flow::Continue
+            },
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(values, ["<>&'\" éé\u{FFFD}\u{FEFF}日 <z"]);
+        assert_eq!(texts, ["<", "x", ">", "&", "'", "\"", "é\u{FFFD}"]);
+        for malformed in [
+            "<a>\u{FFFE}</a>",
+            "<a>é\u{FFFF}</a>",
+            "<a b='\u{FFFE}'/>",
+            "<a b='é\u{FFFF}'/>",
+            "<a>&ltx;</a>",
+            "<a>&lt</a>",
+            "<a b='&lt'/>",
+            "<a b='&quotx;'/>",
+        ] {
+            assert!(
+                matches!(text(malformed.as_bytes()).1, Err(XmlError::Malformed(_))),
+                "{malformed}"
+            );
+        }
     }
 
     #[test]
