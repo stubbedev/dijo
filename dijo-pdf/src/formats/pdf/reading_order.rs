@@ -83,26 +83,71 @@ fn merge_font_runs(line: &mut [TextPosition]) {
     if runs.len() < 2 {
         return;
     }
-    let mut merged = Vec::with_capacity(line.len());
-    for _ in 0..line.len() {
-        let mut leftmost: Option<usize> = None;
-        for run in 0..runs.len() {
-            if runs[run].is_empty() {
-                continue;
-            }
-            let better = leftmost.is_none_or(|best| {
-                line[runs[run].start].x_dir_adj() < line[runs[best].start].x_dir_adj()
-            });
-            if better {
-                leftmost = Some(run);
-            }
+    let x: Vec<f32> = line.iter().map(TextPosition::x_dir_adj).collect();
+    permute(line, merged_runs(&x, runs));
+}
+
+/// The order `merge_font_runs` takes the glyphs at `x` in, from the runs `runs`: next the
+/// glyph whose `x` is least among the runs' next glyphs, from the earlier run on a tie, unless
+/// the first run with a glyph left has one at NaN, which no glyph is left of and which is left
+/// of none.
+fn merged_runs(x: &[f32], mut runs: Vec<Range<usize>>) -> Vec<usize> {
+    let mut leftmost: BinaryHeap<ByLeft> = runs
+        .iter()
+        .enumerate()
+        .filter(|(_, run)| !run.is_empty() && !x[run.start].is_nan())
+        .map(|(index, run)| ByLeft(x[run.start], index))
+        .collect();
+    let mut first = 0;
+    let mut merged = Vec::with_capacity(x.len());
+    for _ in 0..x.len() {
+        while runs[first].is_empty() {
+            first += 1;
         }
-        let run = leftmost.unwrap_or_else(|| unreachable!("a glyph is left in some run"));
+        let run = if x[runs[first].start].is_nan() {
+            first
+        } else {
+            leftmost
+                .pop()
+                .unwrap_or_else(|| unreachable!("the first run's next glyph is queued"))
+                .1
+        };
         merged.push(runs[run].start);
         runs[run].start += 1;
+        if !runs[run].is_empty() && !x[runs[run].start].is_nan() {
+            leftmost.push(ByLeft(x[runs[run].start], run));
+        }
     }
-    permute(line, merged);
+    merged
 }
+
+/// A run in a priority queue by where its next glyph is, never NaN, least first, and by its
+/// index, least first.
+struct ByLeft(f32, usize);
+
+impl Ord for ByLeft {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .0
+            .partial_cmp(&self.0)
+            .unwrap_or_else(|| unreachable!("a queued glyph is not at NaN"))
+            .then(other.1.cmp(&self.1))
+    }
+}
+
+impl PartialOrd for ByLeft {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for ByLeft {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for ByLeft {}
 
 /// Puts `items[order[i]]` at `i` for every `i`, `order` being a permutation of the indices.
 fn permute<T>(items: &mut [T], mut order: Vec<usize>) {
@@ -446,5 +491,53 @@ mod tests {
         let mut same = ['x', 'y'];
         permute(&mut same, vec![0, 1]);
         assert_eq!(same, ['x', 'y']);
+    }
+
+    fn merged_by_scan(x: &[f32], mut runs: Vec<Range<usize>>) -> Vec<usize> {
+        let mut merged = Vec::with_capacity(x.len());
+        for _ in 0..x.len() {
+            let mut leftmost: Option<usize> = None;
+            for run in 0..runs.len() {
+                if runs[run].is_empty() {
+                    continue;
+                }
+                let better = leftmost.is_none_or(|best| x[runs[run].start] < x[runs[best].start]);
+                if better {
+                    leftmost = Some(run);
+                }
+            }
+            let run = leftmost.unwrap();
+            merged.push(runs[run].start);
+            runs[run].start += 1;
+        }
+        merged
+    }
+
+    #[test]
+    fn merges_runs_as_a_scan_merges_them() {
+        let lines: [&[f32]; 9] = [
+            &[3.0, 1.0, 2.0, 0.5, 4.0],
+            &[1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            &[0.0, -0.0, 0.0, -0.0],
+            &[5.0, 6.0, 1.0, 2.0, 7.0, 0.0, 3.0],
+            &[f32::NAN, 2.0, 1.0, 0.0, 3.0],
+            &[2.0, f32::NAN, 1.0, 0.0, f32::NAN, 3.0],
+            &[f32::NAN, f32::NAN, 1.0, f32::NAN, 0.0, 2.0],
+            &[f32::INFINITY, f32::NEG_INFINITY, 1.0, f32::NAN, -1.0, 0.0],
+            &[9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0],
+        ];
+        for x in lines {
+            for cuts in 0u32..1 << (x.len() - 1) {
+                let mut runs = Vec::new();
+                let mut start = 0;
+                for end in 1..=x.len() {
+                    if end == x.len() || cuts & (1 << (end - 1)) != 0 {
+                        runs.push(start..end);
+                        start = end;
+                    }
+                }
+                assert_eq!(merged_runs(x, runs.clone()), merged_by_scan(x, runs));
+            }
+        }
     }
 }
