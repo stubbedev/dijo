@@ -207,7 +207,7 @@ fn parse_header(data: &[u8]) -> Result<(Headers, Protocol, usize), Stop> {
     };
     let mut cs = WARC_START;
     let end = WARC
-        .exec(&mut cs, &Unsigned(data), 0, false, &mut |action, p| {
+        .exec(&mut cs, &Unsigned(data), 0, false, |action, p| {
             Ok::<_, ()>(state.act(action, data[p]))
         })
         .expect("the WARC actions never fail");

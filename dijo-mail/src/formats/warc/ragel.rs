@@ -82,7 +82,7 @@ impl Tables {
         keys: &(impl Keys + ?Sized),
         start: usize,
         end_of_input: bool,
-        on_action: &mut dyn FnMut(u16, usize) -> Result<Flow, E>,
+        mut on_action: impl FnMut(u16, usize) -> Result<Flow, E>,
     ) -> Result<usize, E> {
         let mut p = start;
         if *cs == ERROR && p < keys.len() {

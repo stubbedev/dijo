@@ -53,7 +53,7 @@ impl MediaType {
         let mut quoted: Vec<u16> = Vec::new();
         let mut valid = true;
         let mut cs = MEDIA_TYPE_EN_LENIENT;
-        MEDIA_TYPE.exec(&mut cs, keys.as_slice(), 0, true, &mut |action, p| {
+        MEDIA_TYPE.exec(&mut cs, keys.as_slice(), 0, true, |action, p| {
             match action {
                 0 => {
                     let name = substring(name_start, name_end)?;

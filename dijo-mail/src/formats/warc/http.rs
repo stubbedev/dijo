@@ -47,7 +47,7 @@ pub(super) fn head(message: &[u8]) -> Result<(Head, usize), Unread> {
     let mut state = Parsing::default();
     let mut cs = HTTP_EN_HTTP_RESPONSE_LENIENT;
     let end = HTTP
-        .exec(&mut cs, &Unsigned(message), 0, true, &mut |action, p| {
+        .exec(&mut cs, &Unsigned(message), 0, true, |action, p| {
             Ok::<_, ()>(state.act(action, message.get(p).copied()))
         })
         .expect("the HTTP actions never fail");
@@ -141,7 +141,7 @@ fn dechunk(rest: &[u8]) -> Result<Vec<&[u8]>, Unread> {
         let mut chunk: Option<i64> = None;
         let header_start = at;
         let end = CHUNKED
-            .exec(&mut cs, &keys, at, false, &mut |action, p| {
+            .exec(&mut cs, &keys, at, false, |action, p| {
                 match action {
                     0 => {
                         let digit = char::from(rest[p]).to_digit(16).map_or(-1, i64::from);
