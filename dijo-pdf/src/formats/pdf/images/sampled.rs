@@ -156,8 +156,8 @@ fn from_1_bit(
     color_space.to_rgb_image(width as u32, height as u32, output)
 }
 
-/// `fromAny`: the samples read bit by bit, mapped through the decode array to bytes, a
-/// palette's to indices, and masked by the colour key.
+/// `fromAny`: the samples read as `readBits` reads them, mapped through the decode array to
+/// bytes, a palette's to indices, and masked by the colour key.
 fn from_any(
     color_space: &ColorSpace,
     data: &[u8],
@@ -167,8 +167,6 @@ fn from_any(
     bits: u32,
 ) -> Result<Bitmap, Unwritten> {
     let components = color_space.components();
-    let sample_max = 2f32.powi(bits as i32) - 1.0;
-    let indexed = color_space.is_indexed();
     let ranges: Option<Vec<f32>> = color_key
         .filter(|key| key.len() >= components * 2)
         .map(|key| {
@@ -176,39 +174,17 @@ fn from_any(
                 .map(|item| float_value(item).unwrap_or(0.0))
                 .collect()
         });
-    let row_bits = width as usize * components * bits as usize;
-    let padding = match row_bits % 8 {
-        0 => 0,
-        bits => 8 - bits,
-    };
-    let mut reader = Bits { data, at: 0 };
-    let pixels = width as usize * height as usize;
-    let mut raster = Vec::with_capacity(pixels * components);
-    let mut key_mask = ranges.as_ref().map(|_| Vec::with_capacity(pixels));
-    for _ in 0..height {
-        for _ in 0..width {
-            let mut masked = true;
-            for c in 0..components {
-                let value = reader.read(bits)?;
-                if let Some(ranges) = &ranges {
-                    let value = value as f32;
-                    masked &= value >= ranges[c * 2] && value <= ranges[c * 2 + 1];
-                }
-                let (d_min, d_max) = (decode[c * 2], decode[c * 2 + 1]);
-                let output = d_min + (value as f32 * ((d_max - d_min) / sample_max));
-                let sample = if indexed {
-                    java_round(output)
-                } else {
-                    java_round(((output - d_min.min(d_max)) / (d_max - d_min).abs()) * 255.0)
-                };
-                raster.push(sample as u8);
-            }
-            if let Some(key_mask) = key_mask.as_mut() {
-                key_mask.push(if masked { 255u8 } else { 0 });
-            }
-        }
-        reader.read(padding as u32)?;
-    }
+    let (raster, key_mask) = decoded_samples(
+        data,
+        Sampling {
+            components,
+            bits,
+            indexed: color_space.is_indexed(),
+            decode,
+            ranges: ranges.as_deref(),
+        },
+        (width, height),
+    )?;
     let rgb = color_space.to_rgb_image(width, height, raster)?;
     let Some(key_mask) = key_mask else {
         return Ok(rgb);
@@ -224,25 +200,112 @@ fn from_any(
     Ok(Bitmap::Rgba(masked))
 }
 
-/// `ImageInputStream.readBits`, most significant bit first, failing past the end of the data.
-struct Bits<'a> {
-    data: &'a [u8],
-    /// The next bit to read.
-    at: usize,
+/// How an image's samples are read and decoded.
+#[derive(Clone, Copy)]
+struct Sampling<'a> {
+    components: usize,
+    bits: u32,
+    /// Whether the samples are a palette's indices.
+    indexed: bool,
+    decode: &'a [f32],
+    /// The colour key's range of each component, if it masks the image.
+    ranges: Option<&'a [f32]>,
 }
 
-impl Bits<'_> {
-    fn read(&mut self, count: u32) -> Result<u32, Unwritten> {
-        let mut value = 0u32;
-        for _ in 0..count {
-            let Some(&byte) = self.data.get(self.at / 8) else {
-                return Err(Unwritten::Stream(Exception::bare("java.io.EOFException")));
-            };
-            let bit = (byte >> (7 - self.at % 8)) & 1;
-            value = (value << 1) | u32::from(bit);
-            self.at += 1;
+impl Sampling<'_> {
+    /// Sample `value` of component `c` mapped through the decode array to a byte, and whether
+    /// it lies in the colour key's range.
+    fn decoded(&self, c: usize, value: u32) -> (u8, bool) {
+        let keyed = self.ranges.is_none_or(|ranges| {
+            let value = value as f32;
+            value >= ranges[c * 2] && value <= ranges[c * 2 + 1]
+        });
+        let sample_max = 2f32.powi(self.bits as i32) - 1.0;
+        let (d_min, d_max) = (self.decode[c * 2], self.decode[c * 2 + 1]);
+        let output = d_min + (value as f32 * ((d_max - d_min) / sample_max));
+        let sample = if self.indexed {
+            java_round(output)
+        } else {
+            java_round(((output - d_min.min(d_max)) / (d_max - d_min).abs()) * 255.0)
+        };
+        (sample as u8, keyed)
+    }
+}
+
+/// The samples of a `width` by `height` image, each row padded to a byte, mapped through the
+/// decode array to bytes, and the colour key's mask, 255 for each pixel it masks, if it has
+/// one. A component of up to 8 bits is decoded through a table of its values; one without
+/// decode bounds fails as `fromAny` fails, once its first sample is read.
+#[expect(clippy::needless_range_loop)]
+fn decoded_samples(
+    data: &[u8],
+    sampling: Sampling,
+    (width, height): (u32, u32),
+) -> Result<(Vec<u8>, Option<Vec<u8>>), Unwritten> {
+    let Sampling {
+        components, bits, ..
+    } = sampling;
+    let tables: Vec<Vec<(u8, bool)>> = match bits {
+        16 => Vec::new(),
+        _ => (0..components.min(sampling.decode.len() / 2))
+            .map(|c| {
+                (0..1u32 << bits)
+                    .map(|value| sampling.decoded(c, value))
+                    .collect()
+            })
+            .collect(),
+    };
+    let samples = Samples {
+        data,
+        bits: bits as usize,
+        row_bytes: (width as usize * components * bits as usize).div_ceil(8),
+    };
+    let pixels = width as usize * height as usize;
+    let mut raster = Vec::with_capacity(pixels * components);
+    let mut key_mask = sampling.ranges.map(|_| Vec::with_capacity(pixels));
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let mut masked = true;
+            for c in 0..components {
+                let value = samples.get(y, x * components + c)?;
+                let (sample, keyed) = match bits {
+                    16 => sampling.decoded(c, value),
+                    _ => tables[c][value as usize],
+                };
+                masked &= keyed;
+                raster.push(sample);
+            }
+            if let Some(key_mask) = key_mask.as_mut() {
+                key_mask.push(if masked { 255u8 } else { 0 });
+            }
         }
-        Ok(value)
+    }
+    Ok((raster, key_mask))
+}
+
+/// The samples of an image's rows, each row padded to a byte, read as `ImageInputStream.readBits`
+/// reads them, most significant bit first, failing past the end of the data.
+struct Samples<'a> {
+    data: &'a [u8],
+    /// The bits of a sample: 1, 2, 4, 8 or 16.
+    bits: usize,
+    row_bytes: usize,
+}
+
+impl Samples<'_> {
+    /// Sample `index` of row `row`.
+    fn get(&self, row: usize, index: usize) -> Result<u32, Unwritten> {
+        let at = row * self.row_bytes * 8 + index * self.bits;
+        let byte = |i: usize| {
+            self.data
+                .get(i)
+                .map(|&byte| u32::from(byte))
+                .ok_or_else(|| Unwritten::Stream(Exception::bare("java.io.EOFException")))
+        };
+        Ok(match self.bits {
+            16 => (byte(at / 8)? << 8) | byte(at / 8 + 1)?,
+            bits => (byte(at / 8)? >> (8 - bits - at % 8)) & ((1 << bits) - 1),
+        })
     }
 }
 
@@ -346,4 +409,134 @@ fn mul8(a: u8, b: u8) -> u8 {
 
 fn thrown(message: &str) -> Unwritten {
     Unwritten::Stream(Exception::new(IO_EXCEPTION, message.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use super::*;
+
+    /// `fromAny`'s samples as it read them bit by bit and decoded each on its own.
+    fn decoded_bit_by_bit(
+        data: &[u8],
+        sampling: Sampling,
+        (width, height): (u32, u32),
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), Unwritten> {
+        let Sampling {
+            components,
+            bits,
+            indexed,
+            decode,
+            ranges,
+        } = sampling;
+        let sample_max = 2f32.powi(bits as i32) - 1.0;
+        let row_bits = width as usize * components * bits as usize;
+        let padding = match row_bits % 8 {
+            0 => 0,
+            bits => 8 - bits,
+        };
+        let mut at = 0;
+        let mut read = |count: u32| {
+            let mut value = 0u32;
+            for _ in 0..count {
+                let Some(&byte) = data.get(at / 8) else {
+                    return Err(Unwritten::Stream(Exception::bare("java.io.EOFException")));
+                };
+                value = (value << 1) | u32::from((byte >> (7 - at % 8)) & 1);
+                at += 1;
+            }
+            Ok(value)
+        };
+        let pixels = width as usize * height as usize;
+        let mut raster = Vec::with_capacity(pixels * components);
+        let mut key_mask = ranges.map(|_| Vec::with_capacity(pixels));
+        for _ in 0..height {
+            for _ in 0..width {
+                let mut masked = true;
+                for c in 0..components {
+                    let value = read(bits)?;
+                    if let Some(ranges) = ranges {
+                        let value = value as f32;
+                        masked &= value >= ranges[c * 2] && value <= ranges[c * 2 + 1];
+                    }
+                    let (d_min, d_max) = (decode[c * 2], decode[c * 2 + 1]);
+                    let output = d_min + (value as f32 * ((d_max - d_min) / sample_max));
+                    let sample = if indexed {
+                        java_round(output)
+                    } else {
+                        java_round(((output - d_min.min(d_max)) / (d_max - d_min).abs()) * 255.0)
+                    };
+                    raster.push(sample as u8);
+                }
+                if let Some(key_mask) = key_mask.as_mut() {
+                    key_mask.push(if masked { 255u8 } else { 0 });
+                }
+            }
+            read(padding as u32)?;
+        }
+        Ok((raster, key_mask))
+    }
+
+    #[test]
+    fn decodes_samples_through_tables_as_bit_by_bit() {
+        let data: Vec<u8> = (0..400u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        let decodes: [&[f32]; 5] = [
+            &[0.0, 1.0, 0.0, 1.0, 0.0, 1.0],
+            &[1.0, 0.0, 0.25, 0.75, -0.5, 2.0],
+            &[0.0, 15.0, 0.0, 255.0, 3.0, 1.0],
+            &[0.0, 1.0, 0.0],
+            &[0.0, 1.0],
+        ];
+        let ranges: [Option<&[f32]>; 3] = [
+            None,
+            Some(&[0.0, 1.0, 2.0, 200.0, 5.0, 9.0]),
+            Some(&[3.0, 3.0, 0.0, 70000.0, 0.0, 0.0]),
+        ];
+        let mut checked = 0;
+        for bits in [1, 2, 4, 8, 16] {
+            for components in [1, 3] {
+                for indexed in [false, true] {
+                    for decode in decodes {
+                        for ranges in ranges {
+                            for (size, length) in
+                                [((7, 5), 400), ((13, 3), 400), ((5, 9), 11), ((1, 1), 0)]
+                            {
+                                let sampling = Sampling {
+                                    components,
+                                    bits,
+                                    indexed,
+                                    decode,
+                                    ranges,
+                                };
+                                let data = &data[..length];
+                                let decoded = |by_table: bool| {
+                                    catch_unwind(AssertUnwindSafe(|| match by_table {
+                                        true => {
+                                            format!("{:?}", decoded_samples(data, sampling, size))
+                                        }
+                                        false => format!(
+                                            "{:?}",
+                                            decoded_bit_by_bit(data, sampling, size)
+                                        ),
+                                    }))
+                                    .ok()
+                                };
+                                assert_eq!(
+                                    decoded(true),
+                                    decoded(false),
+                                    "{bits} bits, {components} components, {indexed}, {decode:?}, \
+                                     {ranges:?}, {size:?}, {length}"
+                                );
+                                checked += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 5 * 2 * 2 * 5 * 3 * 4);
+    }
 }
