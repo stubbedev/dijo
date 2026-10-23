@@ -2,6 +2,8 @@
 //! filters by the length and CRC-32 of their code and runs its own version of them, and
 //! writes nothing for any other filter's block.
 
+use std::ops::Range;
+
 use super::bits::BitInput;
 use super::{Thrown, OUT_OF_BOUNDS};
 
@@ -133,6 +135,13 @@ impl Vm {
         Ok(())
     }
 
+    /// `setMemory` at the start of the memory of the bytes of the memory in `block`, as many as
+    /// fit.
+    pub(super) fn move_to_start(&mut self, block: Range<usize>) {
+        let count = block.len().min(VM_MEMSIZE as usize + 1);
+        self.mem.copy_within(block.start..block.start + count, 0);
+    }
+
     /// `execute`: the program's standard filter run over the memory, and where its output is.
     pub(super) fn execute(&mut self, prg: &mut Program) -> Result<(), Thrown> {
         if prg.kind == Standard::None {
@@ -204,22 +213,34 @@ impl Vm {
         if data_size >= VM_GLOBALMEMADDR {
             return Ok(());
         }
-        let mut cur_pos = 0i32;
-        while cur_pos < data_size.wrapping_sub(4) {
-            let cur_byte = self.byte(cur_pos)?;
-            cur_pos += 1;
-            if cur_byte == 0xe8 || cur_byte == second {
-                let offset = i64::from(cur_pos) + file_offset;
-                let addr = i64::from(self.int_at(cur_pos)?);
-                if addr & SIGN != 0 {
-                    if (addr + offset) & SIGN == 0 {
-                        self.set_int(cur_pos, (addr as i32).wrapping_add(FILE_SIZE))?;
-                    }
-                } else if (addr - i64::from(FILE_SIZE)) & SIGN != 0 {
-                    self.set_int(cur_pos, (addr - offset) as i32)?;
+        let end = usize::try_from(data_size.wrapping_sub(4)).unwrap_or(0);
+        let scanned = end.min(self.mem.len());
+        let mut cur_pos = 0;
+        while cur_pos < scanned {
+            let Some(found) = memchr::memchr2(0xe8, second, &self.mem[cur_pos..scanned]) else {
+                cur_pos = scanned;
+                break;
+            };
+            cur_pos += found + 1;
+            let operand = self
+                .mem
+                .get_mut(cur_pos..cur_pos + 4)
+                .ok_or(OUT_OF_BOUNDS)?;
+            let offset = cur_pos as i64 + file_offset;
+            let addr = i64::from(i32::from_le_bytes([
+                operand[0], operand[1], operand[2], operand[3],
+            ]));
+            if addr & SIGN != 0 {
+                if (addr + offset) & SIGN == 0 {
+                    operand.copy_from_slice(&(addr as i32).wrapping_add(FILE_SIZE).to_le_bytes());
                 }
-                cur_pos += 4;
+            } else if (addr - i64::from(FILE_SIZE)) & SIGN != 0 {
+                operand.copy_from_slice(&((addr - offset) as i32).to_le_bytes());
             }
+            cur_pos += 4;
+        }
+        if cur_pos < end {
+            return Err(OUT_OF_BOUNDS);
         }
         Ok(())
     }
@@ -281,22 +302,24 @@ impl Vm {
     fn delta(&mut self, r: &[i32; 7]) -> Result<(), Thrown> {
         let data_size = r[4];
         let channels = r[0];
-        let border = data_size.wrapping_mul(2);
         self.set_int(VM_GLOBALMEMADDR + 0x20, data_size)?;
         if data_size as u32 >= (VM_GLOBALMEMADDR / 2) as u32
             || channels as u32 > MAX3_UNPACK_CHANNELS
         {
             return Ok(());
         }
-        let mut src_pos = 0i32;
+        let (size, channels) = (data_size as usize, channels as usize);
+        let (source, dest) = self.mem.split_at_mut(size);
+        let mut src_pos = 0;
         for cur_channel in 0..channels {
             let mut prev_byte = 0u8;
-            let mut dest_pos = data_size + cur_channel;
-            while dest_pos < border {
-                prev_byte = prev_byte.wrapping_sub(self.byte(src_pos)?);
+            for slot in dest[cur_channel.min(size)..size]
+                .iter_mut()
+                .step_by(channels)
+            {
+                prev_byte = prev_byte.wrapping_sub(source[src_pos]);
                 src_pos += 1;
-                self.set_byte(dest_pos, prev_byte)?;
-                dest_pos += channels;
+                *slot = prev_byte;
             }
         }
         Ok(())
@@ -311,7 +334,13 @@ impl Vm {
         if data_size >= VM_GLOBALMEMADDR / 2 || pos_r < 0 {
             return Ok(());
         }
-        let mut src_pos = 0i32;
+        let Ok(size) = usize::try_from(data_size) else {
+            if pos_r < data_size.wrapping_sub(2) {
+                return Err(OUT_OF_BOUNDS);
+            }
+            return Ok(());
+        };
+        let mut src_pos = 0;
         for cur_channel in 0..3 {
             let mut prev_byte = 0i64;
             let mut i = cur_channel;
@@ -335,21 +364,18 @@ impl Vm {
                 } else {
                     prev_byte
                 };
-                prev_byte = (predicted - i64::from(self.byte(src_pos)?)) & 0xff;
+                prev_byte = (predicted - i64::from(self.mem[src_pos])) & 0xff;
                 src_pos += 1;
-                self.set_byte(dest + i, prev_byte as u8)?;
+                self.mem[size + i as usize] = prev_byte as u8;
                 i += 3;
             }
         }
-        let mut i = pos_r;
-        while i < data_size.wrapping_sub(2) {
-            let at = dest.wrapping_add(i);
-            let green = self.byte(at.wrapping_add(1))?;
-            let red = self.byte(at)?;
-            self.set_byte(at, red.wrapping_add(green))?;
-            let blue = self.byte(at.wrapping_add(2))?;
-            self.set_byte(at.wrapping_add(2), blue.wrapping_add(green))?;
-            i = i.wrapping_add(3);
+        if let Some(pixels) = self.mem.get_mut(size + pos_r as usize..2 * size) {
+            for pixel in pixels.as_chunks_mut::<3>().0 {
+                let green = pixel[1];
+                pixel[0] = pixel[0].wrapping_add(green);
+                pixel[2] = pixel[2].wrapping_add(green);
+            }
         }
         Ok(())
     }
@@ -447,6 +473,251 @@ pub(super) fn read_data(input: &mut BitInput) -> Result<i32, Thrown> {
             let low = input.getbits()?;
             input.addbits(16);
             Ok(high | low)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn checked_e8(vm: &mut Vm, r: &[i32; 7], second: u8) -> Result<(), Thrown> {
+        const FILE_SIZE: i32 = 0x100_0000;
+        let data_size = r[4];
+        let file_offset = i64::from(r[6]);
+        if data_size >= VM_GLOBALMEMADDR {
+            return Ok(());
+        }
+        let mut cur_pos = 0i32;
+        while cur_pos < data_size.wrapping_sub(4) {
+            let cur_byte = vm.byte(cur_pos)?;
+            cur_pos += 1;
+            if cur_byte == 0xe8 || cur_byte == second {
+                let offset = i64::from(cur_pos) + file_offset;
+                let addr = i64::from(vm.int_at(cur_pos)?);
+                if addr & SIGN != 0 {
+                    if (addr + offset) & SIGN == 0 {
+                        vm.set_int(cur_pos, (addr as i32).wrapping_add(FILE_SIZE))?;
+                    }
+                } else if (addr - i64::from(FILE_SIZE)) & SIGN != 0 {
+                    vm.set_int(cur_pos, (addr - offset) as i32)?;
+                }
+                cur_pos += 4;
+            }
+        }
+        Ok(())
+    }
+
+    fn checked_delta(vm: &mut Vm, r: &[i32; 7]) -> Result<(), Thrown> {
+        let data_size = r[4];
+        let channels = r[0];
+        let border = data_size.wrapping_mul(2);
+        vm.set_int(VM_GLOBALMEMADDR + 0x20, data_size)?;
+        if data_size as u32 >= (VM_GLOBALMEMADDR / 2) as u32
+            || channels as u32 > MAX3_UNPACK_CHANNELS
+        {
+            return Ok(());
+        }
+        let mut src_pos = 0i32;
+        for cur_channel in 0..channels {
+            let mut prev_byte = 0u8;
+            let mut dest_pos = data_size + cur_channel;
+            while dest_pos < border {
+                prev_byte = prev_byte.wrapping_sub(vm.byte(src_pos)?);
+                src_pos += 1;
+                vm.set_byte(dest_pos, prev_byte)?;
+                dest_pos += channels;
+            }
+        }
+        Ok(())
+    }
+
+    fn checked_rgb(vm: &mut Vm, r: &[i32; 7]) -> Result<(), Thrown> {
+        let data_size = r[4];
+        let width = r[0].wrapping_sub(3);
+        let pos_r = r[1];
+        let dest = data_size;
+        vm.set_int(VM_GLOBALMEMADDR + 0x20, data_size)?;
+        if data_size >= VM_GLOBALMEMADDR / 2 || pos_r < 0 {
+            return Ok(());
+        }
+        let mut src_pos = 0i32;
+        for cur_channel in 0..3 {
+            let mut prev_byte = 0i64;
+            let mut i = cur_channel;
+            while i < data_size {
+                let upper_pos = i.wrapping_sub(width);
+                let predicted = if upper_pos >= 3 {
+                    let upper_data_pos = dest.wrapping_add(upper_pos);
+                    let upper_byte = i64::from(vm.byte(upper_data_pos)?);
+                    let upper_left_byte = i64::from(vm.byte(upper_data_pos.wrapping_sub(3))?);
+                    let predicted = prev_byte + upper_byte - upper_left_byte;
+                    let pa = ((predicted - prev_byte) as i32).wrapping_abs();
+                    let pb = ((predicted - upper_byte) as i32).wrapping_abs();
+                    let pc = ((predicted - upper_left_byte) as i32).wrapping_abs();
+                    if pa <= pb && pa <= pc {
+                        prev_byte
+                    } else if pb <= pc {
+                        upper_byte
+                    } else {
+                        upper_left_byte
+                    }
+                } else {
+                    prev_byte
+                };
+                prev_byte = (predicted - i64::from(vm.byte(src_pos)?)) & 0xff;
+                src_pos += 1;
+                vm.set_byte(dest + i, prev_byte as u8)?;
+                i += 3;
+            }
+        }
+        let mut i = pos_r;
+        while i < data_size.wrapping_sub(2) {
+            let at = dest.wrapping_add(i);
+            let green = vm.byte(at.wrapping_add(1))?;
+            let red = vm.byte(at)?;
+            vm.set_byte(at, red.wrapping_add(green))?;
+            let blue = vm.byte(at.wrapping_add(2))?;
+            vm.set_byte(at.wrapping_add(2), blue.wrapping_add(green))?;
+            i = i.wrapping_add(3);
+        }
+        Ok(())
+    }
+
+    /// Memories of pseudo-random bytes, one of them dense with the bytes the E8 filters seek.
+    fn memories() -> [Box<[u8]>; 2] {
+        let mut state = 1u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (state >> 16) as u8
+        };
+        let mut random = Vm::new().mem;
+        random.iter_mut().for_each(|byte| *byte = next());
+        let mut dense = Vm::new().mem;
+        for byte in dense.iter_mut() {
+            *byte = match next() % 4 {
+                0 => 0xe8,
+                1 => 0xe9,
+                _ => next(),
+            };
+        }
+        [random, dense]
+    }
+
+    fn assert_same(
+        name: &str,
+        r: &[i32; 7],
+        memory: &[u8],
+        run: impl Fn(&mut Vm) -> Result<(), Thrown>,
+        checked: impl Fn(&mut Vm) -> Result<(), Thrown>,
+    ) {
+        let mut fast = Vm { mem: memory.into() };
+        let mut slow = Vm { mem: memory.into() };
+        assert_eq!(run(&mut fast), checked(&mut slow), "{name} {r:?}");
+        assert!(fast.mem == slow.mem, "{name} {r:?}");
+    }
+
+    #[test]
+    fn filters_slices_of_memory_as_they_did_byte_by_byte() {
+        for memory in memories() {
+            for data_size in [
+                0,
+                1,
+                4,
+                5,
+                6,
+                100,
+                VM_GLOBALMEMADDR - 1,
+                VM_GLOBALMEMADDR,
+                -1,
+                i32::MIN,
+                i32::MIN + 3,
+                i32::MIN + 4,
+                i32::MAX,
+            ] {
+                for file_offset in [0, -5, 0x100_0000, 0x7FFF_FFF0] {
+                    let r = [0, 0, 0, 0, data_size, 0, file_offset];
+                    for second in [0xe8, 0xe9] {
+                        assert_same(
+                            "e8",
+                            &r,
+                            &memory,
+                            |vm| vm.e8(&r, second),
+                            |vm| checked_e8(vm, &r, second),
+                        );
+                    }
+                }
+            }
+            for data_size in [0, 1, 7, 1000, 0x1DFFF, 0x1E000, -1] {
+                for channels in [0, 1, 3, 7, 1024, 1025, -1] {
+                    let r = [channels, 0, 0, 0, data_size, 0, 0];
+                    assert_same(
+                        "delta",
+                        &r,
+                        &memory,
+                        |vm| vm.delta(&r),
+                        |vm| checked_delta(vm, &r),
+                    );
+                }
+            }
+            for data_size in [
+                0,
+                1,
+                2,
+                3,
+                5,
+                30,
+                3000,
+                0x1DFFF,
+                0x1E000,
+                -1,
+                -5,
+                i32::MIN,
+                i32::MIN + 1,
+                i32::MIN + 2,
+            ] {
+                for width in [0, 3, 4, 6, 9, 30, 300, -100, i32::MIN, i32::MAX] {
+                    for pos_r in [0, 1, 2, 5, -1, i32::MAX - 2, i32::MAX] {
+                        let r = [width, pos_r, 0, 0, data_size, 0, 0];
+                        assert_same(
+                            "rgb",
+                            &r,
+                            &memory,
+                            |vm| vm.rgb(&r),
+                            |vm| checked_rgb(vm, &r),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn moves_a_block_to_the_start_as_a_copy_of_it_was_set() {
+        let [memory, _] = memories();
+        let length = memory.len();
+        for (offset, size) in [
+            (0, 0),
+            (0, 10),
+            (3, 10),
+            (100, 7),
+            (5, 1000),
+            (0, length),
+            (1, length - 1),
+            (length - 4, 4),
+            (length, 0),
+            (VM_MEMSIZE as usize / 2, VM_MEMSIZE as usize / 2),
+        ] {
+            let mut moved = Vm {
+                mem: memory.clone(),
+            };
+            moved.move_to_start(offset..offset + size);
+            let mut set = Vm {
+                mem: memory.clone(),
+            };
+            let copy = memory[offset..offset + size].to_vec();
+            set.set_memory(0, &copy, 0, copy.len() as i32).unwrap();
+            assert!(moved.mem == set.mem, "{offset}, {size}");
         }
     }
 }

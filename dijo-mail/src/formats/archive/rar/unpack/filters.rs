@@ -1,6 +1,8 @@
 //! `Unpack`'s filters: `addVMCode`, which puts a filter on the stack, and `UnpWriteBuf`,
 //! which writes the window out, running each filter whose block it reaches over its block.
 
+use std::ops::Range;
+
 use super::bits::BitInput;
 use super::vm::{self, Filter, Program, Vm};
 use super::{
@@ -218,7 +220,7 @@ impl Unpack<'_> {
                 return Err(NULL);
             };
             self.run_filter(&mut flt)?;
-            let mut filtered = self.filtered_from_memory(&flt.prg)?;
+            let mut filtered = self.filtered_in_memory(&flt.prg)?;
             while let Some(Some(next)) = self.prg_stack.get(i + 1) {
                 if next.block_start != block_start
                     || next.block_length != filtered.len() as i32
@@ -226,16 +228,19 @@ impl Unpack<'_> {
                 {
                     break;
                 }
-                self.vm.set_memory(0, &filtered, 0, filtered.len() as i32)?;
+                self.vm.move_to_start(filtered);
                 i += 1;
                 let Some(mut next) = self.prg_stack[i].take() else {
                     return Err(NULL);
                 };
                 self.run_filter(&mut next)?;
-                filtered = self.filtered_from_memory(&next.prg)?;
+                filtered = self.filtered_in_memory(&next.prg)?;
             }
-            self.input.io.write(&filtered, 0, filtered.len() as i32)?;
-            self.written_file_size += filtered.len() as i64;
+            let length = filtered.len();
+            self.input
+                .io
+                .write(&self.vm.mem[filtered], 0, length as i32)?;
+            self.written_file_size += length as i64;
             written_border = block_end;
             write_size = self.unp_ptr.wrapping_sub(written_border) & MAX_WIN_MASK;
             i += 1;
@@ -282,16 +287,15 @@ impl Unpack<'_> {
         self.vm.execute(prg)
     }
 
-    /// The output of a filter run over a block, from the memory, where unrar takes it from
+    /// Where the output of a filter run over a block is in the memory, where unrar takes it from
     /// for each filter of a chain; junrar takes a chained filter's from its global data (#122).
-    fn filtered_from_memory(&self, prg: &Program) -> Result<Vec<u8>, Thrown> {
+    fn filtered_in_memory(&self, prg: &Program) -> Result<Range<usize>, Thrown> {
         let size = usize::try_from(prg.filtered_data_size).map_err(|_| NEGATIVE_SIZE)?;
         let offset = usize::try_from(prg.filtered_data_offset).map_err(|_| OUT_OF_BOUNDS)?;
-        self.vm
-            .mem
-            .get(offset..offset + size)
-            .map(<[u8]>::to_vec)
-            .ok_or(OUT_OF_BOUNDS)
+        if offset + size > self.vm.mem.len() {
+            return Err(OUT_OF_BOUNDS);
+        }
+        Ok(offset..offset + size)
     }
 
     /// `UnpWriteArea`: the window from `start` to `end` written out, around its end.
