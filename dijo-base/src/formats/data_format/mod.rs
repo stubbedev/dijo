@@ -26,6 +26,7 @@ mod fraction;
 pub mod header_footer;
 mod number_text;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -680,8 +681,8 @@ fn phone(digits: &str) -> Result<String, FormatError> {
 
 /// What `getFormat` chose for a value.
 enum Chosen {
-    /// A cached format, by its key.
-    Cached(String),
+    /// A cached format, by its place among the formats made.
+    Cached(usize),
     /// The general number format.
     General,
     /// The text `CellFormat` gave, which `CellFormatResultWrapper` writes trimmed.
@@ -690,14 +691,12 @@ enum Chosen {
     None,
 }
 
-/// What a format string is cached under: a format made for dates under a key of its own. POI
-/// caches one format per string, made for the first value it formats, so a later value gets
-/// the format made for another: a date one for a number, or a number one for a date (#92).
-fn cache_key(format: &str, date: bool) -> String {
-    if date {
-        format!("{format}\u{0}date")
+/// The format with each `\%` in it quoted as `'%'`, borrowed where it has none.
+fn quote_escaped_percents(format: &str) -> Cow<'_, str> {
+    if format.contains("\\%") {
+        Cow::Owned(format.replace("\\%", "'%'"))
     } else {
-        format.to_owned()
+        Cow::Borrowed(format)
     }
 }
 
@@ -711,7 +710,14 @@ pub struct DataFormatter {
     /// Whether the document counts its dates from 1904, as Mac Excel's did. Tika counts them
     /// from 1900 whatever the document says (#92).
     date_1904: bool,
-    formats: HashMap<String, Format>,
+    formats: Vec<Format>,
+    /// The place in `formats` of the format made for each format string: a format made for
+    /// dates under a key of its own, the string followed by `\0date`. POI caches one format per
+    /// string, made for the first value it formats, so a later value gets the format made for
+    /// another: a date one for a number, or a number one for a date (#92).
+    format_places: HashMap<String, usize>,
+    /// The key of a format made for dates, built here so a lookup does not allocate it.
+    date_key: String,
     cell_formats: HashMap<String, Result<CellFormat, String>>,
     date_formats: DateFormats,
 }
@@ -720,23 +726,25 @@ impl DataFormatter {
     /// A formatter for a document that counts its dates from 1904 when `date_1904`, and from
     /// 1900 otherwise.
     pub fn new(date_1904: bool) -> Self {
-        let mut formats = HashMap::new();
-        for format in ZIP_FORMATS {
-            formats.insert(format.to_owned(), Format::ZipPlusFour);
-        }
-        for format in PHONE_FORMATS {
-            formats.insert(format.to_owned(), Format::Phone);
-        }
-        for format in SSN_FORMATS {
-            formats.insert(format.to_owned(), Format::SocialSecurityNumber);
-        }
-        Self {
+        let mut formatter = Self {
             zone: TimeZone::fixed(0),
             date_1904,
-            formats,
+            formats: Vec::new(),
+            format_places: HashMap::new(),
+            date_key: String::new(),
             cell_formats: HashMap::new(),
             date_formats: DateFormats::default(),
+        };
+        for format in ZIP_FORMATS {
+            formatter.cache(format.to_owned(), Format::ZipPlusFour);
         }
+        for format in PHONE_FORMATS {
+            formatter.cache(format.to_owned(), Format::Phone);
+        }
+        for format in SSN_FORMATS {
+            formatter.cache(format.to_owned(), Format::SocialSecurityNumber);
+        }
+        formatter
     }
 
     /// Counts the document's dates from 1904 when `date_1904`, and from 1900 otherwise.
@@ -761,7 +769,7 @@ impl DataFormatter {
                 Chosen::Text(text) => Ok(text),
                 Chosen::None => cell_format::date_to_string(instant, &self.zone),
                 Chosen::General => General::format(Input::Date(instant)),
-                Chosen::Cached(key) => match self.cached(&key)? {
+                Chosen::Cached(place) => match &self.formats[place] {
                     Format::Date(formatter) => {
                         let shown = formatter.rounded(value);
                         let instant =
@@ -791,27 +799,28 @@ impl DataFormatter {
             Chosen::None => return Ok(java_double_to_string(value)),
             Chosen::Text(text) => text,
             Chosen::General => General::format(input)?,
-            Chosen::Cached(key) => self.cached(&key)?.format(input, value, &self.zone)?,
+            Chosen::Cached(place) => self.formats[place].format(input, value, &self.zone)?,
         };
-        let lower = format.to_lowercase();
-        if (lower.contains("general") || lower.contains("e+0"))
-            && result.contains('E')
-            && !result.contains("E-")
-        {
-            return Ok(result.replacen('E', "E+", 1));
+        if result.contains('E') && !result.contains("E-") {
+            let lower = format.to_lowercase();
+            if lower.contains("general") || lower.contains("e+0") {
+                return Ok(result.replacen('E', "E+", 1));
+            }
         }
         Ok(result)
     }
 
-    fn cached(&self, key: &str) -> Result<&Format, FormatError> {
-        self.formats
-            .get(key)
-            .ok_or_else(|| FormatError::Thrown(format!("The format {key:?} was not cached")))
+    /// Caches `format` under `key`, and returns its place among the formats made.
+    fn cache(&mut self, key: String, format: Format) -> usize {
+        let place = self.formats.len();
+        self.formats.push(format);
+        self.format_places.insert(key, place);
+        place
     }
 
     /// `getFormat(cellValue, formatIndex, formatStr, use1904Windowing)`.
     fn get_format(&mut self, value: f64, index: i32, format: &str) -> Result<Chosen, FormatError> {
-        let format = format.replace("\\%", "'%'");
+        let format = quote_escaped_percents(format);
         let semicolons = format.find(';').zip(format.rfind(';'));
         if let Some((first, last)) = semicolons {
             if first != last || RANGE_CONDITIONAL.is_match(&format) {
@@ -822,12 +831,17 @@ impl DataFormatter {
                 }
             }
         }
-        let key = cache_key(
-            &format,
-            self.date_formats.is_a_date_format(index, &format) && is_valid_excel_date(value),
-        );
-        if self.formats.contains_key(&key) {
-            return Ok(Chosen::Cached(key));
+        let key =
+            if self.date_formats.is_a_date_format(index, &format) && is_valid_excel_date(value) {
+                self.date_key.clear();
+                self.date_key.push_str(&format);
+                self.date_key.push_str("\u{0}date");
+                self.date_key.as_str()
+            } else {
+                &*format
+            };
+        if let Some(&place) = self.format_places.get(key) {
+            return Ok(Chosen::Cached(place));
         }
         if format.eq_ignore_ascii_case("General") || format == "@" {
             return Ok(Chosen::General);
@@ -837,8 +851,8 @@ impl DataFormatter {
             Created::Format(created) => created,
             Created::None => return Ok(Chosen::None),
         };
-        self.formats.insert(key.clone(), created);
-        Ok(Chosen::Cached(key))
+        let key = key.to_owned();
+        Ok(Chosen::Cached(self.cache(key, created)))
     }
 
     fn apply_cell_format(
@@ -847,10 +861,14 @@ impl DataFormatter {
         index: i32,
         format: &str,
     ) -> Result<String, FormatError> {
-        let cell_format = self
-            .cell_formats
-            .entry(format.to_owned())
-            .or_insert_with(|| CellFormat::new(format))
+        let cell_format = match self.cell_formats.get(format) {
+            Some(cell_format) => cell_format,
+            None => &*self
+                .cell_formats
+                .entry(format.to_owned())
+                .or_insert_with(|| CellFormat::new(format)),
+        };
+        let cell_format = cell_format
             .as_ref()
             .map_err(|reason| FormatError::Thrown(reason.clone()))?;
         let input = if value != 0.0 && self.date_formats.is_a_date_format(index, format) {
@@ -1084,7 +1102,7 @@ fn create_number_format(format: &str) -> Result<Created, FormatError> {
 /// only the first half of one outside the Basic Multilingual Plane and leaves the other in the
 /// format (#186).
 fn clean_format_for_number(format: &str) -> String {
-    let mut chars: Vec<char> = format.replace("\\%", "'%'").chars().collect();
+    let mut chars: Vec<char> = quote_escaped_percents(format).chars().collect();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
@@ -1207,6 +1225,65 @@ mod tests {
                     && (ours - java).abs() <= 5e-6 * ours.abs() + 5e-11
             }
             _ => false,
+        }
+    }
+
+    #[test]
+    fn quotes_escaped_percents_as_replace_does() {
+        for format in [
+            "",
+            "0%",
+            "0\\%",
+            "\\%",
+            "\\%\\%0.00\\%",
+            "\\\\%",
+            "\\",
+            "%\\",
+            "0.00\\ %",
+            "é\\%€",
+        ] {
+            let quoted = quote_escaped_percents(format);
+            assert_eq!(quoted, format.replace("\\%", "'%'"), "{format}");
+            assert_eq!(matches!(quoted, Cow::Borrowed(_)), !format.contains("\\%"));
+        }
+    }
+
+    /// A formatter that has cached the formats of other values writes each value as a new one.
+    #[test]
+    fn writes_values_with_cached_formats_as_with_new_ones() {
+        let cells = [
+            (45000.0, 164, "yyyy-mm-dd"),
+            (-1.0, 164, "yyyy-mm-dd"),
+            (45000.5, 164, "yyyy-mm-dd"),
+            (1.5, 164, "0.00\\%"),
+            (0.25, 9, "0%"),
+            (12345.0, 164, "00000"),
+            (123456789.0, 164, "00000-0000"),
+            (
+                5551234.0,
+                164,
+                "[<=9999999]###\\-####;\\(###\\)\\ ###\\-####",
+            ),
+            (-3.5, 164, "0.00;[Red]-0.00"),
+            (0.0, 164, "0.00;-0.00;\"zero\""),
+            (1e21, 0, "General"),
+            (1e21, 164, "0.00E+00"),
+            (1e-21, 164, "0.00E+00"),
+            (1.0 / 3.0, 164, "GENERAL"),
+            (1.0 / 3.0, 164, "@"),
+            (1.5, 164, "[h]:mm"),
+            (2.75, 164, "# ?/?"),
+            (42.0, 164, "\"text\""),
+        ];
+        let mut cached = DataFormatter::new(false);
+        for _ in 0..2 {
+            for (value, index, format) in cells {
+                assert_eq!(
+                    cached.format_raw(value, index, format),
+                    DataFormatter::new(false).format_raw(value, index, format),
+                    "{value} {index} {format}"
+                );
+            }
         }
     }
 
