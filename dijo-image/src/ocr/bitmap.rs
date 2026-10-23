@@ -97,18 +97,12 @@ impl Bitmap {
     pub(crate) fn gray(&self) -> Cow<'_, GrayImage> {
         match self {
             Self::Gray(image) => Cow::Borrowed(image),
-            Self::Rgb(image) => {
-                Cow::Owned(GrayImage::from_fn(image.width(), image.height(), |x, y| {
-                    let [red, green, blue] = image.get_pixel(x, y).0;
-                    Luma([luma(red, green, blue)])
-                }))
-            }
-            Self::Rgba(image) => {
-                Cow::Owned(GrayImage::from_fn(image.width(), image.height(), |x, y| {
-                    let [red, green, blue, alpha] = image.get_pixel(x, y).0;
-                    Luma([mul8(alpha, luma(red, green, blue))])
-                }))
-            }
+            Self::Rgb(image) => Cow::Owned(mapped(image, |pixel| {
+                Luma([luma(pixel[0], pixel[1], pixel[2])])
+            })),
+            Self::Rgba(image) => Cow::Owned(mapped(image, |pixel| {
+                Luma([mul8(pixel[3], luma(pixel[0], pixel[1], pixel[2]))])
+            })),
         }
     }
 
@@ -293,12 +287,36 @@ impl Bitmap {
     }
 }
 
+/// The samples of an image's pixels, without what its buffer may hold past them.
+pub(crate) fn samples<P: Pixel>(image: &ImageBuffer<P, Vec<P::Subpixel>>) -> &[P::Subpixel] {
+    let pixels = image.width() as usize * image.height() as usize;
+    &image.as_raw()[..pixels * usize::from(P::CHANNEL_COUNT)]
+}
+
+/// An image of each pixel of `image` converted by `convert`, which is handed its samples.
+fn mapped<P: Pixel<Subpixel = u8>, Q: Pixel<Subpixel = u8>>(
+    image: &ImageBuffer<P, Vec<u8>>,
+    convert: impl Fn(&[u8]) -> Q,
+) -> ImageBuffer<Q, Vec<u8>> {
+    let pixels = image.width() as usize * image.height() as usize;
+    let mut converted = Vec::with_capacity(pixels * usize::from(Q::CHANNEL_COUNT));
+    for pixel in samples(image).chunks_exact(usize::from(P::CHANNEL_COUNT)) {
+        converted.extend_from_slice(convert(pixel).channels());
+    }
+    ImageBuffer::from_raw(image.width(), image.height(), converted)
+        .expect("a converted pixel for each pixel")
+}
+
 /// The colours of an image laid over black by their alpha, as Java2D draws them into an
 /// opaque image that starts black.
 fn over_black(image: &RgbaImage) -> RgbImage {
-    RgbImage::from_fn(image.width(), image.height(), |x, y| {
-        let [red, green, blue, alpha] = image.get_pixel(x, y).0;
-        Rgb([mul8(alpha, red), mul8(alpha, green), mul8(alpha, blue)])
+    mapped(image, |pixel| {
+        let alpha = pixel[3];
+        Rgb([
+            mul8(alpha, pixel[0]),
+            mul8(alpha, pixel[1]),
+            mul8(alpha, pixel[2]),
+        ])
     })
 }
 
@@ -313,12 +331,46 @@ fn oriented<P: Pixel<Subpixel = u8>>(
     } else {
         (width, height)
     };
-    let mut turned = ImageBuffer::new(out_width, out_height);
-    for (x, y, pixel) in image.enumerate_pixels() {
-        let (to_x, to_y) = orientation.moved(x, y, width, height);
-        turned.put_pixel(to_x, to_y, *pixel);
+    if width == 0 || height == 0 {
+        return ImageBuffer::new(out_width, out_height);
     }
-    turned
+    let channels = usize::from(P::CHANNEL_COUNT);
+    let (width, height) = (width as usize, height as usize);
+    let source = samples(image);
+    let mut turned = vec![0; source.len()];
+    let row_length = width * channels;
+    let rows = source.chunks_exact(row_length).enumerate();
+    match orientation.value() {
+        5..=8 => {
+            let mirrored_across = matches!(orientation.value(), 6 | 7);
+            let mirrored_down = matches!(orientation.value(), 7 | 8);
+            for (y, row) in rows {
+                let to_x = if mirrored_across { height - 1 - y } else { y };
+                for (x, pixel) in row.chunks_exact(channels).enumerate() {
+                    let to_y = if mirrored_down { width - 1 - x } else { x };
+                    let at = (to_y * height + to_x) * channels;
+                    turned[at..at + channels].copy_from_slice(pixel);
+                }
+            }
+        }
+        value => {
+            let mirrored_across = matches!(value, 2 | 3);
+            let mirrored_down = matches!(value, 3 | 4);
+            for (y, row) in rows {
+                let to_y = if mirrored_down { height - 1 - y } else { y };
+                let to = &mut turned[to_y * row_length..][..row_length];
+                if mirrored_across {
+                    let pixels = row.chunks_exact(channels).rev();
+                    for (to, pixel) in to.chunks_exact_mut(channels).zip(pixels) {
+                        to.copy_from_slice(pixel);
+                    }
+                } else {
+                    to.copy_from_slice(row);
+                }
+            }
+        }
+    }
+    ImageBuffer::from_raw(out_width, out_height, turned).expect("a pixel for each pixel")
 }
 
 #[cfg(test)]
@@ -357,7 +409,6 @@ mod tests {
     #[test]
     fn draws_each_kind_of_image_with_the_pixels_get_pixel_reads() {
         let (width, height) = (37, 23);
-        let byte = |x: u32, y: u32, channel: u32| ((x * 7 + y * 13 + channel * 101) % 256) as u8;
         let images = [
             Bitmap::Gray(GrayImage::from_fn(width, height, |x, y| {
                 Luma([byte(x, y, 0)])
@@ -439,6 +490,104 @@ mod tests {
         }
         assert_eq!(Orientation::of(1), None);
         assert_eq!(Orientation::of(9), None);
+    }
+
+    fn byte(x: u32, y: u32, channel: u32) -> u8 {
+        ((x * 7 + y * 13 + channel * 101) % 256) as u8
+    }
+
+    fn moved_pixel_by_pixel<P: Pixel<Subpixel = u8>>(
+        image: &ImageBuffer<P, Vec<u8>>,
+        orientation: Orientation,
+    ) -> ImageBuffer<P, Vec<u8>> {
+        let (width, height) = image.dimensions();
+        let (out_width, out_height) = if orientation.swaps_sides() {
+            (height, width)
+        } else {
+            (width, height)
+        };
+        let mut turned = ImageBuffer::new(out_width, out_height);
+        for (x, y, pixel) in image.enumerate_pixels() {
+            let (to_x, to_y) = match orientation.value() {
+                2 => (width - 1 - x, y),
+                3 => (width - 1 - x, height - 1 - y),
+                4 => (x, height - 1 - y),
+                5 => (y, x),
+                6 => (height - 1 - y, x),
+                7 => (height - 1 - y, width - 1 - x),
+                8 => (y, width - 1 - x),
+                _ => (x, y),
+            };
+            turned.put_pixel(to_x, to_y, *pixel);
+        }
+        turned
+    }
+
+    #[test]
+    fn converts_and_orients_as_pixel_by_pixel() {
+        let sizes = [
+            (0, 0),
+            (0, 3),
+            (4, 0),
+            (1, 1),
+            (1, 5),
+            (6, 1),
+            (2, 3),
+            (37, 23),
+        ];
+        for (width, height) in sizes {
+            let gray = GrayImage::from_fn(width, height, |x, y| Luma([byte(x, y, 0)]));
+            let rgb = RgbImage::from_fn(width, height, |x, y| {
+                Rgb([byte(x, y, 0), byte(x, y, 1), byte(x, y, 2)])
+            });
+            let rgba = RgbaImage::from_fn(width, height, |x, y| {
+                image::Rgba([byte(x, y, 0), byte(x, y, 1), byte(x, y, 2), byte(x, y, 3)])
+            });
+            let rgb_gray = GrayImage::from_fn(width, height, |x, y| {
+                let [red, green, blue] = rgb.get_pixel(x, y).0;
+                Luma([luma(red, green, blue)])
+            });
+            let rgba_gray = GrayImage::from_fn(width, height, |x, y| {
+                let [red, green, blue, alpha] = rgba.get_pixel(x, y).0;
+                Luma([mul8(alpha, luma(red, green, blue))])
+            });
+            let black = RgbImage::from_fn(width, height, |x, y| {
+                let [red, green, blue, alpha] = rgba.get_pixel(x, y).0;
+                Rgb([mul8(alpha, red), mul8(alpha, green), mul8(alpha, blue)])
+            });
+            assert_eq!(*Bitmap::Rgb(rgb.clone()).gray(), rgb_gray);
+            assert_eq!(*Bitmap::Rgba(rgba.clone()).gray(), rgba_gray);
+            assert_eq!(over_black(&rgba), black);
+            for value in 2..=8 {
+                let orientation = Orientation::of(value).unwrap();
+                let size = (width, height);
+                assert_eq!(
+                    oriented(&gray, orientation),
+                    moved_pixel_by_pixel(&gray, orientation),
+                    "{size:?} {value}"
+                );
+                assert_eq!(
+                    oriented(&rgb, orientation),
+                    moved_pixel_by_pixel(&rgb, orientation),
+                    "{size:?} {value}"
+                );
+                assert_eq!(
+                    oriented(&rgba, orientation),
+                    moved_pixel_by_pixel(&rgba, orientation),
+                    "{size:?} {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn takes_the_samples_of_the_pixels_alone() {
+        let mut buffer: Vec<u8> = (0..20).collect();
+        let image = GrayImage::from_raw(3, 2, buffer.clone()).unwrap();
+        buffer.truncate(6);
+        assert_eq!(samples(&image), buffer);
+        let rgb = RgbImage::from_raw(2, 2, (0..13).collect()).unwrap();
+        assert_eq!(samples(&rgb), &(0..12).collect::<Vec<u8>>()[..]);
     }
 
     #[test]

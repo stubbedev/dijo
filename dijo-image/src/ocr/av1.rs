@@ -37,6 +37,7 @@ pub(crate) struct Plane {
 }
 
 impl Plane {
+    #[cfg(test)]
     pub(crate) fn at(&self, x: usize, y: usize) -> u16 {
         self.samples[y * self.width + x]
     }

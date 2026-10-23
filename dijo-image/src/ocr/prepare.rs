@@ -74,20 +74,6 @@ impl Orientation {
         matches!(self.0, 5..=8)
     }
 
-    /// Where the pixel at `x`, `y` of an image of `width` by `height` pixels moves to.
-    pub(crate) fn moved(self, x: u32, y: u32, width: u32, height: u32) -> (u32, u32) {
-        match self.0 {
-            2 => (width - 1 - x, y),
-            3 => (width - 1 - x, height - 1 - y),
-            4 => (x, height - 1 - y),
-            5 => (y, x),
-            6 => (height - 1 - y, x),
-            7 => (height - 1 - y, width - 1 - x),
-            8 => (y, width - 1 - x),
-            _ => (x, y),
-        }
-    }
-
     /// The orientation that turns an image clockwise by quarter turns, when it turns it at all.
     pub(crate) fn clockwise(quarter_turns: u8) -> Option<Self> {
         match quarter_turns % 4 {

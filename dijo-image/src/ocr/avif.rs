@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use image::{DynamicImage, GrayImage, ImageBuffer, Pixel, RgbImage};
 
 use super::av1::{self, Chroma, Picture};
-use super::bitmap::Bitmap;
+use super::bitmap::{samples, Bitmap};
 use super::decode::decodable;
 
 /// A box's or an item's type.
@@ -576,10 +576,24 @@ fn paste<P: Pixel>(
     tile: &ImageBuffer<P, Vec<P::Subpixel>>,
     (x, y): (u32, u32),
 ) {
-    for (tile_x, tile_y, pixel) in tile.enumerate_pixels() {
-        if x + tile_x < canvas.width() && y + tile_y < canvas.height() {
-            canvas.put_pixel(x + tile_x, y + tile_y, *pixel);
-        }
+    let (canvas_width, canvas_height) = canvas.dimensions();
+    let columns = tile.width().min(canvas_width.saturating_sub(x)) as usize;
+    let rows = tile.height().min(canvas_height.saturating_sub(y)) as usize;
+    if columns == 0 || rows == 0 {
+        return;
+    }
+    let channels = usize::from(P::CHANNEL_COUNT);
+    let (tile_row, canvas_row) = (
+        tile.width() as usize * channels,
+        canvas_width as usize * channels,
+    );
+    let start = (y as usize * canvas_width as usize + x as usize) * channels;
+    let length = columns * channels;
+    let canvas = &mut **canvas;
+    let from_rows = samples(tile).chunks_exact(tile_row).take(rows);
+    for (row, from) in from_rows.enumerate() {
+        let at = start + row * canvas_row;
+        canvas[at..at + length].copy_from_slice(&from[..length]);
     }
 }
 
@@ -734,52 +748,97 @@ fn picture(picture: &Picture, colour: Option<Colour>) -> Result<Bitmap, String> 
     let luma_plane = &picture.planes[0];
     let (width, height) = (luma_plane.width, luma_plane.height);
     let short = || "the picture holds fewer samples than its size".to_owned();
+    let max = u16::try_from((1u32 << picture.depth) - 1).unwrap_or(u16::MAX);
+    let levels = || tabulated(max, move |sample| level(range.luma(sample)));
     let shifts = match picture.chroma {
         Chroma::Subsampled { x, y } if matrix != Matrix::Brightness => (x, y),
         _ => {
-            let levels = luma_plane
+            let levels = levels();
+            let grey = luma_plane
                 .samples
                 .iter()
-                .map(|&sample| level(range.luma(sample)))
+                .map(|&sample| levels(sample))
                 .collect();
-            return GrayImage::from_raw(width as u32, height as u32, levels)
+            return GrayImage::from_raw(width as u32, height as u32, grey)
                 .map(Bitmap::Gray)
                 .ok_or_else(short);
         }
     };
-    let mut samples = Vec::with_capacity(width * height * 3);
-    for y in 0..height {
-        for x in 0..width {
-            let brightness = range.luma(luma_plane.at(x, y));
-            let (chroma_x, chroma_y) = (x >> shifts.0, y >> shifts.1);
-            let blue = picture.planes[1].at(chroma_x, chroma_y);
-            let red = picture.planes[2].at(chroma_x, chroma_y);
-            let (r, g, b) = match matrix {
-                Matrix::Identity => (range.luma(red), brightness, range.luma(blue)),
-                Matrix::YCgCo => {
-                    let green = range.chroma(blue);
-                    let orange = range.chroma(red);
-                    let base = brightness - green;
-                    (base + orange, brightness + green, base - orange)
-                }
-                Matrix::Weighted {
-                    red: red_weight,
-                    blue: blue_weight,
-                } => {
-                    let r = brightness + 2.0 * (1.0 - red_weight) * range.chroma(red);
-                    let b = brightness + 2.0 * (1.0 - blue_weight) * range.chroma(blue);
-                    let g = (brightness - red_weight * r - blue_weight * b)
-                        / (1.0 - red_weight - blue_weight);
-                    (r, g, b)
-                }
-                Matrix::Brightness => unreachable!("brightness is read in grey"),
-            };
-            samples.extend([level(r), level(g), level(b)]);
+    let planes = &picture.planes;
+    let samples = match matrix {
+        Matrix::Identity => {
+            let levels = levels();
+            colours(planes, shifts, |brightness, blue, red| {
+                [levels(red), levels(brightness), levels(blue)]
+            })
         }
-    }
+        Matrix::YCgCo => {
+            let luma = tabulated(max, |sample| range.luma(sample));
+            let chroma = tabulated(max, |sample| range.chroma(sample));
+            colours(planes, shifts, |brightness, blue, red| {
+                let brightness = luma(brightness);
+                let green = chroma(blue);
+                let orange = chroma(red);
+                let base = brightness - green;
+                [base + orange, brightness + green, base - orange].map(level)
+            })
+        }
+        Matrix::Weighted {
+            red: red_weight,
+            blue: blue_weight,
+        } => {
+            let luma = tabulated(max, |sample| range.luma(sample));
+            let red_difference = tabulated(max, |sample| {
+                2.0 * (1.0 - red_weight) * range.chroma(sample)
+            });
+            let blue_difference = tabulated(max, |sample| {
+                2.0 * (1.0 - blue_weight) * range.chroma(sample)
+            });
+            colours(planes, shifts, |brightness, blue, red| {
+                let brightness = luma(brightness);
+                let r = brightness + red_difference(red);
+                let b = brightness + blue_difference(blue);
+                let g = (brightness - red_weight * r - blue_weight * b)
+                    / (1.0 - red_weight - blue_weight);
+                [r, g, b].map(level)
+            })
+        }
+        Matrix::Brightness => unreachable!("brightness is read in grey"),
+    };
     RgbImage::from_raw(width as u32, height as u32, samples)
         .map(Bitmap::Rgb)
         .ok_or_else(short)
+}
+
+/// `convert` of a sample: looked up in a table up to `max`, worked out past it.
+fn tabulated<T: Copy>(max: u16, convert: impl Fn(u16) -> T) -> impl Fn(u16) -> T {
+    let table: Vec<T> = (0..=max).map(&convert).collect();
+    move |sample| match table.get(usize::from(sample)) {
+        Some(&value) => value,
+        None => convert(sample),
+    }
+}
+
+/// The red, green and blue levels `convert` makes of each pixel's luma, blue and red samples,
+/// the chroma planes subsampled by `shifts`.
+fn colours(
+    planes: &[av1::Plane],
+    (shift_x, shift_y): (u8, u8),
+    convert: impl Fn(u16, u16, u16) -> [u8; 3],
+) -> Vec<u8> {
+    let (luma, blue, red) = (&planes[0], &planes[1], &planes[2]);
+    let mut samples = Vec::with_capacity(luma.width * luma.height * 3);
+    for y in 0..luma.height {
+        let row = &luma.samples[y * luma.width..][..luma.width];
+        let chroma_y = y >> shift_y;
+        let blue_row = &blue.samples[chroma_y * blue.width..];
+        let red_row = &red.samples[chroma_y * red.width..];
+        for (x, &brightness) in row.iter().enumerate() {
+            let chroma_x = x >> shift_x;
+            samples.extend(convert(brightness, blue_row[chroma_x], red_row[chroma_x]));
+        }
+    }
+    samples
 }
 
 /// An image after a transformative property.
@@ -988,5 +1047,181 @@ mod tests {
     fn leaves_other_codecs_to_libheif() {
         let heic = std::fs::read("../quality/corpus/prose-scan.heic").unwrap();
         assert!(matches!(decode(&heic), Ok(Avif::OfOtherCodecs)));
+    }
+
+    fn same(a: &Bitmap, b: &Bitmap) -> bool {
+        match (a, b) {
+            (Bitmap::Gray(a), Bitmap::Gray(b)) => a == b,
+            (Bitmap::Rgb(a), Bitmap::Rgb(b)) => a == b,
+            (Bitmap::Rgba(a), Bitmap::Rgba(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    fn picture_pixel_by_pixel(picture: &Picture) -> Result<Bitmap, String> {
+        let matrix = Matrix::of(picture.matrix, picture.primaries)?;
+        let range = Range::new(picture.depth, picture.full_range);
+        let luma_plane = &picture.planes[0];
+        let (width, height) = (luma_plane.width, luma_plane.height);
+        let short = || "the picture holds fewer samples than its size".to_owned();
+        let shifts = match picture.chroma {
+            Chroma::Subsampled { x, y } if matrix != Matrix::Brightness => (x, y),
+            _ => {
+                let levels = luma_plane
+                    .samples
+                    .iter()
+                    .map(|&sample| level(range.luma(sample)))
+                    .collect();
+                return GrayImage::from_raw(width as u32, height as u32, levels)
+                    .map(Bitmap::Gray)
+                    .ok_or_else(short);
+            }
+        };
+        let mut samples = Vec::with_capacity(width * height * 3);
+        for y in 0..height {
+            for x in 0..width {
+                let brightness = range.luma(luma_plane.at(x, y));
+                let (chroma_x, chroma_y) = (x >> shifts.0, y >> shifts.1);
+                let blue = picture.planes[1].at(chroma_x, chroma_y);
+                let red = picture.planes[2].at(chroma_x, chroma_y);
+                let (r, g, b) = match matrix {
+                    Matrix::Identity => (range.luma(red), brightness, range.luma(blue)),
+                    Matrix::YCgCo => {
+                        let green = range.chroma(blue);
+                        let orange = range.chroma(red);
+                        let base = brightness - green;
+                        (base + orange, brightness + green, base - orange)
+                    }
+                    Matrix::Weighted {
+                        red: red_weight,
+                        blue: blue_weight,
+                    } => {
+                        let r = brightness + 2.0 * (1.0 - red_weight) * range.chroma(red);
+                        let b = brightness + 2.0 * (1.0 - blue_weight) * range.chroma(blue);
+                        let g = (brightness - red_weight * r - blue_weight * b)
+                            / (1.0 - red_weight - blue_weight);
+                        (r, g, b)
+                    }
+                    Matrix::Brightness => unreachable!("brightness is read in grey"),
+                };
+                samples.extend([level(r), level(g), level(b)]);
+            }
+        }
+        RgbImage::from_raw(width as u32, height as u32, samples)
+            .map(Bitmap::Rgb)
+            .ok_or_else(short)
+    }
+
+    #[test]
+    fn converts_pictures_as_pixel_by_pixel() {
+        let layouts = [
+            Chroma::Monochrome,
+            Chroma::Subsampled { x: 1, y: 1 },
+            Chroma::Subsampled { x: 1, y: 0 },
+            Chroma::Subsampled { x: 0, y: 0 },
+        ];
+        let sizes = [(0, 0), (0, 3), (1, 1), (3, 2), (5, 7), (16, 9)];
+        let matrices = [
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (8, 1),
+            (11, 1),
+            (12, 1),
+            (13, 99),
+            (14, 1),
+        ];
+        let mut compared = 0;
+        for depth in [8u8, 10, 12] {
+            let max = (1usize << depth) - 1;
+            for full_range in [false, true] {
+                for chroma in layouts {
+                    for (width, height) in sizes {
+                        let planes = match chroma {
+                            Chroma::Monochrome => vec![(width, height)],
+                            Chroma::Subsampled { x, y } => {
+                                let chroma_size = (
+                                    (width + usize::from(x)) >> x,
+                                    (height + usize::from(y)) >> y,
+                                );
+                                vec![(width, height), chroma_size, chroma_size]
+                            }
+                        };
+                        let planes: Vec<av1::Plane> = planes
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, (width, height))| av1::Plane {
+                                width,
+                                height,
+                                samples: (0..width * height)
+                                    .map(|i| {
+                                        ((i * 7919 + index * 977 + depth as usize) % (max + 17))
+                                            as u16
+                                    })
+                                    .collect(),
+                            })
+                            .collect();
+                        for (matrix, primaries) in matrices {
+                            let picture = Picture {
+                                depth,
+                                chroma,
+                                planes: planes.clone(),
+                                primaries,
+                                matrix,
+                                full_range,
+                            };
+                            let ours = super::picture(&picture, None).unwrap();
+                            let theirs = picture_pixel_by_pixel(&picture).unwrap();
+                            assert!(
+                                same(&ours, &theirs),
+                                "{depth} {full_range} {chroma:?} {width}x{height} {matrix}"
+                            );
+                            compared += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(compared, 3 * 2 * 4 * 6 * 8);
+    }
+
+    fn paste_pixel_by_pixel<P: Pixel>(
+        canvas: &mut ImageBuffer<P, Vec<P::Subpixel>>,
+        tile: &ImageBuffer<P, Vec<P::Subpixel>>,
+        (x, y): (u32, u32),
+    ) {
+        for (tile_x, tile_y, pixel) in tile.enumerate_pixels() {
+            if x + tile_x < canvas.width() && y + tile_y < canvas.height() {
+                canvas.put_pixel(x + tile_x, y + tile_y, *pixel);
+            }
+        }
+    }
+
+    #[test]
+    fn pastes_tiles_as_pixel_by_pixel() {
+        let byte = |x: u32, y: u32, channel: u32| ((x * 7 + y * 13 + channel * 101) % 256) as u8;
+        let canvas = RgbImage::from_fn(11, 7, |x, y| {
+            image::Rgb([byte(x, y, 3), byte(x, y, 4), byte(x, y, 5)])
+        });
+        let gray_canvas = GrayImage::from_fn(11, 7, |x, y| image::Luma([byte(x, y, 6)]));
+        let tiles = [(0, 0), (0, 2), (3, 0), (1, 1), (4, 3), (11, 7), (13, 9)];
+        let places = [(0, 0), (2, 1), (8, 5), (10, 6), (11, 0), (0, 7), (12, 9)];
+        for (tile_width, tile_height) in tiles {
+            let tile = RgbImage::from_fn(tile_width, tile_height, |x, y| {
+                image::Rgb([byte(x, y, 0), byte(x, y, 1), byte(x, y, 2)])
+            });
+            let gray_tile =
+                GrayImage::from_fn(tile_width, tile_height, |x, y| image::Luma([byte(x, y, 0)]));
+            for place in places {
+                let (mut ours, mut theirs) = (canvas.clone(), canvas.clone());
+                paste(&mut ours, &tile, place);
+                paste_pixel_by_pixel(&mut theirs, &tile, place);
+                assert_eq!(ours, theirs, "{tile_width}x{tile_height} at {place:?}");
+                let (mut ours, mut theirs) = (gray_canvas.clone(), gray_canvas.clone());
+                paste(&mut ours, &gray_tile, place);
+                paste_pixel_by_pixel(&mut theirs, &gray_tile, place);
+                assert_eq!(ours, theirs, "{tile_width}x{tile_height} at {place:?}");
+            }
+        }
     }
 }
