@@ -8,7 +8,7 @@
 //! load the assumed script's model for each page read side by side.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Condvar, LazyLock, Mutex, MutexGuard};
 
 use crate::formats::embedded::OcrLanguage;
 use crate::memory;
@@ -264,7 +264,53 @@ pub fn read_pages<S, T: Send, E: Send, R, L: Clone + PartialEq + Send + Sync>(
     })
 }
 
+/// How many pages may be read at once, counted across every document this process reads.
+struct Slots {
+    free: Mutex<usize>,
+    released: Condvar,
+}
+
+/// A page being read, which frees its slot when dropped.
+struct Slot<'a>(&'a Slots);
+
+impl Slots {
+    const fn new(capacity: usize) -> Self {
+        Self {
+            free: Mutex::new(capacity),
+            released: Condvar::new(),
+        }
+    }
+
+    fn free(&self) -> MutexGuard<'_, usize> {
+        self.free.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A slot, once one is free.
+    fn acquire(&self) -> Slot<'_> {
+        let mut free = self.free();
+        while *free == 0 {
+            free = self.released.wait(free).unwrap_or_else(|e| e.into_inner());
+        }
+        *free -= 1;
+        Slot(self)
+    }
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        *self.0.free() += 1;
+        self.0.released.notify_one();
+    }
+}
+
+/// The pages read at once in this process: as many as the processors it may use, however many
+/// documents are read side by side, each on as many threads, so that the rasters and tesseract
+/// engines pages take do not multiply with the documents read at once (#305).
+static SLOTS: LazyLock<Slots> = LazyLock::new(|| Slots::new(crate::process::processors()));
+
 /// Reads the next page not yet taken, on this thread, until none is left or they are given up.
+/// The page is taken once a slot is free, so the earliest page not read yet always holds one: a
+/// page waiting for the pages before it waits only for pages being read.
 fn read_in_turn<S, T, E, L: Clone + PartialEq>(
     shared: &Shared<T, E>,
     next: &AtomicUsize,
@@ -276,6 +322,7 @@ fn read_in_turn<S, T, E, L: Clone + PartialEq>(
     let _reading = Reading(shared);
     let mut own = None;
     loop {
+        let _slot = SLOTS.acquire();
         if shared.abandoned.load(Ordering::SeqCst) {
             return;
         }
@@ -457,5 +504,58 @@ mod tests {
         );
         assert_eq!(first, Some(Ok(0)));
         assert!(started.load(Ordering::SeqCst) < pages / 2);
+    }
+
+    /// Documents read side by side, as a server's workers read them (#305), read no more pages
+    /// at once between them than the processors, each settling its pages' scripts as alone.
+    #[test]
+    fn documents_read_side_by_side_read_no_more_pages_at_once_than_the_processors() {
+        let reading = AtomicUsize::new(0);
+        let most = AtomicUsize::new(0);
+        let pages = 4 * crate::process::processors();
+        std::thread::scope(|scope| {
+            let documents: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let learning = Learning::new(Some("Latin".to_owned()));
+                        let read = read_pages(
+                            pages,
+                            &learning,
+                            || (),
+                            |(), page, script| {
+                                let now = reading.fetch_add(1, Ordering::SeqCst) + 1;
+                                most.fetch_max(now, Ordering::SeqCst);
+                                std::thread::sleep(std::time::Duration::from_millis(2));
+                                reading.fetch_sub(1, Ordering::SeqCst);
+                                Ok::<_, ()>((
+                                    format!("{page}:{}", script.map_or("-", String::as_str)),
+                                    Some("eng".to_owned()),
+                                ))
+                            },
+                            read_all,
+                        );
+                        (read, learning.language())
+                    })
+                })
+                .collect();
+            let expected: Vec<Result<String, ()>> = (0..pages)
+                .map(|page| {
+                    Ok(format!(
+                        "{page}:{}",
+                        if page == 0 { "Latin" } else { "eng" }
+                    ))
+                })
+                .collect();
+            for document in documents {
+                let (read, language) = document.join().unwrap();
+                assert_eq!(read, expected);
+                assert_eq!(language.as_deref(), Some("eng"));
+            }
+        });
+        let most = most.load(Ordering::SeqCst);
+        assert!(
+            most <= crate::process::processors(),
+            "{most} pages were read at once"
+        );
     }
 }
