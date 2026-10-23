@@ -13,6 +13,7 @@
 //! shows, where POI truncates it; and a Japanese format's eras and years of era (`ggge`) and a
 //! Gregorian calendar prefix (`B1`) are written as Excel writes them, where POI fails them.
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -459,6 +460,25 @@ pub(crate) fn is_a_date_format(index: i32, format: &str) -> bool {
     DATE_ONLY.is_match(&cleaned)
 }
 
+/// `is_a_date_format` of each format string it is asked of, remembered.
+#[derive(Debug, Default)]
+pub(crate) struct DateFormats(HashMap<String, bool>);
+
+impl DateFormats {
+    /// `is_a_date_format(index, format)`.
+    pub(crate) fn is_a_date_format(&mut self, index: i32, format: &str) -> bool {
+        if is_internal_date_format(index) {
+            return true;
+        }
+        if let Some(&date) = self.0.get(format) {
+            return date;
+        }
+        let date = is_a_date_format(index, format);
+        self.0.insert(format.to_owned(), date);
+        date
+    }
+}
+
 /// `DateUtil.isValidExcelDate`: anything above `-Double.MIN_VALUE`.
 pub(crate) fn is_valid_excel_date(value: f64) -> bool {
     value > -f64::from_bits(1)
@@ -516,6 +536,36 @@ mod tests {
             assert!(!is_a_date_format(164, number), "{number}");
         }
         assert!(is_a_date_format(14, "0.00"));
+    }
+
+    #[test]
+    fn remembers_date_formats_as_it_tells_them() {
+        let mut remembered = DateFormats::default();
+        for _ in 0..2 {
+            for format in [
+                "",
+                "m/d/yy",
+                "dd/mm/yyyy;@",
+                "[h]:mm:ss",
+                "yyyy\\-mm\\-dd",
+                "[$-409]mmmm d, yyyy",
+                "h \"hours\"",
+                "0.00",
+                "General",
+                "\"Date\" 0",
+                "@",
+                "0;-0;0",
+                "\\",
+            ] {
+                for index in [0, 14, 22, 23, 45, 47, 48, 164] {
+                    assert_eq!(
+                        remembered.is_a_date_format(index, format),
+                        is_a_date_format(index, format),
+                        "{index} {format}"
+                    );
+                }
+            }
+        }
     }
 
     /// A format is a date format by what it holds outside the texts it quotes and the characters

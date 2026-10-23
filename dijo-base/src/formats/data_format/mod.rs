@@ -41,8 +41,8 @@ use crate::unicode::{is_letter, is_whitespace};
 use cell_format::{CellFormat, CellValue};
 pub(crate) use date_format::is_a_date_format;
 use date_format::{
-    is_valid_excel_date, java_date, Calendar, ExcelStyleDateFormatter, Literals, CALENDAR_PREFIX,
-    ERA_LETTER, ERA_NAME, ERA_SHORT, ERA_YEAR, ERA_YEAR_PADDED,
+    is_valid_excel_date, java_date, Calendar, DateFormats, ExcelStyleDateFormatter, Literals,
+    CALENDAR_PREFIX, ERA_LETTER, ERA_NAME, ERA_SHORT, ERA_YEAR, ERA_YEAR_PADDED,
 };
 use fraction::FractionFormat;
 
@@ -713,6 +713,7 @@ pub struct DataFormatter {
     date_1904: bool,
     formats: HashMap<String, Format>,
     cell_formats: HashMap<String, Result<CellFormat, String>>,
+    date_formats: DateFormats,
 }
 
 impl DataFormatter {
@@ -734,6 +735,7 @@ impl DataFormatter {
             date_1904,
             formats,
             cell_formats: HashMap::new(),
+            date_formats: DateFormats::default(),
         }
     }
 
@@ -750,7 +752,7 @@ impl DataFormatter {
         index: i32,
         format: &str,
     ) -> Result<String, FormatError> {
-        if is_a_date_format(index, format) && is_valid_excel_date(value) {
+        if self.date_formats.is_a_date_format(index, format) && is_valid_excel_date(value) {
             let chosen = self.get_format(value, index, format)?;
             let instant = java_date(value, &self.zone, self.date_1904).ok_or_else(|| {
                 FormatError::Thrown("A valid Excel date has no Java date".to_owned())
@@ -822,7 +824,7 @@ impl DataFormatter {
         }
         let key = cache_key(
             &format,
-            is_a_date_format(index, &format) && is_valid_excel_date(value),
+            self.date_formats.is_a_date_format(index, &format) && is_valid_excel_date(value),
         );
         if self.formats.contains_key(&key) {
             return Ok(Chosen::Cached(key));
@@ -851,7 +853,7 @@ impl DataFormatter {
             .or_insert_with(|| CellFormat::new(format))
             .as_ref()
             .map_err(|reason| FormatError::Thrown(reason.clone()))?;
-        let input = if value != 0.0 && is_a_date_format(index, format) {
+        let input = if value != 0.0 && self.date_formats.is_a_date_format(index, format) {
             java_date(value, &self.zone, self.date_1904).map(CellValue::Date)
         } else {
             Some(CellValue::Number(value))
