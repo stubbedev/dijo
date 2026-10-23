@@ -110,6 +110,8 @@ pub(super) struct Embedded {
     state: State,
     bytes: Collected,
     high: Option<u8>,
+    /// The bytes of the hex data being taken, decoded.
+    decoded: Vec<u8>,
     metadata: TikaMetadata,
     in_object: bool,
     raw_bitmap: bool,
@@ -127,6 +129,7 @@ impl Embedded {
             state: State::Nothing,
             bytes: collected(),
             high: None,
+            decoded: Vec::new(),
             metadata: TikaMetadata::new(),
             in_object: false,
             raw_bitmap: false,
@@ -179,20 +182,20 @@ impl Embedded {
         self.text.push(unit);
     }
 
-    /// Takes a byte of hex data; anything other than a hex digit, such as a line break, is
-    /// skipped.
-    pub(super) fn write_hex_char(&mut self, byte: u8) -> Result<(), Failure> {
-        let Some(value) = hex_value(byte) else {
-            return Ok(());
-        };
-        match self.high.take() {
-            None => self.high = Some(16 * value),
-            Some(high) => self
-                .bytes
-                .write_all(&[high + value])
-                .map_err(spool_failed)?,
+    /// Takes bytes of hex data; anything other than a hex digit, such as a line break, is
+    /// skipped, and a last odd digit is kept for the bytes taken next.
+    pub(super) fn write_hex(&mut self, hex: &[u8]) -> Result<(), Failure> {
+        self.decoded.clear();
+        for value in hex.iter().filter_map(|&byte| hex_value(byte)) {
+            match self.high.take() {
+                None => self.high = Some(16 * value),
+                Some(high) => self.decoded.push(high + value),
+            }
         }
-        Ok(())
+        if self.decoded.is_empty() {
+            return Ok(());
+        }
+        self.bytes.write_all(&self.decoded).map_err(spool_failed)
     }
 
     /// Takes `length` bytes of `\binN` data from `input`. Data over the memory limit, or cut
@@ -603,12 +606,8 @@ mod tests {
     }
 
     fn finished(embedded: &mut Embedded, bytes: &[u8]) -> Handed {
-        for digit in bytes
-            .iter()
-            .flat_map(|byte| format!("{byte:02x}").into_bytes())
-        {
-            embedded.write_hex_char(digit).unwrap();
-        }
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        embedded.write_hex(hex.as_bytes()).unwrap();
         embedded.complete().unwrap().unwrap().unwrap()
     }
 
@@ -712,6 +711,30 @@ mod tests {
             ))
         );
         assert_eq!(&*embedded.complete().unwrap().unwrap().unwrap().data, b"ab");
+    }
+
+    /// Hex data taken in runs cut anywhere, with line breaks and other bytes that are no hex
+    /// digits, decodes as it does taken a byte at a time.
+    #[test]
+    fn decodes_hex_data_in_runs_as_a_byte_at_a_time() {
+        fn decode(runs: &[&[u8]]) -> Vec<u8> {
+            let mut embedded = Embedded::new();
+            embedded.start_picture();
+            for run in runs {
+                embedded.write_hex(run).unwrap();
+            }
+            embedded.complete().unwrap().unwrap().unwrap().data.to_vec()
+        }
+        let hex = b"89504e47\r\n0d0A1a0aXYZ00 0f\n4";
+        let one_at_a_time = decode(&hex.chunks(1).collect::<Vec<_>>());
+        assert_eq!(
+            one_at_a_time,
+            [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x0F]
+        );
+        for cut in 0..=hex.len() {
+            let (first, second) = hex.split_at(cut);
+            assert_eq!(decode(&[first, second]), one_at_a_time, "{cut}");
+        }
     }
 
     #[test]

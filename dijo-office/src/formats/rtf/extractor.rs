@@ -441,7 +441,11 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
                     }
                 }
                 _ if self.group.objdata || self.group.pict_depth == 1 => {
-                    self.embedded.write_hex_char(byte)?;
+                    self.embedded.write_hex(&[byte])?;
+                    let run = self
+                        .input
+                        .read_until(|byte| matches!(byte, b'\\' | b'{' | b'}'));
+                    self.embedded.write_hex(run)?;
                 }
                 b'\r' | b'\n' => {}
                 _ if !self.group.ignore

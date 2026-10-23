@@ -54,6 +54,23 @@ impl<'a> Input<'a> {
         byte
     }
 
+    /// The bytes up to the next one `stop` holds for, or to the end, read; none where a byte is
+    /// pushed back, which is to be read first.
+    pub(super) fn read_until(&mut self, stop: impl Fn(u8) -> bool) -> &'a [u8] {
+        if self.pushed > 0 {
+            return &[];
+        }
+        let bytes = self.bytes;
+        let rest = &bytes[self.at..];
+        let length = rest
+            .iter()
+            .position(|&byte| stop(byte))
+            .unwrap_or(rest.len());
+        self.at += length;
+        self.count();
+        &rest[..length]
+    }
+
     /// `PushbackInputStream.unread`, which fails when two bytes are already pushed back.
     pub(super) fn unread(&mut self, byte: Option<u8>) -> Result<(), Failure> {
         if self.pushed == PUSHBACK {
@@ -122,6 +139,22 @@ mod tests {
         assert_eq!(input.read(), None);
         input.unread(None).unwrap();
         assert_eq!(input.read(), Some(0xFF));
+        assert_eq!(input.read(), None);
+    }
+
+    #[test]
+    fn reads_until_a_stop_unless_a_byte_is_pushed_back() {
+        let stop = |byte: u8| byte == b'}';
+        let mut input = Input::new(b"ab}c", Pages::IN_MEMORY);
+        assert_eq!(input.read(), Some(b'a'));
+        input.unread(Some(b'a')).unwrap();
+        assert_eq!(input.read_until(stop), b"");
+        assert_eq!(input.read(), Some(b'a'));
+        assert_eq!(input.read_until(stop), b"b");
+        assert_eq!(input.read_until(stop), b"");
+        assert_eq!(input.read(), Some(b'}'));
+        assert_eq!(input.read_until(stop), b"c");
+        assert_eq!(input.read_until(stop), b"");
         assert_eq!(input.read(), None);
     }
 
