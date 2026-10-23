@@ -9,6 +9,8 @@
 
 use std::io::Write;
 
+use memchr::memmem;
+
 use super::codec::BodyDecoder;
 use super::field::{is_whitespace, RawField};
 use super::structured::{ContentDisposition, ContentType};
@@ -294,29 +296,9 @@ impl LineBuffer {
         self.buf[index]
     }
 
-    /// `indexOf(pattern, off, len)`: its Boyer-Moore-Horspool search, which may stop at the end
-    /// of the backing array before the window ends.
-    fn index_of(&self, pattern: &[u8], from: usize, to: usize) -> Option<usize> {
-        if to - from < pattern.len() {
-            return None;
-        }
-        let mut shift = [pattern.len() + 1; 256];
-        for (i, &b) in pattern.iter().enumerate() {
-            shift[usize::from(b)] = pattern.len() - i;
-        }
-        let mut j = 0;
-        while j <= to - from - pattern.len() {
-            let current = from + j;
-            if self.buf[current..current + pattern.len()] == *pattern {
-                return Some(current);
-            }
-            let next = current + pattern.len();
-            if next >= self.buf.len() {
-                break;
-            }
-            j += shift[usize::from(self.buf[next])];
-        }
-        None
+    /// `indexOf(pattern, off, len)`: where the pattern first stands in the window.
+    fn index_of(&self, pattern: &memmem::Finder, from: usize, to: usize) -> Option<usize> {
+        pattern.find(&self.buf[from..to]).map(|index| from + index)
     }
 }
 
@@ -324,7 +306,7 @@ impl LineBuffer {
 /// boundary.
 #[derive(Debug)]
 struct Boundary {
-    pattern: Vec<u8>,
+    pattern: memmem::Finder<'static>,
     eof: bool,
     /// Where the part's data ends in the buffer; negative or past the buffer's data when none
     /// of it is known to be the part's.
@@ -344,7 +326,7 @@ impl Boundary {
         pattern.extend(boundary.encode_utf16().map(|unit| unit as u8));
         buffer.ensure_capacity((2 * crate::java::utf16_length(boundary)).max(BUFFER_SIZE));
         let mut stream = Boundary {
-            pattern,
+            pattern: memmem::Finder::new(&pattern).into_owned(),
             eof: false,
             limit: -1,
             at_boundary: false,
@@ -421,12 +403,12 @@ impl Boundary {
             }
             None if self.eof => self.limit = buffer.limit as isize,
             None => {
-                let reserve = self.pattern.len() as isize + 3;
+                let reserve = self.pattern.needle().len() as isize + 3;
                 let position = buffer.limit as isize - reserve;
                 self.limit = if position >= 0 && buffer.byte_at(position as usize) == b'\r' {
                     position
                 } else {
-                    buffer.limit as isize - (self.pattern.len() as isize + 2)
+                    buffer.limit as isize - (self.pattern.needle().len() as isize + 2)
                 };
             }
         }
@@ -446,7 +428,7 @@ impl Boundary {
                 buffer.byte_at(index - 1) == b'\n'
             };
             if line_start {
-                let after = index + self.pattern.len();
+                let after = index + self.pattern.needle().len();
                 if after >= buffer.limit {
                     return self.eof.then_some(index);
                 }
@@ -464,12 +446,12 @@ impl Boundary {
                     }
                 }
             }
-            from = index + self.pattern.len();
+            from = index + self.pattern.needle().len();
         }
     }
 
     fn calculate_boundary_length(&mut self, buffer: &LineBuffer) {
-        self.boundary_length = self.pattern.len();
+        self.boundary_length = self.pattern.needle().len();
         let length = self.limit - buffer.pos as isize;
         if length >= 0 && self.initial_length == -1 {
             self.initial_length = length;
@@ -1014,7 +996,7 @@ impl Stream<'_> {
             .iter()
             .rev()
             .find_map(|entity| entity.part.as_ref())
-            .and_then(|part| memchr::memmem::find(rest, &part.pattern));
+            .and_then(|part| part.pattern.find(rest));
         end.unwrap_or(rest.len()) as u64
     }
 
@@ -1126,6 +1108,62 @@ mod tests {
                 ],
                 "{filler} bytes before the boundary"
             );
+        }
+    }
+
+    fn horspool_index_of(buf: &[u8], pattern: &[u8], from: usize, to: usize) -> Option<usize> {
+        if to - from < pattern.len() {
+            return None;
+        }
+        let mut shift = [pattern.len() + 1; 256];
+        for (i, &b) in pattern.iter().enumerate() {
+            shift[usize::from(b)] = pattern.len() - i;
+        }
+        let mut j = 0;
+        while j <= to - from - pattern.len() {
+            let current = from + j;
+            if buf[current..current + pattern.len()] == *pattern {
+                return Some(current);
+            }
+            let next = current + pattern.len();
+            if next >= buf.len() {
+                break;
+            }
+            j += shift[usize::from(buf[next])];
+        }
+        None
+    }
+
+    #[test]
+    fn finds_the_pattern_as_the_horspool_search_did() {
+        let buffers: [&[u8]; 6] = [
+            b"",
+            b"--b",
+            b"x--b\r\n--b--",
+            b"---b--b-b--bb--b",
+            b"\r\n--boundary\r\n--bound--boundary--\n--boundar",
+            b"aaaa--a--aa--aaa",
+        ];
+        for buf in buffers {
+            let buffer = LineBuffer {
+                buf: buf.to_vec(),
+                pos: 0,
+                limit: buf.len(),
+                truncated: false,
+            };
+            for pattern in [&b"--b"[..], b"--boundary", b"--a", b"--aa", b"--"] {
+                let finder = memmem::Finder::new(pattern);
+                for from in 0..=buf.len() {
+                    for to in from..=buf.len() {
+                        assert_eq!(
+                            buffer.index_of(&finder, from, to),
+                            horspool_index_of(buf, pattern, from, to),
+                            "{pattern:?} in {:?}",
+                            &buf[from..to]
+                        );
+                    }
+                }
+            }
         }
     }
 
