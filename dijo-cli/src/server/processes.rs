@@ -112,17 +112,18 @@ fn write_frame(sink: &mut impl Write, tag: u8, payload: &[u8]) -> io::Result<()>
     sink.write_all(payload)
 }
 
-/// The next frame, or None when the stream ended cleanly between frames.
-fn read_frame(source: &mut impl Read) -> io::Result<Option<(u8, Vec<u8>)>> {
+/// The tag of the next frame, with its payload read into `payload`, or None when the stream ended
+/// cleanly between frames.
+fn read_frame(source: &mut impl Read, payload: &mut Vec<u8>) -> io::Result<Option<u8>> {
     let mut tag = [0; 1];
     if source.read(&mut tag)? == 0 {
         return Ok(None);
     }
     let mut length = [0; 4];
     source.read_exact(&mut length)?;
-    let mut payload = vec![0; u32::from_be_bytes(length) as usize];
-    source.read_exact(&mut payload)?;
-    Ok(Some((tag[0], payload)))
+    payload.resize(u32::from_be_bytes(length) as usize, 0);
+    source.read_exact(payload)?;
+    Ok(Some(tag[0]))
 }
 
 fn invalid(error: impl std::fmt::Display) -> io::Error {
@@ -154,7 +155,8 @@ pub fn serve_jobs(cache: Option<&Cache>) -> io::Result<()> {
     let mut input = BufReader::new(io::stdin().lock());
     write_frame(&mut output, READY, &[])?;
     output.flush()?;
-    while let Some((tag, payload)) = read_frame(&mut input)? {
+    let mut payload = Vec::new();
+    while let Some(tag) = read_frame(&mut input, &mut payload)? {
         if tag != JOB {
             return Err(invalid(format!("expected a job, got frame {tag}")));
         }
@@ -233,6 +235,8 @@ pub struct WorkerProcess {
     child: Arc<Mutex<Child>>,
     input: BufWriter<ChildStdin>,
     output: BufReader<ChildStdout>,
+    /// The payload of the last frame read from `output`, whose buffer the next one reuses.
+    payload: Vec<u8>,
 }
 
 impl WorkerProcess {
@@ -250,12 +254,14 @@ impl WorkerProcess {
             .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", executable.display())))?;
         let input = BufWriter::new(child.stdin.take().expect("standard input is piped"));
         let mut output = BufReader::new(child.stdout.take().expect("standard output is piped"));
-        let ready = read_frame(&mut output);
-        if let Ok(Some((READY, _))) = ready {
+        let mut payload = Vec::new();
+        let ready = read_frame(&mut output, &mut payload);
+        if let Ok(Some(READY)) = ready {
             return Ok(WorkerProcess {
                 child: Arc::new(Mutex::new(child)),
                 input,
                 output,
+                payload,
             });
         }
         let _ = child.kill();
@@ -389,6 +395,7 @@ fn relay(
     };
     let answered = relay_answer(
         &mut process.output,
+        &mut process.payload,
         &mut head,
         &body,
         metrics,
@@ -435,10 +442,12 @@ enum Answered {
     ToNobody,
 }
 
-/// Relays a worker's answer frame by frame. `within_limits` is asked before the head goes out,
-/// since a status once sent cannot become the 413 or 504 of a worker over its limits.
+/// Relays a worker's answer frame by frame, read into `payload`. `within_limits` is asked before
+/// the head goes out, since a status once sent cannot become the 413 or 504 of a worker over its
+/// limits.
 fn relay_answer(
     output: &mut impl Read,
+    payload: &mut Vec<u8>,
     head: &mut Option<oneshot::Sender<Head>>,
     body: &async_mpsc::Sender<Chunk>,
     metrics: &Metrics,
@@ -446,7 +455,7 @@ fn relay_answer(
 ) -> io::Result<Answered> {
     let mut over_time = false;
     loop {
-        let Some((tag, payload)) = read_frame(output)? else {
+        let Some(tag) = read_frame(output, payload)? else {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "it ended in the middle of an answer",
@@ -454,7 +463,7 @@ fn relay_answer(
         };
         match tag {
             HEAD => {
-                let parsed: Head = serde_json::from_slice(&payload).map_err(invalid)?;
+                let parsed: Head = serde_json::from_slice(payload).map_err(invalid)?;
                 within_limits()?;
                 let sender = head
                     .take()
@@ -465,13 +474,16 @@ fn relay_answer(
             }
             CHUNK => {
                 let length = payload.len() as u64;
-                if body.blocking_send(Ok(Bytes::from(payload))).is_err() {
+                if body
+                    .blocking_send(Ok(Bytes::copy_from_slice(payload)))
+                    .is_err()
+                {
                     return Ok(Answered::ToNobody);
                 }
                 metrics.bytes_out(length);
             }
             REPORT => {
-                let report = serde_json::from_slice(&payload).map_err(invalid)?;
+                let report = serde_json::from_slice(payload).map_err(invalid)?;
                 over_time |= matches!(report, Report::Failure(ErrorCategory::Timeout));
                 metrics.record(report);
             }
@@ -567,12 +579,36 @@ mod tests {
         write_frame(&mut stream, CHUNK, b"some text").unwrap();
         write_frame(&mut stream, END, &[]).unwrap();
         let mut source = stream.as_slice();
-        assert_eq!(
-            read_frame(&mut source).unwrap(),
-            Some((CHUNK, b"some text".to_vec()))
-        );
-        assert_eq!(read_frame(&mut source).unwrap(), Some((END, Vec::new())));
-        assert_eq!(read_frame(&mut source).unwrap(), None);
+        let mut payload = Vec::new();
+        assert_eq!(read_frame(&mut source, &mut payload).unwrap(), Some(CHUNK));
+        assert_eq!(payload, b"some text");
+        assert_eq!(read_frame(&mut source, &mut payload).unwrap(), Some(END));
+        assert_eq!(payload, b"");
+        assert_eq!(read_frame(&mut source, &mut payload).unwrap(), None);
+    }
+
+    #[test]
+    fn frames_read_into_one_buffer_read_as_into_fresh_ones() {
+        let payloads: [&[u8]; 6] = [b"a longer payload", b"ab", b"", b"xyz123", &[0; 40], b"q"];
+        let mut stream = Vec::new();
+        for (tag, payload) in [HEAD, CHUNK, REPORT, CHUNK, CHUNK, END]
+            .into_iter()
+            .zip(payloads)
+        {
+            write_frame(&mut stream, tag, payload).unwrap();
+        }
+        let mut reused = stream.as_slice();
+        let mut fresh = stream.as_slice();
+        let mut payload = Vec::new();
+        loop {
+            let mut alone = Vec::new();
+            let tag = read_frame(&mut fresh, &mut alone).unwrap();
+            assert_eq!(read_frame(&mut reused, &mut payload).unwrap(), tag);
+            if tag.is_none() {
+                break;
+            }
+            assert_eq!(payload, alone);
+        }
     }
 
     #[test]
@@ -580,7 +616,7 @@ mod tests {
         let mut stream = Vec::new();
         write_frame(&mut stream, CHUNK, b"some text").unwrap();
         stream.truncate(stream.len() - 2);
-        let error = read_frame(&mut stream.as_slice()).unwrap_err();
+        let error = read_frame(&mut stream.as_slice(), &mut Vec::new()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
     }
 
