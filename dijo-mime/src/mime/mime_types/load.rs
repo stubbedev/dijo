@@ -10,10 +10,10 @@ use std::fmt::Write;
 use super::{Magic, MimeType, MimeTypes, Patterns, TypeId};
 use crate::hash::FastMap;
 use crate::java::{self, JavaString};
-use crate::mime::java_regex::translate::{Anchor, Text};
+use crate::mime::java_regex::translate::{self, Text};
 use crate::mime::java_regex::JavaRegex;
 use crate::mime::magic::parse::{MatchAttributes, Read};
-use crate::mime::magic::{Clause, Kind, MagicMatch};
+use crate::mime::magic::{Anchor, Clause, Kind, MagicMatch};
 use crate::mime::media_type::MediaType;
 use crate::mime::registry::Registry;
 use crate::xml::{self, Attribute, Event, Flow};
@@ -493,7 +493,7 @@ impl PatternsBuilder {
         let key = GlobKey(JavaString(glob));
         let previous = self.globs.get(&key).map(|(previous, _)| *previous);
         if replaces(previous, id, types, registry, &key.0 .0)? {
-            let regex = JavaRegex::compile(&key.0 .0, Anchor::Matches, Text::Unicode)?;
+            let regex = JavaRegex::compile(&key.0 .0, translate::Anchor::Matches, Text::Unicode)?;
             self.globs.insert(key, (id, regex));
         }
         Ok(())
@@ -547,19 +547,27 @@ fn emit(types: &MimeTypes) -> String {
     out.line("use std::sync::OnceLock;");
     out.line("");
     out.line("use fancy_regex::Regex;");
+    out.line("use memchr::memmem::Finder;");
     out.line("");
     out.line("use super::{Magic, MimeType, MimeTypes, Patterns};");
     out.line("use crate::mime::java_regex::JavaRegex;");
-    out.line("use crate::mime::magic::{Clause, Kind, MagicMatch};");
+    out.line("use crate::mime::magic::{Anchor, Clause, Kind, MagicMatch, Run};");
     out.line("use crate::mime::registry::Registry;");
     out.line("");
     let mut regexes = 0;
+    let mut finders = 0;
     types.magics.iter().for_each(|magic| {
-        magic.clause.for_each_regex(&mut |_| regexes += 1);
+        magic.clause.for_each_match(&mut |m| {
+            regexes += usize::from(matches!(m.kind, Kind::Regex(_)));
+            finders += usize::from(matches!(m.anchor, Some(Anchor::Run { .. })));
+        });
     });
     regexes += types.patterns.globs.len();
     out.line(&format!(
         "static REGEXES: [OnceLock<Regex>; {regexes}] = [const {{ OnceLock::new() }}; {regexes}];"
+    ));
+    out.line(&format!(
+        "static FINDERS: [OnceLock<Finder<'static>>; {finders}] = [const {{ OnceLock::new() }}; {finders}];"
     ));
     out.line("");
     out.line("pub(super) static MIME_TYPES: MimeTypes = MimeTypes {");
@@ -583,9 +591,10 @@ fn emit(types: &MimeTypes) -> String {
     out.pairs("        ", types.by_type, |id| id.to_string());
     out.line("    ],");
     let mut regex = 0;
+    let mut finder = 0;
     out.line("    magics: &[");
     for magic in types.magics {
-        let clause = clause(&magic.clause, &mut regex);
+        let clause = clause(&magic.clause, &mut regex, &mut finder);
         out.line(&format!(
             "        Magic {{ type_id: {}, priority: {}, clause: {clause} }},",
             magic.type_id, magic.priority
@@ -644,10 +653,14 @@ impl Source {
     }
 }
 
-/// A clause as a Rust expression, its regexes numbered from `regex` on.
-fn clause(clause: &Clause, regex: &mut usize) -> String {
-    let list = |clauses: &[Clause], regex: &mut usize| {
-        let items: Vec<String> = clauses.iter().map(|c| self::clause(c, regex)).collect();
+/// A clause as a Rust expression, its regexes numbered from `regex` on and its searchers from
+/// `finder` on.
+fn clause(clause: &Clause, regex: &mut usize, finder: &mut usize) -> String {
+    let list = |clauses: &[Clause], regex: &mut usize, finder: &mut usize| {
+        let items: Vec<String> = clauses
+            .iter()
+            .map(|c| self::clause(c, regex, finder))
+            .collect();
         format!("&[{}]", items.join(", "))
     };
     match clause {
@@ -657,18 +670,39 @@ fn clause(clause: &Clause, regex: &mut usize) -> String {
                 Kind::IgnoreCase => "Kind::IgnoreCase".to_owned(),
                 Kind::Regex(found) => format!("Kind::Regex({})", java_regex(found, regex)),
             };
+            let anchor = match &m.anchor {
+                None => "None".to_owned(),
+                Some(Anchor::Run { offset, run }) => {
+                    let expression = format!(
+                        "Some(Anchor::Run {{ offset: {offset}, run: Run::new({}, &FINDERS[{finder}]) }})",
+                        bytes(run.bytes())
+                    );
+                    *finder += 1;
+                    expression
+                }
+                Some(Anchor::Byte { offset, byte }) => {
+                    format!("Some(Anchor::Byte {{ offset: {offset}, byte: 0x{byte:02X} }})")
+                }
+                Some(Anchor::EitherByte { offset, bytes }) => format!(
+                    "Some(Anchor::EitherByte {{ offset: {offset}, bytes: [0x{:02X}, 0x{:02X}] }})",
+                    bytes[0], bytes[1]
+                ),
+            };
             format!(
-                "Clause::Match(MagicMatch {{ pattern: {}, mask: {}, kind: {kind}, begin: {}, end: {} }})",
+                "Clause::Match(MagicMatch {{ pattern: {}, mask: {}, kind: {kind}, begin: {}, end: {}, anchor: {anchor} }})",
                 bytes(m.pattern),
                 bytes(m.mask),
                 m.begin,
                 m.end
             )
         }
-        Clause::And(clauses) => format!("Clause::And({})", list(clauses, regex)),
-        Clause::Or(clauses) => format!("Clause::Or({})", list(clauses, regex)),
+        Clause::And(clauses) => format!("Clause::And({})", list(clauses, regex, finder)),
+        Clause::Or(clauses) => format!("Clause::Or({})", list(clauses, regex, finder)),
         Clause::MinShouldMatch(min, clauses) => {
-            format!("Clause::MinShouldMatch({min}, {})", list(clauses, regex))
+            format!(
+                "Clause::MinShouldMatch({min}, {})",
+                list(clauses, regex, finder)
+            )
         }
     }
 }

@@ -1,8 +1,10 @@
 //! The magic as the generator reads it from `<match>` elements: `MagicDetector.parse`, with each
 //! clause's `toString()`, which orders clauses of equal priority and size.
 
-use super::{Clause, Kind, MagicMatch};
-use crate::mime::java_regex::translate::{Anchor, Text};
+use std::sync::OnceLock;
+
+use super::{Anchor, Clause, Kind, MagicMatch, Run};
+use crate::mime::java_regex::translate::{self, Text};
 use crate::mime::java_regex::JavaRegex;
 use crate::mime::media_type::MediaType;
 
@@ -120,6 +122,53 @@ pub(crate) fn decode_value(value: &str, kind: &str) -> Result<Vec<u8>, String> {
     })
 }
 
+/// What a window that matches `pattern` under `mask` must hold at a place in it, as
+/// [`Anchor`] describes.
+fn anchor(pattern: &'static [u8], mask: &[u8], kind: &Kind) -> Option<Anchor> {
+    match kind {
+        Kind::Bytes => {
+            let mut best: Option<(usize, usize)> = None;
+            let mut start = 0;
+            for (index, &mask) in mask.iter().chain([&0]).enumerate() {
+                if mask == 0xFF {
+                    continue;
+                }
+                if index > start && best.is_none_or(|(_, length)| index - start > length) {
+                    best = Some((start, index - start));
+                }
+                start = index + 1;
+            }
+            let (offset, length) = best?;
+            let bytes = &pattern[offset..offset + length];
+            Some(match bytes {
+                [byte] => Anchor::Byte {
+                    offset,
+                    byte: *byte,
+                },
+                _ => Anchor::Run {
+                    offset,
+                    run: Run::new(bytes, Box::leak(Box::new(OnceLock::new()))),
+                },
+            })
+        }
+        Kind::IgnoreCase => {
+            let offset = mask.iter().position(|&mask| mask == 0xFF)?;
+            let byte = pattern[offset];
+            if byte.is_ascii_lowercase() {
+                Some(Anchor::EitherByte {
+                    offset,
+                    bytes: [byte, byte.to_ascii_uppercase()],
+                })
+            } else if byte.is_ascii_uppercase() {
+                None
+            } else {
+                Some(Anchor::Byte { offset, byte })
+            }
+        }
+        Kind::Regex(_) => None,
+    }
+}
+
 impl MagicMatch {
     /// `MagicMatch` with its `MagicDetector`, as `MagicDetector.parse` builds it.
     pub(crate) fn parse(
@@ -173,19 +222,26 @@ impl MagicMatch {
             "regex" => {
                 let source = String::from_utf8_lossy(&pattern);
                 Kind::Regex(
-                    JavaRegex::compile(&source, Anchor::LookingAt, Text::Latin1)
+                    JavaRegex::compile(&source, translate::Anchor::LookingAt, Text::Latin1)
                         .map_err(|error| format!("{string}: {error}"))?,
                 )
             }
             "stringignorecase" => Kind::IgnoreCase,
             _ => Kind::Bytes,
         };
+        let pattern: &'static [u8] = pattern.leak();
+        let anchor = if begin < end {
+            anchor(pattern, &mask, &kind)
+        } else {
+            None
+        };
         let found = MagicMatch {
-            pattern: pattern.leak(),
+            pattern,
             mask: mask.leak(),
             kind,
             begin: usize::try_from(begin).map_err(|error| error.to_string())?,
             end: usize::try_from(end).map_err(|error| error.to_string())?,
+            anchor,
         };
         Ok(Read {
             clause: Clause::Match(found),

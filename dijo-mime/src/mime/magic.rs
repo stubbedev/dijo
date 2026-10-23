@@ -2,6 +2,9 @@
 //! and `minShouldMatch` clauses, each evaluated as Tika's `MagicDetector` evaluates it.
 
 use std::cell::RefCell;
+use std::sync::OnceLock;
+
+use memchr::memmem::Finder;
 
 use super::java_regex::JavaRegex;
 
@@ -99,13 +102,60 @@ pub(crate) struct MagicMatch {
     pub(crate) kind: Kind,
     pub(crate) begin: usize,
     pub(crate) end: usize,
+    /// What a window that matches holds, for a range of offsets of bytes compared whole.
+    pub(crate) anchor: Option<Anchor>,
 }
 
-/// What a matching window holds `offset` bytes into it, by [`MagicMatch::anchor`].
-enum Anchor<'a> {
-    Run { offset: usize, bytes: &'a [u8] },
-    Byte { offset: usize, byte: u8 },
-    EitherByte { offset: usize, bytes: [u8; 2] },
+/// What a window that matches must hold at a place in it, which finds the candidate windows of
+/// a range: where case counts, the longest run of bytes compared whole; where case is ignored,
+/// the first byte compared whole, in either case if it is a letter.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Anchor {
+    Run {
+        offset: usize,
+        run: Run,
+    },
+    Byte {
+        offset: usize,
+        byte: u8,
+    },
+    #[cfg_attr(not(test), expect(dead_code))]
+    EitherByte {
+        offset: usize,
+        bytes: [u8; 2],
+    },
+}
+
+/// A run of bytes to search for, with its searcher built when it is first searched for.
+#[derive(Debug)]
+pub(crate) struct Run {
+    bytes: &'static [u8],
+    finder: &'static OnceLock<Finder<'static>>,
+}
+
+impl PartialEq for Run {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Run {
+    /// The run of `bytes`, its searcher built into `finder` when it is first searched for.
+    pub(crate) const fn new(
+        bytes: &'static [u8],
+        finder: &'static OnceLock<Finder<'static>>,
+    ) -> Self {
+        Run { bytes, finder }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> &'static [u8] {
+        self.bytes
+    }
+
+    fn finder(&self) -> &Finder<'static> {
+        self.finder.get_or_init(|| Finder::new(self.bytes))
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -155,10 +205,10 @@ impl MagicMatch {
                 if self.begin == last {
                     return at(last);
                 }
-                match self.anchor() {
-                    Some(Anchor::Run { offset, bytes }) => {
-                        let window = &data[self.begin + offset..last + offset + bytes.len()];
-                        let finder = memchr::memmem::Finder::new(bytes);
+                match &self.anchor {
+                    Some(Anchor::Run { offset, run }) => {
+                        let window = &data[self.begin + offset..last + offset + run.bytes.len()];
+                        let finder = run.finder();
                         let mut from = 0;
                         while let Some(found) = finder.find(&window[from..]) {
                             if at(self.begin + from + found) {
@@ -170,7 +220,7 @@ impl MagicMatch {
                     }
                     Some(Anchor::Byte { offset, byte }) => {
                         let window = &data[self.begin + offset..=last + offset];
-                        memchr::memchr_iter(byte, window).any(|i| at(self.begin + i))
+                        memchr::memchr_iter(*byte, window).any(|i| at(self.begin + i))
                     }
                     Some(Anchor::EitherByte { offset, bytes }) => {
                         let window = &data[self.begin + offset..=last + offset];
@@ -179,51 +229,6 @@ impl MagicMatch {
                     None => (self.begin..=last).any(at),
                 }
             }
-        }
-    }
-
-    /// What a window that matches must hold at a place in it, which finds the candidate windows
-    /// of a range: where case counts, the longest run of bytes compared whole; where case is
-    /// ignored, the first byte compared whole, in either case if it is a letter.
-    fn anchor(&self) -> Option<Anchor<'static>> {
-        match self.kind {
-            Kind::Bytes => {
-                let mut best: Option<(usize, usize)> = None;
-                let mut start = 0;
-                for (index, &mask) in self.mask.iter().chain([&0]).enumerate() {
-                    if mask == 0xFF {
-                        continue;
-                    }
-                    if index > start && best.is_none_or(|(_, length)| index - start > length) {
-                        best = Some((start, index - start));
-                    }
-                    start = index + 1;
-                }
-                let (offset, length) = best?;
-                let bytes = &self.pattern[offset..offset + length];
-                Some(match bytes {
-                    [byte] => Anchor::Byte {
-                        offset,
-                        byte: *byte,
-                    },
-                    _ => Anchor::Run { offset, bytes },
-                })
-            }
-            Kind::IgnoreCase => {
-                let offset = self.mask.iter().position(|&mask| mask == 0xFF)?;
-                let byte = self.pattern[offset];
-                if byte.is_ascii_lowercase() {
-                    Some(Anchor::EitherByte {
-                        offset,
-                        bytes: [byte, byte.to_ascii_uppercase()],
-                    })
-                } else if byte.is_ascii_uppercase() {
-                    None
-                } else {
-                    Some(Anchor::Byte { offset, byte })
-                }
-            }
-            Kind::Regex(_) => None,
         }
     }
 
@@ -256,21 +261,27 @@ pub(crate) enum Clause {
 }
 
 impl Clause {
-    /// Hands `visit` each regex of the clause.
+    /// Hands `visit` each match of the clause.
     #[cfg(test)]
-    pub(crate) fn for_each_regex(&self, visit: &mut impl FnMut(&JavaRegex)) {
+    pub(crate) fn for_each_match(&self, visit: &mut impl FnMut(&MagicMatch)) {
         match self {
-            Clause::Match(m) => {
-                if let Kind::Regex(regex) = &m.kind {
-                    visit(regex);
-                }
-            }
+            Clause::Match(m) => visit(m),
             Clause::And(clauses) | Clause::Or(clauses) | Clause::MinShouldMatch(_, clauses) => {
                 for clause in *clauses {
-                    clause.for_each_regex(visit);
+                    clause.for_each_match(visit);
                 }
             }
         }
+    }
+
+    /// Hands `visit` each regex of the clause.
+    #[cfg(test)]
+    pub(crate) fn for_each_regex(&self, visit: &mut impl FnMut(&JavaRegex)) {
+        self.for_each_match(&mut |m| {
+            if let Kind::Regex(regex) = &m.kind {
+                visit(regex);
+            }
+        });
     }
 
     pub(crate) fn eval(&self, haystack: &Haystack) -> bool {
@@ -384,6 +395,62 @@ mod tests {
         assert!(!m.clause.eval(&Haystack::new(b"aaaxd")));
         let m = clause("stringignorecase", "0:8", "x<html", Some("0x00FFFFFFFFFF"));
         assert!(m.clause.eval(&Haystack::new(b"....?<HTml")));
+    }
+
+    #[test]
+    fn anchors_find_what_every_offset_finds() {
+        let matches = [
+            clause("string", "0:16", "PK", None),
+            clause("string", "2:9", "\\nFrom: ", None),
+            clause("string", "0:12", "aab", None),
+            clause("string", "1:20", "x", None),
+            clause("string", "0:8", "AB", Some("0xDFFF")),
+            clause("string", "0:10", "aa\\x00c", Some("0xFFFF00FF")),
+            clause("string", "0:10", "a\\x00bc\\x00", Some("0xFF00FFFF00")),
+            clause("string", "0:10", "ab", Some("0x0000")),
+            clause("string", "3:3", "ab", None),
+            clause("stringignorecase", "0:12", "html", None),
+            clause("stringignorecase", "0:12", "<html", None),
+            clause("stringignorecase", "0:12", "x<html", Some("0x00FFFFFFFFFF")),
+            clause("stringignorecase", "0:12", "ab", Some("0x0000")),
+        ];
+        let inputs: [&[u8]; 14] = [
+            b"",
+            b"P",
+            b"PK",
+            b"xxxPKyyPK",
+            b"aaab aab aaab",
+            b"....aB....ab",
+            b"aaaxcaa\0c",
+            b"a\0bc\0a1bc2abc",
+            b"<!-- <HtMl <hTML",
+            b"....?<HTml x<html",
+            b"\n\nFrom: me\nFrom: you",
+            b"xxxxxxxxxxxxxxxxxxxxxxxx",
+            b"ab",
+            b"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdab",
+        ];
+        for read in &matches {
+            let Clause::Match(m) = &read.clause else {
+                unreachable!()
+            };
+            let length = m.length();
+            for input in inputs {
+                for cut in 0..=input.len() {
+                    let data = &input[..cut];
+                    let every = data.len() >= m.begin + length
+                        && (length == 0
+                            || (m.begin..=m.end.min(data.len() - length))
+                                .any(|i| m.matches_at(&data[i..i + length])));
+                    assert_eq!(
+                        m.matches(&Haystack::new(data)),
+                        every,
+                        "{} on {data:?}",
+                        read.string
+                    );
+                }
+            }
+        }
     }
 
     #[test]
