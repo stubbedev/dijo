@@ -368,14 +368,14 @@ impl Document<'_> {
     fn rows(&self, table: Span, level: i32) -> Read<Vec<Vec<Span>>> {
         let count = self.paragraph_count(table)?;
         let mut rows = Vec::new();
-        let mut row_start = 0;
+        let mut row_start = None;
         for row_end in 0..count {
-            let first = self.paragraph(table, row_start)?;
             let last = self.paragraph(table, row_end)?;
+            let start = *row_start.get_or_insert(last.span.start);
             if last.is_table_row_end() && last.table_level() == level {
-                let row = self.subrange(first.span.start, last.span.end)?;
+                let row = self.subrange(start, last.span.end)?;
                 rows.push(self.cells(row, level)?);
-                row_start = row_end + 1;
+                row_start = None;
             }
         }
         Ok(rows)
