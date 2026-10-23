@@ -38,6 +38,8 @@ const INFLATER_CHUNK: usize = 512;
 const WINDOW: usize = 64 << 10;
 /// The bytes of a character array decoded at a time.
 const PIECE: usize = 64 << 10;
+/// The most bytes of values read from a compressed element at a time.
+const VALUES: usize = 4 << 10;
 
 const MI_INT8: i32 = 1;
 const MI_UINT8: i32 = 2;
@@ -847,17 +849,38 @@ impl<'a> Buffer<'a> {
         Ok(bytes)
     }
 
-    fn byte(&mut self) -> Result<u8, Thrown> {
-        Ok(self.array::<1>()?[0])
-    }
-
-    fn short(&mut self) -> Result<i16, Thrown> {
-        let bytes = self.array()?;
-        Ok(if self.little_endian {
-            i16::from_le_bytes(bytes)
-        } else {
-            i16::from_be_bytes(bytes)
-        })
+    /// Reads `count` values of `width` bytes, a piece at a time, handing the bytes of each to
+    /// `value`, then throws, as reading them one at a time does, where the buffer does not hold
+    /// them all.
+    fn values(
+        &mut self,
+        count: usize,
+        width: usize,
+        mut value: impl FnMut(&[u8]),
+    ) -> Result<(), Thrown> {
+        let whole = count.min(self.remaining() / width);
+        let length = whole * width;
+        match &mut self.data {
+            Data::Slice(data) => data[self.at..self.at + length]
+                .chunks_exact(width)
+                .for_each(&mut value),
+            Data::Inflated(inflated) => {
+                let mut piece = [0; VALUES];
+                let most = VALUES / width * width;
+                let mut done = 0;
+                while done < length {
+                    let size = (length - done).min(most);
+                    inflated.copy(self.at + done, &mut piece[..size])?;
+                    piece[..size].chunks_exact(width).for_each(&mut value);
+                    done += size;
+                }
+            }
+        }
+        self.at += length;
+        if whole < count {
+            return Err(underflow());
+        }
+        Ok(())
     }
 
     fn int(&mut self) -> Result<i32, Thrown> {
@@ -867,19 +890,6 @@ impl<'a> Buffer<'a> {
         } else {
             i32::from_be_bytes(bytes)
         })
-    }
-
-    fn long(&mut self) -> Result<i64, Thrown> {
-        let bytes = self.array()?;
-        Ok(if self.little_endian {
-            i64::from_le_bytes(bytes)
-        } else {
-            i64::from_be_bytes(bytes)
-        })
-    }
-
-    fn double(&mut self) -> Result<f64, Thrown> {
-        Ok(f64::from_bits(self.long()?.cast_unsigned()))
     }
 
     /// `position(position)`, which throws beyond either end.
@@ -967,9 +977,89 @@ impl JavaType {
             MI_INT64 | MI_UINT64 if matches!(self, Self::Short | Self::Int | Self::Long) => Ok(8),
             MI_SINGLE if self == Self::Float => Ok(4),
             MI_UTF8 if self == Self::Byte => Ok(1),
-            _ => Err(illegal_argument(format!("Unknown data type: {kind}"))),
+            _ => Err(unknown_type(kind)),
         }
     }
+}
+
+/// What a read of values throws on a data type it does not read.
+fn unknown_type(kind: i32) -> Thrown {
+    illegal_argument(format!("Unknown data type: {kind}"))
+}
+
+/// How `readToIntArray` and `readToByteArray` read a value of a data type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Numeric {
+    Int8,
+    UInt8,
+    Int16,
+    UInt16,
+    Int32,
+    Int64,
+    Double,
+}
+
+impl Numeric {
+    /// How `readToIntArray` reads a value of the data type `kind`, or what it throws on a type
+    /// it does not read.
+    fn of_ints(kind: i32) -> Result<Self, Thrown> {
+        Ok(match kind {
+            MI_UINT8 => Self::UInt8,
+            MI_INT8 => Self::Int8,
+            MI_UINT16 => Self::UInt16,
+            MI_INT16 => Self::Int16,
+            MI_UINT32 | MI_INT32 => Self::Int32,
+            MI_UINT64 | MI_INT64 => Self::Int64,
+            MI_DOUBLE => Self::Double,
+            kind => return Err(unknown_type(kind)),
+        })
+    }
+
+    /// How `readToByteArray` reads a value of the data type `kind`, its byte the low byte of
+    /// [`Numeric::int`], or what it throws on a type it does not read.
+    fn of_bytes(kind: i32) -> Result<Self, Thrown> {
+        Ok(match kind {
+            MI_UINT8 | MI_INT8 | MI_UTF8 => Self::UInt8,
+            MI_UINT16 | MI_INT16 => Self::Int16,
+            MI_UINT32 | MI_INT32 => Self::Int32,
+            MI_DOUBLE => Self::Double,
+            kind => return Err(unknown_type(kind)),
+        })
+    }
+
+    /// The bytes of a value.
+    fn width(self) -> usize {
+        match self {
+            Self::Int8 | Self::UInt8 => 1,
+            Self::Int16 | Self::UInt16 => 2,
+            Self::Int32 => 4,
+            Self::Int64 | Self::Double => 8,
+        }
+    }
+
+    /// The int `readToIntArray` reads of the [`Numeric::width`] bytes of a value.
+    fn int(self, bytes: &[u8], little_endian: bool) -> i32 {
+        match self {
+            Self::UInt8 => i32::from(bytes[0]),
+            Self::Int8 => i32::from(bytes[0].cast_signed()),
+            Self::UInt16 => i32::from(u16::from_le_bytes(ordered(bytes, little_endian))),
+            Self::Int16 => i32::from(i16::from_le_bytes(ordered(bytes, little_endian))),
+            Self::Int32 => i32::from_le_bytes(ordered(bytes, little_endian)),
+            Self::Int64 => i64::from_le_bytes(ordered(bytes, little_endian)) as i32,
+            Self::Double => {
+                f64::from_bits(u64::from_le_bytes(ordered(bytes, little_endian))) as i32
+            }
+        }
+    }
+}
+
+/// The `N` bytes of a value in little-endian order.
+fn ordered<const N: usize>(bytes: &[u8], little_endian: bool) -> [u8; N] {
+    let mut ordered: [u8; N] = bytes.try_into().expect("the bytes of a value");
+    if !little_endian {
+        ordered.reverse();
+    }
+    ordered
 }
 
 /// `MatTag.getPadding`: the bytes after an element's data up to its end, whose divisions by the
@@ -1041,17 +1131,12 @@ impl Tag {
     fn ints(&self, buffer: &mut Buffer) -> Result<Vec<i32>, Thrown> {
         let elements = self.elements()?;
         let mut values = Vec::with_capacity(elements.min(buffer.remaining()));
-        for _ in 0..elements {
-            values.push(match self.kind {
-                MI_UINT8 => i32::from(buffer.byte()?),
-                MI_INT8 => i32::from(buffer.byte()?.cast_signed()),
-                MI_UINT16 => i32::from(buffer.short()?.cast_unsigned()),
-                MI_INT16 => i32::from(buffer.short()?),
-                MI_UINT32 | MI_INT32 => buffer.int()?,
-                MI_UINT64 | MI_INT64 => buffer.long()? as i32,
-                MI_DOUBLE => buffer.double()? as i32,
-                kind => return Err(illegal_argument(format!("Unknown data type: {kind}"))),
-            });
+        if elements > 0 {
+            let numeric = Numeric::of_ints(self.kind)?;
+            let little_endian = buffer.little_endian;
+            buffer.values(elements, numeric.width(), |bytes| {
+                values.push(numeric.int(bytes, little_endian));
+            })?;
         }
         buffer.skip(self.padding)?;
         Ok(values)
@@ -1061,14 +1146,7 @@ impl Tag {
     fn pass_ints(&self, buffer: &mut Buffer) -> Result<usize, Thrown> {
         let elements = self.elements()?;
         if elements > 0 {
-            let width = match self.kind {
-                MI_UINT8 | MI_INT8 => 1,
-                MI_UINT16 | MI_INT16 => 2,
-                MI_UINT32 | MI_INT32 => 4,
-                MI_UINT64 | MI_INT64 | MI_DOUBLE => 8,
-                kind => return Err(illegal_argument(format!("Unknown data type: {kind}"))),
-            };
-            buffer.pass(elements * width)?;
+            buffer.pass(elements * Numeric::of_ints(self.kind)?.width())?;
         }
         buffer.skip(self.padding)?;
         Ok(elements)
@@ -1086,11 +1164,8 @@ impl Tag {
 
     /// `readToString`: the bytes `readToByteArray` reads, a byte of each value, as UTF-8.
     fn string(&self, buffer: &mut Buffer) -> Result<String, Thrown> {
-        let elements = self.elements()?;
-        let mut bytes = Vec::with_capacity(elements.min(buffer.remaining()));
-        for _ in 0..elements {
-            bytes.push(self.byte(buffer)?);
-        }
+        let mut bytes = Vec::with_capacity(self.elements()?.min(buffer.remaining()));
+        self.bytes(buffer, |byte| bytes.push(byte))?;
         buffer.skip(self.padding)?;
         Ok(java::utf8(&bytes))
     }
@@ -1103,8 +1178,7 @@ impl Tag {
         let mut length = 0;
         let mut piece = Vec::with_capacity(elements.min(buffer.remaining()).min(PIECE));
         let mut continuing = 0;
-        for _ in 0..elements {
-            let byte = self.byte(buffer)?;
+        self.bytes(buffer, |byte| {
             continuing = if byte & 0xC0 == 0x80 {
                 continuing + 1
             } else {
@@ -1115,19 +1189,21 @@ impl Tag {
                 piece.clear();
             }
             piece.push(byte);
-        }
+        })?;
         buffer.skip(self.padding)?;
         Ok(length + java::utf16_length(&java::utf8(&piece)))
     }
 
-    /// The byte `readToByteArray` reads of the next value.
-    fn byte(&self, buffer: &mut Buffer) -> Result<u8, Thrown> {
-        Ok(match self.kind {
-            MI_UINT8 | MI_INT8 | MI_UTF8 => buffer.byte()?,
-            MI_UINT16 | MI_INT16 => buffer.short()? as u8,
-            MI_UINT32 | MI_INT32 => buffer.int()? as u8,
-            MI_DOUBLE => buffer.double()? as i32 as u8,
-            kind => return Err(illegal_argument(format!("Unknown data type: {kind}"))),
+    /// The bytes `readToByteArray` reads, a byte of each value, handed to `byte` in turn.
+    fn bytes(&self, buffer: &mut Buffer, mut byte: impl FnMut(u8)) -> Result<(), Thrown> {
+        let elements = self.elements()?;
+        if elements == 0 {
+            return Ok(());
+        }
+        let numeric = Numeric::of_bytes(self.kind)?;
+        let little_endian = buffer.little_endian;
+        buffer.values(elements, numeric.width(), |bytes| {
+            byte(numeric.int(bytes, little_endian) as u8);
         })
     }
 
@@ -1490,6 +1566,136 @@ mod tests {
         for at in [2 * WINDOW + 7, 5, WINDOW - 2, 0] {
             inflated.copy(at, &mut read).unwrap();
             assert_eq!(read, data[at..at + 4], "at {at}");
+        }
+    }
+
+    /// What `readToIntArray`, or `readToByteArray` where `bytes`, reads value by value of
+    /// `elements` values of `kind` in `data`, as ints, and how far it reads.
+    fn one_at_a_time(
+        kind: i32,
+        bytes: bool,
+        elements: usize,
+        data: &[u8],
+        little_endian: bool,
+    ) -> (Result<Vec<i32>, Thrown>, usize) {
+        let mut values = Vec::new();
+        let mut at = 0;
+        for _ in 0..elements {
+            let width = match (kind, bytes) {
+                (MI_UINT8 | MI_INT8, _) | (MI_UTF8, true) => 1,
+                (MI_UINT16 | MI_INT16, _) => 2,
+                (MI_UINT32 | MI_INT32, _) => 4,
+                (MI_UINT64 | MI_INT64, false) | (MI_DOUBLE, _) => 8,
+                _ => return (Err(unknown_type(kind)), at),
+            };
+            let Some(value) = data.get(at..at + width) else {
+                return (Err(underflow()), at);
+            };
+            at += width;
+            let short = || {
+                let value = value.try_into().unwrap();
+                if little_endian {
+                    i16::from_le_bytes(value)
+                } else {
+                    i16::from_be_bytes(value)
+                }
+            };
+            let int = || {
+                let value = value.try_into().unwrap();
+                if little_endian {
+                    i32::from_le_bytes(value)
+                } else {
+                    i32::from_be_bytes(value)
+                }
+            };
+            let long = || {
+                let value = value.try_into().unwrap();
+                if little_endian {
+                    i64::from_le_bytes(value)
+                } else {
+                    i64::from_be_bytes(value)
+                }
+            };
+            let double = || f64::from_bits(long().cast_unsigned());
+            values.push(if bytes {
+                i32::from(match kind {
+                    MI_UINT8 | MI_INT8 | MI_UTF8 => value[0],
+                    MI_UINT16 | MI_INT16 => short() as u8,
+                    MI_UINT32 | MI_INT32 => int() as u8,
+                    _ => double() as i32 as u8,
+                })
+            } else {
+                match kind {
+                    MI_UINT8 => i32::from(value[0]),
+                    MI_INT8 => i32::from(value[0].cast_signed()),
+                    MI_UINT16 => i32::from(short().cast_unsigned()),
+                    MI_INT16 => i32::from(short()),
+                    MI_UINT32 | MI_INT32 => int(),
+                    MI_UINT64 | MI_INT64 => long() as i32,
+                    _ => double() as i32,
+                }
+            });
+        }
+        (Ok(values), at)
+    }
+
+    /// The ints and bytes read a piece at a time are those read a value at a time, as are how
+    /// far the reads go and what they throw, from data in place and inflated alike.
+    #[test]
+    fn reads_values_a_piece_at_a_time_as_one_at_a_time() {
+        const START: usize = 3;
+        let kinds = [
+            MI_INT8, MI_UINT8, MI_INT16, MI_UINT16, MI_INT32, MI_UINT32, MI_INT64, MI_UINT64,
+            MI_DOUBLE, MI_UTF8, MI_SINGLE, 99,
+        ];
+        for length in [0, 1, 7, 8, 9, 2 * VALUES + 5] {
+            let data: Vec<u8> = (0..START + length)
+                .map(|at| (at * 37 % 256) as u8)
+                .collect();
+            let compressed = zlib(&data);
+            for inflated in [false, true] {
+                for little_endian in [true, false] {
+                    for kind in kinds {
+                        for elements in [0, 1, 2, 5, 1100, 2100] {
+                            for bytes in [false, true] {
+                                let mut buffer = Buffer {
+                                    data: if inflated {
+                                        Data::Inflated(Inflated::new(Cow::Borrowed(
+                                            compressed.as_slice(),
+                                        )))
+                                    } else {
+                                        Data::Slice(&data)
+                                    },
+                                    length: data.len(),
+                                    at: START,
+                                    little_endian,
+                                };
+                                let tag = Tag {
+                                    kind,
+                                    size: i32::try_from(elements).unwrap() * size_of(kind),
+                                    padding: 0,
+                                };
+                                let read = if bytes {
+                                    let mut read = Vec::new();
+                                    tag.bytes(&mut buffer, |byte| read.push(i32::from(byte)))
+                                        .map(|()| read)
+                                } else {
+                                    tag.ints(&mut buffer)
+                                };
+                                let expected = one_at_a_time(
+                                    kind,
+                                    bytes,
+                                    elements,
+                                    &data[START..],
+                                    little_endian,
+                                );
+                                let case = (length, inflated, little_endian, kind, elements, bytes);
+                                assert_eq!((read, buffer.at - START), expected, "{case:?}");
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
