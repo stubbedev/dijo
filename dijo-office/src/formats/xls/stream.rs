@@ -349,8 +349,15 @@ impl<'a> RecordStream<'a> {
             } else {
                 available
             };
-            for _ in 0..take.max(0) {
-                units.push(self.read_char(compressed)?);
+            let count = take.max(0) as usize;
+            if compressed {
+                units.extend(self.take_units(count, 1)?.iter().map(|&byte| u16::from(byte)));
+            } else {
+                units.extend(
+                    self.take_units(count, 2)?
+                        .chunks_exact(2)
+                        .map(|pair| u16::from_le_bytes([pair[0], pair[1]])),
+                );
             }
             if wanted <= available {
                 return Ok(units);
@@ -377,12 +384,21 @@ impl<'a> RecordStream<'a> {
         }
     }
 
-    fn read_char(&mut self, compressed: bool) -> Read<u16> {
-        Ok(if compressed {
-            u16::from(self.read_u8()?)
-        } else {
-            self.read_i16()? as u16
-        })
+    /// `count` units of `width` bytes the record holds, read as one at a time would: where the
+    /// stream ends early, the stream moves past the first unit it cannot read and fails.
+    fn take_units(&mut self, count: usize, width: usize) -> Read<&[u8]> {
+        if count == 0 {
+            return Ok(&[]);
+        }
+        let length = count * width;
+        let held = self.data.len().saturating_sub(self.offset as usize);
+        if held < length {
+            let past = (held / width + 1) * width;
+            self.offset += past as i64;
+            self.position += past;
+            return Err(illegal_state(UNEXPECTED_END));
+        }
+        self.take(length)
     }
 
     /// `readRemainder`: the rest of the record.
@@ -422,6 +438,73 @@ pub(super) mod tests {
         stream.next_record().unwrap();
         assert_eq!(java_string(&stream.read_compressed(4).unwrap()), "abcd");
         assert!(!stream.has_next_record().unwrap());
+    }
+
+    fn read_string_per_char(
+        stream: &mut RecordStream,
+        length: i32,
+        compressed: bool,
+    ) -> Read<Vec<u16>> {
+        let length = length as usize;
+        let mut units = Vec::new();
+        let mut compressed = compressed;
+        loop {
+            let available = if compressed {
+                stream.remaining()
+            } else {
+                stream.remaining() / 2
+            };
+            let wanted = (length - units.len()) as i64;
+            for _ in 0..wanted.min(available).max(0) {
+                units.push(if compressed {
+                    u16::from(stream.read_u8()?)
+                } else {
+                    stream.read_i16()? as u16
+                });
+            }
+            if wanted <= available {
+                return Ok(units);
+            }
+            if !stream.is_continue_next()? {
+                return record_format("no continue");
+            }
+            stream.next_record()?;
+            compressed = stream.read_u8()? == 0;
+        }
+    }
+
+    #[test]
+    fn reads_strings_as_char_by_char() {
+        let mut continued = record(0x0204, &[b'a', 0, 0x3D, 0xD8, b'b']);
+        continued.extend(record(CONTINUE, &[0, b'c', b'd', b'e']));
+        continued.extend(record(CONTINUE, &[1, 0x00, 0xDC, b'f', 0]));
+        let mut truncated = record(0x0204, &[b'a', 0, b'b']);
+        truncated[2] = 9;
+        let mut empty_truncated = record(0x0204, &[]);
+        empty_truncated[2] = 4;
+        for data in [continued, truncated, empty_truncated] {
+            for compressed in [true, false] {
+                for length in 0..12 {
+                    let mut fast = RecordStream::new(&data);
+                    fast.has_next_record().unwrap();
+                    fast.next_record().unwrap();
+                    let mut slow = fast.clone();
+                    let read = fast.read_string(length, compressed);
+                    let expected = read_string_per_char(&mut slow, length, compressed);
+                    assert_eq!(read.is_ok(), expected.is_ok());
+                    if let (Ok(read), Ok(expected)) = (&read, &expected) {
+                        assert_eq!(read, expected);
+                    }
+                    if read.as_ref().is_err_and(|error| {
+                        *error == Thrown::runtime(ILLEGAL_STATE, UNEXPECTED_END)
+                    }) {
+                        assert_eq!(read, expected);
+                    }
+                    assert_eq!(fast.position(), slow.position());
+                    assert_eq!(fast.remaining(), slow.remaining());
+                }
+            }
+        }
     }
 
     #[test]
