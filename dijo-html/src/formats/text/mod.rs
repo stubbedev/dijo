@@ -222,23 +222,18 @@ fn write(
             .with_parameter("charset", detection.decode_as.name())
             .to_string(),
     );
-    let chars = head
-        .into_iter()
-        .chain(text)
-        .flat_map(|piece| piece.chars().collect::<Vec<char>>());
+    let pieces = head.into_iter().chain(text);
     match delimiter {
         None => {
             xhtml.start_element("p")?;
-            for chunk in chunks(chars) {
-                xhtml.characters(&chunk)?;
-            }
+            for_each_chunk(pieces, |chunk| xhtml.characters(chunk))?;
             xhtml.end_element("p")?;
         }
         Some(delimiter) => {
             xhtml.metadata_mut().set("csv:delimiter", delimiter.name());
             xhtml.start_element("table")?;
             let mut rows = 0usize;
-            for record in Records::new(chars, Excel(delimiter.char())) {
+            for record in Records::new(pieces.flat_map(owned_chars), Excel(delimiter.char())) {
                 let Ok(record) = record;
                 xhtml.start_element("tr")?;
                 for value in &record {
@@ -261,27 +256,61 @@ fn write(
     Ok(())
 }
 
-/// The text as reads of [`CHUNK`] UTF-16 units, a read that would end between the two halves of
-/// a surrogate pair ending before it. Tika's `handleText` splits the pair, and each half becomes
-/// U+FFFD (#66).
-fn chunks(mut text: impl Iterator<Item = char>) -> impl Iterator<Item = String> {
-    let mut carried: Option<char> = None;
-    std::iter::from_fn(move || {
-        let mut chunk = String::new();
-        let mut units = 0;
-        while let Some(c) = carried.take().or_else(|| text.next()) {
+/// Calls `emit` with the text of `pieces` as reads of [`CHUNK`] UTF-16 units, a read that would
+/// end between the two halves of a surrogate pair ending before it. Tika's `handleText` splits
+/// the pair, and each half becomes U+FFFD (#66).
+fn for_each_chunk<E>(
+    pieces: impl IntoIterator<Item = impl AsRef<str>>,
+    mut emit: impl FnMut(&str) -> Result<(), E>,
+) -> Result<(), E> {
+    fn finish<E>(
+        carried: &mut String,
+        tail: &str,
+        emit: &mut impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if carried.is_empty() {
+            return emit(tail);
+        }
+        carried.push_str(tail);
+        emit(carried.as_str())?;
+        carried.clear();
+        Ok(())
+    }
+    let mut carried = String::new();
+    let mut units = 0;
+    for piece in pieces {
+        let piece = piece.as_ref();
+        let mut start = 0;
+        for (at, c) in piece.char_indices() {
             let width = c.len_utf16();
             if units + width > CHUNK {
-                carried = Some(c);
-                return Some(chunk);
+                finish(&mut carried, &piece[start..at], &mut emit)?;
+                start = at;
+                units = 0;
             }
-            chunk.push(c);
             units += width;
             if units == CHUNK {
-                return Some(chunk);
+                let end = at + c.len_utf8();
+                finish(&mut carried, &piece[start..end], &mut emit)?;
+                start = end;
+                units = 0;
             }
         }
-        (!chunk.is_empty()).then_some(chunk)
+        carried.push_str(&piece[start..]);
+    }
+    if carried.is_empty() {
+        return Ok(());
+    }
+    emit(carried.as_str())
+}
+
+/// The characters of `piece`, which the iterator owns.
+fn owned_chars(piece: String) -> impl Iterator<Item = char> {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        let c = piece[at..].chars().next()?;
+        at += c.len_utf8();
+        Some(c)
     })
 }
 
@@ -314,9 +343,81 @@ mod tests {
             .is_some_and(|reason| reason.contains("x-IBM930")));
     }
 
+    fn chunks<S: AsRef<str>>(pieces: &[S]) -> Vec<String> {
+        let mut chunks = Vec::new();
+        for_each_chunk(pieces, |chunk| {
+            chunks.push(chunk.to_string());
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+        chunks
+    }
+
+    fn chunks_a_char_at_a_time(mut text: impl Iterator<Item = char>) -> Vec<String> {
+        let mut carried: Option<char> = None;
+        std::iter::from_fn(move || {
+            let mut chunk = String::new();
+            let mut units = 0;
+            while let Some(c) = carried.take().or_else(|| text.next()) {
+                let width = c.len_utf16();
+                if units + width > CHUNK {
+                    carried = Some(c);
+                    return Some(chunk);
+                }
+                chunk.push(c);
+                units += width;
+                if units == CHUNK {
+                    return Some(chunk);
+                }
+            }
+            (!chunk.is_empty()).then_some(chunk)
+        })
+        .collect()
+    }
+
+    #[test]
+    fn chunking_pieces_matches_chunking_a_char_at_a_time() {
+        let text: String = (0..CHUNK * 5)
+            .map(|index| match index % 11 {
+                0 => '\u{1F600}',
+                3 => '\u{e9}',
+                7 => '\u{6f22}',
+                _ => 'a',
+            })
+            .collect();
+        let texts = [
+            String::new(),
+            "a".repeat(CHUNK),
+            "a".repeat(CHUNK * 3),
+            format!("{}\u{1F600}b", "a".repeat(CHUNK - 1)),
+            format!("{}\u{1F600}b", "a".repeat(CHUNK - 2)),
+            "\u{1F600}".repeat(CHUNK + 1),
+            text,
+        ];
+        for text in &texts {
+            let expected = chunks_a_char_at_a_time(text.chars());
+            let boundaries: Vec<usize> = (0..=text.len())
+                .filter(|&at| text.is_char_boundary(at))
+                .collect();
+            for step in [1, 2, 3, 1000, CHUNK - 1, CHUNK, CHUNK + 1, usize::MAX] {
+                let mut pieces = Vec::new();
+                let mut start = 0;
+                for &at in boundaries.iter().step_by(step.min(boundaries.len())) {
+                    pieces.push(&text[start..at]);
+                    pieces.push("");
+                    start = at;
+                }
+                pieces.push(&text[start..]);
+                assert!(chunks(&pieces) == expected, "step {step}");
+            }
+            let owned: String = owned_chars(text.clone()).collect();
+            assert_eq!(&owned, text);
+        }
+    }
+
     #[test]
     fn splits_reads_between_characters() {
-        let chunks = |text: &str| chunks(text.chars()).collect::<Vec<String>>();
+        let chunks = |text: &str| chunks(&[text]);
         assert_eq!(chunks(""), Vec::<String>::new());
         let full = "a".repeat(CHUNK);
         assert_eq!(chunks(&full), std::slice::from_ref(&full));
