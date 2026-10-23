@@ -1,3 +1,10 @@
+# 0.2.10 (2026-10-23)
+
+### Fixed
+
+* A damaged TIFF whose directory claims more tag values than the file holds no longer aborts the process
+  reserving memory for them: what a TIFF's tags and compressed strips may allocate is bounded by the file's size.
+
 # 0.2.9 (2026-10-23)
 
 ### Changed
