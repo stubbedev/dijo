@@ -175,9 +175,9 @@ impl Parser for ZipParser {
     ) -> Result<Prepared<'a>, Decline<'a>> {
         if let Ok(zip) = ZipFile::open(input) {
             let paging = Paging::new(pages);
-            let difference = check_entries(&zip, &paging);
+            let (names, difference) = check_entries(&zip, &paging);
             return reading(
-                Box::new(move |xhtml| write_archive(input, &zip, xhtml, pages, &paging)),
+                Box::new(move |xhtml| write_archive(input, &zip, &names, xhtml, pages, &paging)),
                 difference,
             );
         }
@@ -202,7 +202,7 @@ impl Parser for ZipParser {
             }
         };
         let in_memory = Paging::new(Pages::IN_MEMORY);
-        let difference = check_entries(
+        let (names, difference) = check_entries(
             &ZipFile::open(&salvaged).expect("a salvaged archive opens"),
             &in_memory,
         );
@@ -210,7 +210,7 @@ impl Parser for ZipParser {
             Box::new(move |xhtml| {
                 let zip = ZipFile::open(&salvaged).expect("a salvaged archive opens");
                 let pages = salvaged.pages();
-                write_archive(input, &zip, xhtml, pages, &Paging::new(pages))
+                write_archive(input, &zip, &names, xhtml, pages, &Paging::new(pages))
             }),
             difference,
         )
@@ -247,27 +247,34 @@ fn streamed<'a>(
     )
 }
 
-/// Reads each entry of the archive `zip` and finds the first detail in which the native reading
-/// differs from Tika's.
-fn check_entries(zip: &ZipFile, paging: &Paging) -> Option<Difference> {
+/// Names each entry of the archive `zip` but a directory, as [`entry_name`] does, and reads each
+/// to find the first detail in which the native reading differs from Tika's.
+fn check_entries(zip: &ZipFile, paging: &Paging) -> (Vec<String>, Option<Difference>) {
+    let mut names = Vec::new();
     let mut difference = None;
+    let mut checking = true;
     for entry in zip.entries() {
-        if entry.is_directory() || !entry.can_read() {
+        if entry.is_directory() {
             continue;
         }
-        difference = difference.or(entry_name(entry).1);
+        let (name, differs) = entry_name(entry);
+        names.push(name);
+        if !checking || !entry.can_read() {
+            continue;
+        }
+        difference = difference.or(differs);
         match zip.verify(entry) {
             Some(Decoded::Complete(_)) => {
                 paging.read(usize::try_from(entry.compressed_size).unwrap_or(usize::MAX));
             }
-            Some(Decoded::Oversized(_)) => break,
+            Some(Decoded::Oversized(_)) => checking = false,
             Some(Decoded::Truncated(_)) | None => {
                 difference = difference.or_else(|| Some(cut_short(&entry.name)));
             }
         }
     }
     paging.release();
-    difference
+    (names, difference)
 }
 
 /// How the native reading of an entry of `name` whose data is cut short or corrupt differs
@@ -280,12 +287,14 @@ fn cut_short(name: &str) -> Difference {
     ))
 }
 
-/// `parseWithZipFile` of the archive `zip`, read from `input` or salvaged from it. Tika checks
-/// the integrity of `input` after the document has ended, so its result never reaches the
-/// document's head, and not at all when an entry fails it (#99).
+/// `parseWithZipFile` of the archive `zip`, read from `input` or salvaged from it, the names of
+/// its entries but directories `names`. Tika checks the integrity of `input` after the document
+/// has ended, so its result never reaches the document's head, and not at all when an entry
+/// fails it (#99).
 fn write_archive<'a>(
     input: &[u8],
     zip: &ZipFile<'a>,
+    names: &[String],
     xhtml: &mut Xhtml,
     pages: Pages<'a>,
     paging: &Paging,
@@ -293,23 +302,22 @@ fn write_archive<'a>(
     check_integrity(input, &CentralNames::of(zip), xhtml.metadata_mut());
     paging.release();
     update_media_type(zip, xhtml.metadata_mut());
-    let written = write_entries(zip, xhtml, pages, paging);
+    let written = write_entries(zip, names, xhtml, pages, paging);
     xhtml.end_document()?;
     written
 }
 
-/// `parseWithZipFile`'s loop over the entries, which ends the document whatever happens.
+/// `parseWithZipFile`'s loop over the entries but directories, of `names`, which ends the
+/// document whatever happens.
 fn write_entries<'a>(
     zip: &ZipFile<'a>,
+    names: &[String],
     xhtml: &mut Xhtml,
     pages: Pages<'a>,
     paging: &Paging,
 ) -> Result<(), Failure> {
-    for entry in zip.entries() {
-        if entry.is_directory() {
-            continue;
-        }
-        let name = zip_file::entry_name(entry_name(entry).0, entry.version_made_by);
+    let entries = zip.entries().iter().filter(|entry| !entry.is_directory());
+    for (entry, name) in entries.zip(names) {
         if entry.uses_encryption() {
             record_unread(
                 xhtml,
@@ -326,23 +334,23 @@ fn write_entries<'a>(
             );
             continue;
         }
-        let metadata = entry_metadata(entry, &name);
+        let metadata = entry_metadata(entry, name);
         let (content, cut) = match zip.spool(entry, pages) {
-            Some(Err(undecoded)) => return Err(unspooled(&name, &undecoded)),
+            Some(Err(undecoded)) => return Err(unspooled(name, &undecoded)),
             Some(Ok(Decoded::Complete(content))) => (content, None),
-            Some(Ok(Decoded::Oversized(content))) => (content, Some(Cut(the_entry(&name)))),
+            Some(Ok(Decoded::Oversized(content))) => (content, Some(Cut(the_entry(name)))),
             Some(Ok(Decoded::Truncated(content))) if !content.is_empty() => {
-                write_entry(xhtml, &metadata, &name, &content, None)?;
-                record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED);
+                write_entry(xhtml, &metadata, name, &content, None)?;
+                record_unreadable(xhtml.metadata_mut(), name, TRUNCATED);
                 continue;
             }
             Some(Ok(Decoded::Truncated(_))) | None => {
-                write_entry_div(xhtml, &name)?;
-                record_unreadable(xhtml.metadata_mut(), &name, TRUNCATED);
+                write_entry_div(xhtml, name)?;
+                record_unreadable(xhtml.metadata_mut(), name, TRUNCATED);
                 continue;
             }
         };
-        write_entry(xhtml, &metadata, &name, &content, cut)?;
+        write_entry(xhtml, &metadata, name, &content, cut)?;
         paging.read(usize::try_from(entry.compressed_size).unwrap_or(usize::MAX));
     }
     Ok(())
@@ -426,18 +434,21 @@ fn local_headers(input: &[u8]) -> ZipStream<'_> {
     ZipStream::new(input, true).skipping_split_signature()
 }
 
-/// What reading an archive by its local headers finds before it is written: the names of the
-/// entries that occur more than once, at most a hundred, in order, and the first detail in
-/// which the native reading differs from Tika's.
+/// What reading an archive by its local headers finds before it is written: the name of each
+/// entry but a directory up to where the reading stops, as [`entry_name`] gives it, the names
+/// of the entries that occur more than once, at most a hundred, in order, and the first detail
+/// in which the native reading differs from Tika's.
 struct Streamed {
+    names: Vec<String>,
     duplicates: Vec<String>,
     difference: Option<Difference>,
 }
 
 impl Streamed {
-    /// Reads each entry of the archive `input` and finds the duplicate names.
+    /// Names and reads each entry of the archive `input` and finds the duplicate names.
     fn scan(input: &[u8]) -> Self {
         let mut stream = local_headers(input);
+        let mut names = Vec::new();
         let mut seen = HashSet::new();
         let mut duplicates = Vec::new();
         let mut difference = None;
@@ -445,7 +456,9 @@ impl Streamed {
             if entry.is_directory() {
                 continue;
             }
-            difference = difference.or(entry_name(&entry).1);
+            let (name, differs) = entry_name(&entry);
+            names.push(name);
+            difference = difference.or(differs);
             if entry.streams_without_decompressor() {
                 difference = difference.or_else(|| {
                     Some(Difference::new(format!(
@@ -468,6 +481,7 @@ impl Streamed {
             }
         }
         Streamed {
+            names,
             duplicates,
             difference,
         }
@@ -477,7 +491,7 @@ impl Streamed {
     /// compare the entries with a central directory, then each entry but a directory up to
     /// the first whose data cannot be read whole or where the stream fails.
     fn write<'a>(
-        &self,
+        self,
         input: &'a [u8],
         pages: Pages<'a>,
         xhtml: &mut Xhtml,
@@ -488,10 +502,11 @@ impl Streamed {
             metadata.set("zip:integrity-check-result", "PARTIAL");
         } else {
             metadata.set("zip:integrity-check-result", "FAIL");
-            for name in &self.duplicates {
-                metadata.add("zip:duplicate-entry-names", name.clone());
+            for name in self.duplicates {
+                metadata.add("zip:duplicate-entry-names", name);
             }
         }
+        let mut names = self.names.into_iter();
         let mut stream = local_headers(input);
         loop {
             let entry = match stream.next_entry() {
@@ -511,7 +526,7 @@ impl Streamed {
             if entry.is_directory() {
                 continue;
             }
-            let name = zip_file::entry_name(entry_name(&entry).0, entry.version_made_by);
+            let name = names.next().unwrap_or_else(|| entry_name(&entry).0);
             if entry.uses_encryption() {
                 record_unread(
                     xhtml,
@@ -550,6 +565,16 @@ impl Streamed {
     }
 }
 
+/// The name of `entry` as Tika writes it, by [`detect_entry_name`] and
+/// [`zip_file::entry_name`], and how it may differ from Tika's.
+fn entry_name(entry: &ZipEntry) -> (String, Option<Difference>) {
+    let (name, difference) = detect_entry_name(entry);
+    (
+        zip_file::entry_name(name, entry.version_made_by),
+        difference,
+    )
+}
+
 /// `detectEntryName`: a name from the Unicode extra field as commons-compress read it, a name
 /// flagged UTF-8 (EFS) decoded so when it is valid UTF-8, else the name's bytes decoded in the
 /// charset Tika's encoding detector finds, told a name flagged UTF-8 claims so. Tika takes the
@@ -557,7 +582,7 @@ impl Streamed {
 /// how it may differ from Tika's: where its bytes are malformed in a charset Java decodes
 /// otherwise than the WHATWG decoder, which replaces them its own way, and where the native
 /// decoders do not decode the charset, for which the name is as commons-compress decodes it.
-fn entry_name(entry: &ZipEntry) -> (String, Option<Difference>) {
+fn detect_entry_name(entry: &ZipEntry) -> (String, Option<Difference>) {
     if entry.name_source == NameSource::UnicodeExtraField {
         return (entry.name.clone(), None);
     }
@@ -755,6 +780,40 @@ mod tests {
                 "method {method}"
             );
         }
+    }
+
+    #[test]
+    fn names_each_entry_once_as_it_is_written() {
+        let data = zip(&[
+            ("a", b"hej"),
+            ("dir/", b""),
+            ("b\\c.txt", b"igen"),
+            ("K\u{f8}benhavn.txt", b"by"),
+            ("c/a", b"igen"),
+        ]);
+        let zip = ZipFile::open(&data).unwrap();
+        let named: Vec<String> = zip
+            .entries()
+            .iter()
+            .filter(|entry| !entry.is_directory())
+            .map(|entry| entry_name(entry).0)
+            .collect();
+        assert_eq!(named.len(), 4);
+        let (names, _) = check_entries(&zip, &Paging::new(Pages::IN_MEMORY));
+        assert_eq!(names, named);
+        let streamed = |input: &[u8]| {
+            let mut stream = local_headers(input);
+            let mut streamed = Vec::new();
+            while let Ok(Some(entry)) = stream.next_entry() {
+                if !entry.is_directory() {
+                    streamed.push(entry_name(&entry).0);
+                }
+            }
+            streamed
+        };
+        assert_eq!(Streamed::scan(&data).names, streamed(&data));
+        let cut = &data[..data.len() - 10];
+        assert_eq!(Streamed::scan(cut).names, streamed(cut));
     }
 
     #[test]
