@@ -188,17 +188,19 @@ fn write_table(reader: &mut Reader, xhtml: &mut Xhtml) -> Result<(), Written> {
     xhtml.end_element("tr")?;
     xhtml.newline()?;
     let mut writer = Writer::default();
+    let mut cells = Vec::new();
+    let mut texts = Vec::new();
     loop {
-        let row = match reader.read_next()? {
-            Next::Row(row) => row,
+        match reader.read_next(&mut cells)? {
+            Next::Row => {}
             Next::Deleted => continue,
             Next::End => break,
-        };
-        let texts = row_texts(&reader.columns, &row, &mut writer)?;
+        }
+        row_texts(&reader.columns, &mut cells, &mut writer, &mut texts)?;
         xhtml.start_element("tr")?;
-        for text in texts {
+        for text in &texts {
             xhtml.start_element("td")?;
-            xhtml.characters(&text)?;
+            xhtml.characters(text)?;
             xhtml.end_element("td")?;
         }
         xhtml.end_element("tr")?;
@@ -208,30 +210,33 @@ fn write_table(reader: &mut Reader, xhtml: &mut Xhtml) -> Result<(), Written> {
     Ok(())
 }
 
-/// `DataWriterUtil.getRowValues`: the text of each column's cell of `row`.
+/// `DataWriterUtil.getRowValues`: the text of each column's cell of `row` into `texts`, the
+/// cells taken out of `row`.
 fn row_texts(
     columns: &[Column],
-    row: &[Option<Value>],
+    row: &mut Vec<Option<Value>>,
     writer: &mut Writer,
-) -> Result<Vec<String>, Thrown> {
-    columns
-        .iter()
-        .enumerate()
-        .map(|(index, column)| {
-            let cell = row.get(index).ok_or_else(|| {
-                Thrown::Runtime(Exception::new(
-                    "java.lang.ArrayIndexOutOfBoundsException",
-                    format!("Index {index} out of bounds for length {}", row.len()),
-                ))
-            })?;
-            let format = values::Format {
-                column: column.id,
-                name: &column.format.name,
-                precision: column.format.precision,
-            };
-            writer.text(&format, cell.as_ref())
-        })
-        .collect()
+    texts: &mut Vec<String>,
+) -> Result<(), Thrown> {
+    texts.clear();
+    let length = row.len();
+    let mut cells = row.drain(..);
+    for (index, column) in columns.iter().enumerate() {
+        let cell = cells.next().ok_or_else(|| {
+            Thrown::Runtime(Exception::new(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {index} out of bounds for length {length}"),
+            ))
+        })?;
+        let format = values::Format {
+            column: column.id,
+            name: &column.format.name,
+            precision: column.format.precision,
+            style: column.format.style,
+        };
+        texts.push(writer.text(&format, cell)?);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

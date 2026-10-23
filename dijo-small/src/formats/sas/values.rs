@@ -41,7 +41,8 @@ const DATE_FORMATS: [&str; 51] = [
     "WEEKDATX", "WEEKDAY", "DOWNAME", "WORDDATE", "WORDDATX", "QTR",
 ];
 
-/// The SAS formats parso reads as times, `SasTimeFormat`'s names.
+/// The SAS formats parso reads as times, `SasTimeFormat`'s names, which are the formats
+/// `DataWriterUtil` writes as times, `DateTimeConstants.TIME_FORMAT_STRINGS`.
 const TIME_FORMATS: [&str; 7] = [
     "TIME", "MMSS", "HHMM", "HOUR", "TIMEAMPM", "E8601LZ", "E8601TM",
 ];
@@ -50,11 +51,6 @@ const TIME_FORMATS: [&str; 7] = [
 const DATE_TIME_FORMATS: [&str; 17] = [
     "DATETIME", "B8601DN", "B8601DT", "B8601DX", "B8601DZ", "B8601LX", "E8601DN", "E8601DT",
     "E8601DX", "E8601DZ", "E8601LX", "DATEAMPM", "DTDATE", "DTMONYY", "DTWKDATX", "DTYEAR", "TOD",
-];
-
-/// `DateTimeConstants.TIME_FORMAT_STRINGS`: the formats `DataWriterUtil` writes as times.
-const WRITTEN_TIME_FORMATS: [&str; 7] = [
-    "TIME", "HHMM", "E8601LZ", "E8601TM", "HOUR", "MMSS", "TIMEAMPM",
 ];
 
 /// `DateTimeConstants.DATE_FORMAT_STRINGS` then `DATETIME_FORMAT_STRINGS`: the pattern
@@ -151,7 +147,7 @@ pub(super) enum Temporal {
 
 impl Temporal {
     /// The temporal kind of the SAS format `name`, as `SasTemporalFormatter` tells it.
-    pub(super) fn of(name: &str) -> Option<Self> {
+    fn of(name: &str) -> Option<Self> {
         if DATE_TIME_FORMATS.contains(&name) {
             Some(Self::DateTime)
         } else if DATE_FORMATS.contains(&name) {
@@ -186,6 +182,26 @@ impl Temporal {
                 }
             }
         })
+    }
+}
+
+/// What a column's SAS format makes of its cells: numbers parso reads as dates or times, and
+/// `DataWriterUtil` writes by them, percentages, or plain values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Style {
+    Temporal(Temporal),
+    Percent,
+    Plain,
+}
+
+impl Style {
+    /// The style of the SAS format `name`.
+    pub(super) fn of(name: &str) -> Self {
+        match Temporal::of(name) {
+            Some(temporal) => Self::Temporal(temporal),
+            None if name == "PERCENT" => Self::Percent,
+            None => Self::Plain,
+        }
     }
 }
 
@@ -279,28 +295,25 @@ pub(super) struct Writer {
     formatters: HashMap<i32, Formatter>,
 }
 
-/// The column of a cell, as `DataWriterUtil` reads it: its id and its format's name and
-/// precision.
+/// The column of a cell, as `DataWriterUtil` reads it: its id and its format's name, precision
+/// and style.
 pub(super) struct Format<'a> {
     pub(super) column: i32,
     pub(super) name: &'a str,
     pub(super) precision: i32,
+    pub(super) style: Style,
 }
 
 impl Writer {
     /// `DataWriterUtil.getValue`: the text of a cell, or what it throws on it.
-    pub(super) fn text(
-        &mut self,
-        format: &Format,
-        value: Option<&Value>,
-    ) -> Result<String, Thrown> {
+    pub(super) fn text(&mut self, format: &Format, value: Option<Value>) -> Result<String, Thrown> {
         let Some(value) = value else {
             return Ok(String::new());
         };
         if value.is_infinite() {
             return Ok(String::new());
         }
-        if let Value::Date(millis) = value {
+        if let Value::Date(millis) = &value {
             let Formatter::Date(dates) = self.formatter(format, Self::date_formatter)? else {
                 return Err(Thrown::Runtime(Exception::new(
                     "java.lang.ClassCastException",
@@ -311,18 +324,18 @@ impl Writer {
                 .format(*millis, &TimeZone::fixed(0))
                 .expect("the date patterns of SAS formats name no time zone"));
         }
-        if WRITTEN_TIME_FORMATS.contains(&format.name) {
+        if format.style == Style::Temporal(Temporal::Time) {
             return match value {
-                Value::Long(seconds) => Ok(clock(*seconds)),
-                Value::Double(seconds) => Ok(fractional_clock(*seconds)),
-                other => Err(class_cast(other, "java.lang.Long")),
+                Value::Long(seconds) => Ok(clock(seconds)),
+                Value::Double(seconds) => Ok(fractional_clock(seconds)),
+                other => Err(class_cast(&other, "java.lang.Long")),
             };
         }
-        if format.name == "PERCENT" {
+        if format.style == Style::Percent {
             let number = match value {
-                Value::Long(number) => *number as f64,
-                Value::Double(number) => *number,
-                other => return Err(class_cast(other, "java.lang.Double")),
+                Value::Long(number) => number as f64,
+                Value::Double(number) => number,
+                other => return Err(class_cast(&other, "java.lang.Double")),
             };
             let Formatter::Percent(percent) = self.formatter(format, Self::percent_formatter)?
             else {
@@ -336,8 +349,8 @@ impl Writer {
         Ok(match value {
             Value::Short(number) => number.to_string(),
             Value::Long(number) => number.to_string(),
-            Value::Double(number) => double_text(*number),
-            Value::Text(text) => text.clone(),
+            Value::Double(number) => double_text(number),
+            Value::Text(text) => text,
             Value::Date(_) => unreachable!("a date is written by its format above"),
         })
     }
@@ -437,8 +450,39 @@ mod tests {
             column: 1,
             name,
             precision,
+            style: Style::of(name),
         };
-        Writer::default().text(&format, Some(&value))
+        Writer::default().text(&format, Some(value))
+    }
+
+    #[test]
+    fn tells_the_styles_of_formats_as_their_names_do() {
+        const WRITTEN_TIME_FORMATS: [&str; 7] = [
+            "TIME", "HHMM", "E8601LZ", "E8601TM", "HOUR", "MMSS", "TIMEAMPM",
+        ];
+        let others = [
+            "", "PERCENT", "BEST", "percent", "PERCENTN", "time", "MDYAMPM", " DATE",
+        ];
+        let names = DATE_FORMATS
+            .iter()
+            .chain(&TIME_FORMATS)
+            .chain(&DATE_TIME_FORMATS)
+            .chain(&WRITTEN_TIME_FORMATS)
+            .chain(&others);
+        for &name in names {
+            let style = Style::of(name);
+            let temporal = match style {
+                Style::Temporal(temporal) => Some(temporal),
+                Style::Percent | Style::Plain => None,
+            };
+            assert_eq!(temporal, Temporal::of(name), "{name}");
+            assert_eq!(
+                style == Style::Temporal(Temporal::Time),
+                WRITTEN_TIME_FORMATS.contains(&name),
+                "{name}"
+            );
+            assert_eq!(style == Style::Percent, name == "PERCENT", "{name}");
+        }
     }
 
     #[test]

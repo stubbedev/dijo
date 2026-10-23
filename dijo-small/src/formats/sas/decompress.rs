@@ -248,6 +248,30 @@ fn binary_row(page: &[u8], offset: i64, length: i64, row: &mut Row) -> Result<()
 /// `Arrays.copyOfRange(bytes, from, to)`: zeros past the end of `bytes`, throwing where `from`
 /// lies outside it or after `to`.
 pub(super) fn copy_of_range(bytes: &[u8], from: i64, to: i64) -> Result<Vec<u8>, Thrown> {
+    let (start, length) = checked_range(bytes, from, to)?;
+    let mut copy = vec![0; length];
+    let available = (bytes.len() - start).min(length);
+    copy[..available].copy_from_slice(&bytes[start..start + available]);
+    Ok(copy)
+}
+
+/// The first `N` bytes of [`copy_of_range`]'s copy, zeros past where it ends too, and how many
+/// of them it holds, without the copy; it throws as `copy_of_range` does.
+pub(super) fn head_of_range<const N: usize>(
+    bytes: &[u8],
+    from: i64,
+    to: i64,
+) -> Result<([u8; N], usize), Thrown> {
+    let (start, length) = checked_range(bytes, from, to)?;
+    let kept = length.min(N);
+    let mut head = [0; N];
+    let available = (bytes.len() - start).min(kept);
+    head[..available].copy_from_slice(&bytes[start..start + available]);
+    Ok((head, kept))
+}
+
+/// The start and length of `Arrays.copyOfRange(bytes, from, to)`, or what it throws.
+fn checked_range(bytes: &[u8], from: i64, to: i64) -> Result<(usize, usize), Thrown> {
     if from > to {
         return Err(Thrown::Runtime(Exception::new(
             "java.lang.IllegalArgumentException",
@@ -259,10 +283,7 @@ pub(super) fn copy_of_range(bytes: &[u8], from: i64, to: i64) -> Result<Vec<u8>,
         .filter(|&start| start <= bytes.len())
         .ok_or_else(|| out_of_bounds(from, bytes.len()))?;
     let length = usize::try_from(to - from).expect("not negative");
-    let mut copy = vec![0; length];
-    let available = (bytes.len() - start).min(length);
-    copy[..available].copy_from_slice(&bytes[start..start + available]);
-    Ok(copy)
+    Ok((start, length))
 }
 
 #[cfg(test)]
@@ -303,6 +324,29 @@ mod tests {
         assert_eq!(row, b"aaazbcaaa\0");
         assert_eq!(copy_of_range(b"abc", 1, 5).unwrap(), b"bc\0\0");
         assert!(copy_of_range(b"abc", 4, 5).is_err());
+    }
+
+    #[test]
+    fn reads_heads_of_ranges_as_their_copies_begin() {
+        for length in 0..12 {
+            let bytes = (1..=length).collect::<Vec<u8>>();
+            for from in -3..16 {
+                for to in -3..24 {
+                    let copy = copy_of_range(&bytes, from, to);
+                    let head = head_of_range::<8>(&bytes, from, to);
+                    match (copy, head) {
+                        (Ok(copy), Ok((head, kept))) => {
+                            assert_eq!(kept, copy.len().min(8), "{length} {from} {to}");
+                            assert_eq!(head[..kept], copy[..kept], "{length} {from} {to}");
+                            assert!(head[kept..].iter().all(|&byte| byte == 0));
+                        }
+                        (copy, head) => {
+                            assert_eq!(copy.err(), head.err(), "{length} {from} {to}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -6,8 +6,8 @@
 //! which parso logs, a failure while a subheader is read skips the subheader, and anything else
 //! fails the file.
 
-use super::decompress::{copy_of_range, Compression};
-use super::values::{self, Temporal, Value};
+use super::decompress::{copy_of_range, head_of_range, Compression};
+use super::values::{self, Style, Value};
 use crate::formats::thrown::{Exception, Thrown};
 use crate::input::{Pages, Paging};
 use crate::text::charset::Charset;
@@ -220,11 +220,23 @@ pub(super) enum Kind {
     Text,
 }
 
-/// `ColumnFormat`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// `ColumnFormat`, with the [`Style`] of its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Format {
     pub(super) name: String,
     pub(super) precision: i32,
+    pub(super) style: Style,
+}
+
+impl Format {
+    fn new(name: String, precision: i32) -> Self {
+        let style = Style::of(&name);
+        Self {
+            name,
+            precision,
+            style,
+        }
+    }
 }
 
 /// parso's `Column`.
@@ -237,11 +249,12 @@ pub(super) struct Column {
     pub(super) kind: Kind,
 }
 
-/// What [`Reader::read_next`] reads: a row's cells, a row the file marks deleted, which parso
-/// reads as none and Tika's parser ends the table at (#155), or the end of the rows.
+/// What [`Reader::read_next`] reads: a row, its cells read into the buffer it is given, a row
+/// the file marks deleted, which parso reads as none and Tika's parser ends the table at
+/// (#155), or the end of the rows.
 #[derive(Debug)]
 pub(super) enum Next {
-    Row(Vec<Option<Value>>),
+    Row,
     Deleted,
     End,
 }
@@ -968,17 +981,15 @@ impl<'a> Reader<'a> {
             id: number + 1,
             name,
             label,
-            format: Format {
-                name: format,
-                precision,
-            },
+            format: Format::new(format, precision),
             kind,
         });
         Ok(())
     }
 
-    /// `readNext`: the next row, a deleted one, or the end of the rows.
-    pub(super) fn read_next(&mut self) -> Result<Next, Thrown> {
+    /// `readNext`: the next row, its cells read into `cells`, a deleted one, or the end of the
+    /// rows.
+    pub(super) fn read_next(&mut self, cells: &mut Vec<Option<Value>>) -> Result<Next, Thrown> {
         let index = self.row_in_file;
         self.row_in_file = self.row_in_file.wrapping_add(1);
         if i64::from(index) >= self.properties.row_count || self.eof {
@@ -999,7 +1010,8 @@ impl<'a> Reader<'a> {
                     .ok()
                     .and_then(|at| self.data_pointers.get(at))
                     .ok_or_else(|| index_out_of_bounds(at, self.data_pointers.len()))?;
-                row = Next::Row(self.row(pointer.offset, pointer.length)?);
+                self.row(pointer.offset, pointer.length, cells)?;
+                row = Next::Row;
                 if to_i64(self.data_pointers.len()) == i64::from(self.row_on_page) {
                     self.read_next_page()?;
                     self.row_on_page = 0;
@@ -1018,7 +1030,8 @@ impl<'a> Reader<'a> {
                         + align
                         + pointers
                         + i64::from(at) * row_length;
-                    row = Next::Row(self.row(offset, row_length)?);
+                    self.row(offset, row_length, cells)?;
+                    row = Next::Row;
                 }
                 self.row_on_page += 1;
                 let rows = self
@@ -1038,7 +1051,8 @@ impl<'a> Reader<'a> {
                 if self.page_type == PAGE_DATA_TYPE || self.is_kept(at)? {
                     let offset =
                         bit_offset + SUBHEADER_POINTERS_OFFSET + i64::from(at) * row_length;
-                    row = Next::Row(self.row(offset, row_length)?);
+                    self.row(offset, row_length, cells)?;
+                    row = Next::Row;
                 }
                 self.row_on_page += 1;
                 if self.row_on_page == self.block_count {
@@ -1110,12 +1124,7 @@ impl<'a> Reader<'a> {
                 .ok_or_else(|| index_out_of_bounds(info.column, length))?;
             match info.missing {
                 Missing::Name => column.name = text,
-                Missing::Format => {
-                    column.format = Format {
-                        name: text,
-                        precision: 0,
-                    };
-                }
+                Missing::Format => column.format = Format::new(text, 0),
                 Missing::Label => column.label = text,
             }
         }
@@ -1143,12 +1152,14 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    /// `processByteArrayWithData`: the cells of the row of `length` bytes at `offset`,
-    /// decompressed where it is shorter than a row, up to the first column of no length.
-    fn row(&self, offset: i64, length: i64) -> Result<Vec<Option<Value>>, Thrown> {
+    /// `processByteArrayWithData`: the cells of the row of `length` bytes at `offset` read into
+    /// `cells`, decompressed where it is shorter than a row, up to the first column of no
+    /// length.
+    fn row(&self, offset: i64, length: i64, cells: &mut Vec<Option<Value>>) -> Result<(), Thrown> {
         let count = self.properties.columns_count as i32;
         let size = usize::try_from(count).map_err(|_| negative_size(count))?;
-        let mut cells = vec![None; size];
+        cells.clear();
+        cells.resize(size, None);
         let page = self.page.as_deref().expect("rows are read from a page");
         let decompressed;
         let (source, start) = match self.properties.compression {
@@ -1179,7 +1190,7 @@ impl<'a> Reader<'a> {
                 .ok_or_else(|| array_out_of_bounds(to_i64(index), size))? = cell;
             index += 1;
         }
-        Ok(cells)
+        Ok(())
     }
 
     /// `processElement`: the cell of the column at `index` in the row at `start` of `source`.
@@ -1200,17 +1211,16 @@ impl<'a> Reader<'a> {
             .ok_or_else(|| index_out_of_bounds(index, self.offsets.len()))?;
         let at = start.wrapping_add(offset as i32);
         if column.kind == Kind::Number {
-            let bytes = copy_of_range(source, i64::from(at), i64::from(at.wrapping_add(length)))?;
+            let (head, kept) =
+                head_of_range::<8>(source, i64::from(at), i64::from(at.wrapping_add(length)))?;
+            let bytes = &head[..kept];
             if length <= 2 {
-                return Ok(Some(Value::Short(self.short(&bytes)?)));
+                return Ok(Some(Value::Short(self.short(bytes)?)));
             }
-            let number = self.double(&bytes)?;
-            if column.format.name.is_empty() {
-                return Ok(values::number(number));
-            }
-            return Ok(match Temporal::of(&column.format.name) {
-                Some(temporal) => temporal.value(number),
-                None => values::number(number),
+            let number = self.double(bytes)?;
+            return Ok(match column.format.style {
+                Style::Temporal(temporal) => temporal.value(number),
+                Style::Percent | Style::Plain => values::number(number),
             });
         }
         Ok(trimmed(source, i64::from(at), i64::from(length))?
