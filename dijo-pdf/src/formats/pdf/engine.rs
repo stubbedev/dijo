@@ -822,9 +822,15 @@ impl<'p> Run<'p, '_> {
         code: u32,
         displacement: (f32, f32),
     ) -> Result<(), Unported> {
-        self.legacy_show_glyph(rendering, font, code, displacement)?;
-        let unicode = font.to_unicode(code, false)?;
-        if unicode.as_deref().is_none_or(str::is_empty) {
+        let mapped = self.legacy_show_glyph(rendering, font, code, displacement)?;
+        let mapped = if font.has_extended_text() {
+            font.to_unicode(code, false)?
+                .as_deref()
+                .is_some_and(|text| !text.is_empty())
+        } else {
+            mapped
+        };
+        if !mapped {
             self.content.unmapped += 1;
         }
         self.content.glyphs += 1;
@@ -843,7 +849,7 @@ impl<'p> Run<'p, '_> {
         font: &Rc<Font>,
         code: u32,
         displacement: (f32, f32),
-    ) -> Result<(), Unported> {
+    ) -> Result<bool, Unported> {
         let state = self.state();
         let font_size = state.text.font_size;
         let horizontal_scaling = state.text.horizontal_scaling / 100.0;
@@ -881,7 +887,9 @@ impl<'p> Run<'p, '_> {
             space_width_text = 1.0;
         }
         let space_width_display = space_width_text * rendering.scaling_factor_x();
-        let unicode = match font.to_unicode(code, true)? {
+        let unicode = font.to_unicode(code, true)?;
+        let mapped = unicode.as_deref().is_some_and(|text| !text.is_empty());
+        let unicode = match unicode {
             Some(unicode) => unicode,
             None if font.is_simple() => match char::from_u32(code & 0xFFFF) {
                 Some(c) => GlyphText::from(c),
@@ -891,7 +899,7 @@ impl<'p> Run<'p, '_> {
                     ))
                 }
             },
-            None => return Ok(()),
+            None => return Ok(mapped),
         };
         let translated = match &self.translate {
             None => *rendering,
@@ -923,7 +931,7 @@ impl<'p> Run<'p, '_> {
             label,
         );
         self.process_text_position(position);
-        Ok(())
+        Ok(mapped)
     }
 
     /// `PDFTextStripper.processTextPosition`, with duplicate overlapping text kept, as Tika

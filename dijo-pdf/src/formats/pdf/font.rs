@@ -1098,12 +1098,14 @@ impl Font {
                 } else {
                     self.code_to_cid(code)
                 };
-                match cmap.codes(glyph) {
-                    Some(codes) if !codes.is_empty() => java_char(codes[0]).map(Some),
-                    _ => Ok(None),
-                }
+                cmap.first_code(glyph)
+                    .map_or(Ok(None), |code| java_char(code).map(Some))
             }
         }
+    }
+
+    pub(super) fn has_extended_text(&self) -> bool {
+        matches!(&self.kind, FontKind::Simple(simple) if !simple.zapf_dingbats)
     }
 
     /// `PDType0Font.codeToCID`.

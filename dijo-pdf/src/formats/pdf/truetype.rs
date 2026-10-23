@@ -339,17 +339,12 @@ impl CmapSubtable {
         self.code_to_glyph.get(&code).copied().unwrap_or(0)
     }
 
-    /// `CmapSubtable.getCharCodes`: the codes mapped to `glyph`, in ascending order when there
-    /// are several.
-    pub(super) fn codes(&self, glyph: u32) -> Option<Vec<u32>> {
+    /// `CmapSubtable.getCharCodes(glyph)[0]`: the least of the codes mapped to `glyph`.
+    pub(super) fn first_code(&self, glyph: u32) -> Option<u32> {
         match self.glyph_to_code.get(glyph as usize)? {
             GlyphCode::None => None,
-            GlyphCode::One(code) => Some(vec![*code]),
-            GlyphCode::Several => {
-                let mut codes = self.glyph_to_codes.get(&glyph)?.clone();
-                codes.sort_unstable();
-                Some(codes)
-            }
+            GlyphCode::One(code) => Some(*code),
+            GlyphCode::Several => self.glyph_to_codes.get(&glyph)?.iter().min().copied(),
         }
     }
 
@@ -1639,7 +1634,7 @@ mod tests {
             (cmap.glyph(0x41), cmap.glyph(0x43), cmap.glyph(0x44)),
             (1, 3, 0)
         );
-        assert_eq!(cmap.codes(2), Some(vec![0x42]));
+        assert_eq!(cmap.first_code(2), Some(0x42));
     }
 
     #[test]
@@ -1647,14 +1642,14 @@ mod tests {
         let format = format8();
         let cmap = subtable(format).unwrap();
         assert_eq!((cmap.glyph(0x41), cmap.glyph(0x43)), (1, 3));
-        assert_eq!(cmap.codes(3), Some(vec![0x43]));
+        assert_eq!(cmap.first_code(3), Some(0x43));
     }
 
     /// Format 10 is checked and its glyphs left unread, as FontBox leaves them.
     #[test]
     fn checks_a_format_10_subtable() {
         let cmap = subtable(long_subtable(10, &[0x41, 3])).unwrap();
-        assert_eq!((cmap.glyph(0x41), cmap.codes(1)), (0, None));
+        assert_eq!((cmap.glyph(0x41), cmap.first_code(1)), (0, None));
         assert_eq!(
             subtable(long_subtable(10, &[0xD7FE, 3])).unwrap_err(),
             Failure::Damaged(Damaged)
@@ -1667,7 +1662,7 @@ mod tests {
     fn reads_a_format_13_subtable() {
         let cmap = subtable(long_subtable(13, &[1, 0x41, 0x43, 2])).unwrap();
         assert_eq!((cmap.glyph(0x41), cmap.glyph(0x43)), (2, 2));
-        assert_eq!(cmap.codes(2), Some(vec![0x43]));
+        assert_eq!(cmap.first_code(2), Some(0x43));
         let past = u32::from(GLYPHS);
         assert_eq!(
             subtable(long_subtable(13, &[1, 0x41, 0x41, past])).unwrap_err(),
@@ -1675,6 +1670,46 @@ mod tests {
         );
         let ended = subtable(long_subtable(13, &[2, 0x41, 0x41, past + 1, 0x42, 0x42, 1])).unwrap();
         assert_eq!(ended.glyph(0x42), 0);
+    }
+
+    /// A glyph's first code is the first of its codes sorted, as `getCharCodes` sorts them.
+    #[test]
+    fn gives_a_glyph_the_least_of_its_codes() {
+        let mut cmap = CmapSubtable::default();
+        let mappings = [
+            (0x41, 1),
+            (0x10FFFF, 2),
+            (0x42, 2),
+            (0x20, 2),
+            (0x300, 3),
+            (0x30, 3),
+            (0, 4),
+            (0xFFFF, 4),
+            (0x61, 6),
+        ];
+        for (code, glyph) in mappings {
+            cmap.code_to_glyph.insert(code, glyph);
+        }
+        cmap.build_reverse(6);
+        for glyph in 0..10 {
+            let codes = match cmap.glyph_to_code.get(glyph as usize) {
+                None | Some(GlyphCode::None) => None,
+                Some(GlyphCode::One(code)) => Some(vec![*code]),
+                Some(GlyphCode::Several) => cmap.glyph_to_codes.get(&glyph).map(|codes| {
+                    let mut codes = codes.clone();
+                    codes.sort_unstable();
+                    codes
+                }),
+            };
+            assert_eq!(
+                cmap.first_code(glyph),
+                codes.map(|codes| codes[0]),
+                "{glyph}"
+            );
+        }
+        assert_eq!(cmap.first_code(2), Some(0x20));
+        assert_eq!(cmap.first_code(4), Some(0));
+        assert_eq!(cmap.first_code(5), None);
     }
 
     #[test]
