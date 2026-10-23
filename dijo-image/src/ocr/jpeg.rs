@@ -59,7 +59,7 @@ pub fn pdfbox_raster(input: &[u8]) -> Result<Raster, String> {
     let data = input.strip_prefix(b"\n").unwrap_or(input);
     let Planes {
         frame,
-        planes,
+        mut upsampled,
         space,
         adobe_transform,
         ..
@@ -67,31 +67,18 @@ pub fn pdfbox_raster(input: &[u8]) -> Result<Raster, String> {
         .planes()
         .map_err(|e| format!("cannot decode the JPEG: {e}"))?;
     let components = frame.components.len();
-    let upsampled: Vec<Vec<u8>> = frame
-        .components
-        .iter()
-        .zip(&planes)
-        .map(|(component, plane)| frame.upsampled(component, plane))
-        .collect();
-    let pixels = frame.width * frame.height;
-    let interleaved = |order: &[usize]| -> Vec<u8> {
-        (0..pixels)
-            .flat_map(|i| order.iter().map(move |&c| (c, i)))
-            .map(|(c, i)| upsampled[c][i])
-            .collect()
-    };
     let samples = match (components, space) {
-        (1, _) => interleaved(&[0]),
-        (3, ColorSpace::Unknown) => interleaved(&[2, 1, 0]),
-        (3, _) => match frame.converted(&planes, space, false) {
+        (1, _) => upsampled.swap_remove(0),
+        (3, ColorSpace::Unknown) => interleaved(&upsampled, [2, 1, 0], |pixel| pixel),
+        (3, _) => match converted(upsampled, space, false) {
             Samples::Rgb(rgb) => rgb,
             other => unreachable!("three components convert to RGB, not {other:?}"),
         },
         (4, _) => match adobe_transform.unwrap_or(0) {
-            0 => interleaved(&[0, 1, 2, 3]),
-            1 | 2 => (0..pixels)
-                .flat_map(|i| ycck_to_cmyk([0, 1, 2, 3].map(|c| f32::from(upsampled[c][i]))))
-                .collect(),
+            0 => interleaved(&upsampled, [0, 1, 2, 3], |pixel| pixel),
+            1 | 2 => interleaved(&upsampled, [0, 1, 2, 3], |pixel| {
+                ycck_to_cmyk(pixel.map(f32::from))
+            }),
             other => {
                 return Err(format!(
                     "java.lang.IllegalArgumentException: Unknown colorTransform {other}"
@@ -121,11 +108,11 @@ fn ycck_to_cmyk([y, cb, cr, k]: [f32; 4]) -> [u8; 4] {
     [(255 - r) as u8, (255 - g) as u8, (255 - b) as u8, k as u8]
 }
 
-/// A JPEG decoded up to its components' samples: the colour space the JDK settles on, the
-/// Adobe transform it names, if any, and the ICC profile it embeds.
+/// A JPEG decoded up to its components' samples at the image's size: the colour space the JDK
+/// settles on, the Adobe transform it names, if any, and the ICC profile it embeds.
 struct Planes {
     frame: Frame,
-    planes: Vec<Plane>,
+    upsampled: Vec<Vec<u8>>,
     space: ColorSpace,
     adobe_transform: Option<u8>,
     icc_profile: Option<Vec<u8>>,
@@ -346,7 +333,7 @@ impl<'a> Decoder<'a> {
     fn decode(self) -> Result<Jpeg, String> {
         let Planes {
             frame,
-            planes,
+            upsampled,
             space,
             adobe_transform,
             icc_profile,
@@ -356,7 +343,7 @@ impl<'a> Decoder<'a> {
             ColorSpace::Unknown => ColorSpace::YCbCr,
             known => known,
         };
-        let samples = frame.converted(&planes, space, adobe_transform.is_some());
+        let samples = converted(upsampled, space, adobe_transform.is_some());
         Ok(Jpeg {
             width: frame.width,
             height: frame.height,
@@ -403,10 +390,10 @@ impl<'a> Decoder<'a> {
             }
         }
         let frame = self.frame.take().expect("a decoded image has a frame");
-        let planes = frame.planes();
+        let upsampled = frame.upsampled_planes();
         Ok(Planes {
             frame,
-            planes,
+            upsampled,
             space,
             adobe_transform: self.adobe_transform,
             icc_profile,
@@ -1346,12 +1333,22 @@ struct Plane {
 }
 
 impl Plane {
-    fn at(&self, row: usize, column: usize) -> u8 {
-        self.samples[row * self.stride + column]
+    /// The image's samples of a row.
+    fn row(&self, row: usize) -> &[u8] {
+        &self.samples[row * self.stride..][..self.width]
     }
 }
 
 impl Frame {
+    /// Each component's samples at the image's size.
+    fn upsampled_planes(&self) -> Vec<Vec<u8>> {
+        self.components
+            .iter()
+            .zip(self.planes())
+            .map(|(component, plane)| self.upsampled(component, plane))
+            .collect()
+    }
+
     /// Each component's samples, inverse transformed block by block, smoothed first as libjpeg
     /// smooths a progressive image whose low coefficients are not fully known.
     fn planes(&self) -> Vec<Plane> {
@@ -1412,89 +1409,42 @@ impl Frame {
         useful
     }
 
-    /// The image's samples in the colour space the JDK reads them in.
-    /// The samples of the colour space libjpeg converts the image to, CMYK as the amounts of
-    /// ink, inverted when an `adobe` marker says Photoshop wrote them.
-    fn converted(&self, planes: &[Plane], space: ColorSpace, adobe: bool) -> Samples {
-        let upsampled: Vec<Vec<u8>> = self
-            .components
-            .iter()
-            .zip(planes)
-            .map(|(component, plane)| self.upsampled(component, plane))
-            .collect();
-        let pixels = 0..self.width * self.height;
-        let ink = |sample: u8| if adobe { 255 - sample } else { sample };
-        match space {
-            ColorSpace::Grayscale => {
-                Samples::Gray(upsampled.into_iter().next().unwrap_or_default())
-            }
-            ColorSpace::Rgb => Samples::Rgb(
-                pixels
-                    .flat_map(|i| [upsampled[0][i], upsampled[1][i], upsampled[2][i]])
-                    .collect(),
-            ),
-            ColorSpace::YCbCr | ColorSpace::Unknown => {
-                let table = YccTable::new();
-                Samples::Rgb(
-                    pixels
-                        .flat_map(|i| table.rgb(upsampled[0][i], upsampled[1][i], upsampled[2][i]))
-                        .collect(),
-                )
-            }
-            ColorSpace::Cmyk => Samples::Cmyk(
-                pixels
-                    .flat_map(|i| [0, 1, 2, 3].map(|component| ink(upsampled[component][i])))
-                    .collect(),
-            ),
-            ColorSpace::Ycck => {
-                let table = YccTable::new();
-                Samples::Cmyk(
-                    pixels
-                        .flat_map(|i| {
-                            let [c, m, y] = table
-                                .rgb(upsampled[0][i], upsampled[1][i], upsampled[2][i])
-                                .map(|level| ink(255 - level));
-                            [c, m, y, ink(upsampled[3][i])]
-                        })
-                        .collect(),
-                )
-            }
-        }
-    }
-
     /// A component's samples at the image's size, as `jinit_upsampler`'s method for its
     /// sampling makes them.
-    fn upsampled(&self, component: &Component, plane: &Plane) -> Vec<u8> {
+    fn upsampled(&self, component: &Component, plane: Plane) -> Vec<u8> {
         let (width, height) = (self.width, self.height);
-        let mut out = vec![0u8; width * height];
-        let h_expand = self.max_h / component.h;
-        let v_expand = self.max_v / component.v;
-        let fancy_width = plane.width > 2;
         if component.h == self.max_h && component.v == self.max_v {
-            for y in 0..height {
-                out[y * width..(y + 1) * width]
-                    .copy_from_slice(&plane.samples[y * plane.stride..y * plane.stride + width]);
+            let mut samples = plane.samples;
+            for y in 1..height {
+                samples.copy_within(y * plane.stride..y * plane.stride + width, y * width);
             }
-        } else if component.h * 2 == self.max_h && component.v == self.max_v && fancy_width {
-            for y in 0..height {
-                let row = h2v1_fancy(plane, y);
-                out[y * width..(y + 1) * width].copy_from_slice(&row[..width]);
+            samples.truncate(width * height);
+            return samples;
+        }
+        let mut out = vec![0u8; width * height];
+        let rows = out.chunks_exact_mut(width).enumerate();
+        let fancy_width = plane.width > 2;
+        if component.h * 2 == self.max_h && component.v == self.max_v && fancy_width {
+            for (y, out_row) in rows {
+                h2v1_fancy(plane.row(y), out_row);
             }
         } else if component.h * 2 == self.max_h && component.v * 2 == self.max_v && fancy_width {
-            for y in 0..height {
+            for (y, out_row) in rows {
                 let nearest = y / 2;
                 let further = if y % 2 == 0 {
                     nearest.saturating_sub(1)
                 } else {
                     (nearest + 1).min(plane.height - 1)
                 };
-                let row = h2v2_fancy(plane, nearest, further);
-                out[y * width..(y + 1) * width].copy_from_slice(&row[..width]);
+                h2v2_fancy(plane.row(nearest), plane.row(further), out_row);
             }
         } else {
-            for y in 0..height {
-                for x in 0..width {
-                    out[y * width + x] = plane.at(y / v_expand, x / h_expand);
+            let h_expand = self.max_h / component.h;
+            let v_expand = self.max_v / component.v;
+            for (y, out_row) in rows {
+                let input = plane.row(y / v_expand);
+                for (x, sample) in out_row.iter_mut().enumerate() {
+                    *sample = input[x / h_expand];
                 }
             }
         }
@@ -1502,48 +1452,84 @@ impl Frame {
     }
 }
 
-/// `h2v1_fancy_upsample` of one row.
-fn h2v1_fancy(plane: &Plane, row: usize) -> Vec<u8> {
-    let input = &plane.samples[row * plane.stride..row * plane.stride + plane.width];
-    let mut out = Vec::with_capacity(plane.width * 2);
-    let first = i32::from(input[0]);
-    out.push(input[0]);
-    out.push(((first * 3 + i32::from(input[1]) + 2) >> 2) as u8);
-    for x in 1..plane.width - 1 {
-        let value = i32::from(input[x]) * 3;
-        out.push(((value + i32::from(input[x - 1]) + 1) >> 2) as u8);
-        out.push(((value + i32::from(input[x + 1]) + 2) >> 2) as u8);
+/// The samples of the colour space libjpeg converts the image to, from its components' samples
+/// at the image's size, CMYK as the amounts of ink, inverted when an `adobe` marker says
+/// Photoshop wrote them.
+fn converted(upsampled: Vec<Vec<u8>>, space: ColorSpace, adobe: bool) -> Samples {
+    let ink = |sample: u8| if adobe { 255 - sample } else { sample };
+    match space {
+        ColorSpace::Grayscale => Samples::Gray(upsampled.into_iter().next().unwrap_or_default()),
+        ColorSpace::Rgb => Samples::Rgb(interleaved(&upsampled, [0, 1, 2], |pixel| pixel)),
+        ColorSpace::YCbCr | ColorSpace::Unknown => {
+            let table = YccTable::new();
+            Samples::Rgb(interleaved(&upsampled, [0, 1, 2], |[y, cb, cr]| {
+                table.rgb(y, cb, cr)
+            }))
+        }
+        ColorSpace::Cmyk => Samples::Cmyk(interleaved(&upsampled, [0, 1, 2, 3], |pixel| {
+            pixel.map(ink)
+        })),
+        ColorSpace::Ycck => {
+            let table = YccTable::new();
+            Samples::Cmyk(interleaved(&upsampled, [0, 1, 2, 3], |[y, cb, cr, k]| {
+                let [c, m, y] = table.rgb(y, cb, cr).map(|level| ink(255 - level));
+                [c, m, y, ink(k)]
+            }))
+        }
     }
-    let last = i32::from(input[plane.width - 1]);
-    out.push(((last * 3 + i32::from(input[plane.width - 2]) + 1) >> 2) as u8);
-    out.push(input[plane.width - 1]);
+}
+
+/// The pixels of the components at `order` in `upsampled`, each made the samples `pixel` gives
+/// for them, one pixel after the other.
+fn interleaved<const C: usize, const S: usize>(
+    upsampled: &[Vec<u8>],
+    order: [usize; C],
+    pixel: impl Fn([u8; C]) -> [u8; S],
+) -> Vec<u8> {
+    let planes = order.map(|component| upsampled[component].as_slice());
+    let pixels = planes.iter().map(|plane| plane.len()).min().unwrap_or(0);
+    let mut out = Vec::with_capacity(pixels * S);
+    for i in 0..pixels {
+        out.extend_from_slice(&pixel(planes.map(|plane| plane[i])));
+    }
     out
 }
 
-/// `h2v2_fancy_upsample` of one output row: from the nearest input row and the further one,
-/// above it for an even output row and below it for an odd one.
-fn h2v2_fancy(plane: &Plane, nearest: usize, further: usize) -> Vec<u8> {
+/// `h2v1_fancy_upsample` of one row: the samples of `out` from the row `input` of half as
+/// many, rounded up.
+fn h2v1_fancy(input: &[u8], out: &mut [u8]) {
+    let last_column = input.len() - 1;
+    for (x, pair) in out.chunks_mut(2).enumerate() {
+        let value = i32::from(input[x]) * 3;
+        let left = i32::from(input[x.saturating_sub(1)]);
+        let right = i32::from(input[(x + 1).min(last_column)]);
+        let samples = [
+            ((value + left + 1) >> 2) as u8,
+            ((value + right + 2) >> 2) as u8,
+        ];
+        pair.copy_from_slice(&samples[..pair.len()]);
+    }
+}
+
+/// `h2v2_fancy_upsample` of one output row, `out`: from the nearest input row and the further
+/// one, above it for an even output row and below it for an odd one.
+fn h2v2_fancy(nearest: &[u8], further: &[u8], out: &mut [u8]) {
     const ROUND_LEFT: i32 = 8;
     const ROUND_RIGHT: i32 = 7;
-    let column_sum =
-        |x: usize| i32::from(plane.at(nearest, x)) * 3 + i32::from(plane.at(further, x));
-    let mut out = Vec::with_capacity(plane.width * 2);
-    let mut this = column_sum(0);
-    let mut next = column_sum(1);
-    out.push(((this * 4 + ROUND_LEFT) >> 4) as u8);
-    out.push(((this * 3 + next + ROUND_RIGHT) >> 4) as u8);
-    let mut last = this;
-    this = next;
-    for x in 2..plane.width {
-        next = column_sum(x);
-        out.push(((this * 3 + last + ROUND_LEFT) >> 4) as u8);
-        out.push(((this * 3 + next + ROUND_RIGHT) >> 4) as u8);
+    let last_column = nearest.len() - 1;
+    let column_sum = |x: usize| i32::from(nearest[x]) * 3 + i32::from(further[x]);
+    let mut last = column_sum(0);
+    let mut this = last;
+    for (x, pair) in out.chunks_mut(2).enumerate() {
+        let next = column_sum((x + 1).min(last_column));
+        let samples = [
+            ((this * 3 + last + ROUND_LEFT) >> 4) as u8,
+            ((this * 3 + next + ROUND_RIGHT) >> 4) as u8,
+        ];
+        pair.copy_from_slice(&samples[..pair.len()]);
         last = this;
         this = next;
     }
-    out.push(((this * 3 + last + ROUND_LEFT) >> 4) as u8);
-    out.push(((this * 4 + ROUND_RIGHT) >> 4) as u8);
-    out
 }
 
 /// `build_ycc_rgb_table`.
@@ -1806,5 +1792,130 @@ mod tests {
             other => panic!("decoded to {other:?}"),
         };
         assert_eq!(samples(&transformed), samples(&ycbcr));
+    }
+
+    /// libjpeg's upsampling as it was first written here: each output row built apart, from
+    /// samples read one by one, and copied into the image.
+    fn upsampled_row_by_row(frame: &Frame, component: &Component, plane: &Plane) -> Vec<u8> {
+        let at = |row: usize, column: usize| i32::from(plane.samples[row * plane.stride + column]);
+        let (width, height) = (frame.width, frame.height);
+        let mut out = vec![0u8; width * height];
+        let h_expand = frame.max_h / component.h;
+        let v_expand = frame.max_v / component.v;
+        let fancy_width = plane.width > 2;
+        let last = plane.width - 1;
+        for y in 0..height {
+            let row: Vec<u8> = if component.h == frame.max_h && component.v == frame.max_v {
+                plane.samples[y * plane.stride..y * plane.stride + width].to_vec()
+            } else if component.h * 2 == frame.max_h && component.v == frame.max_v && fancy_width {
+                let mut row = vec![at(y, 0) as u8, ((at(y, 0) * 3 + at(y, 1) + 2) >> 2) as u8];
+                for x in 1..last {
+                    row.push(((at(y, x) * 3 + at(y, x - 1) + 1) >> 2) as u8);
+                    row.push(((at(y, x) * 3 + at(y, x + 1) + 2) >> 2) as u8);
+                }
+                row.push(((at(y, last) * 3 + at(y, last - 1) + 1) >> 2) as u8);
+                row.push(at(y, last) as u8);
+                row
+            } else if component.h * 2 == frame.max_h
+                && component.v * 2 == frame.max_v
+                && fancy_width
+            {
+                let nearest = y / 2;
+                let further = if y % 2 == 0 {
+                    nearest.saturating_sub(1)
+                } else {
+                    (nearest + 1).min(plane.height - 1)
+                };
+                let sum = |x: usize| at(nearest, x) * 3 + at(further, x);
+                let mut row = vec![((sum(0) * 4 + 8) >> 4) as u8];
+                row.push(((sum(0) * 3 + sum(1) + 7) >> 4) as u8);
+                for x in 1..last {
+                    row.push(((sum(x) * 3 + sum(x - 1) + 8) >> 4) as u8);
+                    row.push(((sum(x) * 3 + sum(x + 1) + 7) >> 4) as u8);
+                }
+                row.push(((sum(last) * 3 + sum(last - 1) + 8) >> 4) as u8);
+                row.push(((sum(last) * 4 + 7) >> 4) as u8);
+                row
+            } else {
+                (0..width)
+                    .map(|x| at(y / v_expand, x / h_expand) as u8)
+                    .collect()
+            };
+            out[y * width..(y + 1) * width].copy_from_slice(&row[..width]);
+        }
+        out
+    }
+
+    #[test]
+    fn upsamples_in_place_as_row_by_row() {
+        let samplings = [
+            (1, 1, 1, 1),
+            (2, 1, 1, 1),
+            (2, 2, 1, 1),
+            (2, 2, 2, 2),
+            (2, 2, 1, 2),
+            (2, 2, 2, 1),
+            (1, 2, 1, 1),
+            (4, 1, 1, 1),
+            (4, 2, 2, 1),
+            (4, 4, 2, 2),
+            (3, 1, 1, 1),
+        ];
+        let mut seed = 0x2545_f491u32;
+        for (max_h, max_v, h, v) in samplings {
+            for width in 1..=21usize {
+                for height in 1..=6usize {
+                    let plane_width = (width * h).div_ceil(max_h);
+                    let plane_height = (height * v).div_ceil(max_v);
+                    let stride = plane_width.div_ceil(DCTSIZE) * DCTSIZE;
+                    let rows = plane_height.div_ceil(DCTSIZE) * DCTSIZE;
+                    let samples: Vec<u8> = (0..stride * rows)
+                        .map(|i| {
+                            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                            match i % 11 {
+                                0 => 0,
+                                1 => 255,
+                                _ => (seed >> 16) as u8,
+                            }
+                        })
+                        .collect();
+                    let plane = || Plane {
+                        samples: samples.clone(),
+                        stride,
+                        width: plane_width,
+                        height: plane_height,
+                    };
+                    let frame = Frame {
+                        progressive: false,
+                        width,
+                        height,
+                        max_h,
+                        max_v,
+                        components: Vec::new(),
+                    };
+                    let component = Component {
+                        id: 1,
+                        h,
+                        v,
+                        quant_table: 0,
+                        width_in_blocks: stride / DCTSIZE,
+                        height_in_blocks: rows / DCTSIZE,
+                        downsampled_width: plane_width,
+                        downsampled_height: plane_height,
+                        blocks_per_row: stride / DCTSIZE,
+                        quant: None,
+                        coefficients: Vec::new(),
+                        dc_table: 0,
+                        ac_table: 0,
+                        coef_bits: [-1; DCTSIZE2],
+                    };
+                    assert_eq!(
+                        frame.upsampled(&component, plane()),
+                        upsampled_row_by_row(&frame, &component, &plane()),
+                        "{max_h}x{max_v} from {h}x{v}, {width}x{height}"
+                    );
+                }
+            }
+        }
     }
 }
