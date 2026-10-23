@@ -12,7 +12,7 @@
 //! them. A structure held in a field is named by its field, where jmatio names it "@".
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read};
 
 use flate2::bufread::ZlibDecoder;
@@ -402,8 +402,8 @@ fn read_matrix(buffer: &mut Buffer, size: i32) -> Result<Field, Thrown> {
         MX_STRUCT => {
             capacity(array.dims[0].wrapping_mul(array.dims[1]))?;
             let mut fields = Fields::read_names(buffer)?;
-            for index in 0..array.size().max(0) {
-                fields.read_element(buffer, usize::try_from(index).expect("not negative"))?;
+            for _ in 0..array.size().max(0) {
+                fields.read_element(buffer)?;
             }
             array.fields = Some(fields);
         }
@@ -428,7 +428,7 @@ fn read_matrix(buffer: &mut Buffer, size: i32) -> Result<Field, Thrown> {
         MX_OBJECT => {
             Tag::read(buffer)?.string(buffer)?;
             capacity(array.dims[0].wrapping_mul(array.dims[1]))?;
-            Fields::read_names(buffer)?.read_element(buffer, 0)?;
+            Fields::read_names(buffer)?.read_element(buffer)?;
             array = Array {
                 name: array.name,
                 dims: vec![1, 1],
@@ -613,13 +613,14 @@ impl Field {
     }
 }
 
-/// `MLStructure`'s fields: their names in the order first set, and each element's fields, in
-/// the order set, a name set again keeping its place.
+/// `MLStructure`'s fields: their names, the place of each name's field in an element, the
+/// position of each name in the order first set, and each element's fields, in the order set, a
+/// name set again keeping its place.
 struct Fields {
     names: Vec<String>,
-    keys: Vec<String>,
-    elements: Vec<Vec<(String, Field)>>,
-    current: usize,
+    places: Vec<usize>,
+    keys: Vec<usize>,
+    elements: Vec<Vec<Field>>,
 }
 
 impl Fields {
@@ -640,52 +641,62 @@ impl Fields {
             names.push(java::latin1(zero_ended(&buffer.bytes(length)?)));
         }
         buffer.skip(tag.padding)?;
+        let mut keys = Vec::new();
+        let mut first = HashMap::new();
+        let places = names
+            .iter()
+            .enumerate()
+            .map(|(at, name)| {
+                *first.entry(name.as_str()).or_insert_with(|| {
+                    keys.push(at);
+                    keys.len() - 1
+                })
+            })
+            .collect();
         Ok(Self {
             names,
-            keys: Vec::new(),
+            places,
+            keys,
             elements: Vec::new(),
-            current: 0,
         })
     }
 
-    /// The fields of the element at `index`, each an array, an empty array where its element is
-    /// empty, or a Java object's null.
-    fn read_element(&mut self, buffer: &mut Buffer, index: usize) -> Result<(), Thrown> {
-        for at in 0..self.names.len() {
+    /// The fields of the next element, each an array, an empty array where its element is
+    /// empty, or a Java object's null, set as `setField(name, value, index)` sets them.
+    fn read_element(&mut self, buffer: &mut Buffer) -> Result<(), Thrown> {
+        let mut element: Vec<Field> = Vec::with_capacity(self.keys.len());
+        for &place in &self.places {
             let tag = Tag::read(buffer)?;
             let value = if tag.size > 0 {
                 read_matrix(buffer, tag.size)?
             } else {
                 Field::Array(Array::empty())
             };
-            let name = self.names[at].clone();
-            self.set(name, value, index);
+            if place < element.len() {
+                element[place] = value;
+            } else {
+                element.push(value);
+            }
         }
+        self.elements.push(element);
         Ok(())
     }
 
-    /// `setField(name, value, index)`.
-    fn set(&mut self, name: String, value: Field, index: usize) {
-        if !self.keys.contains(&name) {
-            self.keys.push(name.clone());
-        }
-        self.current = index;
-        if self.elements.len() <= index {
-            self.elements.push(Vec::new());
-        }
-        let element = &mut self.elements[index];
-        match element.iter_mut().find(|(set, _)| *set == name) {
-            Some((_, field)) => *field = value,
-            None => element.push((name, value)),
-        }
+    /// The names in the order first set: none before an element is set.
+    fn keys(&self) -> impl Iterator<Item = &str> {
+        let keys: &[usize] = if self.elements.is_empty() {
+            &[]
+        } else {
+            self.keys.as_slice()
+        };
+        keys.iter().map(move |&at| self.names[at].as_str())
     }
 
     /// `getAllFields`: every element's fields, element by element, with their names.
     fn all(&self) -> impl Iterator<Item = (&str, &Field)> {
         self.elements
             .iter()
-            .flatten()
-            .map(|(name, field)| (name.as_str(), field))
+            .flat_map(move |element| self.keys().zip(element))
     }
 
     /// `MLStructure.contentToString` of the structure `array` these are the fields of, held in
@@ -694,15 +705,10 @@ impl Fields {
     fn content(&self, name: &str, array: &Array) -> String {
         let mut content = format!("{name} = \n");
         if array.size() == 1 {
-            for key in &self.keys {
-                let field = self.elements.get(self.current).and_then(|element| {
-                    element
-                        .iter()
-                        .find(|(name, _)| name == key)
-                        .map(|(_, field)| field)
-                });
-                let described = field.map_or_else(|| "null".to_owned(), Field::describe);
-                content.push_str(&format!("\t{key} : {described}\n"));
+            if let Some(element) = self.elements.last() {
+                for (key, field) in self.keys().zip(element) {
+                    content.push_str(&format!("\t{key} : {}\n", field.describe()));
+                }
             }
         } else {
             content.push_str(&format!(
@@ -710,7 +716,7 @@ impl Fields {
                 array.m(),
                 array.n()
             ));
-            for key in &self.keys {
+            for key in self.keys() {
                 content.push_str(&format!("\t{key}\n"));
             }
         }
@@ -1278,6 +1284,16 @@ mod tests {
 
     /// A structure of one element whose fields are named `names` and hold `fields`.
     fn structure(name: &str, dims: &[i32], names: &[&str], fields: &[Vec<u8>]) -> Vec<u8> {
+        let mut body = field_names(names);
+        for field in fields {
+            body.extend_from_slice(field);
+        }
+        matrix(MX_STRUCT, 0, dims, name, &body)
+    }
+
+    /// The names of a structure's fields as MATLAB writes them: the longest name's length, then
+    /// the names, each padded to it.
+    fn field_names(names: &[&str]) -> Vec<u8> {
         let length = names.iter().map(|name| name.len()).max().unwrap_or(0) + 1;
         let mut body = ((4 << 16) | MI_INT32).to_le_bytes().to_vec();
         body.extend_from_slice(&i32::try_from(length).unwrap().to_le_bytes());
@@ -1288,10 +1304,7 @@ mod tests {
             packed.extend(padded);
         }
         body.extend(element(MI_INT8, &packed));
-        for field in fields {
-            body.extend_from_slice(field);
-        }
-        matrix(MX_STRUCT, 0, dims, name, &body)
+        body
     }
 
     fn file(description: &str, elements: &[Vec<u8>]) -> Vec<u8> {
@@ -1750,6 +1763,108 @@ mod tests {
                             "{columns:?} {n} {rows} {values}"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// Each element's fields by name, described.
+    type Set = Vec<Vec<(String, String)>>;
+
+    /// The names first set and each element's named fields, as `setField` sets the fields
+    /// described `elements`, each element's in the order of `names`, one at a time.
+    fn set_one_at_a_time(names: &[&str], elements: &[Vec<String>]) -> (Vec<String>, Set, usize) {
+        let mut keys: Vec<String> = Vec::new();
+        let mut set: Set = Vec::new();
+        let mut current = 0;
+        for (index, values) in elements.iter().enumerate() {
+            for (name, value) in names.iter().zip(values) {
+                if !keys.iter().any(|key| key == name) {
+                    keys.push((*name).to_owned());
+                }
+                current = index;
+                if set.len() <= index {
+                    set.push(Vec::new());
+                }
+                let element = &mut set[index];
+                match element.iter_mut().find(|(key, _)| key == name) {
+                    Some((_, field)) => field.clone_from(value),
+                    None => element.push(((*name).to_owned(), value.clone())),
+                }
+            }
+        }
+        (keys, set, current)
+    }
+
+    /// A structure's fields set by position are those set one at a time by name, where names
+    /// repeat too, as are its content and the names it lists, whatever its size.
+    #[test]
+    fn sets_fields_by_position_as_by_name() {
+        let cases: [&[&str]; 6] = [
+            &[],
+            &["a"],
+            &["a", "b"],
+            &["a", "b", "a"],
+            &["x", "x", "x"],
+            &["b", "a", "b", "c", "a"],
+        ];
+        for names in cases {
+            for count in 0..4 {
+                let mut bytes = field_names(names);
+                let mut described = Vec::new();
+                for index in 0..count {
+                    let mut values = Vec::new();
+                    for at in 0..names.len() {
+                        let columns = i32::try_from(index * names.len() + at + 1).unwrap();
+                        bytes.extend(doubles("", &[1, columns]));
+                        values.push(format!("[1x{columns}  double array]"));
+                    }
+                    described.push(values);
+                }
+                let mut buffer = Buffer {
+                    data: Data::Slice(&bytes),
+                    length: bytes.len(),
+                    at: 0,
+                    little_endian: true,
+                };
+                let mut fields = Fields::read_names(&mut buffer).unwrap();
+                for _ in 0..count {
+                    fields.read_element(&mut buffer).unwrap();
+                }
+                let (keys, set, current) = set_one_at_a_time(names, &described);
+                let all: Vec<(String, String)> = fields
+                    .all()
+                    .map(|(name, field)| (name.to_owned(), field.describe()))
+                    .collect();
+                let expected: Vec<(String, String)> = set.iter().flatten().cloned().collect();
+                assert_eq!(all, expected, "{names:?} {count}");
+                let one = format!(
+                    "s = \n{}",
+                    keys.iter()
+                        .map(|key| {
+                            let field = set
+                                .get(current)
+                                .and_then(|element| element.iter().find(|(name, _)| name == key));
+                            let described = field.map_or("null", |(_, field)| field.as_str());
+                            format!("\t{key} : {described}\n")
+                        })
+                        .collect::<String>()
+                );
+                let many = format!(
+                    "s = \n\n2x3 struct array with fields: \n{}",
+                    keys.iter()
+                        .map(|key| format!("\t{key}\n"))
+                        .collect::<String>()
+                );
+                for (dims, expected) in [(vec![1, 1], one), (vec![2, 3], many)] {
+                    let array = Array {
+                        name: "s".to_owned(),
+                        dims,
+                        class: MX_STRUCT,
+                        attributes: 0,
+                        fields: None,
+                    };
+                    assert_eq!(fields.content("s", &array), expected, "{names:?} {count}");
                 }
             }
         }
