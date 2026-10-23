@@ -153,6 +153,16 @@ pub enum DocumentTypes {
     Skipped,
 }
 
+/// The order in which a parse reports the attributes of a start tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttributeOrder {
+    /// As they are written, defaults after them.
+    Written,
+    /// The `xmlns` attributes first and then the others, each in the written order, as SAX
+    /// reports them apart.
+    DeclarationsFirst,
+}
+
 /// Parses `bytes` as one XML document, handing each start and end tag to `handler` until it
 /// asks to stop. An error is what Xerces would throw before the handler stopped it.
 pub fn parse(bytes: &[u8], handler: &mut dyn FnMut(Event<'_>) -> Flow) -> Result<()> {
@@ -170,6 +180,7 @@ pub fn parse_pages(
         bytes,
         &Paging::new(pages),
         DocumentTypes::Processed,
+        AttributeOrder::Written,
         handler,
     )
 }
@@ -210,11 +221,13 @@ pub fn is_read_as_utf8(bytes: &[u8]) -> bool {
     }
 }
 
-/// [`parse`] of `bytes` whose pages `paging` releases as their characters are first checked.
+/// [`parse`] of `bytes` whose pages `paging` releases as their characters are first checked,
+/// reporting the attributes of each start tag in `attribute_order`.
 pub(crate) fn parse_paged(
     bytes: &[u8],
     paging: &Paging,
     document_types: DocumentTypes,
+    attribute_order: AttributeOrder,
     handler: &mut dyn FnMut(Event<'_>) -> Flow,
 ) -> Result<()> {
     let Some((detected, reader, start)) = detect_encoding(bytes) else {
@@ -225,6 +238,7 @@ pub(crate) fn parse_paged(
         position: 0,
         mark: 0,
         document_types,
+        attribute_order,
         entities: HashMap::new(),
         expansions: Cell::new(0),
         defaults: HashMap::new(),
@@ -921,6 +935,7 @@ struct Parser<'a> {
     /// the window keeps.
     mark: usize,
     document_types: DocumentTypes,
+    attribute_order: AttributeOrder,
     entities: HashMap<String, Entity>,
     /// The entities expanded so far, as Xerces counts them against its limit.
     expansions: Cell<usize>,
@@ -1963,7 +1978,11 @@ impl Parser<'_> {
         };
         let mut slots = std::mem::take(&mut self.attributes);
         let read = self.attributes_into(&qualified, &mut slots, scopes);
+        let attribute_order = self.attribute_order;
         let result = read.and_then(|(count, empty, namespace)| {
+            if attribute_order == AttributeOrder::DeclarationsFirst {
+                declarations_first(&mut slots[..count]);
+            }
             let name = Name {
                 qualified,
                 namespace,
@@ -2115,6 +2134,17 @@ impl Parser<'_> {
             attribute.namespace.push_str(uri);
         }
         Ok((count, empty, namespace))
+    }
+}
+
+/// Moves the `xmlns` attributes among `attributes` before the others, each kept in order.
+fn declarations_first(attributes: &mut [Attribute]) {
+    let mut declarations = 0;
+    for index in 0..attributes.len() {
+        if attributes[index].namespace == XMLNS_NAMESPACE {
+            attributes[declarations..=index].rotate_right(1);
+            declarations += 1;
+        }
     }
 }
 
@@ -2356,16 +2386,22 @@ mod tests {
             let mut attributes = Vec::new();
             let mut texts = Vec::new();
             let paging = Paging::new(Pages::IN_MEMORY);
-            let result = parse_paged(bytes, &paging, DocumentTypes::Skipped, &mut |event| {
-                match event {
-                    Event::Start(_, found) => {
-                        attributes.extend(found.iter().map(|a| a.local_name.clone()))
+            let result = parse_paged(
+                bytes,
+                &paging,
+                DocumentTypes::Skipped,
+                AttributeOrder::Written,
+                &mut |event| {
+                    match event {
+                        Event::Start(_, found) => {
+                            attributes.extend(found.iter().map(|a| a.local_name.clone()))
+                        }
+                        Event::Text(text, _) => texts.push(text.to_owned()),
+                        _ => {}
                     }
-                    Event::Text(text, _) => texts.push(text.to_owned()),
-                    _ => {}
-                }
-                Flow::Continue
-            });
+                    Flow::Continue
+                },
+            );
             (result.is_ok(), attributes, texts.concat())
         };
         assert_eq!(
@@ -2391,6 +2427,48 @@ mod tests {
             events(b"<!DOCTYPE a [<!ENTITY e 'v'>]><a>&e;</a>").0,
             ["<!DOCTYPE>", "<a>", "v", "</a>"]
         );
+    }
+
+    #[test]
+    fn orders_declarations_first_as_a_stable_partition_does() {
+        let tags = |bytes: &[u8], order: AttributeOrder| {
+            let mut tags = Vec::new();
+            let paging = Paging::new(Pages::IN_MEMORY);
+            let result = parse_paged(
+                bytes,
+                &paging,
+                DocumentTypes::Processed,
+                order,
+                &mut |event| {
+                    if let Event::Start(_, found) = event {
+                        tags.push(found.to_vec());
+                    }
+                    Flow::Continue
+                },
+            );
+            assert_eq!(result, Ok(()));
+            tags
+        };
+        for document in [
+            &b"<a b='1' xmlns='urn:d' c:x='2' xmlns:c='urn:c' xmlns:e='urn:e'>\
+                <e:f xmlns:g='urn:g' g:h='3' i='4'/><j k='5'/><l xmlns='urn:l'/><m/></a>"[..],
+            b"<!DOCTYPE a [<!ATTLIST i xmlns:z CDATA #FIXED 'urn:z' d CDATA 'v'>]>\
+                <a xmlns:y='urn:y' y:p='1'><i j='4'/><i xmlns:z='urn:z' z:q='2'/></a>",
+            b"<a><b c='1'/></a>",
+        ] {
+            let written = tags(document, AttributeOrder::Written);
+            let expected: Vec<Vec<Attribute>> = written
+                .into_iter()
+                .map(|attributes| {
+                    let (mut declarations, others): (Vec<_>, Vec<_>) = attributes
+                        .into_iter()
+                        .partition(|a| a.namespace == XMLNS_NAMESPACE);
+                    declarations.extend(others);
+                    declarations
+                })
+                .collect();
+            assert_eq!(tags(document, AttributeOrder::DeclarationsFirst), expected);
+        }
     }
 
     /// The events of a parse and how it ended.

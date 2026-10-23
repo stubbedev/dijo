@@ -3,12 +3,12 @@
 //! [`SaxHandler`] without the `xmlns` attributes and with character data in the pieces Xerces
 //! reports it in.
 
-use std::borrow::Cow;
-
 use crate::errors::Error;
 use crate::formats::Failure;
 use crate::input::{Input, Pages, Paging};
-use crate::xml::{self, DocumentTypes, Event, Flow, TextKind, XmlError, ENTITY_EXPANSION_LIMIT};
+use crate::xml::{
+    self, AttributeOrder, DocumentTypes, Event, Flow, TextKind, XmlError, ENTITY_EXPANSION_LIMIT,
+};
 
 pub use crate::xml::{Attribute, XMLNS};
 
@@ -144,51 +144,51 @@ fn parse_sax_paged(
     let mut failure = None;
     let mut events = 0usize;
     let paging = Paging::new(pages);
-    let result = xml::parse_paged(input, &paging, document_types, &mut |event| {
-        events += 1;
-        if events.is_multiple_of(RELEASE_EVERY_EVENTS) {
-            paging.release();
-        }
-        let handled = match event {
-            Event::DocumentType => handler.document_type(),
-            Event::Start(name, attributes) => {
-                let (declarations, attributes): (Cow<'_, [Attribute]>, Cow<'_, [Attribute]>) =
-                    if attributes.iter().any(|a| a.namespace == XMLNS) {
-                        let (declarations, attributes) = attributes
-                            .iter()
-                            .cloned()
-                            .partition(|a| a.namespace == XMLNS);
-                        (Cow::Owned(declarations), Cow::Owned(attributes))
-                    } else {
-                        (Cow::Borrowed(&[]), Cow::Borrowed(attributes))
-                    };
-                handler.start_tag(&StartTag {
-                    namespace: name.namespace(),
-                    local_name: name.local_name(),
-                    qualified_name: name.qualified_name(),
-                    attributes: &attributes,
-                    declarations: &declarations,
-                })
+    let result = xml::parse_paged(
+        input,
+        &paging,
+        document_types,
+        AttributeOrder::DeclarationsFirst,
+        &mut |event| {
+            events += 1;
+            if events.is_multiple_of(RELEASE_EVERY_EVENTS) {
+                paging.release();
             }
-            Event::End(name) => {
-                handler.end_tag(name.namespace(), name.local_name(), name.qualified_name())
+            let handled = match event {
+                Event::DocumentType => handler.document_type(),
+                Event::Start(name, attributes) => {
+                    let (declarations, attributes) =
+                        attributes.split_at(attributes.partition_point(|a| a.namespace == XMLNS));
+                    handler.start_tag(&StartTag {
+                        namespace: name.namespace(),
+                        local_name: name.local_name(),
+                        qualified_name: name.qualified_name(),
+                        attributes,
+                        declarations,
+                    })
+                }
+                Event::End(name) => {
+                    handler.end_tag(name.namespace(), name.local_name(), name.qualified_name())
+                }
+                Event::Text(text, TextKind::Data) => {
+                    for_each_sax_piece(text, |piece| handler.characters(piece))
+                }
+                Event::Text("", TextKind::CData)
+                | Event::Comment(_)
+                | Event::ProcessingInstruction(..) => Ok(()),
+                Event::Text(text, TextKind::CData | TextKind::Reference) => {
+                    handler.characters(text)
+                }
+            };
+            match handled {
+                Ok(()) => Flow::Continue,
+                Err(stopped) => {
+                    failure = Some(stopped);
+                    Flow::Stop
+                }
             }
-            Event::Text(text, TextKind::Data) => {
-                for_each_sax_piece(text, |piece| handler.characters(piece))
-            }
-            Event::Text("", TextKind::CData)
-            | Event::Comment(_)
-            | Event::ProcessingInstruction(..) => Ok(()),
-            Event::Text(text, TextKind::CData | TextKind::Reference) => handler.characters(text),
-        };
-        match handled {
-            Ok(()) => Flow::Continue,
-            Err(stopped) => {
-                failure = Some(stopped);
-                Flow::Stop
-            }
-        }
-    });
+        },
+    );
     if let Some(failure) = failure {
         return Err(failure);
     }
