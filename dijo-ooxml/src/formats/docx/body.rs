@@ -106,9 +106,9 @@ pub(crate) struct Body<'x, 'h, 'c> {
     table_depth: i32,
     cell_depth: i32,
     paragraphs_in_cell: i32,
-    paragraph_tag: String,
+    paragraph_tag: &'static str,
     /// The paragraphs, tables, rows and cells written and not closed yet, innermost last.
-    open: Vec<String>,
+    open: Vec<&'static str>,
     pending_comments: Vec<String>,
     emitted_comments: HashSet<String>,
     ole_references: OleReferences,
@@ -124,7 +124,7 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
             table_depth: 0,
             cell_depth: 0,
             paragraphs_in_cell: 0,
-            paragraph_tag: "p".to_owned(),
+            paragraph_tag: "p",
             open: Vec::new(),
             pending_comments: Vec::new(),
             emitted_comments: HashSet::new(),
@@ -169,7 +169,7 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
             self.xhtml.characters("\n")?;
         }
         if self.paragraph_depth == 0 && self.table_depth == 0 {
-            let mut tag = "p".to_owned();
+            let mut tag = "p";
             let mut class = None;
             if let (Some(id), Some(styles)) = (&properties.style_id, self.context.styles) {
                 if let Some(name) = styles.name(id) {
@@ -179,10 +179,10 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
                 }
             }
             match &class {
-                Some(class) => self.xhtml.start_element_with(&tag, &[("class", class)])?,
-                None => self.xhtml.start_element(&tag)?,
+                Some(class) => self.xhtml.start_element_with(tag, &[("class", class)])?,
+                None => self.xhtml.start_element(tag)?,
             }
-            self.open.push(tag.clone());
+            self.open.push(tag);
             self.paragraph_tag = tag;
         }
         if let (true, true, Some(lists)) = (
@@ -200,9 +200,9 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
     pub(super) fn end_paragraph(&mut self) -> Result<(), Failure> {
         self.formatting.close_all(self.xhtml)?;
         if self.paragraph_depth == 1 && self.table_depth == 0 {
-            let tag = self.paragraph_tag.clone();
-            self.xhtml.end_element(&tag)?;
-            self.close_expected(&tag);
+            let tag = self.paragraph_tag;
+            self.xhtml.end_element(tag)?;
+            self.close_expected(tag);
         } else if self.cell_depth == 0 || self.paragraphs_in_cell > 0 {
             self.xhtml.characters("\n")?;
         }
@@ -228,7 +228,7 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
 
     /// `popExpected`: forgets the innermost open element if it is `tag`.
     fn close_expected(&mut self, tag: &str) {
-        if self.open.last().is_some_and(|open| open == tag) {
+        if self.open.last().is_some_and(|&open| open == tag) {
             self.open.pop();
         }
     }
@@ -237,7 +237,7 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
     pub(super) fn close_any_pending(&mut self) -> Result<(), Stop> {
         self.formatting.close_all(self.xhtml)?;
         while let Some(tag) = self.open.pop() {
-            self.xhtml.end_element(&tag)?;
+            self.xhtml.end_element(tag)?;
         }
         self.table_depth = 0;
         self.cell_depth = 0;
@@ -249,7 +249,7 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
     pub(super) fn start_table(&mut self) -> Result<(), Stop> {
         self.formatting.close_all(self.xhtml)?;
         self.xhtml.start_element("table")?;
-        self.open.push("table".to_owned());
+        self.open.push("table");
         self.table_depth += 1;
         Ok(())
     }
@@ -263,7 +263,7 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
 
     pub(super) fn start_row(&mut self) -> Result<(), Stop> {
         self.xhtml.start_element("tr")?;
-        self.open.push("tr".to_owned());
+        self.open.push("tr");
         Ok(())
     }
 
@@ -275,7 +275,7 @@ impl<'x, 'h, 'c> Body<'x, 'h, 'c> {
 
     pub(super) fn start_cell(&mut self) -> Result<(), Stop> {
         self.xhtml.start_element("td")?;
-        self.open.push("td".to_owned());
+        self.open.push("td");
         self.cell_depth += 1;
         Ok(())
     }

@@ -58,18 +58,20 @@ impl SaxHandler for Styles {
 /// The element a paragraph is written as, and its class.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TagAndStyle {
-    pub(super) tag: String,
+    pub(super) tag: &'static str,
     pub(super) class: Option<String>,
 }
 
 impl TagAndStyle {
-    fn plain(tag: &str, class: Option<&str>) -> Self {
+    fn plain(tag: &'static str, class: Option<&str>) -> Self {
         Self {
-            tag: tag.to_owned(),
+            tag,
             class: class.map(str::to_owned),
         }
     }
 }
+
+const HEADINGS: [&str; 7] = ["h0", "h1", "h2", "h3", "h4", "h5", "h6"];
 
 /// `WordExtractor.buildParagraphTagAndStyle(styleName, false)`.
 pub(super) fn paragraph_tag_and_style(style: &str) -> TagAndStyle {
@@ -90,9 +92,10 @@ pub(super) fn paragraph_tag_and_style(style: &str) -> TagAndStyle {
             .next_back()
             .filter(|last| last.len_utf16() == 1)
             .and_then(|last| java::parse_int(last.encode_utf8(&mut [0; 4])))
+            .and_then(|level| usize::try_from(level).ok())
             .unwrap_or(1);
         return TagAndStyle {
-            tag: format!("h{}", level.min(6)),
+            tag: HEADINGS[level.min(6)],
             class: None,
         };
     }
@@ -106,7 +109,7 @@ pub(super) fn paragraph_tag_and_style(style: &str) -> TagAndStyle {
         }
     });
     TagAndStyle {
-        tag: "p".to_owned(),
+        tag: "p",
         class: Some(format!("{first}{}", characters.as_str())),
     }
 }
@@ -146,5 +149,18 @@ mod tests {
             paragraph_tag_and_style("Überschrift"),
             TagAndStyle::plain("p", Some("überschrift"))
         );
+    }
+
+    #[test]
+    fn names_heading_levels_as_formatting_them_did() {
+        for last in [
+            '0', '1', '5', '6', '7', '9', '\u{663}', '\u{ff18}', 'X', '-', '+',
+        ] {
+            let level = java::parse_int(last.encode_utf8(&mut [0; 4])).unwrap_or(1);
+            assert_eq!(
+                paragraph_tag_and_style(&format!("Heading{last}")).tag,
+                format!("h{}", level.min(6))
+            );
+        }
     }
 }

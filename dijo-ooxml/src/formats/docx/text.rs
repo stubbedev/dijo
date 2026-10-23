@@ -172,11 +172,16 @@ impl<'x, 'h, 'c, 'r> TextHandler<'x, 'h, 'c, 'r> {
     }
 
     fn end_run(&mut self) -> Result<(), Stop> {
-        let text = std::mem::take(&mut self.run_buffer);
-        self.body.run(&self.run, &text)?;
+        self.write_run()?;
         self.in_run = false;
         self.run = RunProperties::default();
         Ok(())
+    }
+
+    fn write_run(&mut self) -> Result<(), Stop> {
+        let written = self.body.run(&self.run, &self.run_buffer);
+        self.run_buffer.clear();
+        written
     }
 
     fn end_ruby(&mut self) -> Result<(), Stop> {
@@ -455,8 +460,7 @@ impl SaxHandler for TextHandler<'_, '_, '_, '_> {
             }
             "p" => {
                 if !self.run_buffer.is_empty() {
-                    let text = std::mem::take(&mut self.run_buffer);
-                    self.body.run(&self.run, &text)?;
+                    self.write_run()?;
                 }
                 if self.paragraphs_started.pop().unwrap_or(false) {
                     self.body.end_paragraph()?;
