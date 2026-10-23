@@ -7,6 +7,7 @@
 //! rules and dates. Core property dates are judged by the leading `number-number-number` that
 //! `SimpleDateFormat`'s lenient parse needs, not by a port of it.
 
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::compress::zip::file::{ZipEntry, ZipFile};
@@ -484,16 +485,19 @@ fn open(zip: &ZipFile<'_>, content_types_entry: &ZipEntry) -> Result<Package, In
         let Some(part) = part_name(&to_uri_text(&opc_name)) else {
             continue;
         };
+        let key = part.key();
         let content_type = types
             .overrides
-            .get(&part.key())
+            .get(&key)
             .or_else(|| types.defaults.get(&java::to_lower_case(part.extension())))
             .cloned()
             .ok_or(Invalid)?;
-        if parts.contains_key(&part.key()) {
-            return Err(Invalid);
+        match parts.entry(key) {
+            Entry::Occupied(_) => return Err(Invalid),
+            Entry::Vacant(vacant) => {
+                vacant.insert((part, content_type, entry));
+            }
         }
-        parts.insert(part.key(), (part, content_type, entry));
     }
     let mut keys: Vec<&String> = parts.keys().collect();
     keys.sort();
