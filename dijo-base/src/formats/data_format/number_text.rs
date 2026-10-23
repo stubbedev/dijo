@@ -3,6 +3,7 @@
 //! notation and its odd text for some special values.
 
 use crate::java::bigint::BigUint;
+use std::sync::{LazyLock, OnceLock};
 
 const EXCEL_NAN_BITS: u64 = 0xFFFF_0420_003C_0000;
 const MAX_TEXT_LEN: usize = 20;
@@ -13,6 +14,10 @@ const FRAC_HALF: i32 = 0x80_0000;
 const MAX_REP_WHOLE_PART: i64 = 0x0003_8D7E_A4C6_8000;
 const C_64: u32 = 64;
 const MIN_PRECISION: u32 = 72;
+const TEN_POWERS: usize = 350;
+
+static MAX_REP_BASE: LazyLock<BigUint> = LazyLock::new(|| BigUint::from_u64(0xE35F_A931_9FFF_E000));
+static MIN_REP_BASE: LazyLock<BigUint> = LazyLock::new(|| BigUint::from_u64(0xB5E6_20F4_7FFF_E666));
 
 /// `NumberToTextConverter.toText`.
 pub(crate) fn to_text(value: f64) -> String {
@@ -102,19 +107,17 @@ impl MutableNumber {
         self.binary_exponent + self.significand.bit_length() as i32 - C_64 as i32
     }
 
-    fn compare_shifted(&self, base_hex: &str) -> std::cmp::Ordering {
-        let base =
-            BigUint::from_decimal(&u128::from_str_radix(base_hex, 16).unwrap_or(0).to_string());
+    fn compare_shifted(&self, base: &BigUint) -> std::cmp::Ordering {
         let shift = self.significand.bit_length() - C_64;
         self.significand.cmp(&base.shl(shift))
     }
 
     fn is_below_max_rep(&self) -> bool {
-        self.compare_shifted("0E35FA9319FFFE000").is_lt()
+        self.compare_shifted(&MAX_REP_BASE).is_lt()
     }
 
     fn is_above_min_rep(&self) -> bool {
-        self.compare_shifted("0B5E620F47FFFE666").is_gt()
+        self.compare_shifted(&MIN_REP_BASE).is_gt()
     }
 
     fn create_normalised_decimal(&self, pow10: i32) -> NormalisedDecimal {
@@ -133,8 +136,13 @@ impl MutableNumber {
     }
 
     fn multiply_by_power_of_ten(&mut self, pow10: i32) {
-        let (multiplicand, shift) = ten_power(pow10.unsigned_abs(), pow10 < 0);
-        self.significand = self.significand.mul(&multiplicand);
+        let power = TenPower::get(pow10.unsigned_abs());
+        let (multiplicand, shift) = if pow10 < 0 {
+            (&power.divisor, power.divisor_shift)
+        } else {
+            (&power.multiplicand, power.multiplier_shift)
+        };
+        self.significand = self.significand.mul(multiplicand);
         self.binary_exponent += shift;
         let excess = (self.significand.bit_length() as i32 - MIN_PRECISION as i32) & !31;
         if excess > 0 {
@@ -144,24 +152,43 @@ impl MutableNumber {
     }
 }
 
-/// `TenPower`: the multiplicand and the shift that multiply by 10^index, or divide by it.
-fn ten_power(index: u32, divide: bool) -> (BigUint, i32) {
-    let five = BigUint::pow(5, index);
-    let five_bits = five.bit_length() as i32;
-    if divide {
+/// `TenPower`: the multiplicand and the shift that multiply by 10^index, and the divisor and the
+/// shift that divide by it.
+struct TenPower {
+    multiplicand: BigUint,
+    multiplier_shift: i32,
+    divisor: BigUint,
+    divisor_shift: i32,
+}
+
+impl TenPower {
+    fn new(index: u32) -> Self {
+        let five = BigUint::pow(5, index);
+        let five_bits = five.bit_length() as i32;
         let px = 80 + five_bits;
         let (fx, _) = BigUint::from_u64(1).shl(px as u32).div_rem(&five);
         let adjust = fx.bit_length() as i32 - 80;
         let divisor = fx.shr(adjust as u32);
         let bits = five_bits - adjust;
-        (divisor, -(bits + index as i32 + 80))
-    } else {
+        let divisor_shift = -(bits + index as i32 + 80);
         let shift = five_bits - 68;
-        if shift > 0 {
+        let (multiplicand, multiplier_shift) = if shift > 0 {
             (five.shr(shift as u32), index as i32 + shift)
         } else {
             (five, index as i32)
+        };
+        Self {
+            multiplicand,
+            multiplier_shift,
+            divisor,
+            divisor_shift,
         }
+    }
+
+    /// `TenPower.getInstance`: the powers for 10^index, computed the first time they are asked for.
+    fn get(index: u32) -> &'static Self {
+        static CACHE: [OnceLock<TenPower>; TEN_POWERS] = [const { OnceLock::new() }; TEN_POWERS];
+        CACHE[index as usize].get_or_init(|| Self::new(index))
     }
 }
 
@@ -294,5 +321,58 @@ mod tests {
         assert_eq!(to_text(1.0 / 3.0), "0.333333333333333");
         assert_eq!(to_text(123456789012345678.0), "123456789012346000");
         assert_eq!(to_text(1e-25), "1E-25");
+    }
+
+    fn computed_ten_power(index: u32, divide: bool) -> (BigUint, i32) {
+        let five = BigUint::pow(5, index);
+        let five_bits = five.bit_length() as i32;
+        if divide {
+            let px = 80 + five_bits;
+            let (fx, _) = BigUint::from_u64(1).shl(px as u32).div_rem(&five);
+            let adjust = fx.bit_length() as i32 - 80;
+            let divisor = fx.shr(adjust as u32);
+            let bits = five_bits - adjust;
+            (divisor, -(bits + index as i32 + 80))
+        } else {
+            let shift = five_bits - 68;
+            if shift > 0 {
+                (five.shr(shift as u32), index as i32 + shift)
+            } else {
+                (five, index as i32)
+            }
+        }
+    }
+
+    #[test]
+    fn cached_ten_powers_match_computed_ones() {
+        for index in [
+            0, 1, 2, 27, 28, 29, 30, 100, 293, 294, 295, 322, 323, 324, 349,
+        ] {
+            let power = TenPower::get(index);
+            let (multiplicand, multiplier_shift) = computed_ten_power(index, false);
+            assert_eq!(power.multiplicand, multiplicand, "multiplicand {index}");
+            assert_eq!(
+                power.multiplier_shift, multiplier_shift,
+                "multiplier shift {index}"
+            );
+            if index > 0 {
+                let (divisor, divisor_shift) = computed_ten_power(index, true);
+                assert_eq!(power.divisor, divisor, "divisor {index}");
+                assert_eq!(power.divisor_shift, divisor_shift, "divisor shift {index}");
+            }
+            assert!(std::ptr::eq(power, TenPower::get(index)));
+        }
+    }
+
+    #[test]
+    fn representation_bases_match_their_hex_text() {
+        for (base, hex) in [
+            (&*MAX_REP_BASE, "0E35FA9319FFFE000"),
+            (&*MIN_REP_BASE, "0B5E620F47FFFE666"),
+        ] {
+            let parsed =
+                BigUint::from_decimal(&u128::from_str_radix(hex, 16).unwrap_or(0).to_string());
+            assert_eq!(*base, parsed);
+        }
     }
 }
