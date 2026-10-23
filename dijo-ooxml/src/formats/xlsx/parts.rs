@@ -41,14 +41,15 @@ impl Styles {
     }
 
     /// `getFormatString`: the style's own format, else the built-in one of its index.
-    pub(crate) fn format_string(&self, style: i32) -> Option<String> {
+    pub(crate) fn format_string(&self, style: i32) -> Option<&str> {
         let index = self.format_index(style);
         if index == -1 {
             return None;
         }
-        self.formats.get(&index).cloned().or_else(|| {
-            crate::formats::data_format::builtin_format(i32::from(index)).map(str::to_owned)
-        })
+        self.formats
+            .get(&index)
+            .map(String::as_str)
+            .or_else(|| crate::formats::data_format::builtin_format(i32::from(index)))
     }
 }
 

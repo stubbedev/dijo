@@ -3,6 +3,7 @@
 //! hidden rows and columns, writing rows and cells as `SheetTextAsHTML` does. The capturer's
 //! note of protection is read ahead, by [`super::handlers::Protection`].
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 
@@ -167,10 +168,11 @@ pub(crate) struct SheetReader<'r, 'x, 'h> {
     header_footer_open: bool,
     data_type: DataType,
     format_index: i16,
-    format_string: Option<String>,
+    format_string: Option<&'r str>,
     row: i32,
     next_row: i32,
-    reference: Option<String>,
+    has_reference: bool,
+    reference: String,
     value: String,
     header_footer: String,
     comment_cells: VecDeque<CellAddress>,
@@ -209,13 +211,19 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
             format_string: None,
             row: 0,
             next_row: 0,
-            reference: None,
+            has_reference: false,
+            reference: String::new(),
             value: String::new(),
             header_footer: String::new(),
             comment_cells: comments
                 .map(|comments| comments.cells().collect())
                 .unwrap_or_default(),
         }
+    }
+
+    /// The cell's `r` attribute.
+    fn reference(&self) -> Option<&str> {
+        self.has_reference.then_some(self.reference.as_str())
     }
 
     fn is_text_tag(&self, name: &str) -> bool {
@@ -249,7 +257,14 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
         } else if local_name == "c" {
             self.format_index = -1;
             self.format_string = None;
-            self.reference = value("r").map(str::to_owned);
+            self.reference.clear();
+            self.has_reference = match value("r") {
+                Some(reference) => {
+                    self.reference.push_str(reference);
+                    true
+                }
+                None => false,
+            };
             self.data_type = match value("t") {
                 Some("b") => DataType::Boolean,
                 Some("e") => DataType::Error,
@@ -314,52 +329,59 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
 
     /// The number `value` holds in the cell's format, or the value itself where it is not a
     /// number or the format throws, as Tika's catch writes it.
-    fn formatted(&mut self, value: String) -> Result<String, Failure> {
-        let Some(format) = &self.format_string else {
-            return Ok(value);
+    fn formatted<'v>(&mut self, value: &'v str) -> Result<Cow<'v, str>, Failure> {
+        let Some(format) = self.format_string else {
+            return Ok(Cow::Borrowed(value));
         };
-        let Some(number) = parse_double(trim(&value)) else {
-            return Ok(value);
+        let Some(number) = parse_double(trim(value)) else {
+            return Ok(Cow::Borrowed(value));
         };
         match self
             .formatter
             .format_raw(number, i32::from(self.format_index), format)
         {
-            Ok(text) => Ok(text),
-            Err(FormatError::Thrown(_)) => Ok(value),
+            Ok(text) => Ok(Cow::Owned(text)),
+            Err(FormatError::Thrown(_)) => Ok(Cow::Borrowed(value)),
             Err(FormatError::Unported(what)) => Err(runtime(format!(
                 "the cell {} holds {what}, which this port does not write",
-                self.reference.as_deref().unwrap_or("without a reference")
+                self.reference().unwrap_or("without a reference")
             ))),
         }
     }
 
+    /// Writes the cell its value has been read for, the value set aside while it is written.
     fn output_cell(&mut self) -> Result<(), Failure> {
+        let value = std::mem::take(&mut self.value);
+        let written = self.write_cell(&value);
+        self.value = value;
+        written
+    }
+
+    fn write_cell(&mut self, value: &str) -> Result<(), Failure> {
         let text = match self.data_type {
             DataType::Boolean => {
-                let first = self
-                    .value
+                let first = value
                     .chars()
                     .next()
                     .ok_or_else(|| runtime("A boolean cell has an empty value".to_owned()))?;
-                Some(if first == '0' { "FALSE" } else { "TRUE" }.to_owned())
+                Some(Cow::Borrowed(if first == '0' { "FALSE" } else { "TRUE" }))
             }
-            DataType::Error => Some(format!("ERROR:{}", self.value)),
-            DataType::Formula => Some(self.formatted(self.value.clone())?),
-            DataType::InlineString => Some(self.value.clone()),
-            DataType::SharedString => self.shared_string()?,
+            DataType::Error => Some(Cow::Owned(format!("ERROR:{value}"))),
+            DataType::Formula => Some(self.formatted(value)?),
+            DataType::InlineString => Some(Cow::Borrowed(value)),
+            DataType::SharedString => self.shared_string(value)?.map(Cow::Borrowed),
             DataType::Number => {
-                if self.value.is_empty() {
-                    Some(String::new())
+                if value.is_empty() {
+                    Some(Cow::Borrowed(""))
                 } else {
-                    Some(self.formatted(self.value.clone())?)
+                    Some(self.formatted(value)?)
                 }
             }
         };
         self.check_empty_cell_comments(CommentCheck::Cell)?;
         let comment = match self.comments {
             Some(comments) => {
-                let reference = self.reference.as_deref().ok_or_else(|| {
+                let reference = self.reference().ok_or_else(|| {
                     runtime("A cell without a reference is in a sheet with comments".to_owned())
                 })?;
                 comments.find(CellAddress::parse(reference)?)
@@ -367,16 +389,16 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
             None => None,
         };
         self.output.cell(
-            self.reference.as_deref(),
+            self.has_reference.then_some(self.reference.as_str()),
             text.as_deref(),
             comment,
             self.xhtml,
         )
     }
 
-    /// The shared string a cell's index names, `None` for an index that is not an int.
-    fn shared_string(&self) -> Result<Option<String>, Failure> {
-        let index = trim(&self.value);
+    /// The shared string the index `value` names, `None` for an index that is not an int.
+    fn shared_string(&self, value: &str) -> Result<Option<&'r str>, Failure> {
+        let index = trim(value);
         let Some(strings) = self.strings.filter(|_| !index.is_empty()) else {
             return Ok(None);
         };
@@ -386,8 +408,7 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
         usize::try_from(position)
             .ok()
             .and_then(|position| strings.strings.get(position))
-            .cloned()
-            .map(Some)
+            .map(|string| Some(string.as_str()))
             .ok_or_else(|| runtime(format!("The shared string {position} does not exist")))
     }
 
@@ -403,7 +424,7 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
             }
             return Ok(());
         }
-        let Some(reference) = self.reference.clone() else {
+        let Some(reference) = self.reference() else {
             if check == CommentCheck::EndOfRow {
                 while let Some(&cell) = self.comment_cells.front() {
                     if cell.row != self.row {
@@ -419,8 +440,8 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
                 self.row
             )));
         };
+        let address = CellAddress::parse(reference)?;
         loop {
-            let address = CellAddress::parse(&reference)?;
             let Some(&peek) = self.comment_cells.front() else {
                 return Ok(());
             };

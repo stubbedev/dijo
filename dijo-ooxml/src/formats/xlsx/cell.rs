@@ -19,9 +19,18 @@ fn invalid(what: &str, reference: &str) -> Failure {
 /// at the start. A column past what an `int` holds is invalid, where POI's arithmetic wraps
 /// around to another column (#186).
 fn column_index(text: &str, reference: &str) -> Result<i32, Failure> {
+    if text.is_ascii() {
+        column_index_of(text.chars().map(|c| c.to_ascii_uppercase()), reference)
+    } else {
+        column_index_of(text.to_uppercase().chars(), reference)
+    }
+}
+
+/// [`column_index`] of the upper-cased characters of the column.
+fn column_index_of(upper: impl Iterator<Item = char>, reference: &str) -> Result<i32, Failure> {
     let overflow = || invalid("its column is past what an int holds", reference);
     let mut index: i32 = 0;
-    for (k, c) in text.to_uppercase().chars().enumerate() {
+    for (k, c) in upper.enumerate() {
         if c == '$' {
             if k != 0 {
                 return Err(invalid("a $ inside the column", reference));
@@ -49,8 +58,14 @@ pub(crate) fn reference_column(reference: &str) -> Result<i32, Failure> {
         }
         None => reference,
     };
-    let cell = cell.to_uppercase();
-    let (column, rest) = split_part(&cell, |c| c.is_ascii_alphabetic());
+    let upper;
+    let cell = if cell.is_ascii() {
+        cell
+    } else {
+        upper = cell.to_uppercase();
+        upper.as_str()
+    };
+    let (column, rest) = split_part(cell, |c| c.is_ascii_alphabetic());
     let (row, rest) = split_part(rest, |c| c.is_ascii_digit());
     if !rest.is_empty() {
         return Err(invalid("it is not a column and a row", reference));
@@ -194,5 +209,95 @@ mod tests {
         assert_eq!(address.format(), "AB12");
         assert!(CellAddress::parse("A").is_err());
         assert!(CellAddress::parse("A1x").is_err());
+    }
+
+    /// The column read without upper-casing an ASCII reference is the one read from it upper
+    /// cased, as `String.toUpperCase` does, which turns some letters outside ASCII into ASCII.
+    #[test]
+    fn reads_columns_as_from_the_upper_cased_reference() {
+        fn upper_cased_column(reference: &str) -> Result<i32, Failure> {
+            if reference.len() >= 5
+                && reference[reference.len() - 5..].eq_ignore_ascii_case("#REF!")
+            {
+                return Err(invalid("it is #REF!", reference));
+            }
+            let cell = match reference.rfind('!') {
+                Some(pling) => {
+                    check_sheet_name(reference, pling)?;
+                    &reference[pling + 1..]
+                }
+                None => reference,
+            };
+            let cell = cell.to_uppercase();
+            let (column, rest) = split_part(&cell, |c| c.is_ascii_alphabetic());
+            let (row, rest) = split_part(rest, |c| c.is_ascii_digit());
+            if !rest.is_empty() {
+                return Err(invalid("it is not a column and a row", reference));
+            }
+            if !row.is_empty() && parse_int(row.strip_prefix('$').unwrap_or(row)).is_none() {
+                return Err(invalid("its row is not an int", reference));
+            }
+            match column.strip_prefix('$').unwrap_or(column) {
+                "" => Ok(-1),
+                letters => column_index_of(letters.to_uppercase().chars(), reference),
+            }
+        }
+        let references = [
+            "A1",
+            "a1",
+            "xfd1048576",
+            "$ab$12",
+            "$Ab12",
+            "aB$3",
+            "Sheet1!c3",
+            "'My Sheet'!d4",
+            "'It''s'!e5",
+            "'Bad'Quote'!A1",
+            "My Sheet!A1",
+            "sheet!#ref!",
+            "12",
+            "$12",
+            "",
+            "$",
+            "a",
+            "$a$",
+            "1a",
+            "a1b",
+            "a$$1",
+            "a99999999999",
+            "baaaaaaaaaaaaaaaaaaaaa1",
+            "\u{131}1",
+            "\u{17f}2",
+            "\u{df}3",
+            "\u{fb00}4",
+            "\u{e9}5",
+            "a\u{131}6",
+            "\u{212a}7",
+            "!a1",
+        ];
+        for reference in references {
+            assert_eq!(
+                format!("{:?}", reference_column(reference)),
+                format!("{:?}", upper_cased_column(reference)),
+                "{reference:?}"
+            );
+        }
+        for text in ["ab12", "AB12", "\u{131}1", "a-1", "-1", "1", "\u{df}2"] {
+            assert_eq!(
+                format!("{:?}", CellAddress::parse(text)),
+                format!("{:?}", {
+                    let split = text
+                        .find(|c: char| c.is_ascii_digit())
+                        .unwrap_or(text.len());
+                    column_index_of(text[..split].to_uppercase().chars(), text).map(|column| {
+                        CellAddress {
+                            row: parse_int(&text[split..]).unwrap() - 1,
+                            column,
+                        }
+                    })
+                }),
+                "{text:?}"
+            );
+        }
     }
 }
