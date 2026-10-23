@@ -90,27 +90,15 @@ impl Orientation {
 /// dark pixels of that reduced copy onto the vertical axis at candidate angles: text lines give
 /// the sharpest profile when level.
 pub(crate) fn skew_degrees(analysis: &GrayImage) -> f64 {
-    let width = analysis.width() as i64;
-    let height = analysis.height() as i64;
-    let levels = analysis.as_raw();
-    let threshold = otsu_threshold(&histogram(levels));
-    let points: Vec<(f64, f64)> = levels
-        .iter()
-        .enumerate()
-        .filter(|(_, &level)| u32::from(level) < threshold)
-        .map(|(index, _)| ((index as i64 % width) as f64, (index as i64 / width) as f64))
-        .collect();
-    if points.is_empty() || points.len() > levels.len() / 2 {
+    let Some(mut projection) = Projection::of(analysis) else {
         return 0.0;
-    }
-    let diagonal = (width as f64).hypot(height as f64).ceil() as i64;
-    let mut rows = vec![0u64; (2 * diagonal + 1) as usize];
-    let level = sharpness(&points, 0.0, diagonal, &mut rows);
+    };
+    let level = projection.sharpness(0.0);
     let mut best = 0.0;
     let mut best_sharpness = level;
     let mut angle = -MAX_SKEW_DEGREES;
     while angle <= MAX_SKEW_DEGREES {
-        let sharpness = sharpness(&points, angle, diagonal, &mut rows);
+        let sharpness = projection.sharpness(angle);
         if sharpness > best_sharpness {
             best = angle;
             best_sharpness = sharpness;
@@ -120,7 +108,7 @@ pub(crate) fn skew_degrees(analysis: &GrayImage) -> f64 {
     let coarse = best;
     let mut angle = coarse - COARSE_STEP_DEGREES;
     while angle <= coarse + COARSE_STEP_DEGREES {
-        let sharpness = sharpness(&points, angle, diagonal, &mut rows);
+        let sharpness = projection.sharpness(angle);
         if sharpness > best_sharpness {
             best = angle;
             best_sharpness = sharpness;
@@ -133,18 +121,61 @@ pub(crate) fn skew_degrees(analysis: &GrayImage) -> f64 {
     best
 }
 
-/// How sharp the profile of the points projected onto the vertical axis at an angle is: the sum
-/// of the squared counts of its rows.
-fn sharpness(points: &[(f64, f64)], degrees: f64, diagonal: i64, rows: &mut [u64]) -> f64 {
-    let (sin, cos) = degrees.to_radians().sin_cos();
-    rows.fill(0);
-    for &(x, y) in points {
-        let row = (y * cos - x * sin).round() as i64 + diagonal;
-        rows[row as usize] += 1;
+struct Projection {
+    points: Vec<(u32, u32)>,
+    diagonal: i64,
+    rows: Vec<u64>,
+    across: Vec<f64>,
+    down: Vec<f64>,
+}
+
+impl Projection {
+    fn of(analysis: &GrayImage) -> Option<Self> {
+        let (width, height) = analysis.dimensions();
+        let levels = analysis.as_raw();
+        let threshold = otsu_threshold(&histogram(levels));
+        let row = width as usize;
+        let points: Vec<(u32, u32)> = levels
+            .iter()
+            .enumerate()
+            .filter(|(_, &level)| u32::from(level) < threshold)
+            .map(|(index, _)| ((index % row) as u32, (index / row) as u32))
+            .collect();
+        if points.is_empty() || points.len() > levels.len() / 2 {
+            return None;
+        }
+        let diagonal = f64::from(width).hypot(f64::from(height)).ceil() as i64;
+        let rows_down = points.last().map_or(0, |&(_, y)| y as usize + 1);
+        Some(Self {
+            points,
+            diagonal,
+            rows: vec![0; (2 * diagonal + 1) as usize],
+            across: vec![0.0; row],
+            down: vec![0.0; rows_down],
+        })
     }
-    rows.iter()
-        .map(|&count| (count as f64) * (count as f64))
-        .sum()
+
+    /// How sharp the profile of the points projected onto the vertical axis at an angle is: the
+    /// sum of the squared counts of its rows.
+    fn sharpness(&mut self, degrees: f64) -> f64 {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        for (x, across) in self.across.iter_mut().enumerate() {
+            *across = x as f64 * sin;
+        }
+        for (y, down) in self.down.iter_mut().enumerate() {
+            *down = y as f64 * cos;
+        }
+        self.rows.fill(0);
+        for &(x, y) in &self.points {
+            let projected = self.down[y as usize] - self.across[x as usize];
+            let row = projected.round() as i64 + self.diagonal;
+            self.rows[row as usize] += 1;
+        }
+        self.rows
+            .iter()
+            .map(|&count| (count as f64) * (count as f64))
+            .sum()
+    }
 }
 
 /// How much to resize the image so its text lines are about [`TARGET_LINE_PIXELS`] pixels high:
@@ -719,5 +750,66 @@ pub(crate) mod tests {
         assert!((skew - 3.0).abs() < 0.2, "{skew}");
         let level = image.rotated(skew);
         assert!(skew_degrees(&analysis(&level)).abs() < MIN_CORRECTION_DEGREES);
+    }
+
+    fn sharpness_of_float_points(
+        points: &[(f64, f64)],
+        degrees: f64,
+        diagonal: i64,
+        rows: &mut [u64],
+    ) -> f64 {
+        let (sin, cos) = degrees.to_radians().sin_cos();
+        rows.fill(0);
+        for &(x, y) in points {
+            let row = (y * cos - x * sin).round() as i64 + diagonal;
+            rows[row as usize] += 1;
+        }
+        rows.iter()
+            .map(|&count| (count as f64) * (count as f64))
+            .sum()
+    }
+
+    #[test]
+    fn projects_points_as_float_points_do() {
+        let sizes = [(1, 1), (1, 9), (9, 1), (7, 5), (64, 48), (301, 97)];
+        let mut angles = vec![0.0, -MAX_SKEW_DEGREES, MAX_SKEW_DEGREES, 45.0, -90.0, 0.05];
+        let mut angle = -MAX_SKEW_DEGREES;
+        while angle <= MAX_SKEW_DEGREES {
+            angles.push(angle);
+            angle += FINE_STEP_DEGREES * 3.0;
+        }
+        let mut projected = 0;
+        for (width, height) in sizes {
+            let image = GrayImage::from_fn(width, height, |x, y| {
+                let dark = (x * 7 + y * 13) % 5 == 0 || (y * 3 + x) % 11 == 0;
+                Luma([if dark { 0 } else { WHITE }])
+            });
+            let Some(mut projection) = Projection::of(&image) else {
+                continue;
+            };
+            let (width, height) = (i64::from(width), i64::from(height));
+            let points: Vec<(f64, f64)> = image
+                .as_raw()
+                .iter()
+                .enumerate()
+                .filter(|(_, &level)| level == 0)
+                .map(|(index, _)| ((index as i64 % width) as f64, (index as i64 / width) as f64))
+                .collect();
+            assert_eq!(points.len(), projection.points.len());
+            let diagonal = (width as f64).hypot(height as f64).ceil() as i64;
+            assert_eq!(projection.diagonal, diagonal);
+            let mut rows = vec![0u64; (2 * diagonal + 1) as usize];
+            for &degrees in &angles {
+                let expected = sharpness_of_float_points(&points, degrees, diagonal, &mut rows);
+                let found = projection.sharpness(degrees);
+                assert_eq!(
+                    found.to_bits(),
+                    expected.to_bits(),
+                    "{width}x{height} {degrees}"
+                );
+                projected += 1;
+            }
+        }
+        assert!(projected >= 3 * angles.len(), "{projected}");
     }
 }
