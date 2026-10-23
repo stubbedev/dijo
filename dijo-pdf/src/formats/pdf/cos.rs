@@ -902,14 +902,13 @@ impl<'p> Pdf<'p> {
     /// order up to the first that `stop` names, each with its own parameters of `parameters`.
     pub(super) fn decode_data(
         &self,
-        content: Cow<'_, [u8]>,
+        mut content: Cow<'_, [u8]>,
         dictionary: &Dictionary,
         filters: Option<&Object>,
         parameters: Option<&Object>,
         stop: &[&[u8]],
     ) -> Result<Vec<u8>, Unported> {
         let filters = self.filter_names(filters);
-        let mut data = content.into_owned();
         for (index, filter) in filters.iter().enumerate() {
             if stop.contains(filter) {
                 break;
@@ -931,9 +930,9 @@ impl<'p> Pdf<'p> {
                 }
                 continue;
             }
-            data = decode_filter(filter, params, data)?;
+            content = Cow::Owned(decode_filter(filter, params, content)?);
         }
-        Ok(data)
+        Ok(content.into_owned())
     }
 
     /// `COSStream.getFilters` of the `Filter` entry `value`: its name, or the names in its
@@ -1041,7 +1040,7 @@ fn object_stream_objects(
 fn decode_filter(
     filter: &[u8],
     params: Option<&Dictionary>,
-    data: Vec<u8>,
+    data: Cow<'_, [u8]>,
 ) -> Result<Vec<u8>, Unported> {
     let name = match filter {
         b"FlateDecode" | b"Fl" => "FlateDecode",
@@ -1061,7 +1060,7 @@ fn decode_filter(
     if let Some(params) = params {
         dict.set("DecodeParms", Object::Dictionary(params.clone()));
     }
-    Stream::new(dict, data)
+    Stream::new(dict, data.into_owned())
         .decompressed_content()
         .map_err(|e| Unported(format!("a stream's {name} data does not decode: {e}")))
 }

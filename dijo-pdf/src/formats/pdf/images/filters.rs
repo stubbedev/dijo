@@ -23,7 +23,7 @@ const CCITT_MAX_BYTES: i64 = 256 * 1024 * 1024;
 /// `filters`, each with its parameters of `parameters`, for an image of the height `height`.
 pub(super) fn decoded(
     pdf: &Pdf,
-    data: Cow<'_, [u8]>,
+    mut data: Cow<'_, [u8]>,
     dictionary: &Dictionary,
     filters: &[&[u8]],
     parameters: Option<&Object>,
@@ -32,7 +32,6 @@ pub(super) fn decoded(
     if let Some(invalid) = invalid_filter(filters) {
         return Err(Unwritten::Stream(invalid));
     }
-    let mut data = data.into_owned();
     for (index, filter) in filters.iter().enumerate() {
         let params = match parameters {
             Some(Object::Array(each)) => each
@@ -42,7 +41,7 @@ pub(super) fn decoded(
             Some(other) => (index == 0).then(|| as_dict(other)).flatten(),
             None => None,
         };
-        data = match *filter {
+        data = Cow::Owned(match *filter {
             b"DCTDecode" | b"DCT" => {
                 jpeg::pdfbox_raster(&data)
                     .map_err(|reason| Unwritten::Stream(Exception::new(IIO_EXCEPTION, reason)))?
@@ -53,22 +52,16 @@ pub(super) fn decoded(
             b"JBIG2Decode" => jbig2(pdf, &data, params)?,
             b"Crypt" => {
                 crypt(pdf, dictionary)?;
-                data
+                continue;
             }
             other => {
                 let name = Object::Name(other.to_vec());
                 let params = params.map(|params| Object::Dictionary(params.clone()));
-                pdf.decode_data(
-                    Cow::Owned(data),
-                    dictionary,
-                    Some(&name),
-                    params.as_ref(),
-                    &[],
-                )?
+                pdf.decode_data(data, dictionary, Some(&name), params.as_ref(), &[])?
             }
-        };
+        });
     }
-    Ok(data)
+    Ok(data.into_owned())
 }
 
 /// The `MissingImageReaderException` PDFBox's `JPXFilter` throws in Tika, whose Java has no
