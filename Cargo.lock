@@ -722,6 +722,7 @@ dependencies = [
  "jiff",
  "jsonschema",
  "libc",
+ "memchr",
  "mimalloc",
  "quick-xml",
  "serde",

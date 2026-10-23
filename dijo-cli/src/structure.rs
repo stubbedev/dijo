@@ -424,6 +424,15 @@ impl<R: Read> TextBreaker<R> {
             && !self.previous.is_ascii_whitespace()
     }
 
+    fn plain_text_span(&self, room: usize) -> usize {
+        if self.state != Lexed::Text || self.in_entity || self.run >= MAX_TEXT_RUN_BYTES {
+            return 0;
+        }
+        let available = &self.buffer[self.position..self.filled];
+        let limit = available.len().min(room).min(MAX_TEXT_RUN_BYTES - self.run);
+        memchr::memchr2(b'<', b'&', &available[..limit]).unwrap_or(limit)
+    }
+
     fn advance(&mut self, byte: u8) {
         self.state = match self.state {
             Lexed::Text => match byte {
@@ -504,6 +513,16 @@ impl<R: Read> Read for TextBreaker<R> {
                 if self.filled == 0 {
                     break;
                 }
+            }
+            let span = self.plain_text_span(out.len() - written);
+            if span > 0 {
+                let end = self.position + span;
+                out[written..written + span].copy_from_slice(&self.buffer[self.position..end]);
+                self.previous = self.buffer[end - 1];
+                self.run += span;
+                self.position = end;
+                written += span;
+                continue;
             }
             let byte = self.buffer[self.position];
             if self.breaks_before(byte) {
@@ -865,6 +884,67 @@ mod tests {
             .map(|part| part.text.as_str())
             .collect();
         assert_eq!(joined, expected.trim());
+    }
+
+    #[test]
+    fn copying_plain_text_spans_matches_breaking_a_byte_at_a_time() {
+        fn byte_at_a_time(input: &[u8]) -> Vec<u8> {
+            let mut breaker = TextBreaker::new(io::empty());
+            let mut out = Vec::new();
+            for &byte in input {
+                if breaker.breaks_before(byte) {
+                    out.extend_from_slice(TEXT_BREAK);
+                    breaker.run = 0;
+                }
+                out.push(byte);
+                breaker.advance(byte);
+            }
+            out
+        }
+        struct Chunked<'a>(&'a [u8], usize);
+        impl io::Read for Chunked<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let read = self.0.len().min(buffer.len()).min(self.1);
+                buffer[..read].copy_from_slice(&self.0[..read]);
+                self.0 = &self.0[read..];
+                Ok(read)
+            }
+        }
+        let long = "x".repeat(MAX_TEXT_RUN_BYTES * 2 + 3);
+        let spaced = format!("{} {}", "y".repeat(MAX_TEXT_RUN_BYTES - 1), "z".repeat(10));
+        let wide = "\u{e9}\u{6f22}\u{1F389}".repeat(MAX_TEXT_RUN_BYTES / 4);
+        let entities = "a&amp;b &#x1F389; c&lt;d & e;".repeat(MAX_TEXT_RUN_BYTES / 8);
+        let markup = format!(
+            "<html><!-- a > b -- c --><div title=\"x > y\" alt='<&'><p>{long}</p>{wide}<br/>{entities}</div>"
+        );
+        let inputs = [
+            String::new(),
+            "&".to_string(),
+            "<".to_string(),
+            long.clone(),
+            spaced,
+            wide,
+            entities,
+            markup,
+            format!("&{long}"),
+            format!("{long}&amp;{long}"),
+        ];
+        for input in &inputs {
+            let expected = byte_at_a_time(input.as_bytes());
+            for (chunk, room) in [(1 << 16, 1 << 16), (7, 5), (1000, 1 << 13), (1 << 16, 3)] {
+                let mut breaker = TextBreaker::new(Chunked(input.as_bytes(), chunk));
+                let mut copied = Vec::new();
+                let mut out = vec![0; room];
+                loop {
+                    let read = breaker.read(&mut out).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    copied.extend_from_slice(&out[..read]);
+                }
+                assert!(copied == expected, "chunk {chunk}, room {room}");
+            }
+        }
     }
 
     #[test]
