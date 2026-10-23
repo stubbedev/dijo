@@ -1,7 +1,7 @@
 [package]
 name = "dijo-image"
 publish = false
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 description = "dijo's OCR and its native parsers of images, metafiles and DjVu"
 license = "Apache-2.0"

@@ -1,7 +1,7 @@
 [package]
 name = "dijo-office"
 publish = false
-version = "0.2.7"
+version = "0.2.8"
 edition = "2021"
 description = "dijo's native parsers of Microsoft Office's binary formats, Outlook and RTF"
 license = "Apache-2.0"

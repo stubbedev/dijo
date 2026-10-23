@@ -1,3 +1,32 @@
+# 0.2.8 (2026-10-23)
+
+### Changed
+
+Needless work removed from hot paths across the formats, with output unchanged (#230 to #267):
+
+* JPEG: entropy-coded data is decoded through a bit buffer and a lookahead table, and each component is upsampled
+  once and converted in place (#230, #231). OCR prepares an image once per orientation rather than once per retry,
+  reusing its grey and analysis images (#232).
+* Spreadsheets: whether a format is a date format is remembered, the powers of ten of General number text are
+  computed once, and a cell's format is looked up once without allocating (#234, #235, #236). XLS strings are read as
+  one slice and skipped without being built (#240, #241); XLSX and XLSB cells borrow their values, references and
+  formats, and XLSB hands on a cell's column instead of formatting and reparsing its address (#245, #246).
+* PDF: CMap codes are read without a buffer of their own, a glyph's text is resolved once, a code's CID range is
+  found by search, and image samples and single-sample colours are converted through tables; bitonal images and
+  CCITT black runs are written without per-pixel work (#252 to #258).
+* AES is decrypted a run of blocks at a time (#237). Written text is checked and escaped by bytes, and the XML
+  parser keeps non-ASCII text and attribute values on its fast path (#238, #239).
+* DOC text is decoded straight into its output, RTF picture data a run at a time, and xls drawings are checked
+  without inflating their metafiles (#242, #243, #244). DOCX runs keep their text buffer (#251).
+* Plain text and CSV are written from the decoded pieces as they are, and text output splits XHTML a run at a time
+  (#248, #249). With a cache, an input is hashed once (#250).
+* Mail: base64 is decoded through a table and the boundary searcher is built once (#259, #260). MIME magic anchors
+  are found when the tables are generated (#261); ZIP entry names are decoded once (#262); SQLite columns are
+  classified once per table (#263).
+* SAS column formats are classified once and decompressed runs filled as slices; MAT tag data is read in pieces;
+  OneNote superseded objects are compacted in one pass; XMP array items skip a quadratic duplicate scan (#233,
+  #264 to #267).
+
 # 0.2.7 (2026-10-22)
 
 ### Added
