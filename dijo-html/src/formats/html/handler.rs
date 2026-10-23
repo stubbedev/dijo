@@ -25,7 +25,7 @@ use super::JSoupParser;
 use crate::formats::data_uri;
 use crate::formats::embedded::{ResourceType, Wrapping, PARSER_OVERRIDE};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::xhtml::Xhtml;
+use crate::formats::xhtml::{Xhtml, ENDLINE};
 use crate::formats::{Difference, Failure, Parser};
 use crate::java;
 use crate::java::is_blank;
@@ -41,46 +41,52 @@ pub(super) const CODEBASE: &str = "codebase";
 /// The attributes of an `object` whose links `HtmlHandler` resolves against its [`CODEBASE`].
 pub(super) const OBJECT_LINKS: [&str; 2] = ["data", "classid"];
 
-/// The elements the default mapper keeps, by their upper case names (`SAFE_ELEMENTS`).
-fn safe_element(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "H1" => "h1",
-        "H2" => "h2",
-        "H3" => "h3",
-        "H4" => "h4",
-        "H5" => "h5",
-        "H6" => "h6",
-        "P" => "p",
-        "PRE" => "pre",
-        "BLOCKQUOTE" => "blockquote",
-        "Q" => "q",
-        "UL" => "ul",
-        "OL" => "ol",
-        "MENU" => "ul",
-        "LI" => "li",
-        "DL" => "dl",
-        "DT" => "dt",
-        "DD" => "dd",
-        "TABLE" => "table",
-        "THEAD" => "thead",
-        "TBODY" => "tbody",
-        "TR" => "tr",
-        "TH" => "th",
-        "TD" => "td",
-        "ADDRESS" => "address",
-        "A" => "a",
-        "MAP" => "map",
-        "AREA" => "area",
-        "IMG" => "img",
-        "FRAMESET" => "frameset",
-        "FRAME" => "frame",
-        "IFRAME" => "iframe",
-        "OBJECT" => "object",
-        "PARAM" => "param",
-        "INS" => "ins",
-        "DEL" => "del",
-        _ => return None,
-    })
+/// The elements the default mapper keeps, by their upper case names, with the names it writes
+/// them by (`SAFE_ELEMENTS`).
+const SAFE_ELEMENTS: [(&str, &str); 35] = [
+    ("H1", "h1"),
+    ("H2", "h2"),
+    ("H3", "h3"),
+    ("H4", "h4"),
+    ("H5", "h5"),
+    ("H6", "h6"),
+    ("P", "p"),
+    ("PRE", "pre"),
+    ("BLOCKQUOTE", "blockquote"),
+    ("Q", "q"),
+    ("UL", "ul"),
+    ("OL", "ol"),
+    ("MENU", "ul"),
+    ("LI", "li"),
+    ("DL", "dl"),
+    ("DT", "dt"),
+    ("DD", "dd"),
+    ("TABLE", "table"),
+    ("THEAD", "thead"),
+    ("TBODY", "tbody"),
+    ("TR", "tr"),
+    ("TH", "th"),
+    ("TD", "td"),
+    ("ADDRESS", "address"),
+    ("A", "a"),
+    ("MAP", "map"),
+    ("AREA", "area"),
+    ("IMG", "img"),
+    ("FRAMESET", "frameset"),
+    ("FRAME", "frame"),
+    ("IFRAME", "iframe"),
+    ("OBJECT", "object"),
+    ("PARAM", "param"),
+    ("INS", "ins"),
+    ("DEL", "del"),
+];
+
+/// The name the default mapper writes an element by, if it keeps it.
+fn safe_element(name: &EventName<'_>) -> Option<&'static str> {
+    SAFE_ELEMENTS
+        .iter()
+        .find(|(upper, _)| name.is(upper))
+        .map(|&(_, safe)| safe)
 }
 
 /// The attributes the default mapper keeps on a safe element (`SAFE_ATTRIBUTES`).
@@ -129,42 +135,81 @@ fn safe_attribute(element: &str, attribute: &str) -> bool {
     safe.contains(&attribute)
 }
 
-fn is_discarded(name: &str) -> bool {
-    name == "STYLE" || name == "SCRIPT"
+fn is_discarded(name: &EventName<'_>) -> bool {
+    name.is("STYLE") || name.is("SCRIPT")
 }
 
 /// A node's attributes as `XHTMLDowngradeHandler` passes them on: without `xmlns` and
 /// `xmlns:*` declarations.
-fn sax_attributes(attributes: &[Attribute]) -> Vec<&Attribute> {
-    attributes
-        .iter()
-        .filter(|attribute| attribute.key != "xmlns" && !attribute.key.starts_with("xmlns:"))
-        .collect()
+#[derive(Clone, Copy)]
+struct SaxAttributes<'a>(&'a [Attribute]);
+
+impl<'a> SaxAttributes<'a> {
+    fn of(node: &ParsedNode<'a>) -> Self {
+        match node {
+            ParsedNode::Element { attributes, .. } => SaxAttributes(attributes),
+            ParsedNode::Document | ParsedNode::Comment | ParsedNode::Doctype => SaxAttributes(&[]),
+        }
+    }
+
+    fn iter(self) -> impl Iterator<Item = &'a Attribute> {
+        self.0
+            .iter()
+            .filter(|attribute| attribute.key != "xmlns" && !attribute.key.starts_with("xmlns:"))
+    }
+
+    fn is_empty(self) -> bool {
+        self.iter().next().is_none()
+    }
+
+    fn value(self, name: &str) -> Option<&'a str> {
+        self.iter()
+            .find(|attribute| attribute.key == name)
+            .map(|attribute| attribute.value.as_str())
+    }
 }
 
-fn value<'a>(attributes: &[&'a Attribute], name: &str) -> Option<&'a str> {
-    attributes
-        .iter()
-        .find(|attribute| attribute.key == name)
-        .map(|attribute| attribute.value.as_str())
+/// The name a node takes in the SAX events, in upper case as `XHTMLDowngradeHandler` writes it:
+/// an ASCII name as it stands, compared without regard to ASCII case, any other upper cased.
+enum EventName<'a> {
+    Ascii(&'a str),
+    Upper(String),
 }
 
-/// The name a node takes in the SAX events, in upper case as `XHTMLDowngradeHandler` writes it.
-fn event_name(node: &ParsedNode<'_>) -> String {
-    let name = match node {
-        ParsedNode::Document => "#document",
-        ParsedNode::Element { name, .. } => name,
-        ParsedNode::Comment => "#comment",
-        ParsedNode::Doctype => "#doctype",
-    };
-    name.to_uppercase()
-}
+impl<'a> EventName<'a> {
+    fn new(name: &'a str) -> Self {
+        if name.is_ascii() {
+            EventName::Ascii(name)
+        } else {
+            EventName::Upper(name.to_uppercase())
+        }
+    }
 
-/// A node's attributes, as `XHTMLDowngradeHandler` passes them on.
-fn node_attributes<'a>(node: &ParsedNode<'a>) -> Vec<&'a Attribute> {
-    match node {
-        ParsedNode::Element { attributes, .. } => sax_attributes(attributes),
-        ParsedNode::Document | ParsedNode::Comment | ParsedNode::Doctype => Vec::new(),
+    fn of(node: &ParsedNode<'a>) -> Self {
+        Self::new(match node {
+            ParsedNode::Document => "#document",
+            ParsedNode::Element { name, .. } => name,
+            ParsedNode::Comment => "#comment",
+            ParsedNode::Doctype => "#doctype",
+        })
+    }
+
+    /// Whether the name in upper case is `upper`, which holds no lower case letter.
+    fn is(&self, upper: &str) -> bool {
+        match self {
+            EventName::Ascii(name) => name.eq_ignore_ascii_case(upper),
+            EventName::Upper(name) => name == upper,
+        }
+    }
+
+    /// Whether the name in upper case, lower cased again, is a block element a line break ends.
+    fn is_endline(&self) -> bool {
+        match self {
+            EventName::Ascii(name) => ENDLINE
+                .iter()
+                .any(|endline| name.eq_ignore_ascii_case(endline)),
+            EventName::Upper(name) => Xhtml::is_endline(&name.to_lowercase()),
+        }
     }
 }
 
@@ -196,8 +241,6 @@ impl Base {
 /// Tika's handlers, written to as the document is walked.
 pub(super) struct HtmlHandler<'x, 'h> {
     xhtml: &'x mut Xhtml<'h>,
-    /// The event names of the nodes started and not yet ended.
-    names: Vec<String>,
     /// The `Content-Location` links are resolved against.
     location: Option<String>,
     title: String,
@@ -224,7 +267,6 @@ impl<'x, 'h> HtmlHandler<'x, 'h> {
         };
         HtmlHandler {
             xhtml,
-            names: Vec::new(),
             location,
             title: String::new(),
             body_level: 0,
@@ -241,62 +283,59 @@ impl Visitor for HtmlHandler<'_, '_> {
     type Stop = Failure;
 
     fn start(&mut self, node: &ParsedNode<'_>) -> Result<(), Failure> {
-        let name = event_name(node);
-        self.start_element(&name, &node_attributes(node))?;
-        self.names.push(name);
-        Ok(())
+        self.start_element(&EventName::of(node), SaxAttributes::of(node))
     }
 
     fn text(&mut self, text: &str) -> Result<(), Failure> {
         self.characters(text)
     }
 
-    fn end(&mut self, _node: &ParsedNode<'_>) -> Result<(), Failure> {
-        let name = self
-            .names
-            .pop()
-            .expect("the walk ends the nodes it started");
-        self.end_element(&name)
+    fn end(&mut self, node: &ParsedNode<'_>) -> Result<(), Failure> {
+        self.end_element(&EventName::of(node))
     }
 }
 
 impl HtmlHandler<'_, '_> {
-    fn start_element(&mut self, name: &str, attributes: &[&Attribute]) -> Result<(), Failure> {
-        if name == "HTML" {
-            if let Some(lang) = value(attributes, "lang") {
+    fn start_element(
+        &mut self,
+        name: &EventName<'_>,
+        attributes: SaxAttributes<'_>,
+    ) -> Result<(), Failure> {
+        if name.is("HTML") {
+            if let Some(lang) = attributes.value("lang") {
                 self.xhtml.metadata_mut().set("Content-Language", lang);
             }
         }
-        if name == "SCRIPT" {
+        if name.is("SCRIPT") {
             self.script_level += 1;
         }
-        if name == "TITLE" && self.title_level == 0 {
+        if name.is("TITLE") && self.title_level == 0 {
             self.title.clear();
         }
-        if name == "TITLE" || self.title_level > 0 {
+        if name.is("TITLE") || self.title_level > 0 {
             self.title_level += 1;
         }
-        if name == "BODY" || name == "FRAMESET" || self.body_level > 0 {
+        if name.is("BODY") || name.is("FRAMESET") || self.body_level > 0 {
             self.body_level += 1;
         }
         if is_discarded(name) || self.discard_level > 0 {
             self.discard_level += 1;
         }
         if self.body_level == 0 && self.discard_level == 0 {
-            if name == "META" {
-                if let Some(content) = value(attributes, "content") {
-                    if let Some(equiv) = value(attributes, "http-equiv") {
+            if name.is("META") {
+                if let Some(content) = attributes.value("content") {
+                    if let Some(equiv) = attributes.value("http-equiv") {
                         self.add_html_metadata(equiv, content);
-                    } else if let Some(meta_name) = value(attributes, "name") {
+                    } else if let Some(meta_name) = attributes.value("name") {
                         self.add_html_metadata(meta_name, content);
-                    } else if let Some(property) = value(attributes, "property") {
+                    } else if let Some(property) = attributes.value("property") {
                         self.xhtml
                             .metadata_mut()
                             .add(&format!("html:{property}"), content);
                     }
                 }
-            } else if name == "BASE" {
-                if let Some(href) = value(attributes, "href") {
+            } else if name.is("BASE") {
+                if let Some(href) = attributes.value("href") {
                     self.start_element_with_mapped_attributes("base", attributes)?;
                     self.xhtml.end_element("base")?;
                     let location = self.resolve(href);
@@ -305,7 +344,7 @@ impl HtmlHandler<'_, '_> {
                         .set("Content-Location", location.as_str());
                     self.location = Some(location);
                 }
-            } else if name == "LINK" {
+            } else if name.is("LINK") {
                 self.start_element_with_mapped_attributes("link", attributes)?;
                 self.xhtml.end_element("link")?;
             }
@@ -320,8 +359,8 @@ impl HtmlHandler<'_, '_> {
                 uri.embed(self.xhtml, JSoupParser.tika_name())?;
             }
         }
-        if name == "IFRAME" {
-            if let Some(document) = value(attributes, "srcdoc").filter(|doc| !is_blank(doc)) {
+        if name.is("IFRAME") {
+            if let Some(document) = attributes.value("srcdoc").filter(|doc| !is_blank(doc)) {
                 self.embed_srcdoc(document)?;
             }
         }
@@ -385,21 +424,21 @@ impl HtmlHandler<'_, '_> {
     fn start_element_with_mapped_attributes(
         &mut self,
         name: &str,
-        attributes: &[&Attribute],
+        attributes: SaxAttributes<'_>,
     ) -> Result<(), Failure> {
         if attributes.is_empty() {
             return Ok(self.xhtml.start_element(name)?);
         }
         let codebase = if name == "object" {
-            match value(attributes, CODEBASE) {
+            match attributes.value(CODEBASE) {
                 Some(codebase) => Some(self.resolve(codebase)),
                 None => self.location.clone(),
             }
         } else {
             None
         };
-        let mut mapped: Vec<(String, String)> = Vec::with_capacity(attributes.len() + 1);
-        for attribute in attributes {
+        let mut mapped: Vec<(String, String)> = Vec::with_capacity(attributes.0.len() + 1);
+        for attribute in attributes.iter() {
             if !safe_attribute(name, &attribute.key) {
                 continue;
             }
@@ -429,14 +468,14 @@ impl HtmlHandler<'_, '_> {
         Ok(self.xhtml.start_element_with(name, &pairs)?)
     }
 
-    fn end_element(&mut self, name: &str) -> Result<(), Failure> {
-        if name == "SCRIPT" {
+    fn end_element(&mut self, name: &EventName<'_>) -> Result<(), Failure> {
+        if name.is("SCRIPT") {
             self.script_level -= 1;
         }
         if self.body_level > 0 && self.discard_level == 0 {
             if let Some(safe) = safe_element(name) {
                 self.xhtml.end_element(safe)?;
-            } else if Xhtml::is_endline(&name.to_lowercase()) {
+            } else if name.is_endline() {
                 self.xhtml.newline()?;
             }
         }
@@ -508,8 +547,9 @@ fn icbm(value: &str) -> Option<(&str, &str)> {
 
 /// The data URI of an element's `src`, which `HtmlHandler` hands to the embedded document
 /// extractor outside a script.
-fn embedded_data_uri(attributes: &[&Attribute]) -> Option<data_uri::DataUri> {
-    value(attributes, "src")
+fn embedded_data_uri(attributes: SaxAttributes<'_>) -> Option<data_uri::DataUri> {
+    attributes
+        .value("src")
         .filter(|src| src.starts_with("data:"))
         .and_then(data_uri::parse)
 }
@@ -517,7 +557,7 @@ fn embedded_data_uri(attributes: &[&Attribute]) -> Option<data_uri::DataUri> {
 /// Whether `attributes` hold a data URI the parser may read differently from Tika's, as
 /// [`Scan`] finds, wherever the element stands.
 pub(super) fn reads_otherwise(attributes: &[Attribute]) -> bool {
-    embedded_data_uri(&sax_attributes(attributes)).is_some_and(|uri| uri.difference().is_some())
+    embedded_data_uri(SaxAttributes(attributes)).is_some_and(|uri| uri.difference().is_some())
 }
 
 /// Where this parser reads a document differently from Tika's, as the document is walked: where
@@ -540,11 +580,12 @@ impl Visitor for Scan {
     type Stop = Infallible;
 
     fn start(&mut self, node: &ParsedNode<'_>) -> Result<(), Infallible> {
-        if event_name(node) == "SCRIPT" {
+        if EventName::of(node).is("SCRIPT") {
             self.script_level += 1;
         }
         if self.script_level == 0 && self.found.is_none() {
-            self.found = embedded_data_uri(&node_attributes(node)).and_then(|uri| uri.difference());
+            self.found =
+                embedded_data_uri(SaxAttributes::of(node)).and_then(|uri| uri.difference());
         }
         Ok(())
     }
@@ -554,7 +595,7 @@ impl Visitor for Scan {
     }
 
     fn end(&mut self, node: &ParsedNode<'_>) -> Result<(), Infallible> {
-        if event_name(node) == "SCRIPT" {
+        if EventName::of(node).is("SCRIPT") {
             self.script_level -= 1;
         }
         Ok(())
@@ -690,6 +731,75 @@ mod tests {
         assert_eq!(icbm("1.5,2"), None);
         assert_eq!(icbm("1.5 2.5x"), None);
         assert_eq!(icbm("north"), None);
+    }
+
+    /// An event name is compared, mapped to its safe element and taken for a block element as
+    /// its name in upper case is, ASCII or not.
+    #[test]
+    fn compares_event_names_as_their_upper_case() {
+        let names = [
+            "",
+            "p",
+            "P",
+            "Br",
+            "blockquote",
+            "BLOCKQUOTE",
+            "bLoCkQuOtE",
+            "script",
+            "\u{17f}cript",
+            "\u{131}mg",
+            "foreignObject",
+            "clipPath",
+            "#document",
+            "#comment",
+            "menu",
+            "td",
+            "h7",
+            "\u{fb00}",
+            "stra\u{df}e",
+            "x-custom-element",
+        ];
+        let uppers = [
+            "HTML",
+            "SCRIPT",
+            "STYLE",
+            "TITLE",
+            "BODY",
+            "META",
+            "BASE",
+            "LINK",
+            "#DOCUMENT",
+            "FF",
+            "STRASSE",
+            "",
+        ];
+        for name in names {
+            let event = EventName::new(name);
+            let upper = name.to_uppercase();
+            for candidate in uppers
+                .iter()
+                .chain(SAFE_ELEMENTS.iter().map(|(safe, _)| safe))
+            {
+                assert_eq!(
+                    event.is(candidate),
+                    upper == *candidate,
+                    "{name} {candidate}"
+                );
+            }
+            assert_eq!(
+                safe_element(&event),
+                SAFE_ELEMENTS
+                    .iter()
+                    .find(|(safe, _)| *safe == upper)
+                    .map(|&(_, safe)| safe),
+                "{name}"
+            );
+            assert_eq!(
+                event.is_endline(),
+                Xhtml::is_endline(&upper.to_lowercase()),
+                "{name}"
+            );
+        }
     }
 
     /// The title element's text is the title, the meta titles before and after it further
