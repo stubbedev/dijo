@@ -1,3 +1,29 @@
+# 0.2.9 (2026-10-23)
+
+### Changed
+
+More needless work removed from hot paths, with output unchanged (#268 to #304):
+
+* HTML and XHTML: element names are compared without building them, attributes are filtered as they are read, and
+  references resolve without building strings (#268, #270). The normaliser keeps its buffers across chunks (#269), and
+  the server reads worker frames into one buffer (#271).
+* OCR and images: an image with alpha is encoded for tesseract once, skew detection projects pixels through tables,
+  pixels are converted, oriented and pasted without dispatching on each, and ICC colours convert without allocating
+  (#272, #273, #276, #277). DjVu IW44 places coefficients by table and inverts columns a row at a time; JB2 keeps its
+  pixel contexts in rolling registers (#274, #275).
+* XML: known XHTML names are borrowed, SAX gets a start tag's declarations without copied attributes, and namespace
+  prefixes resolve through a map (#278, #279, #280). OLE2 sizes a stream's loop detector by its chain (#281), and the
+  fixed cell value formatters are built once (#282).
+* PDF: an operator is described only when it fails, keywords are searched with memmem, stream data is copied only
+  when a filter needs it owned, and a line's font runs merge through a priority queue (#283 to #286).
+* Archives, mail and MIME: RAR filters run in the VM's memory, WARC's machines take a generic callback, magic regexes
+  rule out regions by their first characters, OPC parts are keyed once, mail dates use a constant month table, and
+  name extensions are looked up without collecting suffixes (#287 to #292).
+* Office: Access text is decoded directly, workbooks no longer allocate per cell, DOC table rows take their start as
+  read, and EPUB indexes its entries once (#293 to #296).
+* MAT, DBF, OneNote, source code, FictionBook and ISA-Tab avoid per-value and per-line allocations and linear
+  searches (#297 to #304).
+
 # 0.2.8 (2026-10-23)
 
 ### Changed
