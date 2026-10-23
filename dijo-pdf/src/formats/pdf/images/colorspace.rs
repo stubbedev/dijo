@@ -5,15 +5,13 @@
 //! their tint transforms; and palettes over any of them. An image of one row or column in a
 //! profile's colour space is drawn by Java2D, which converts each pixel on its own.
 
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-
 use lopdf::{Dictionary, Object};
 
 use super::super::cos::{as_dict, float_value, int_value, name_string, Pdf};
 use super::super::function::{self, Function};
 use super::super::Unported;
 use super::{Exception, Unwritten};
+use crate::hash::FastMap;
 use crate::ocr::bitmap::Bitmap;
 use crate::ocr::icc::{accepted_components, gray_to_srgb_levels, IccToRgb, ToSrgb};
 
@@ -408,9 +406,18 @@ fn per_pixel(
     components: usize,
     mut convert: impl FnMut(&[u8]) -> Result<[u8; 3], Unwritten>,
 ) -> Result<Vec<u8>, Unwritten> {
-    let mut converted: HashMap<&[u8], [u8; 3]> = HashMap::new();
-    let mut rgb = Vec::with_capacity(samples.len() / components.max(1) * 3);
-    for pixel in samples.chunks_exact(components.max(1)) {
+    let components = components.max(1);
+    let mut rgb = Vec::with_capacity(samples.len() / components * 3);
+    if components == 1 {
+        per_sample(
+            samples,
+            |sample| convert(&[sample]),
+            |colour: &[u8; 3]| rgb.extend_from_slice(colour),
+        )?;
+        return Ok(rgb);
+    }
+    let mut converted: FastMap<&[u8], [u8; 3]> = FastMap::default();
+    for pixel in samples.chunks_exact(components) {
         let colour = match converted.get(pixel) {
             Some(&colour) => colour,
             None => {
@@ -422,6 +429,24 @@ fn per_pixel(
         rgb.extend_from_slice(&colour);
     }
     Ok(rgb)
+}
+
+/// Converts each sample with `convert`, once for each distinct sample, and hands each sample's
+/// conversion to `emit` in turn.
+fn per_sample<T>(
+    samples: &[u8],
+    mut convert: impl FnMut(u8) -> Result<T, Unwritten>,
+    mut emit: impl FnMut(&T),
+) -> Result<(), Unwritten> {
+    let mut converted: [Option<T>; 256] = std::array::from_fn(|_| None);
+    for &sample in samples {
+        let slot = &mut converted[usize::from(sample)];
+        match slot {
+            Some(value) => emit(value),
+            None => emit(slot.insert(convert(sample)?)),
+        }
+    }
+    Ok(())
 }
 
 /// `tintTransform.eval`, a failure of the function an exception of the image's stream.
@@ -475,12 +500,12 @@ impl Separation {
             ));
         }
         let components = self.alternate.components();
-        let mut tints: HashMap<u8, Vec<u8>> = HashMap::new();
         let mut alternate = Vec::with_capacity(samples.len() * components);
-        for &sample in samples {
-            if let Entry::Vacant(vacant) = tints.entry(sample) {
+        per_sample(
+            samples,
+            |sample| {
                 let tinted = tint(&self.tint, &[f32::from(sample) / 255.0])?;
-                let bytes = (0..components)
+                (0..components)
                     .map(|i| {
                         tinted
                             .get(i)
@@ -489,11 +514,10 @@ impl Separation {
                                 thrown_io("a tint transform of fewer outputs than its alternate")
                             })
                     })
-                    .collect::<Result<Vec<u8>, Unwritten>>()?;
-                vacant.insert(bytes);
-            }
-            alternate.extend_from_slice(&tints[&sample]);
-        }
+                    .collect::<Result<Vec<u8>, Unwritten>>()
+            },
+            |bytes: &Vec<u8>| alternate.extend_from_slice(bytes),
+        )?;
         self.alternate.to_rgb_image(width, height, alternate)
     }
 }
@@ -1120,6 +1144,59 @@ mod tests {
         profile[DEVICE_CLASS].copy_from_slice(class);
         profile[RENDERING_INTENT].copy_from_slice(&intent.to_be_bytes());
         profile
+    }
+
+    /// `per_pixel` as it hashed each pixel with SipHash: the colours, the pixels converted in
+    /// turn, and where it fails.
+    fn per_pixel_hashed(
+        samples: &[u8],
+        components: usize,
+        mut convert: impl FnMut(&[u8]) -> Result<[u8; 3], Unwritten>,
+    ) -> Result<Vec<u8>, Unwritten> {
+        let mut converted: std::collections::HashMap<&[u8], [u8; 3]> =
+            std::collections::HashMap::new();
+        let mut rgb = Vec::with_capacity(samples.len() / components.max(1) * 3);
+        for pixel in samples.chunks_exact(components.max(1)) {
+            let colour = match converted.get(pixel) {
+                Some(&colour) => colour,
+                None => {
+                    let colour = convert(pixel)?;
+                    converted.insert(pixel, colour);
+                    colour
+                }
+            };
+            rgb.extend_from_slice(&colour);
+        }
+        Ok(rgb)
+    }
+
+    #[test]
+    fn converts_each_distinct_pixel_once_as_hashing_them_did() {
+        let samples: Vec<u8> = (0..3000u32)
+            .map(|i| ((i * 37 % 251) ^ (i / 7)) as u8)
+            .collect();
+        for components in [0, 1, 2, 3, 4] {
+            for failing in [None, Some(200u8), Some(samples[0]), Some(255)] {
+                let run = |hashed: bool| {
+                    let mut seen = Vec::new();
+                    let convert = |pixel: &[u8]| {
+                        seen.push(pixel.to_vec());
+                        if Some(pixel[0]) == failing {
+                            return Err(thrown_io(&format!("{pixel:?}")));
+                        }
+                        let sum = pixel.iter().fold(0u8, |sum, &c| sum.wrapping_add(c));
+                        Ok([pixel[0], sum, sum ^ 0x5A])
+                    };
+                    let rgb = match hashed {
+                        true => per_pixel_hashed(&samples, components, convert),
+                        false => per_pixel(&samples, components, convert),
+                    };
+                    (format!("{rgb:?}"), seen)
+                };
+                assert_eq!(run(false), run(true), "{components} {failing:?}");
+            }
+        }
+        assert_eq!(per_pixel(&[], 1, |_| unreachable!()).ok(), Some(Vec::new()));
     }
 
     #[test]
