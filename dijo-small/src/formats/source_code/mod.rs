@@ -20,7 +20,7 @@ use lexer::{Scanner, Tables};
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
 use crate::formats::embedded::RESOURCE_NAME;
-use crate::formats::html::{walk_parsed, ParsedNode, Visitor};
+use crate::formats::html::{walk_parsed, Attribute, ParsedNode, Visitor};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
@@ -127,7 +127,7 @@ impl Parser for SourceCodeParser {
             })?;
             let (_, text) = AutoDetectReader::stream(input, given.as_deref(), pages);
             let mut code = text.lines().map(|line| {
-                if unicode {
+                if unicode || !line.contains('\u{FFFD}') {
                     line
                 } else {
                     line.replace('\u{FFFD}', "?")
@@ -280,12 +280,12 @@ fn frame(name: &str) -> String {
     escape_into(name.encode_utf16(), &mut html);
     html.extend("</h1><code>".encode_utf16());
     html.extend(FOOTER.encode_utf16());
-    text_of(html)
+    text_of(&html)
 }
 
 /// Markup as UTF-16 units, as a string, an unpaired surrogate as `?`.
-fn text_of(html: Vec<u16>) -> String {
-    char::decode_utf16(html)
+fn text_of(html: &[u16]) -> String {
+    char::decode_utf16(html.iter().copied())
         .map(|unit| unit.unwrap_or('?'))
         .collect()
 }
@@ -299,6 +299,8 @@ struct Renderer {
     state: usize,
     previous_style: u8,
     newline: bool,
+    /// The UTF-16 units of the line being scanned.
+    units: Vec<u16>,
 }
 
 impl Renderer {
@@ -308,6 +310,7 @@ impl Renderer {
             state: 0,
             previous_style: 0,
             newline: false,
+            units: Vec::new(),
         }
     }
 
@@ -315,11 +318,14 @@ impl Renderer {
     fn line(&mut self, line: &str, html: &mut Vec<u16>) {
         let scanner = self.language.scanner();
         let line = tabs_to_spaces(line);
-        let units: Vec<u16> = line.encode_utf16().chain([u16::from(b'\n')]).collect();
+        self.units.clear();
+        self.units
+            .extend(line.encode_utf16().chain([u16::from(b'\n')]));
+        let units = &self.units;
         let mut index = 0;
         while index < units.len() {
             let (action, length) = scanner
-                .next(&units, index, self.state)
+                .next(units, index, self.state)
                 .expect("the scanners' fallback rule matches any character");
             let (style, begin) = self.language.action(action);
             if let Some(begin) = begin {
@@ -390,7 +396,7 @@ impl<V: Visitor<Stop = Failure>> Visitor for Framed<'_, '_, V> {
             }
             html.extend("</code>".encode_utf16());
             walk_parsed(
-                &text_of(std::mem::take(&mut html)),
+                &text_of(&html),
                 &mut Inside {
                     walk: &mut *self.walk,
                     depth: None,
@@ -513,6 +519,11 @@ fn node_name<'n>(node: &ParsedNode<'n>) -> &'n str {
     }
 }
 
+/// An attribute as the name and value an element is started with.
+fn pair(attribute: &Attribute) -> (&str, &str) {
+    (attribute.key.as_str(), attribute.value.as_str())
+}
+
 impl Visitor for Walk<'_, '_> {
     type Stop = Failure;
 
@@ -532,11 +543,14 @@ impl Visitor for Walk<'_, '_> {
         let written = !self.ignore && !matches!(name, "html" | "body");
         if written {
             match node {
+                ParsedNode::Element {
+                    attributes: [attribute],
+                    ..
+                } => {
+                    self.xhtml.start_element_with(name, &[pair(attribute)])?;
+                }
                 ParsedNode::Element { attributes, .. } => {
-                    let attributes: Vec<(&str, &str)> = attributes
-                        .iter()
-                        .map(|attribute| (attribute.key.as_str(), attribute.value.as_str()))
-                        .collect();
+                    let attributes: Vec<(&str, &str)> = attributes.iter().map(pair).collect();
                     self.xhtml.start_element_with(name, &attributes)?;
                 }
                 ParsedNode::Document | ParsedNode::Comment | ParsedNode::Doctype => {

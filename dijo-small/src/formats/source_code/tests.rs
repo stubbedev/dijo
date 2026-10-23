@@ -46,7 +46,7 @@ fn walks_code_a_chunk_at_a_time_as_whole() {
     let mut framed = frame("Kode.java");
     framed.insert_str(
         framed.find("<code>").unwrap() + "<code>".len(),
-        &text_of(whole),
+        &text_of(&whole),
     );
     let mut whole = Recorder::default();
     walk_parsed(&framed, &mut whole).unwrap();
@@ -66,6 +66,33 @@ fn walks_code_a_chunk_at_a_time_as_whole() {
     .unwrap();
     assert!(whole.0.len() > 1000);
     assert_eq!(chunked.0, whole.0);
+}
+
+/// A renderer scanning each line in the units of the line before gives each line the markup a
+/// renderer in the same state with units of its own gives it, longer and shorter lines alike.
+#[test]
+fn renders_lines_in_units_used_again_as_in_fresh_ones() {
+    let code = "/** lang kommentar med @param og\ttab */\nx\n\n\tint y = 0x1F; // æøå 😀\n\"s\"\n/* åben\nlukket */ ÿ\n";
+    for language in [Language::Java, Language::Groovy, Language::Cpp] {
+        let mut renderer = Renderer::new(language);
+        for line in auto_detect_reader::lines(code) {
+            let mut fresh = Renderer {
+                language,
+                state: renderer.state,
+                previous_style: renderer.previous_style,
+                newline: renderer.newline,
+                units: Vec::new(),
+            };
+            let (mut used_again, mut own) = (Vec::new(), Vec::new());
+            renderer.line(line, &mut used_again);
+            fresh.line(line, &mut own);
+            assert_eq!(used_again, own, "{language:?} {line:?}");
+            assert_eq!(
+                (renderer.state, renderer.previous_style, renderer.newline),
+                (fresh.state, fresh.previous_style, fresh.newline)
+            );
+        }
+    }
 }
 
 /// The nodes a walk reports, adjacent text joined.
