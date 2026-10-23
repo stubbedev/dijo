@@ -501,20 +501,29 @@ impl Formatter {
                     CellValue::Number(number) => number,
                     CellValue::Date(millis) => return date_to_string(millis, zone),
                 };
-                let pattern = if number % 1.0 == 0.0 { "#" } else { "#.#" };
-                NumberFormatter::new(pattern)
-                    .map_err(FormatError::Thrown)?
-                    .format(value)
+                let formatter = if number % 1.0 == 0.0 {
+                    &*SIMPLE_WHOLE_NUMBER
+                } else {
+                    &*SIMPLE_NUMBER
+                };
+                formatter.format(value)
             }
-            Formatter::Date(_) => DateFormatter::new("mm/d/y")
-                .map_err(FormatError::Thrown)?
-                .format(value, zone),
-            Formatter::Text(_) => TextFormatter::new("@")
-                .map_err(FormatError::Thrown)?
-                .format(value, zone),
+            Formatter::Date(_) => SIMPLE_DATE.format(value, zone),
+            Formatter::Text(_) => SIMPLE_TEXT.format(value, zone),
         }
     }
 }
+
+/// The formatters `simpleValue` writes a value of a number format in, a whole number with `#`
+/// and another with `#.#`, of a date format in, and of a text format in.
+static SIMPLE_WHOLE_NUMBER: LazyLock<NumberFormatter> =
+    LazyLock::new(|| NumberFormatter::new("#").expect("a valid format"));
+static SIMPLE_NUMBER: LazyLock<NumberFormatter> =
+    LazyLock::new(|| NumberFormatter::new("#.#").expect("a valid format"));
+static SIMPLE_DATE: LazyLock<DateFormatter> =
+    LazyLock::new(|| DateFormatter::new("mm/d/y").expect("a valid format"));
+static SIMPLE_TEXT: LazyLock<TextFormatter> =
+    LazyLock::new(|| TextFormatter::new("@").expect("a valid format"));
 
 fn number_of(value: CellValue) -> Outcome<f64> {
     match value {
@@ -2141,5 +2150,41 @@ mod tests {
             "small"
         );
         assert!(apply("[Red", 1.0).is_err());
+    }
+
+    #[test]
+    fn writes_simple_values_with_the_fixed_formatters_as_with_fresh_ones() {
+        let zone = TimeZone::fixed(0);
+        let numbers = [
+            0.0, -0.0, 1.0, -1.0, 2.5, -0.25, 1234.5678, 1e15, 1e-7, 0.05, 99.99, 45_000.75,
+        ];
+        let values = numbers
+            .map(CellValue::Number)
+            .into_iter()
+            .chain([0, 86_400_000, -1, 1_700_000_000_123].map(CellValue::Date));
+        for value in values {
+            if let CellValue::Number(number) = value {
+                let (fixed, pattern) = if number % 1.0 == 0.0 {
+                    (&*SIMPLE_WHOLE_NUMBER, "#")
+                } else {
+                    (&*SIMPLE_NUMBER, "#.#")
+                };
+                assert_eq!(
+                    fixed.format(value),
+                    NumberFormatter::new(pattern).unwrap().format(value),
+                    "{value:?}"
+                );
+            }
+            assert_eq!(
+                SIMPLE_DATE.format(value, &zone),
+                DateFormatter::new("mm/d/y").unwrap().format(value, &zone),
+                "{value:?}"
+            );
+            assert_eq!(
+                SIMPLE_TEXT.format(value, &zone),
+                TextFormatter::new("@").unwrap().format(value, &zone),
+                "{value:?}"
+            );
+        }
     }
 }

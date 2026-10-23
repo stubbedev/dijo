@@ -18,7 +18,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-use super::{FormatError, DOT};
+use super::{half_up, FormatError, DOT};
 use crate::java::decimal::Rounding;
 use crate::java::decimal_format::DecimalFormat;
 use crate::java::simple_date_format::SimpleDateFormat;
@@ -242,6 +242,18 @@ static ONE_LETTER_MONTH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\x{e001}(\p{L}|\p{P})[\p{L}\p{P}]+\x{e002}").expect("a valid pattern")
 });
 
+/// The elapsed hours, minutes or seconds of `[h]`, `[m]` or `[s]` and of `[hh]`, `[mm]` or
+/// `[ss]`, rounded down.
+static ELAPSED_ONE_DIGIT: LazyLock<DecimalFormat> = LazyLock::new(|| down("0"));
+static ELAPSED_TWO_DIGITS: LazyLock<DecimalFormat> = LazyLock::new(|| down("00"));
+/// The tenths and the hundredths of a second, rounded half up.
+static TENTHS: LazyLock<DecimalFormat> = LazyLock::new(|| half_up("0"));
+static HUNDREDTHS: LazyLock<DecimalFormat> = LazyLock::new(|| half_up("00"));
+
+fn down(pattern: &str) -> DecimalFormat {
+    DecimalFormat::new(pattern, Rounding::Down).expect("a valid pattern")
+}
+
 impl ExcelStyleDateFormatter {
     /// `new ExcelStyleDateFormatter(pattern, symbols)`; an error where `SimpleDateFormat` throws.
     #[cfg(test)]
@@ -321,37 +333,35 @@ impl ExcelStyleDateFormatter {
         if text.contains(MMMMM_START) {
             text = ONE_LETTER_MONTH.replace_all(&text, "$1").into_owned();
         }
-        let down = |value: f64, pattern: &str| {
-            DecimalFormat::new(pattern, Rounding::Down)
-                .expect("a valid pattern")
-                .format_f64(value)
-        };
         let elapsed_millis = (value * DAY_MILLISECONDS).round();
         if text.contains(H_BRACKET) || text.contains(HH_BRACKET) {
             let hours = (elapsed_millis / 3_600_000.0).floor();
             text = text
-                .replace(H_BRACKET, &down(hours, "0"))
-                .replace(HH_BRACKET, &down(hours, "00"));
+                .replace(H_BRACKET, &ELAPSED_ONE_DIGIT.format_f64(hours))
+                .replace(HH_BRACKET, &ELAPSED_TWO_DIGITS.format_f64(hours));
         }
         if text.contains(M_BRACKET) || text.contains(MM_BRACKET) {
             let minutes = (elapsed_millis / 60_000.0).floor();
             text = text
-                .replace(M_BRACKET, &down(minutes, "0"))
-                .replace(MM_BRACKET, &down(minutes, "00"));
+                .replace(M_BRACKET, &ELAPSED_ONE_DIGIT.format_f64(minutes))
+                .replace(MM_BRACKET, &ELAPSED_TWO_DIGITS.format_f64(minutes));
         }
         if text.contains(S_BRACKET) || text.contains(SS_BRACKET) {
             let seconds = (elapsed_millis / 1000.0).floor();
             text = text
-                .replace(S_BRACKET, &down(seconds, "0"))
-                .replace(SS_BRACKET, &down(seconds, "00"));
+                .replace(S_BRACKET, &ELAPSED_ONE_DIGIT.format_f64(seconds))
+                .replace(SS_BRACKET, &ELAPSED_TWO_DIGITS.format_f64(seconds));
         }
         if text.contains(L_BRACKET) || text.contains(LL_BRACKET) {
             let fraction = value - value.floor();
             let temp = (fraction * 24.0 * 60.0 * 60.0) as f32;
             let millis = temp - (temp as i32) as f32;
             text = text
-                .replace(L_BRACKET, &half_up_f64(f64::from(millis) * 10.0, "0"))
-                .replace(LL_BRACKET, &half_up_f64(f64::from(millis) * 100.0, "00"));
+                .replace(L_BRACKET, &TENTHS.format_f64(f64::from(millis) * 10.0))
+                .replace(
+                    LL_BRACKET,
+                    &HUNDREDTHS.format_f64(f64::from(millis) * 100.0),
+                );
         }
         Ok(self.literals.restore(&text))
     }
@@ -382,12 +392,6 @@ impl ExcelStyleDateFormatter {
         }
         written
     }
-}
-
-fn half_up_f64(value: f64, pattern: &str) -> String {
-    DecimalFormat::new(pattern, Rounding::HalfUp)
-        .expect("a valid pattern")
-        .format_f64(value)
 }
 
 /// `DateUtil.isInternalDateFormat`: the built-in formats 14 to 22 and 45 to 47.
@@ -647,5 +651,27 @@ mod tests {
         assert_eq!(date(45000.0, true), "2027-03-16");
         assert_eq!(date(45000.0, false), "2023-03-15");
         assert_eq!(date(61.0, false), "1900-03-01");
+    }
+
+    #[test]
+    fn writes_elapsed_times_with_the_fixed_formats_as_with_fresh_ones() {
+        for value in [
+            0.0, -0.0, 0.4, 0.5, 0.6, 1.5, 2.5, 9.0, 9.99, 59.5, 99.5, -1.5, -0.5, 1234567.0, 3e12,
+        ] {
+            for (fixed, pattern, rounding) in [
+                (&*ELAPSED_ONE_DIGIT, "0", Rounding::Down),
+                (&*ELAPSED_TWO_DIGITS, "00", Rounding::Down),
+                (&*TENTHS, "0", Rounding::HalfUp),
+                (&*HUNDREDTHS, "00", Rounding::HalfUp),
+            ] {
+                assert_eq!(
+                    fixed.format_f64(value),
+                    DecimalFormat::new(pattern, rounding)
+                        .unwrap()
+                        .format_f64(value),
+                    "{value} {pattern}"
+                );
+            }
+        }
     }
 }
