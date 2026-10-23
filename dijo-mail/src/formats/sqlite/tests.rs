@@ -157,6 +157,24 @@ fn names_values_as_commons_io_does() {
 }
 
 #[test]
+fn borrows_text_java_decodes_as_it_is() {
+    let texts: [&[u8]; 9] = [
+        b"",
+        b"plain",
+        "K\u{f8}benhavn \u{1F600}".as_bytes(),
+        b"\xEF\xBB\xBFbom",
+        b"bad \xFF byte",
+        b"cut \xE2\x82",
+        b"\xED\xA0\x80 surrogate",
+        b"\xC0\xAF overlong",
+        b"nul \0 inside",
+    ];
+    for text in texts {
+        assert_eq!(utf8(text), java::utf8(text), "{text:?}");
+    }
+}
+
+#[test]
 fn writes_integers_in_hex_as_java_does() {
     assert_eq!(java_hex(0), "0");
     assert_eq!(java_hex(255), "ff");
@@ -168,39 +186,39 @@ fn writes_integers_in_hex_as_java_does() {
 fn types_values_as_sqlite_jdbc_does() {
     let integer = ValueRef::Integer(1);
     assert_eq!(
-        jdbc_type("BOOLEAN", Storage::Integer, integer),
+        Reported::new("BOOLEAN", Storage::Integer).of(integer),
         JdbcType::Boolean
     );
     assert_eq!(
-        jdbc_type("REAL", Storage::Integer, integer),
+        Reported::new("REAL", Storage::Integer).of(integer),
         JdbcType::Integer
     );
     assert_eq!(
-        jdbc_type("TEXT", Storage::Integer, ValueRef::Integer(1 << 40)),
+        Reported::new("TEXT", Storage::Integer).of(ValueRef::Integer(1 << 40)),
         JdbcType::BigInt
     );
     assert_eq!(
-        jdbc_type("INTEGER", Storage::Float, ValueRef::Real(1.0)),
+        Reported::new("INTEGER", Storage::Float).of(ValueRef::Real(1.0)),
         JdbcType::Float
     );
     assert_eq!(
-        jdbc_type("REAL", Storage::Float, ValueRef::Real(1.0)),
+        Reported::new("REAL", Storage::Float).of(ValueRef::Real(1.0)),
         JdbcType::Real
     );
     assert_eq!(
-        jdbc_type("INTEGER", Storage::Text, ValueRef::Text(b"x")),
+        Reported::new("INTEGER", Storage::Text).of(ValueRef::Text(b"x")),
         JdbcType::Varchar
     );
     assert_eq!(
-        jdbc_type("CLOB", Storage::Text, ValueRef::Text(b"x")),
+        Reported::new("CLOB", Storage::Text).of(ValueRef::Text(b"x")),
         JdbcType::Clob
     );
     assert_eq!(
-        jdbc_type("BINARY", Storage::Blob, ValueRef::Blob(b"x")),
+        Reported::new("BINARY", Storage::Blob).of(ValueRef::Blob(b"x")),
         JdbcType::Binary
     );
     assert_eq!(
-        jdbc_type("FOO", Storage::Null, ValueRef::Null),
+        Reported::new("FOO", Storage::Null).of(ValueRef::Null),
         JdbcType::Numeric
     );
     assert_eq!(declared_type_name("varchar (20)"), "VARCHAR ");

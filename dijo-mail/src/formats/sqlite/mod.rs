@@ -7,7 +7,8 @@
 #[cfg(test)]
 mod tests;
 
-use std::fmt::Display;
+use std::borrow::Cow;
+use std::fmt::{Display, Write as _};
 use std::io::{self, Write};
 
 use rusqlite::types::{ToSqlOutput, ValueRef};
@@ -246,6 +247,15 @@ enum Storage {
 }
 
 impl Storage {
+    /// Every storage class, each at the index of its discriminant.
+    const ALL: [Storage; 5] = [
+        Self::Integer,
+        Self::Float,
+        Self::Text,
+        Self::Blob,
+        Self::Null,
+    ];
+
     fn of(value: ValueRef<'_>) -> Self {
         match value {
             ValueRef::Integer(_) => Self::Integer,
@@ -268,84 +278,105 @@ impl Storage {
     }
 }
 
-/// `getColumnType`: the JDBC type of a value stored as `storage` in a column of `type_name`, an
-/// integer one in or out of the range of an `int`.
-fn jdbc_type(type_name: &str, storage: Storage, value: ValueRef<'_>) -> JdbcType {
-    let is = |names: &[&str]| names.contains(&type_name);
-    if matches!(storage, Storage::Integer | Storage::Null) {
-        if is(&["BOOLEAN"]) {
-            return JdbcType::Boolean;
+/// What `getColumnType` reports for the values of one storage class in a column: one JDBC type
+/// for them all, or for integers `Integer` or `BigInt` as each is in or out of the range of an
+/// `int`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reported {
+    Always(JdbcType),
+    ByRange,
+}
+
+impl Reported {
+    /// `getColumnType` of the values stored as `storage` in a column of `type_name`.
+    fn new(type_name: &str, storage: Storage) -> Self {
+        let is = |names: &[&str]| names.contains(&type_name);
+        if matches!(storage, Storage::Integer | Storage::Null) {
+            if is(&["BOOLEAN"]) {
+                return Reported::Always(JdbcType::Boolean);
+            }
+            if is(&["TINYINT"]) {
+                return Reported::Always(JdbcType::TinyInt);
+            }
+            if is(&["SMALLINT", "INT2"]) {
+                return Reported::Always(JdbcType::SmallInt);
+            }
+            if is(&["BIGINT", "INT8", "UNSIGNED BIG INT"]) {
+                return Reported::Always(JdbcType::BigInt);
+            }
+            if is(&["DATE"]) {
+                return Reported::Always(JdbcType::Date);
+            }
+            if is(&["DATETIME", "TIMESTAMP"]) {
+                return Reported::Always(JdbcType::Timestamp);
+            }
+            if storage == Storage::Integer || is(&["INT", "INTEGER", "MEDIUMINT"]) {
+                return Reported::ByRange;
+            }
         }
-        if is(&["TINYINT"]) {
-            return JdbcType::TinyInt;
+        if matches!(storage, Storage::Float | Storage::Null) {
+            if is(&["DECIMAL"]) {
+                return Reported::Always(JdbcType::Decimal);
+            }
+            if is(&["DOUBLE", "DOUBLE PRECISION"]) {
+                return Reported::Always(JdbcType::Double);
+            }
+            if is(&["NUMERIC"]) {
+                return Reported::Always(JdbcType::Numeric);
+            }
+            if is(&["REAL"]) {
+                return Reported::Always(JdbcType::Real);
+            }
+            if storage == Storage::Float || is(&["FLOAT"]) {
+                return Reported::Always(JdbcType::Float);
+            }
         }
-        if is(&["SMALLINT", "INT2"]) {
-            return JdbcType::SmallInt;
+        if matches!(storage, Storage::Text | Storage::Null) {
+            if is(&["CHARACTER", "NCHAR", "NATIVE CHARACTER", "CHAR"]) {
+                return Reported::Always(JdbcType::Char);
+            }
+            if is(&["CLOB"]) {
+                return Reported::Always(JdbcType::Clob);
+            }
+            if is(&["DATE"]) {
+                return Reported::Always(JdbcType::Date);
+            }
+            if is(&["DATETIME", "TIMESTAMP"]) {
+                return Reported::Always(JdbcType::Timestamp);
+            }
+            if storage == Storage::Text || is(&["VARCHAR", "VARYING CHARACTER", "NVARCHAR", "TEXT"])
+            {
+                return Reported::Always(JdbcType::Varchar);
+            }
         }
-        if is(&["BIGINT", "INT8", "UNSIGNED BIG INT"]) {
-            return JdbcType::BigInt;
+        if matches!(storage, Storage::Blob | Storage::Null) {
+            if is(&["BINARY"]) {
+                return Reported::Always(JdbcType::Binary);
+            }
+            if storage == Storage::Blob || is(&["BLOB"]) {
+                return Reported::Always(JdbcType::Blob);
+            }
         }
-        if is(&["DATE"]) {
-            return JdbcType::Date;
-        }
-        if is(&["DATETIME", "TIMESTAMP"]) {
-            return JdbcType::Timestamp;
-        }
-        if storage == Storage::Integer || is(&["INT", "INTEGER", "MEDIUMINT"]) {
-            let long = match value {
-                ValueRef::Integer(long) => long,
-                _ => 0,
-            };
-            return if i32::try_from(long).is_ok() {
-                JdbcType::Integer
-            } else {
-                JdbcType::BigInt
-            };
+        Reported::Always(JdbcType::Numeric)
+    }
+
+    /// The JDBC type of `value`, one of the values reported so.
+    fn of(self, value: ValueRef<'_>) -> JdbcType {
+        match self {
+            Reported::Always(jdbc_type) => jdbc_type,
+            Reported::ByRange => {
+                let long = match value {
+                    ValueRef::Integer(long) => long,
+                    _ => 0,
+                };
+                if i32::try_from(long).is_ok() {
+                    JdbcType::Integer
+                } else {
+                    JdbcType::BigInt
+                }
+            }
         }
     }
-    if matches!(storage, Storage::Float | Storage::Null) {
-        if is(&["DECIMAL"]) {
-            return JdbcType::Decimal;
-        }
-        if is(&["DOUBLE", "DOUBLE PRECISION"]) {
-            return JdbcType::Double;
-        }
-        if is(&["NUMERIC"]) {
-            return JdbcType::Numeric;
-        }
-        if is(&["REAL"]) {
-            return JdbcType::Real;
-        }
-        if storage == Storage::Float || is(&["FLOAT"]) {
-            return JdbcType::Float;
-        }
-    }
-    if matches!(storage, Storage::Text | Storage::Null) {
-        if is(&["CHARACTER", "NCHAR", "NATIVE CHARACTER", "CHAR"]) {
-            return JdbcType::Char;
-        }
-        if is(&["CLOB"]) {
-            return JdbcType::Clob;
-        }
-        if is(&["DATE"]) {
-            return JdbcType::Date;
-        }
-        if is(&["DATETIME", "TIMESTAMP"]) {
-            return JdbcType::Timestamp;
-        }
-        if storage == Storage::Text || is(&["VARCHAR", "VARYING CHARACTER", "NVARCHAR", "TEXT"]) {
-            return JdbcType::Varchar;
-        }
-    }
-    if matches!(storage, Storage::Blob | Storage::Null) {
-        if is(&["BINARY"]) {
-            return JdbcType::Binary;
-        }
-        if storage == Storage::Blob || is(&["BLOB"]) {
-            return JdbcType::Blob;
-        }
-    }
-    JdbcType::Numeric
 }
 
 /// The type a column declares, as `getColumnDeclType` finds it: its declared type, else the
@@ -377,10 +408,12 @@ fn declared_type_name(declared: &str) -> String {
     java::to_upper_case(base)
 }
 
-/// The open database, with the statement that reads values as text.
+/// The open database, with the statement that reads values as text, and the text of the last
+/// integer written.
 struct Database<'c> {
     connection: &'c Connection,
     as_text: Statement<'c>,
+    digits: String,
 }
 
 impl<'c> Database<'c> {
@@ -391,6 +424,7 @@ impl<'c> Database<'c> {
         Ok(Self {
             connection,
             as_text,
+            digits: String::new(),
         })
     }
 
@@ -406,11 +440,7 @@ impl<'c> Database<'c> {
         let columns: Vec<Column> = statement
             .columns()
             .iter()
-            .map(|column| Column {
-                name: column.name().to_owned(),
-                declared: declared_type(column.decl_type(), column.name())
-                    .map(|declared| declared_type_name(&declared)),
-            })
+            .map(|column| Column::new(column.name(), column.decl_type()))
             .collect();
         let mut rows = statement
             .query([])
@@ -450,24 +480,31 @@ impl<'c> Database<'c> {
         value: ValueRef<'_>,
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
-        let storage = Storage::of(value);
-        let type_name = column
-            .declared
-            .as_deref()
-            .unwrap_or_else(|| storage.type_name());
-        let text = match (jdbc_type(type_name, storage, value), value) {
+        match (column.jdbc_type(value), value) {
             (_, ValueRef::Null) | (JdbcType::Clob, _) => return Ok(()),
             (JdbcType::Blob, ValueRef::Blob(data)) => {
                 return write_blob(table, &column.name, row, data, xhtml)
             }
-            (JdbcType::Boolean, ValueRef::Integer(long)) => (long as i32 != 0).to_string(),
-            (JdbcType::Float, ValueRef::Real(double)) => java_float_to_string(double as f32),
-            (JdbcType::Double, ValueRef::Real(double)) => java_double_to_string(double),
-            (_, ValueRef::Integer(long)) => long.to_string(),
-            (_, ValueRef::Text(text)) => java::utf8(text),
-            (_, value @ (ValueRef::Real(_) | ValueRef::Blob(_))) => self.text(value)?,
-        };
-        xhtml.characters_chunk(&text)?;
+            (JdbcType::Boolean, ValueRef::Integer(long)) => {
+                xhtml.characters_chunk(if long as i32 != 0 { "true" } else { "false" })?;
+            }
+            (JdbcType::Float, ValueRef::Real(double)) => {
+                xhtml.characters_chunk(&java_float_to_string(double as f32))?;
+            }
+            (JdbcType::Double, ValueRef::Real(double)) => {
+                xhtml.characters_chunk(&java_double_to_string(double))?;
+            }
+            (_, ValueRef::Integer(long)) => {
+                self.digits.clear();
+                write!(self.digits, "{long}").expect("writing to a String");
+                xhtml.characters_chunk(&self.digits)?;
+            }
+            (_, ValueRef::Text(text)) => xhtml.characters_chunk(&utf8(text))?,
+            (_, value @ (ValueRef::Real(_) | ValueRef::Blob(_))) => {
+                let text = self.text(value)?;
+                xhtml.characters_chunk(&text)?;
+            }
+        }
         Ok(())
     }
 
@@ -490,10 +527,40 @@ impl<'c> Database<'c> {
     }
 }
 
-/// A column of a table's query: its name, and the type its declaration or name declares.
+/// A column of a table's query: its name, and what `getColumnType` reports for the values of
+/// each storage class in it, by the type its declaration or name declares.
 struct Column {
     name: String,
-    declared: Option<String>,
+    reported: [Reported; 5],
+}
+
+impl Column {
+    /// The column of `name` whose declared type is `declared`, if it has one.
+    fn new(name: &str, declared: Option<&str>) -> Self {
+        let declared = declared_type(declared, name).map(|declared| declared_type_name(&declared));
+        let reported = Storage::ALL.map(|storage| {
+            let type_name = declared.as_deref().unwrap_or_else(|| storage.type_name());
+            Reported::new(type_name, storage)
+        });
+        Column {
+            name: name.to_owned(),
+            reported,
+        }
+    }
+
+    /// `getColumnType` of `value`, a value of the column.
+    fn jdbc_type(&self, value: ValueRef<'_>) -> JdbcType {
+        self.reported[Storage::of(value) as usize].of(value)
+    }
+}
+
+/// `new String(bytes, UTF_8)`, as [`java::utf8`] decodes it, borrowed where `bytes` are valid
+/// UTF-8, which it decodes as they are.
+fn utf8(bytes: &[u8]) -> Cow<'_, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => Cow::Borrowed(text),
+        Err(_) => Cow::Owned(java::utf8(bytes)),
+    }
 }
 
 /// `getHeaders`, then the start of the body.
