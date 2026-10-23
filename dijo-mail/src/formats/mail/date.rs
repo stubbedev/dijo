@@ -649,33 +649,34 @@ fn chars_equal(a: char, b: char, case_insensitive: bool) -> bool {
             && (a.to_uppercase().eq(b.to_uppercase()) || a.to_lowercase().eq(b.to_lowercase())))
 }
 
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-
 /// The month names a parse tries, longest first: the full and the short names. Tika also
 /// reads a month's initial, and a number in place of the name (#80).
-fn month_names() -> Vec<(String, i64)> {
-    let mut names: Vec<(String, i64)> = Vec::new();
-    for (index, name) in MONTHS.iter().enumerate() {
-        names.push(((*name).to_owned(), index as i64 + 1));
-    }
-    for (index, name) in MONTHS.iter().enumerate() {
-        names.push((name[..3].to_owned(), index as i64 + 1));
-    }
-    names
-}
+const MONTH_NAMES: [(&str, i64); 24] = [
+    ("January", 1),
+    ("February", 2),
+    ("March", 3),
+    ("April", 4),
+    ("May", 5),
+    ("June", 6),
+    ("July", 7),
+    ("August", 8),
+    ("September", 9),
+    ("October", 10),
+    ("November", 11),
+    ("December", 12),
+    ("Jan", 1),
+    ("Feb", 2),
+    ("Mar", 3),
+    ("Apr", 4),
+    ("May", 5),
+    ("Jun", 6),
+    ("Jul", 7),
+    ("Aug", 8),
+    ("Sep", 9),
+    ("Oct", 10),
+    ("Nov", 11),
+    ("Dec", 12),
+];
 
 const AM_PM_NAMES: [(&str, i64); 4] = [("AM", 0), ("PM", 1), ("a", 0), ("p", 1)];
 
@@ -731,14 +732,7 @@ impl Formatter {
                 Some(&c) if chars_equal(c, literal, self.case_insensitive) => Ok(pos + 1),
                 _ => Err(Stop::Mismatch),
             },
-            MonthText => {
-                let names = month_names();
-                let candidates: Vec<(&str, i64)> = names
-                    .iter()
-                    .map(|(text, value)| (text.as_str(), *value))
-                    .collect();
-                self.parse_text(Month, &candidates, parsed, text, pos)
-            }
+            MonthText => self.parse_text(Month, &MONTH_NAMES, parsed, text, pos),
             Element::AmPmText => self.parse_text(AmPm, &AM_PM_NAMES, parsed, text, pos),
             Optional(elements) => {
                 let saved = parsed.clone();
@@ -1051,6 +1045,36 @@ mod tests {
 
     fn parse(text: &str) -> Option<String> {
         parse_date(text).unwrap().map(MailDate::format)
+    }
+
+    #[test]
+    fn month_names_are_the_full_then_the_short_names() {
+        let months = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ];
+        let mut built: Vec<(String, i64)> = Vec::new();
+        for (index, name) in months.iter().enumerate() {
+            built.push(((*name).to_owned(), index as i64 + 1));
+        }
+        for (index, name) in months.iter().enumerate() {
+            built.push((name[..3].to_owned(), index as i64 + 1));
+        }
+        let table: Vec<(String, i64)> = MONTH_NAMES
+            .iter()
+            .map(|&(name, value)| (name.to_owned(), value))
+            .collect();
+        assert_eq!(table, built);
     }
 
     #[test]
