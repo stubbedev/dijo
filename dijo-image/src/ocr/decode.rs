@@ -17,9 +17,9 @@ use std::io::Cursor;
 
 use image::{DynamicImage, GrayImage, ImageFormat, RgbImage, RgbaImage};
 use tiff::decoder::ifd::Value;
-use tiff::decoder::{Decoder, DecodingResult};
+use tiff::decoder::{Decoder, DecodingSampleType, Limits};
 use tiff::tags::Tag;
-use tiff::ColorType;
+use tiff::{ColorType, TiffError};
 
 use super::bitmap::{cmyk_rgb, Bitmap, Density};
 use super::prepare::Orientation;
@@ -137,10 +137,19 @@ impl TiffPageReader<'_> {
     }
 }
 
+/// The bytes a pixel of the widest page read takes: four samples of 16 bits.
+const MOST_BYTES_A_PIXEL: u64 = 8;
+
+/// A decoder of a TIFF that allocates for a tag's values or a compressed strip no more than
+/// `input` can hold, as both are read from it.
 fn tiff_decoder(input: &[u8]) -> Result<Decoder<Cursor<&[u8]>>, String> {
+    let mut limits = Limits::unlimited();
+    limits.decoding_buffer_size = input.len().saturating_mul(size_of::<Value>());
+    limits.ifd_value_size = input.len();
+    limits.intermediate_buffer_size = input.len();
     Ok(Decoder::new(Cursor::new(input))
         .map_err(|e| format!("cannot read the TIFF: {e}"))?
-        .with_limits(tiff::decoder::Limits::unlimited()))
+        .with_limits(limits))
 }
 
 /// An image file's decoded content.
@@ -450,13 +459,38 @@ fn tiff_page(decoder: &mut Decoder<Cursor<&[u8]>>, most: u64) -> Page {
         ColorType::Palette(_) => Some(colour_map(decoder)?),
         _ => None,
     };
-    let samples = decoder
-        .read_image()
+    let layout = decoder
+        .image_buffer_layout()
         .map_err(|e| format!("cannot decode the page: {e}"))?;
-    let levels = match samples {
-        DecodingResult::U8(bytes) => bytes,
-        DecodingResult::U16(words) => words.iter().map(|&word| (word >> 8) as u8).collect(),
+    let sixteen_bits = match layout.sample_type {
+        Some(DecodingSampleType::U8) => false,
+        Some(DecodingSampleType::U16) => true,
         _ => return Err(format!("cannot read samples of {color:?}")),
+    };
+    let length = if sixteen_bits {
+        layout.len.next_multiple_of(2)
+    } else {
+        layout.len
+    };
+    if length as u64 > u64::from(width) * u64::from(height) * MOST_BYTES_A_PIXEL {
+        return Err(format!(
+            "cannot decode the page: {}",
+            TiffError::LimitsExceeded
+        ));
+    }
+    let mut samples = vec![0; length];
+    decoder
+        .read_image_bytes(&mut samples)
+        .map_err(|e| format!("cannot decode the page: {e}"))?;
+    let levels = if sixteen_bits {
+        samples
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&word| (u16::from_ne_bytes(word) >> 8) as u8)
+            .collect()
+    } else {
+        samples
     };
     let short = || "the page holds fewer samples than its size needs".to_owned();
     let gray = |levels: Vec<u8>| {
@@ -775,5 +809,70 @@ mod tests {
     fn unpacks_bilevel_rows() {
         let samples: Vec<u8> = unpack(&[0b1010_0000, 0b0100_0000], 3, 1).collect();
         assert_eq!(samples, [1, 0, 1, 0, 1, 0]);
+    }
+
+    fn tiff_of(image: DynamicImage) -> Vec<u8> {
+        let mut tiff = Cursor::new(Vec::new());
+        image.write_to(&mut tiff, ImageFormat::Tiff).unwrap();
+        tiff.into_inner()
+    }
+
+    #[test]
+    fn decodes_tiff_pages_of_eight_and_sixteen_bit_samples() {
+        let rgb = RgbImage::from_fn(3, 2, |x, y| image::Rgb([x as u8 * 80, y as u8 * 90, 7]));
+        let Bitmap::Rgb(decoded) =
+            single(&tiff_of(DynamicImage::ImageRgb8(rgb.clone())), Format::Tiff)
+        else {
+            panic!("an RGB page decodes in colour");
+        };
+        assert_eq!(decoded, rgb);
+        let deep = image::ImageBuffer::<image::Luma<u16>, _>::from_fn(5, 3, |x, y| {
+            image::Luma([(x * 13_000 + y * 700) as u16])
+        });
+        let expected = GrayImage::from_fn(5, 3, |x, y| {
+            image::Luma([(deep.get_pixel(x, y).0[0] >> 8) as u8])
+        });
+        let Bitmap::Gray(decoded) = single(&tiff_of(DynamicImage::ImageLuma16(deep)), Format::Tiff)
+        else {
+            panic!("a grey page decodes in grey");
+        };
+        assert_eq!(decoded, expected);
+    }
+
+    /// A directory whose tag claims more values than the whole file holds fails to be read,
+    /// rather than reserving memory for them all.
+    #[test]
+    fn refuses_tags_claiming_more_values_than_the_file_holds() {
+        let directory = |strip_offsets: u32, next: u32| {
+            let entries: [(u16, u16, u32, u32); 8] = [
+                (256, 3, 1, 1),
+                (257, 3, 1, 1),
+                (258, 3, 1, 8),
+                (259, 3, 1, 1),
+                (262, 3, 1, 1),
+                (273, 4, strip_offsets, 8),
+                (278, 3, 1, 1),
+                (279, 4, 1, 1),
+            ];
+            let mut bytes = (entries.len() as u16).to_le_bytes().to_vec();
+            for (tag, kind, count, value) in entries {
+                bytes.extend(tag.to_le_bytes());
+                bytes.extend(kind.to_le_bytes());
+                bytes.extend(count.to_le_bytes());
+                bytes.extend(value.to_le_bytes());
+            }
+            bytes.extend(next.to_le_bytes());
+            bytes
+        };
+        let first = directory(1, 0);
+        let second_at = 8 + first.len() as u32;
+        let mut input = b"II*\0".to_vec();
+        input.extend(8u32.to_le_bytes());
+        input.extend(directory(1, second_at));
+        input.extend(directory(u32::MAX, 0));
+        assert!(matches!(
+            decode(&input, Pages::IN_MEMORY, Format::Tiff, None),
+            Err(Undecoded::Failed(_))
+        ));
     }
 }
