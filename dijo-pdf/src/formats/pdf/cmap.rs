@@ -1,7 +1,7 @@
 //! FontBox's `CMap` and `CMapParser`: the character maps of composite fonts and the
 //! `ToUnicode` maps of all fonts, read as FontBox reads them, and the predefined Identity maps.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::sync::{LazyLock, OnceLock};
 
@@ -119,6 +119,102 @@ impl CidRange {
     }
 }
 
+/// The `CIDRange`s of a map, in the order they were added, and the codes each length's ranges
+/// cover, each with the first range that covers it, worked out when a code is first looked up.
+#[derive(Debug, Clone, Default)]
+struct CidRanges {
+    ranges: Vec<CidRange>,
+    covered: OnceLock<FastMap<usize, Vec<Covered>>>,
+}
+
+/// Codes `from` to `to`, whose first range is `range`.
+#[derive(Debug, Clone)]
+struct Covered {
+    from: u32,
+    to: u32,
+    range: usize,
+}
+
+impl CidRanges {
+    fn is_empty(&self) -> bool {
+        self.ranges.is_empty()
+    }
+
+    /// Adds a range, or extends the last one where the range continues it; whether it was added.
+    fn add(&mut self, from: u32, to: u32, cid: u32, length: usize) -> bool {
+        self.covered = OnceLock::new();
+        let extended = self
+            .ranges
+            .last_mut()
+            .is_some_and(|last| last.extend(from, to, cid, length));
+        if !extended {
+            self.ranges.push(CidRange {
+                from,
+                to,
+                cid,
+                length,
+            });
+        }
+        !extended
+    }
+
+    fn extend(&mut self, other: &CidRanges) {
+        self.covered = OnceLock::new();
+        self.ranges.extend(other.ranges.iter().cloned());
+    }
+
+    /// The CID of `code` of `length` bytes in the first range that holds it.
+    fn map(&self, code: u32, length: usize) -> Option<u32> {
+        let covered = self
+            .covered
+            .get_or_init(|| covered(&self.ranges))
+            .get(&length)?;
+        let at = covered.partition_point(|span| span.to < code);
+        let found = covered.get(at).filter(|span| span.from <= code)?;
+        self.ranges[found.range].map(code, length)
+    }
+}
+
+/// The codes the ranges of each length cover, in order, each with the first range that covers it.
+fn covered(ranges: &[CidRange]) -> FastMap<usize, Vec<Covered>> {
+    let mut bounds: FastMap<usize, Vec<(u64, usize)>> = FastMap::default();
+    for (index, range) in ranges.iter().enumerate() {
+        if range.from <= range.to {
+            let bounds = bounds.entry(range.length).or_default();
+            bounds.push((u64::from(range.from), index));
+            bounds.push((u64::from(range.to) + 1, index));
+        }
+    }
+    bounds
+        .into_iter()
+        .map(|(length, mut bounds)| {
+            bounds.sort_unstable();
+            let mut open = BTreeSet::new();
+            let mut covered: Vec<Covered> = Vec::new();
+            let mut bounds = bounds.into_iter().peekable();
+            while let Some((at, index)) = bounds.next() {
+                if !open.remove(&index) {
+                    open.insert(index);
+                }
+                let (Some(&range), Some(&(next, _))) = (open.first(), bounds.peek()) else {
+                    continue;
+                };
+                if next == at {
+                    continue;
+                }
+                let (from, to) = (at as u32, (next - 1) as u32);
+                match covered.last_mut() {
+                    Some(last) if last.range == range && u64::from(last.to) + 1 == at => {
+                        last.to = to
+                    }
+                    _ => covered.push(Covered { from, to, range }),
+                }
+            }
+            (length, covered)
+        })
+        .collect()
+}
+
 /// FontBox's `CMap`.
 #[derive(Debug, Clone)]
 pub(super) struct CMap {
@@ -138,7 +234,7 @@ pub(super) struct CMap {
     /// `unicodeToByteCodes`: the code of each text, the last mapped to it.
     unicode_to_codes: FastMap<String, Vec<u8>>,
     code_to_cid: FastMap<usize, FastMap<u32, u32>>,
-    cid_ranges: Vec<CidRange>,
+    cid_ranges: CidRanges,
     space_mapping: i64,
 }
 
@@ -160,7 +256,7 @@ impl CMap {
             more_bytes: FastMap::default(),
             unicode_to_codes: FastMap::default(),
             code_to_cid: FastMap::default(),
-            cid_ranges: Vec::new(),
+            cid_ranges: CidRanges::default(),
             space_mapping: -1,
         }
     }
@@ -262,10 +358,7 @@ impl CMap {
         if let Some(cid) = self.code_to_cid.get(&length).and_then(|map| map.get(&code)) {
             return *cid;
         }
-        self.cid_ranges
-            .iter()
-            .find_map(|range| range.map(code, length))
-            .unwrap_or(0)
+        self.cid_ranges.map(code, length).unwrap_or(0)
     }
 
     fn add_char_mapping(&mut self, codes: &[u8], unicode: String) {
@@ -294,18 +387,8 @@ impl CMap {
     }
 
     fn add_cid_range(&mut self, from: &[u8], to: &[u8], cid: u32) {
-        let (start, end, length) = (to_int(from), to_int(to), from.len());
-        let extended = self
-            .cid_ranges
-            .last_mut()
-            .is_some_and(|last| last.extend(start, end, cid, length));
-        if !extended {
-            self.cid_ranges.push(CidRange {
-                from: start,
-                to: end,
-                cid,
-                length,
-            });
+        let length = from.len();
+        if self.cid_ranges.add(to_int(from), to_int(to), cid, length) {
             self.min_cid_length = self.min_cid_length.min(length);
             self.max_cid_length = self.max_cid_length.max(length);
         }
@@ -343,7 +426,7 @@ impl CMap {
                 .or_default()
                 .extend(map.iter().map(|(&k, &v)| (k, v)));
         }
-        self.cid_ranges.extend(other.cid_ranges.iter().cloned());
+        self.cid_ranges.extend(&other.cid_ranges);
         self.max_code_length = self.max_code_length.max(other.max_code_length);
         self.min_code_length = self.min_code_length.min(other.min_code_length);
         self.max_cid_length = self.max_cid_length.max(other.max_cid_length);
@@ -1045,6 +1128,65 @@ endcmap CMapName currentdict /CMap defineresource pop end end";
                     "{bytes:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn finds_a_code_in_the_first_range_that_holds_it_as_a_scan_of_them_does() {
+        let added: [(u32, u32, u32, usize); 14] = [
+            (0x10, 0x1F, 100, 1),
+            (0x20, 0x2F, 116, 1),
+            (0x18, 0x40, 500, 1),
+            (0x00, 0xFF, 7, 2),
+            (0x30, 0x30, 900, 1),
+            (0x50, 0x40, 1, 1),
+            (0x8140, 0x817E, 633, 2),
+            (0x8100, 0x81FF, 0, 2),
+            (0x8180, 0x81AC, 696, 2),
+            (0xFFFF_FF00, u32::MAX, 3, 4),
+            (0, 0xFF, 0xFFFF_FFF0, 4),
+            (0x15, 0x16, 42, 1),
+            (0x41, 0x60, 1000, 1),
+            (0x61, 0x70, 1032, 1),
+        ];
+        let mut ranges = CidRanges::default();
+        for (from, to, cid, length) in added {
+            ranges.add(from, to, cid, length);
+        }
+        assert_eq!(ranges.ranges.len(), 12);
+        let mut used = CidRanges::default();
+        used.add(0x1F, 0x22, 2000, 1);
+        used.add(0x8000, 0x8200, 3000, 2);
+        used.add(0x71, 0x71, 4000, 1);
+        let mut codes: Vec<u32> = vec![u32::MAX, u32::MAX - 1, 0xFFFF_FEFF];
+        let bounds = added
+            .iter()
+            .map(|&(from, to, _, _)| (from, to))
+            .chain(used.ranges.iter().map(|range| (range.from, range.to)));
+        for (from, to) in bounds {
+            for code in [from, to] {
+                codes.extend([code.wrapping_sub(1), code, code.wrapping_add(1)]);
+            }
+        }
+        codes.extend((0..0x200).chain(0x8000..0x8300));
+        let scanned = |ranges: &CidRanges, code: u32, length: usize| {
+            ranges
+                .ranges
+                .iter()
+                .find_map(|range| range.map(code, length))
+        };
+        for step in 0..2 {
+            for &code in &codes {
+                for length in 0..=5 {
+                    assert_eq!(
+                        ranges.map(code, length),
+                        scanned(&ranges, code, length),
+                        "{step}: {code:#X} of {length} bytes"
+                    );
+                }
+            }
+            ranges.extend(&used);
+            ranges.add(0x05, 0x12, 5000, 1);
         }
     }
 
