@@ -129,7 +129,7 @@ impl<'a> SharedStringReader<'a> {
         };
         self.next = None;
         while next < index {
-            read_unicode_string(&mut self.stream)?;
+            skip_unicode_string(&mut self.stream)?;
             next += 1;
         }
         let string = read_unicode_string(&mut self.stream)?;
@@ -225,7 +225,7 @@ pub(super) enum Record {
 pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
     let sid = stream.sid();
     if !PARSEABLE.contains(&sid) {
-        stream.read_remainder()?;
+        stream.skip_remainder()?;
         return Ok(Record::Unknown);
     }
     Ok(match sid {
@@ -234,14 +234,14 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
             let kind = stream.read_i16()?;
             for size in [2, 2, 4, 4] {
                 if stream.remaining() >= size {
-                    stream.read_fully(size as usize)?;
+                    stream.skip_fully(size as usize)?;
                 }
             }
             Record::Bof { kind }
         }
         sid::EOF => Record::Eof,
         sid::BOUND_SHEET => {
-            stream.read_fully(4)?;
+            stream.skip_fully(4)?;
             let flags = stream.read_u16()?;
             let length = i32::from(stream.read_u8()?);
             let multibyte = stream.read_u8()? & 1 != 0;
@@ -287,7 +287,7 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
                 Vec::new()
             };
             if stream.remaining() > 0 {
-                stream.read_remainder()?;
+                stream.skip_remainder()?;
             }
             Record::Label {
                 cell: CellRef { row, column, xf },
@@ -350,7 +350,7 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
         }
         sid::DRAWING_GROUP => {
             let start = stream.record_start();
-            stream.read_remainder()?;
+            stream.skip_remainder()?;
             Record::DrawingGroup(start)
         }
         sid::DRAWING => Record::Drawing(stream.read_remainder()?),
@@ -395,7 +395,7 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
         sid::HEADER => Record::Header(read_header_footer(stream)?),
         sid::FOOTER => Record::Footer(read_header_footer(stream)?),
         sid::OBJ => {
-            stream.read_remainder()?;
+            stream.skip_remainder()?;
             Record::Obj
         }
         sid::FILE_PASS => Record::FilePass(stream.read_fully(stream.remaining() as usize)?),
@@ -413,7 +413,7 @@ pub(super) fn read_record(stream: &mut RecordStream<'_>) -> Read<Record> {
             Record::DbCell
         }
         _ => {
-            stream.read_remainder()?;
+            stream.skip_remainder()?;
             Record::Other
         }
     })
@@ -435,7 +435,7 @@ pub(super) fn read_formula(stream: &mut RecordStream<'_>) -> Read<(CellRef, Cach
     stream.read_i32()?;
     stream.read_i16()?;
     let available = stream.remaining();
-    stream.read_fully(available.max(0) as usize)?;
+    stream.skip_fully(available.max(0) as usize)?;
     Ok((cell, cached))
 }
 
@@ -516,7 +516,7 @@ fn read_shared_strings(stream: &mut RecordStream<'_>) -> Read<SharedStrings> {
         if index % STRINGS_PER_MARK == 0 {
             strings.marks.push(stream.mark());
         }
-        read_unicode_string(stream)?;
+        skip_unicode_string(stream)?;
         strings.count += 1;
     }
     Ok(strings)
@@ -524,36 +524,54 @@ fn read_shared_strings(stream: &mut RecordStream<'_>) -> Read<SharedStrings> {
 
 /// `UnicodeString(RecordInputStream)`.
 fn read_unicode_string(stream: &mut RecordStream<'_>) -> Read<SharedString> {
-    let count = i32::from(stream.read_u16()?);
-    let flags = stream.read_u8()?;
-    let rich = flags & 0x8 != 0;
-    let extended = flags & 0x4 != 0;
-    let runs = if rich { stream.read_i16()? } else { 0 };
-    let extension = if extended { stream.read_i32()? } else { 0 };
-    let text = if flags & 1 == 0 {
-        stream.read_compressed(count)?
-    } else {
-        stream.read_unicode(count)?
-    };
-    if rich {
-        for _ in 0..runs.max(0) {
-            stream.read_i16()?;
-            stream.read_i16()?;
-        }
-    }
-    let phonetic = if extended && extension > 0 {
-        read_phonetic(stream, extension)?
-    } else {
-        None
-    };
+    let mut text = Vec::new();
+    let phonetic = unicode_string(stream, Some(&mut text))?;
     Ok(SharedString {
         text: java_string(&text),
         phonetic,
     })
 }
 
-/// `ExtRst`: the phonetic text, `None` where POI makes the extension empty.
-fn read_phonetic(stream: &mut RecordStream<'_>, expected: i32) -> Read<Option<String>> {
+/// [`read_unicode_string`], the string passed over.
+fn skip_unicode_string(stream: &mut RecordStream<'_>) -> Read<()> {
+    unicode_string(stream, None).map(drop)
+}
+
+/// What `UnicodeString(RecordInputStream)` reads: the characters, into `text` where it is
+/// given, else passed over, and the phonetic text, kept where the characters are.
+fn unicode_string(
+    stream: &mut RecordStream<'_>,
+    text: Option<&mut Vec<u16>>,
+) -> Read<Option<String>> {
+    let count = i32::from(stream.read_u16()?);
+    let flags = stream.read_u8()?;
+    let rich = flags & 0x8 != 0;
+    let extended = flags & 0x4 != 0;
+    let runs = if rich { stream.read_i16()? } else { 0 };
+    let extension = if extended { stream.read_i32()? } else { 0 };
+    let compressed = flags & 1 == 0;
+    let keep = text.is_some();
+    match text {
+        Some(text) if compressed => *text = stream.read_compressed(count)?,
+        Some(text) => *text = stream.read_unicode(count)?,
+        None => stream.skip_string(count, compressed)?,
+    }
+    if rich {
+        for _ in 0..runs.max(0) {
+            stream.read_i16()?;
+            stream.read_i16()?;
+        }
+    }
+    if extended && extension > 0 {
+        read_phonetic(stream, extension, keep)
+    } else {
+        Ok(None)
+    }
+}
+
+/// `ExtRst`: the phonetic text, `None` where POI makes the extension empty, and empty where it
+/// is passed over rather than kept.
+fn read_phonetic(stream: &mut RecordStream<'_>, expected: i32, keep: bool) -> Read<Option<String>> {
     let reserved = stream.read_i16()?;
     if reserved == -1 {
         return Ok(Some(String::new()));
@@ -581,10 +599,13 @@ fn read_phonetic(stream: &mut RecordStream<'_>, expected: i32) -> Read<Option<St
     }
     let bytes = i64::from(first) * 2;
     safely_allocate_check(bytes, MAX_STRING_LENGTH)?;
-    let raw = stream.read_fully(bytes as usize)?;
-    let units: Vec<u16> = utf16_le(&raw);
-    let phonetic = java_string(&units);
-    let run_data = i32::from(size) - 4 - 6 - 2 * units.len() as i32;
+    let phonetic = if keep {
+        java_string(&utf16_le(&stream.read_fully(bytes as usize)?))
+    } else {
+        stream.skip_fully(bytes as usize)?;
+        String::new()
+    };
+    let run_data = i32::from(size) - 4 - 6 - 2 * i32::from(first);
     let runs = run_data / 6;
     for _ in 0..runs.max(0) {
         for _ in 0..3 {
@@ -626,7 +647,7 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
     stream.read_u16()?;
     let first_column = i32::from(stream.read_u16()?);
     stream.read_u16()?;
-    stream.read_fully(16)?;
+    stream.skip_fully(16)?;
     let version = stream.read_i32()?;
     if version != 2 {
         return record_format(format!("Stream Version must be 0x2 but found {version}"));
@@ -634,11 +655,11 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
     let options = stream.read_i32()?;
     if options & LINK_LABEL != 0 {
         let length = stream.read_i32()?;
-        stream.read_unicode(length)?;
+        stream.skip_string(length, false)?;
     }
     if options & LINK_TARGET_FRAME != 0 {
         let length = stream.read_i32()?;
-        stream.read_unicode(length)?;
+        stream.skip_string(length, false)?;
     }
     let mut address = None;
     let mut short_file_name = None;
@@ -658,7 +679,7 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
                 address = Some(java_string(&stream.read_unicode(length / 2)?));
             } else {
                 address = Some(java_string(&stream.read_unicode((length - TAIL_SIZE) / 2)?));
-                stream.read_fully(TAIL_SIZE as usize)?;
+                stream.skip_fully(TAIL_SIZE as usize)?;
             }
         } else if moniker == FILE_MONIKER {
             file_moniker = true;
@@ -672,7 +693,7 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
                     .map(|&byte| char::from(byte))
                     .collect::<String>(),
             );
-            stream.read_fully(TAIL_SIZE as usize)?;
+            stream.skip_fully(TAIL_SIZE as usize)?;
             let size = stream.read_i32()?;
             if size > 0 {
                 let characters = stream.read_i32()? / 2;
@@ -696,7 +717,7 @@ fn read_hyperlink(stream: &mut RecordStream<'_>) -> Read<Record> {
         text_mark = Some(java_string(&stream.read_unicode(length)?));
     }
     if stream.remaining() > 0 {
-        stream.read_remainder()?;
+        stream.skip_remainder()?;
     }
     let chosen = if options & LINK_URL != 0 && file_moniker {
         address.or(short_file_name)
@@ -1136,6 +1157,64 @@ mod tests {
                 phonetic: Some("y".to_owned())
             }
         );
+    }
+
+    #[test]
+    fn passes_over_strings_and_tails_as_they_are_read() {
+        let mut phonetic = vec![1, 0, 0x4];
+        phonetic.extend(18i32.to_le_bytes());
+        phonetic.push(b'x');
+        phonetic.extend([1, 0, 12, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, b'y', 0]);
+        let mut disagreeing = phonetic.clone();
+        disagreeing[19] = 2;
+        let mut reserved = vec![1, 0, 0x4];
+        reserved.extend(6i32.to_le_bytes());
+        reserved.extend([b'x', 7, 0, 1, 2, 3, 4]);
+        let wide_rich = vec![2, 0, 0x9, 1, 0, b'a', 0, b'b', 0, 0, 0, 0, 0];
+        let mut continued = record(sid::SST, &[3, 0, 0, b'a']);
+        continued.extend(record(sid::CONTINUE, &[1, b'b', 0, b'c', 0]));
+        let mut truncated = record(sid::SST, &[9, 0, 1, b'a', 0]);
+        truncated[2] = 40;
+        let mut tail = record(sid::OBJ, &[1, 2, 3]);
+        tail.extend(record(sid::CONTINUE, &[4, 5]));
+        let streams = [
+            record(sid::SST, &[2, 0, 0, b'h', b'i']),
+            record(sid::SST, &phonetic),
+            record(sid::SST, &disagreeing),
+            record(sid::SST, &reserved),
+            record(sid::SST, &wide_rich),
+            record(sid::SST, &[2, 0, 0, b'h']),
+            continued,
+            truncated,
+            tail,
+            record(sid::OBJ, &[]),
+        ];
+        for bytes in &streams {
+            let mut read = RecordStream::new(bytes);
+            read.has_next_record().unwrap();
+            read.next_record().unwrap();
+            let mut skipped = read.clone();
+            assert_eq!(
+                read_unicode_string(&mut read).map(drop),
+                skip_unicode_string(&mut skipped)
+            );
+            assert_eq!(read.position(), skipped.position());
+            assert_eq!(read.remaining(), skipped.remaining());
+            for length in 0..8 {
+                let mut read = RecordStream::new(bytes);
+                read.has_next_record().unwrap();
+                read.next_record().unwrap();
+                let mut skipped = read.clone();
+                assert_eq!(
+                    read.read_fully(length).map(drop),
+                    skipped.skip_fully(length)
+                );
+                assert_eq!(read.position(), skipped.position());
+                assert_eq!(read.read_remainder().map(drop), skipped.skip_remainder());
+                assert_eq!(read.position(), skipped.position());
+                assert_eq!(read.remaining(), skipped.remaining());
+            }
+        }
     }
 
     #[test]

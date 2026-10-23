@@ -288,6 +288,16 @@ impl<'a> RecordStream<'a> {
     /// `readFully`: bytes read on into the following records.
     pub(super) fn read_fully(&mut self, length: usize) -> Read<Vec<u8>> {
         let mut bytes = Vec::with_capacity(length);
+        self.read_fully_with(length, |chunk| bytes.extend_from_slice(chunk))?;
+        Ok(bytes)
+    }
+
+    /// [`RecordStream::read_fully`], the bytes passed over.
+    pub(super) fn skip_fully(&mut self, length: usize) -> Read<()> {
+        self.read_fully_with(length, |_| {})
+    }
+
+    fn read_fully_with(&mut self, length: usize, mut read: impl FnMut(&[u8])) -> Read<()> {
         let mut left = length as i64;
         while left > 0 {
             let mut chunk = self.remaining().min(left);
@@ -309,10 +319,10 @@ impl<'a> RecordStream<'a> {
                 }
             }
             self.check_record_position(chunk)?;
-            bytes.extend_from_slice(self.take(chunk as usize)?);
+            read(self.take(chunk as usize)?);
             left -= chunk;
         }
-        Ok(bytes)
+        Ok(())
     }
 
     /// `readCompressedUnicode`.
@@ -325,17 +335,42 @@ impl<'a> RecordStream<'a> {
         self.read_string(length, false)
     }
 
-    /// `readStringCommon`: the characters, read on into `CONTINUE` records, each of which
-    /// starts with a byte saying whether its characters are compressed.
     fn read_string(&mut self, length: i32, compressed: bool) -> Read<Vec<u16>> {
-        if !(0..=0x10_0000).contains(&length) {
-            return Err(Thrown::runtime(
-                ILLEGAL_ARGUMENT,
-                format!("Bad requested string length ({length})"),
-            ));
-        }
-        let length = length as usize;
+        let length = string_length(length)?;
         let mut units = Vec::with_capacity(length);
+        self.read_string_with(length, compressed, |bytes, compressed| {
+            if compressed {
+                units.extend(bytes.iter().map(|&byte| u16::from(byte)));
+            } else {
+                units.extend(
+                    bytes
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|&pair| u16::from_le_bytes(pair)),
+                );
+            }
+        })?;
+        Ok(units)
+    }
+
+    /// [`RecordStream::read_compressed`] or [`RecordStream::read_unicode`], the characters
+    /// passed over.
+    pub(super) fn skip_string(&mut self, length: i32, compressed: bool) -> Read<()> {
+        let length = string_length(length)?;
+        self.read_string_with(length, compressed, |_, _| {})
+    }
+
+    /// `readStringCommon`: the bytes of `length` characters, read on into `CONTINUE` records,
+    /// each of which starts with a byte saying whether its characters are compressed, passed
+    /// to `read` with whether they are.
+    fn read_string_with(
+        &mut self,
+        length: usize,
+        compressed: bool,
+        mut read: impl FnMut(&[u8], bool),
+    ) -> Read<()> {
+        let mut done = 0;
         let mut compressed = compressed;
         loop {
             let available = if compressed {
@@ -343,30 +378,26 @@ impl<'a> RecordStream<'a> {
             } else {
                 self.remaining() / 2
             };
-            let wanted = (length - units.len()) as i64;
+            let wanted = (length - done) as i64;
             let take = if wanted <= available {
                 wanted
             } else {
                 available
             };
             let count = take.max(0) as usize;
-            if compressed {
-                units.extend(self.take_units(count, 1)?.iter().map(|&byte| u16::from(byte)));
-            } else {
-                units.extend(
-                    self.take_units(count, 2)?
-                        .chunks_exact(2)
-                        .map(|pair| u16::from_le_bytes([pair[0], pair[1]])),
-                );
-            }
+            read(
+                self.take_units(count, if compressed { 1 } else { 2 })?,
+                compressed,
+            );
+            done += count;
             if wanted <= available {
-                return Ok(units);
+                return Ok(());
             }
             if !self.is_continue_next()? {
                 return record_format(format!(
                     "Expected to find a ContinueRecord in order to read remaining {} of {length} \
                      chars",
-                    length - units.len()
+                    length - done
                 ));
             }
             if self.remaining() != 0 {
@@ -403,13 +434,35 @@ impl<'a> RecordStream<'a> {
 
     /// `readRemainder`: the rest of the record.
     pub(super) fn read_remainder(&mut self) -> Read<Vec<u8>> {
+        let size = self.remainder_size()?;
+        self.read_fully(size)
+    }
+
+    /// [`RecordStream::read_remainder`], the bytes passed over.
+    pub(super) fn skip_remainder(&mut self) -> Read<()> {
+        let size = self.remainder_size()?;
+        self.skip_fully(size)
+    }
+
+    fn remainder_size(&self) -> Read<usize> {
         let size = self.remaining();
         if size == 0 {
-            return Ok(Vec::new());
+            return Ok(0);
         }
         safely_allocate_check(size, MAX_RECORD_LENGTH)?;
-        self.read_fully(size as usize)
+        Ok(size as usize)
     }
+}
+
+/// `readStringCommon`'s check of the length of a string.
+fn string_length(length: i32) -> Read<usize> {
+    if !(0..=0x10_0000).contains(&length) {
+        return Err(Thrown::runtime(
+            ILLEGAL_ARGUMENT,
+            format!("Bad requested string length ({length})"),
+        ));
+    }
+    Ok(length as usize)
 }
 
 /// A Java string of UTF-16 units, unpaired surrogates replaced.
