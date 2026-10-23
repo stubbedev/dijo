@@ -282,6 +282,14 @@ fn text(value: Option<&Value>, data_type: DataType) -> Result<String, Thrown> {
     })
 }
 
+fn owned_text(value: Option<Value>, data_type: DataType) -> Result<String, Thrown> {
+    match (data_type, value) {
+        (DataType::Text | DataType::Memo, Some(Value::Text(v)))
+        | (DataType::Guid, Some(Value::Guid(v))) => Ok(v),
+        (data_type, value) => text(value.as_ref(), data_type),
+    }
+}
+
 /// A currency amount, kept in ten-thousandths: exactly, with at least two decimals.
 fn money(ten_thousandths: i64) -> String {
     let mut amount = Decimal {
@@ -541,18 +549,18 @@ fn table_rows<E>(
     )?;
     let mut rich: Option<Vec<bool>> = None;
     for row in table.rows(&database.pages, vec![true; columns.len()]) {
-        let row = row?;
+        let mut row = row?;
         let rich = match &rich {
             Some(rich) => rich,
             None => rich.insert(rich_text_columns(database, table, page)?),
         };
         let mut cells = Vec::with_capacity(columns.len());
         for (index, column) in columns.iter().enumerate() {
-            let value = row[index].as_ref();
+            let value = row[index].take();
             cells.push(match column.data_type {
                 DataType::Ole => match value {
                     None => Cell::Text(String::new()),
-                    Some(Value::Binary(bytes)) => match ole::read(bytes, configs) {
+                    Some(Value::Binary(bytes)) => match ole::read(&bytes, configs) {
                         Ok(Ole::Nothing) => Cell::Text(String::new()),
                         Ok(Ole::Link(path)) => Cell::Text(path),
                         Ok(Ole::Resource(document)) => Cell::Resource(document),
@@ -582,7 +590,7 @@ fn table_rows<E>(
                 DataType::Binary => match value {
                     None => Cell::Text(String::new()),
                     Some(Value::Binary(bytes)) => {
-                        Cell::Resource(Embedded::owned(bytes.clone(), TikaMetadata::new()))
+                        Cell::Resource(Embedded::owned(bytes, TikaMetadata::new()))
                     }
                     Some(other) => {
                         return Err(
@@ -591,7 +599,7 @@ fn table_rows<E>(
                     }
                 },
                 data_type => {
-                    let text = text(value, data_type)?;
+                    let text = owned_text(value, data_type)?;
                     if rich[index] {
                         let (text, read_otherwise) = rich_text(&text, configs);
                         difference = difference.or(read_otherwise);

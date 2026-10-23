@@ -704,3 +704,44 @@ fn extracts_databases_too_large_to_read_whole_in_bounded_memory() {
     );
     assert_eq!(metadata["Content-Type"], ["application/x-msaccess"]);
 }
+
+/// Compressed Unicode text decodes each byte of its compressed runs as the UTF-16LE unit it
+/// expands to.
+#[test]
+fn decodes_compressed_text_as_its_expansion() {
+    use format::Charset;
+
+    let expanded = |data: &[u8]| {
+        let mut text = String::new();
+        for (run, bytes) in data[2..].split(|&byte| byte == 0).enumerate() {
+            if run % 2 == 0 {
+                let units: Vec<u8> = bytes.iter().flat_map(|&byte| [byte, 0]).collect();
+                text.push_str(&Charset::Unicode.decode(&units));
+            } else {
+                text.push_str(&Charset::Unicode.decode(bytes));
+            }
+        }
+        text
+    };
+    let all: Vec<u8> = (1..=255).collect();
+    let inputs: [&[u8]; 9] = [
+        &[0xFF, 0xFE],
+        &[0xFF, 0xFE, b'a', b'b', b'c'],
+        &[0xFF, 0xFE, 0x80, 0xE9, 0xFF, 0xFE, 0x7F],
+        &[0xFF, 0xFE, b'a', 0, 0x3A, 0x04, 0x30, 0x04, 0, b'z'],
+        &[0xFF, 0xFE, 0, 0x3D, 0xD8, 0x00, 0xDE, 0, 0xFC],
+        &[0xFF, 0xFE, b'x', 0, 0x41, 0, b'y'],
+        &[0xFF, 0xFE, 0, 0, 0, b'q', 0],
+        &[0xFF, 0xFE, b'a', 0, 0x00, 0xD8, 0, b'b'],
+        &[0xFF, 0xFE, 0xA0, 0xC0, 0xFF],
+    ];
+    let mut with_all = vec![0xFF, 0xFE];
+    with_all.extend_from_slice(&all);
+    for data in inputs.into_iter().chain([with_all.as_slice()]) {
+        assert_eq!(
+            column::decode_text(data, Charset::Unicode),
+            expanded(data),
+            "{data:?}"
+        );
+    }
+}

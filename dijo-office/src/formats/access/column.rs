@@ -521,8 +521,7 @@ pub(super) fn decode_text(data: &[u8], charset: Charset) -> String {
             return;
         }
         if compressed {
-            let expanded: Vec<u8> = bytes.iter().flat_map(|&byte| [byte, 0]).collect();
-            text.push_str(&charset.decode(&expanded));
+            text.extend(bytes.iter().map(|&byte| char::from(byte)));
         } else {
             text.push_str(&charset.decode(bytes));
         }
