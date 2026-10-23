@@ -4,6 +4,7 @@
 //! Java keeps it, since tesseract reads the colours of the image it is handed in its own grey.
 
 use std::borrow::Cow;
+use std::sync::OnceLock;
 
 use image::{GrayImage, ImageBuffer, ImageEncoder, Luma, Pixel, Rgb, RgbImage, RgbaImage};
 
@@ -193,8 +194,9 @@ impl Bitmap {
     }
 
     /// The image as tesseract reads the PNG Java writes of it: its grey levels or colours, and an
-    /// image with alpha as a PNG, whose transparency tesseract lays over white.
-    pub(crate) fn pixels(&self) -> Pixels<'_> {
+    /// image with alpha as a PNG, whose transparency tesseract lays over white, encoded into
+    /// `png` unless it already holds it.
+    pub(crate) fn pixels<'a>(&'a self, png: &'a OnceLock<Vec<u8>>) -> Pixels<'a> {
         match self {
             Self::Gray(image) => Pixels::Gray {
                 data: image.as_raw(),
@@ -207,17 +209,20 @@ impl Bitmap {
                 height: image.height(),
             },
             Self::Rgba(image) => {
-                let mut png = Vec::new();
-                image::codecs::png::PngEncoder::new(&mut png)
-                    .write_image(
-                        image.as_raw(),
-                        image.width(),
-                        image.height(),
-                        image::ExtendedColorType::Rgba8,
-                    )
-                    .expect("an image in memory encodes as PNG");
+                let png = png.get_or_init(|| {
+                    let mut png = Vec::new();
+                    image::codecs::png::PngEncoder::new(&mut png)
+                        .write_image(
+                            image.as_raw(),
+                            image.width(),
+                            image.height(),
+                            image::ExtendedColorType::Rgba8,
+                        )
+                        .expect("an image in memory encodes as PNG");
+                    png
+                });
                 Pixels::Encoded {
-                    data: png.into(),
+                    data: png.as_slice().into(),
                     width: image.width(),
                     height: image.height(),
                 }
@@ -588,6 +593,42 @@ mod tests {
         assert_eq!(samples(&image), buffer);
         let rgb = RgbImage::from_raw(2, 2, (0..13).collect()).unwrap();
         assert_eq!(samples(&rgb), &(0..12).collect::<Vec<u8>>()[..]);
+    }
+
+    #[test]
+    fn encodes_an_image_with_alpha_once() {
+        let image = RgbaImage::from_fn(5, 3, |x, y| {
+            image::Rgba([byte(x, y, 0), byte(x, y, 1), byte(x, y, 2), byte(x, y, 3)])
+        });
+        let mut expected = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut expected)
+            .write_image(image.as_raw(), 5, 3, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let bitmap = Bitmap::Rgba(image);
+        let png = OnceLock::new();
+        for _ in 0..2 {
+            let Pixels::Encoded {
+                data,
+                width,
+                height,
+            } = bitmap.pixels(&png)
+            else {
+                panic!("an image with alpha is handed to tesseract as a PNG");
+            };
+            assert_eq!((width, height), (5, 3));
+            assert_eq!(*data, expected[..]);
+        }
+        assert_eq!(png.get(), Some(&expected));
+        let gray = OnceLock::new();
+        assert!(matches!(
+            numbered(3, 2).pixels(&gray),
+            Pixels::Gray {
+                width: 3,
+                height: 2,
+                ..
+            }
+        ));
+        assert!(gray.get().is_none());
     }
 
     #[test]

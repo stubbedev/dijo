@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use image::GrayImage;
@@ -151,6 +151,7 @@ pub struct Image<'a> {
     pub(crate) orientation: Option<Orientation>,
     /// Its pixels to the inch, as its file records them or as it was rendered.
     pub(crate) density: Option<Density>,
+    png: OnceLock<Vec<u8>>,
 }
 
 impl<'a> Image<'a> {
@@ -171,6 +172,7 @@ impl<'a> Image<'a> {
             file_size,
             orientation,
             density,
+            png: OnceLock::new(),
         }
     }
 }
@@ -342,6 +344,7 @@ struct Prepared {
     quarter_turns: u8,
     skew_degrees: f64,
     scale: f64,
+    png: OnceLock<Vec<u8>>,
 }
 
 impl Prepared {
@@ -361,6 +364,7 @@ impl Prepared {
             quarter_turns: 0,
             skew_degrees: 0.0,
             scale: 1.0,
+            png: OnceLock::new(),
         }
     }
 
@@ -525,6 +529,7 @@ impl<'t> Recognizer<'t> {
     ) -> Result<Recognized, OcrError> {
         let mut recognized = self.recognize_preparing(image, assumed)?;
         recognized.read.prepared.image = None;
+        recognized.read.prepared.png = OnceLock::new();
         Ok(recognized)
     }
 
@@ -881,9 +886,9 @@ impl<'t> Recognizer<'t> {
 
 /// The image as tesseract reads it: prepared, or else its file, as Java hands tesseract the
 /// file of an image it does not decode for it, or else its pixels.
-fn pixels_of<'a>(image: &Image<'a>, prepared: &'a Prepared) -> Pixels<'a> {
+fn pixels_of<'a>(image: &'a Image<'a>, prepared: &'a Prepared) -> Pixels<'a> {
     match (&prepared.image, image.file) {
-        (Some(prepared), _) => prepared.pixels(),
+        (Some(made), _) => made.pixels(&prepared.png),
         (None, Some(file)) => {
             let (width, height) = image.bitmap.dimensions();
             Pixels::Encoded {
@@ -892,7 +897,7 @@ fn pixels_of<'a>(image: &Image<'a>, prepared: &'a Prepared) -> Pixels<'a> {
                 height,
             }
         }
-        (None, None) => image.bitmap.pixels(),
+        (None, None) => image.bitmap.pixels(&image.png),
     }
 }
 
@@ -1000,6 +1005,7 @@ fn finish(
         quarter_turns,
         skew_degrees: unscaled.skew_degrees,
         scale,
+        png: OnceLock::new(),
     }
 }
 
