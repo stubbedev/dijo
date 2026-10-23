@@ -128,7 +128,7 @@ struct Header {
 }
 
 /// A record of the table: whether its mark deletes it, and its cells.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Record<'a> {
     deleted: bool,
     cells: Vec<&'a [u8]>,
@@ -136,8 +136,9 @@ struct Record<'a> {
 
 /// What reading the next record finds.
 #[derive(Debug)]
-enum Next<'a> {
-    Record(Record<'a>),
+enum Next {
+    /// A record, read into the one given.
+    Record,
     /// No more records.
     End,
     /// The exception that ends the records.
@@ -318,9 +319,9 @@ fn header(stream: &mut Stream<'_>) -> Result<Header, String> {
     })
 }
 
-/// `DBFReader.nextRecord`: the next record, read from `stream` past the header.
-fn next_record<'a>(stream: &mut Stream<'a>, columns: &[Column]) -> Next<'a> {
-    let deleted = match stream.read() {
+/// `DBFReader.nextRecord`: the next record, read from `stream` past the header into `record`.
+fn next_record<'a>(stream: &mut Stream<'a>, columns: &[Column], record: &mut Record<'a>) -> Next {
+    record.deleted = match stream.read() {
         Some(mark @ (b' ' | DELETED)) => mark == DELETED,
         None | Some(26) => return Next::End,
         Some(other) => {
@@ -329,14 +330,14 @@ fn next_record<'a>(stream: &mut Stream<'a>, columns: &[Column]) -> Next<'a> {
             ));
         }
     };
-    let cells: Vec<&[u8]> = columns
-        .iter()
-        .map(|column| stream.some(column.length))
-        .collect();
-    if cells.iter().all(|cell| cell.is_empty()) {
+    record.cells.clear();
+    record
+        .cells
+        .extend(columns.iter().map(|column| stream.some(column.length)));
+    if record.cells.iter().all(|cell| cell.is_empty()) {
         return Next::End;
     }
-    Next::Record(Record { deleted, cells })
+    Next::Record
 }
 
 /// The code page the header names, or, as `getCharset` gives it, the charset detected from the
@@ -426,8 +427,9 @@ fn write(header: &Header, mut stream: Stream<'_>, xhtml: &mut Xhtml) -> Result<(
     let mut first = Vec::with_capacity(ROWS_FOR_DETECTION + 1);
     let mut ended = false;
     while first.len() <= ROWS_FOR_DETECTION {
-        match next_record(&mut stream, &header.columns) {
-            Next::Record(record) => first.push(record),
+        let mut record = Record::default();
+        match next_record(&mut stream, &header.columns, &mut record) {
+            Next::Record => first.push(record),
             Next::End => {
                 ended = true;
                 break;
@@ -452,9 +454,10 @@ fn write(header: &Header, mut stream: Stream<'_>, xhtml: &mut Xhtml) -> Result<(
         write_record(record, &header.columns, decode_as, xhtml)?;
     }
     drop(first);
+    let mut record = Record::default();
     while !ended {
-        match next_record(&mut stream, &header.columns) {
-            Next::Record(record) => write_record(&record, &header.columns, decode_as, xhtml)?,
+        match next_record(&mut stream, &header.columns, &mut record) {
+            Next::Record => write_record(&record, &header.columns, decode_as, xhtml)?,
             Next::End => ended = true,
             Next::Thrown(thrown) => return Err(Failure::Malformed(thrown)),
         }
@@ -476,14 +479,27 @@ fn write_record(
     }
     xhtml.start_element("tr")?;
     for (cell, column) in record.cells.iter().zip(columns) {
-        let text = match column.kind {
-            Kind::Character => java::trim(&decode(decode_as, cell)?).to_owned(),
-            Kind::Date => date(cell),
-            Kind::Other => java::trim(&java::ascii(cell)).to_owned(),
-            Kind::DateTime => date_time(cell),
+        let decoded;
+        let text: &str = match column.kind {
+            Kind::Character => {
+                decoded = decode(decode_as, cell)?;
+                java::trim(&decoded)
+            }
+            Kind::Date => {
+                decoded = date(cell);
+                &decoded
+            }
+            Kind::Other => {
+                decoded = java::ascii(cell);
+                java::trim(&decoded)
+            }
+            Kind::DateTime => {
+                decoded = date_time(cell);
+                &decoded
+            }
         };
         xhtml.start_element("td")?;
-        xhtml.characters(&text)?;
+        xhtml.characters(text)?;
         xhtml.end_element("td")?;
     }
     xhtml.end_element("tr")?;
