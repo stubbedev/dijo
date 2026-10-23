@@ -275,20 +275,22 @@ impl Patterns {
             return Some(id);
         }
         if !self.extensions.is_empty() {
-            let mut suffixes: Vec<(usize, &str)> = Vec::new();
-            let mut units = 0;
+            let (mut start, mut units) = (name.len(), 0);
             for (index, c) in name.char_indices().rev() {
-                units += c.len_utf16();
-                suffixes.push((units, &name[index..]));
-            }
-            let longest = self.max_extension.min(java::utf16_length(name));
-            for (length, suffix) in suffixes.into_iter().rev() {
-                if length > longest || length < self.min_extension {
-                    continue;
+                if units + c.len_utf16() > self.max_extension {
+                    break;
                 }
-                if let Some(id) = sorted_get(self.extensions, suffix) {
+                units += c.len_utf16();
+                start = index;
+            }
+            for (offset, c) in name[start..].char_indices() {
+                if units < self.min_extension {
+                    break;
+                }
+                if let Some(id) = sorted_get(self.extensions, &name[start + offset..]) {
                     return Some(id);
                 }
+                units -= c.len_utf16();
             }
         }
         self.globs
@@ -322,6 +324,70 @@ mod tests {
             types.extension(&MediaType::named("application/x-unheard-of")),
             ""
         );
+    }
+
+    #[test]
+    fn looks_up_the_longest_extension_of_a_name_first() {
+        fn collected(patterns: &Patterns, name: &str) -> Option<TypeId> {
+            let mut suffixes: Vec<(usize, &str)> = Vec::new();
+            let mut units = 0;
+            for (index, c) in name.char_indices().rev() {
+                units += c.len_utf16();
+                suffixes.push((units, &name[index..]));
+            }
+            let longest = patterns.max_extension.min(name.encode_utf16().count());
+            for (length, suffix) in suffixes.into_iter().rev() {
+                if length > longest || length < patterns.min_extension {
+                    continue;
+                }
+                if let Some(id) = sorted_get(patterns.extensions, suffix) {
+                    return Some(id);
+                }
+            }
+            None
+        }
+        let tables: [&'static [(&'static str, TypeId)]; 3] = [
+            &[(".gz", 1), (".tar.gz", 2), (".x\u{1F600}", 3), ("z", 4)],
+            &[(".tar.gz", 2), ("\u{1F600}", 5)],
+            &[(".gz", 1), ("gz", 6)],
+        ];
+        let names = [
+            "",
+            "z",
+            "gz",
+            ".gz",
+            "a.gz",
+            "tar.gz",
+            ".tar.gz",
+            "x.tar.gz",
+            "ab\u{1F600}.tar.gz",
+            "\u{1F600}",
+            "a\u{1F600}",
+            "x\u{1F600}",
+            "b.x\u{1F600}",
+            "\u{1F600}z",
+            "\u{e9}.gz",
+            "foo.z",
+            "abcdefghij",
+            "archive.tar",
+        ];
+        for extensions in tables {
+            let lengths = extensions.iter().map(|(ext, _)| ext.encode_utf16().count());
+            let patterns = Patterns {
+                names: &[],
+                extensions,
+                globs: &[],
+                min_extension: lengths.clone().min().unwrap(),
+                max_extension: lengths.max().unwrap(),
+            };
+            for name in names {
+                assert_eq!(
+                    patterns.matches(name),
+                    collected(&patterns, name),
+                    "{name:?}"
+                );
+            }
+        }
     }
 
     #[test]
