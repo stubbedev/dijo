@@ -960,20 +960,14 @@ impl AesKey {
         })
     }
 
-    fn decrypt_block(&self, block: &mut [u8; 16]) {
-        let block: &mut aes::Block = block.into();
-        match self {
-            AesKey::Aes128(cipher) => cipher.decrypt_block(block),
-            AesKey::Aes192(cipher) => cipher.decrypt_block(block),
-            AesKey::Aes256(cipher) => cipher.decrypt_block(block),
-        }
-    }
-
     /// AES/ECB/NoPadding of `data`'s whole blocks.
     pub fn decrypt_ecb(&self, data: &[u8]) -> Vec<u8> {
         let mut out = data.to_vec();
-        for chunk in out.as_chunks_mut::<16>().0 {
-            self.decrypt_block(chunk);
+        let blocks = aes::Block::slice_as_chunks_mut(&mut out).0;
+        match self {
+            AesKey::Aes128(cipher) => cipher.decrypt_blocks(blocks),
+            AesKey::Aes192(cipher) => cipher.decrypt_blocks(blocks),
+            AesKey::Aes256(cipher) => cipher.decrypt_blocks(blocks),
         }
         out
     }
@@ -987,15 +981,12 @@ impl AesKey {
 
     /// AES/CBC/NoPadding of `data`'s whole blocks with the IV.
     pub fn decrypt_cbc(&self, iv: &[u8; 16], data: &[u8]) -> Vec<u8> {
-        let mut out = data.to_vec();
-        let mut previous = *iv;
-        for chunk in out.as_chunks_mut::<16>().0 {
-            let cipher_text = *chunk;
-            self.decrypt_block(chunk);
-            for (byte, mask) in chunk.iter_mut().zip(&previous) {
+        let mut out = self.decrypt_ecb(data);
+        let previous = std::iter::once(iv).chain(data.as_chunks::<16>().0);
+        for (block, previous) in out.as_chunks_mut::<16>().0.iter_mut().zip(previous) {
+            for (byte, mask) in block.iter_mut().zip(previous) {
                 *byte ^= mask;
             }
-            previous = cipher_text;
         }
         out
     }
@@ -1096,6 +1087,42 @@ mod tests {
         assert_eq!(aes.decrypt_cbc_whole(&iv, &chained).unwrap(), [3u8; 16]);
         assert!(aes.decrypt_ecb_whole(&[0; 15]).is_err());
         assert!(AesKey::new(&[0; 20]).is_err());
+    }
+
+    #[test]
+    fn decrypts_runs_of_blocks_as_block_by_block_decryption_does() {
+        let block_by_block = |key: &AesKey, block: &mut [u8; 16]| {
+            let block: &mut aes::Block = block.into();
+            match key {
+                AesKey::Aes128(cipher) => cipher.decrypt_block(block),
+                AesKey::Aes192(cipher) => cipher.decrypt_block(block),
+                AesKey::Aes256(cipher) => cipher.decrypt_block(block),
+            }
+        };
+        let iv: [u8; 16] = std::array::from_fn(|at| (at * 11) as u8);
+        for key_length in [16, 24, 32] {
+            let key_bytes: Vec<u8> = (0..key_length).map(|at| (at * 7 + 1) as u8).collect();
+            let key = AesKey::new(&key_bytes).unwrap();
+            for length in [0, 1, 15, 16, 17, 31, 32, 33, 64, 100, 129, 1000, 4096] {
+                let data: Vec<u8> = (0..length).map(|at| (at * 31 + 5) as u8).collect();
+                let mut ecb = data.clone();
+                for chunk in ecb.as_chunks_mut::<16>().0 {
+                    block_by_block(&key, chunk);
+                }
+                assert_eq!(key.decrypt_ecb(&data), ecb);
+                let mut cbc = data.clone();
+                let mut previous = iv;
+                for chunk in cbc.as_chunks_mut::<16>().0 {
+                    let cipher_text = *chunk;
+                    block_by_block(&key, chunk);
+                    for (byte, mask) in chunk.iter_mut().zip(&previous) {
+                        *byte ^= mask;
+                    }
+                    previous = cipher_text;
+                }
+                assert_eq!(key.decrypt_cbc(&iv, &data), cbc);
+            }
+        }
     }
 
     #[test]
