@@ -4,6 +4,7 @@
 //! falls in, with what Tika's tagged writer records of the marked content around it.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Display;
 use std::rc::Rc;
 
 use lopdf::{Dictionary, Object};
@@ -298,7 +299,7 @@ fn number(object: &Object) -> Option<f32> {
 
 /// Notes that `pdf` is read otherwise than Tika, where the port leaves out `what` of a
 /// page for the reason `unported`, on which PDFBox throws or which the port does not read.
-pub(super) fn differ_past(pdf: &Pdf, what: &str, Unported(reason): Unported) {
+pub(super) fn differ_past(pdf: &Pdf, what: impl Display, Unported(reason): Unported) {
     pdf.differ(Difference(format!("the port leaves out {what}: {reason}")));
 }
 
@@ -356,7 +357,7 @@ impl<'p> Run<'p, '_> {
                 Token::Operand(operand) => operands.push(operand),
                 Token::Operator(operator) => {
                     if let Err(unported) = self.operator(&operator, &operands) {
-                        differ_past(self.pdf, &format!("the operator {operator}"), unported);
+                        differ_past(self.pdf, format_args!("the operator {operator}"), unported);
                     }
                     operands.clear();
                 }

@@ -3,6 +3,7 @@
 //! form, and the metadata the writer collects on the way, recorded as they are written.
 
 use std::collections::{BTreeSet, HashSet};
+use std::fmt::Display;
 use std::ops::ControlFlow;
 
 use lopdf::{Dictionary, Object};
@@ -76,7 +77,7 @@ impl From<Unported> for PartFailure {
 /// past it, `pdf` noting the difference ([`differ_past`]).
 pub(super) fn gone_past(
     pdf: &Pdf,
-    what: &str,
+    what: impl Display,
     written: Result<(), PartFailure>,
 ) -> Result<(), Stop> {
     match written {

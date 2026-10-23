@@ -237,22 +237,19 @@ impl<'p> Engine<'p, '_> {
                     return Ok(());
                 }
             };
-            let (what, processed) = match token {
-                Token::Operand(operand) => {
-                    operands.push(operand);
-                    continue;
-                }
+            match token {
+                Token::Operand(operand) => operands.push(operand),
                 Token::Operator(operator) => {
                     let processed = self.operator(&operator, &operands);
-                    (format!("the operator {operator}"), processed)
+                    operands.clear();
+                    gone_past(self.pdf, format_args!("the operator {operator}"), processed)?;
                 }
                 Token::InlineImage(image) => {
                     let processed = self.inline_image(*image);
-                    ("an inline image".to_owned(), processed)
+                    operands.clear();
+                    gone_past(self.pdf, "an inline image", processed)?;
                 }
-            };
-            operands.clear();
-            gone_past(self.pdf, &what, processed)?;
+            }
         }
     }
 
