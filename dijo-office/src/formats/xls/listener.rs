@@ -592,7 +592,7 @@ impl<'a, 'p> Listener<'a, 'p> {
     fn add_cell(
         &mut self,
         cell_ref: Option<CellRef>,
-        cell: Cell,
+        cell: impl FnOnce() -> Cell,
         out: &mut dyn Out,
     ) -> Result<(), Stop> {
         let place = cell_ref
@@ -600,7 +600,7 @@ impl<'a, 'p> Listener<'a, 'p> {
             .map(|cell_ref| (cell_ref.row, i32::from(cell_ref.column)));
         let (Some(sheet), Some(place)) = (&mut self.sheet, place) else {
             if !self.plans() {
-                self.extra.push(cell);
+                self.extra.push(cell());
             }
             return Ok(());
         };
@@ -620,7 +620,7 @@ impl<'a, 'p> Listener<'a, 'p> {
                 let Pass::Write(plans) = self.pass else {
                     unreachable!("a sheet is streamed as it is written");
                 };
-                let mut cell = cell;
+                let mut cell = cell();
                 for (before, address) in plans[*plan].links.get(&place).into_iter().flatten() {
                     if *before > *placed {
                         cell = Cell::Linked(Box::new(cell), address.clone());
@@ -630,9 +630,9 @@ impl<'a, 'p> Listener<'a, 'p> {
                 table.cell(place, &cell, self.settings.missing_rows, out)?;
             }
             Sheet::Held(cells) => match cells.entry(place) {
-                Entry::Occupied(_) => self.extra.push(cell),
+                Entry::Occupied(_) => self.extra.push(cell()),
                 Entry::Vacant(vacant) => {
-                    vacant.insert(cell);
+                    vacant.insert(cell());
                 }
             },
         }
@@ -649,7 +649,7 @@ impl<'a, 'p> Listener<'a, 'p> {
         if text.is_empty() {
             return Ok(());
         }
-        self.add_cell(cell_ref, Cell::Text(text.to_owned()), out)
+        self.add_cell(cell_ref, || Cell::Text(text.to_owned()), out)
     }
 
     /// The name the page of the sheet is headed with, if any, failing on a sheet before the
@@ -700,9 +700,8 @@ impl<'a, 'p> Listener<'a, 'p> {
     /// caching formats of its own.
     fn format_number(&mut self, cell: CellRef, value: f64) -> Result<String, Uncaught> {
         let index = self.format_index(cell)?;
-        let format = self.format_string(index);
-        let formatted = match format {
-            Some(format) => self.formatter.format_raw(value, index, &format),
+        let formatted = match format_string(&self.custom_formats, index) {
+            Some(format) => self.formatter.format_raw(value, index, format),
             None => Ok(default_number_format(value)),
         };
         formatted.map_err(|error| match error {
@@ -725,14 +724,14 @@ impl<'a, 'p> Listener<'a, 'p> {
                 Uncaught::Thrown(index_out_of_bounds(cell.xf, self.extended_formats.len()))
             })
     }
+}
 
-    /// `getFormatString(formatIndex)`.
-    fn format_string(&self, index: i32) -> Option<String> {
-        if index >= FIRST_CUSTOM_FORMAT {
-            self.custom_formats.get(&index).cloned()
-        } else {
-            builtin_format(i32::from(index as i16)).map(str::to_owned)
-        }
+/// `getFormatString(formatIndex)`.
+fn format_string(custom_formats: &HashMap<i32, String>, index: i32) -> Option<&str> {
+    if index >= FIRST_CUSTOM_FORMAT {
+        custom_formats.get(&index).map(String::as_str)
+    } else {
+        builtin_format(i32::from(index as i16))
     }
 }
 

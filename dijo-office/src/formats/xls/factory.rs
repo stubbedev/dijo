@@ -218,7 +218,10 @@ impl<'a> Records<'a> {
                 return Ok(Some((record_sid, record)));
             }
             Record::DbCell => return Ok(None),
-            Record::Rk { .. } | Record::MulRk { .. } => {
+            Record::Rk { cell, value } => {
+                return Ok(Some((sid::NUMBER, Record::Number { cell, value })));
+            }
+            Record::MulRk { .. } => {
                 let mut numbers = cells(record_sid, record)?.into_iter();
                 let first = numbers.next();
                 self.unread.extend(numbers);
