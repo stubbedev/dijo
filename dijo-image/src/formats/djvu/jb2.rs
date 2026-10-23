@@ -52,14 +52,6 @@ impl Bitmap {
         })
     }
 
-    fn at(&self, x: isize, y: isize) -> u16 {
-        if x < 0 || y < 0 || x as usize >= self.width || y as usize >= self.height {
-            0
-        } else {
-            u16::from(self.pixels[y as usize * self.width + x as usize])
-        }
-    }
-
     /// The bitmap without its white edge rows and columns.
     fn cropped(&self) -> Self {
         let mut left = self.width;
@@ -93,6 +85,91 @@ impl Bitmap {
             width,
             height,
             pixels,
+        }
+    }
+}
+
+/// Row `y` of `height` rows of `width` pixels, empty outside them.
+fn row_of(pixels: &[u8], width: usize, height: usize, y: isize) -> &[u8] {
+    match usize::try_from(y) {
+        Ok(y) if y < height => &pixels[y * width..][..width],
+        _ => &[],
+    }
+}
+
+/// The pixel of a row at `x`, white outside it.
+fn pixel_of(row: &[u8], x: isize) -> usize {
+    usize::try_from(x)
+        .ok()
+        .and_then(|x| row.get(x))
+        .map_or(0, |&pixel| usize::from(pixel))
+}
+
+/// The pixels of a row at `x - 1`, `x` and `x + 1`, the first in the highest bit.
+fn three_of(row: &[u8], x: isize) -> usize {
+    pixel_of(row, x - 1) << 2 | pixel_of(row, x) << 1 | pixel_of(row, x + 1)
+}
+
+/// Decides a bitmap's pixels, row by row, with `decide` from their contexts in the ten-pixel
+/// template of Figure 2: the pixels of the template in each of its rows held in a register
+/// shifted along a column at a time.
+fn direct_pixels(mark: &mut Bitmap, mut decide: impl FnMut(usize) -> u8) {
+    let width = mark.width;
+    for y in 0..mark.height {
+        let (above, row) = mark.pixels.split_at_mut(y * width);
+        let above = &*above;
+        let two_up = row_of(above, width, y, y as isize - 2);
+        let one_up = row_of(above, width, y, y as isize - 1);
+        let mut two_up_bits = three_of(two_up, 0);
+        let mut one_up_bits = three_of(one_up, 1);
+        let mut left_bits = 0;
+        for (x, pixel) in row[..width].iter_mut().enumerate() {
+            *pixel = decide(two_up_bits << 7 | one_up_bits << 2 | left_bits);
+            let x = x as isize;
+            two_up_bits = ((two_up_bits << 1) & 0b111) | pixel_of(two_up, x + 2);
+            one_up_bits = ((one_up_bits << 1) & 0b1_1111) | pixel_of(one_up, x + 3);
+            left_bits = ((left_bits << 1) & 0b11) | usize::from(*pixel);
+        }
+    }
+}
+
+/// Decides a bitmap's pixels, row by row, with `decide` from their contexts in the
+/// eleven-pixel template of Figure 3 over the shape it refines, offset from it by `dx` and `dy`:
+/// the pixels of the template in each of its rows held in a register shifted along a column at
+/// a time.
+fn refined_pixels(
+    mark: &mut Bitmap,
+    reference: &Bitmap,
+    (dx, dy): (isize, isize),
+    mut decide: impl FnMut(usize) -> u8,
+) {
+    let width = mark.width;
+    let (pixels, reference_width, reference_height) =
+        (&reference.pixels[..], reference.width, reference.height);
+    for y in 0..mark.height {
+        let (above, row) = mark.pixels.split_at_mut(y * width);
+        let up = row_of(above, width, y, y as isize - 1);
+        let ry = y as isize + dy;
+        let reference_up = row_of(pixels, reference_width, reference_height, ry - 1);
+        let middle = row_of(pixels, reference_width, reference_height, ry);
+        let below = row_of(pixels, reference_width, reference_height, ry + 1);
+        let mut up_bits = three_of(up, 0);
+        let mut middle_bits = three_of(middle, dx);
+        let mut below_bits = three_of(below, dx);
+        let mut left = 0;
+        for (x, pixel) in row[..width].iter_mut().enumerate() {
+            let (x, rx) = (x as isize, x as isize + dx);
+            *pixel = decide(
+                up_bits << 8
+                    | left << 7
+                    | pixel_of(reference_up, rx) << 6
+                    | middle_bits << 3
+                    | below_bits,
+            );
+            up_bits = ((up_bits << 1) & 0b111) | pixel_of(up, x + 2);
+            middle_bits = ((middle_bits << 1) & 0b111) | pixel_of(middle, rx + 2);
+            below_bits = ((below_bits << 1) & 0b111) | pixel_of(below, rx + 2);
+            left = usize::from(*pixel);
         }
     }
 }
@@ -408,22 +485,9 @@ impl<'a> Decoder<'a> {
 
     /// Codes a bitmap's pixels with the ten-pixel template of Figure 2 (11.5.9).
     fn direct(&mut self, mut mark: Bitmap) -> Bitmap {
-        for y in 0..mark.height as isize {
-            for x in 0..mark.width as isize {
-                let context = mark.at(x - 1, y - 2) << 9
-                    | mark.at(x, y - 2) << 8
-                    | mark.at(x + 1, y - 2) << 7
-                    | mark.at(x - 2, y - 1) << 6
-                    | mark.at(x - 1, y - 1) << 5
-                    | mark.at(x, y - 1) << 4
-                    | mark.at(x + 1, y - 1) << 3
-                    | mark.at(x + 2, y - 1) << 2
-                    | mark.at(x - 2, y) << 1
-                    | mark.at(x - 1, y);
-                let pixel = self.zp.decode(&mut self.direct, usize::from(context)) as u8;
-                mark.pixels[y as usize * mark.width + x as usize] = pixel;
-            }
-        }
+        direct_pixels(&mut mark, |context| {
+            self.zp.decode(&mut self.direct, context) as u8
+        });
         mark
     }
 
@@ -443,25 +507,9 @@ impl<'a> Decoder<'a> {
         let mut mark = Bitmap::blank(width as usize, height as usize)?;
         let dx = (reference.width as isize - 1) / 2 - (width as isize - 1) / 2;
         let dy = reference.height as isize / 2 - height as isize / 2;
-        for y in 0..height as isize {
-            let ry = y + dy;
-            for x in 0..width as isize {
-                let rx = x + dx;
-                let context = mark.at(x - 1, y - 1) << 10
-                    | mark.at(x, y - 1) << 9
-                    | mark.at(x + 1, y - 1) << 8
-                    | mark.at(x - 1, y) << 7
-                    | reference.at(rx, ry - 1) << 6
-                    | reference.at(rx - 1, ry) << 5
-                    | reference.at(rx, ry) << 4
-                    | reference.at(rx + 1, ry) << 3
-                    | reference.at(rx - 1, ry + 1) << 2
-                    | reference.at(rx, ry + 1) << 1
-                    | reference.at(rx + 1, ry + 1);
-                let pixel = self.zp.decode(&mut self.refinement, usize::from(context)) as u8;
-                mark.pixels[y as usize * mark.width + x as usize] = pixel;
-            }
-        }
+        refined_pixels(&mut mark, reference, (dx, dy), |context| {
+            self.zp.decode(&mut self.refinement, context) as u8
+        });
         Ok(mark)
     }
 
@@ -599,6 +647,132 @@ impl<'a> Decoder<'a> {
             -cutoff - 1
         } else {
             cutoff
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(bitmap: &Bitmap, x: isize, y: isize) -> usize {
+        if x < 0 || y < 0 || x as usize >= bitmap.width || y as usize >= bitmap.height {
+            0
+        } else {
+            usize::from(bitmap.pixels[y as usize * bitmap.width + x as usize])
+        }
+    }
+
+    fn direct_pixel_by_pixel(mark: &mut Bitmap, mut decide: impl FnMut(usize) -> u8) {
+        for y in 0..mark.height as isize {
+            for x in 0..mark.width as isize {
+                let context = at(mark, x - 1, y - 2) << 9
+                    | at(mark, x, y - 2) << 8
+                    | at(mark, x + 1, y - 2) << 7
+                    | at(mark, x - 2, y - 1) << 6
+                    | at(mark, x - 1, y - 1) << 5
+                    | at(mark, x, y - 1) << 4
+                    | at(mark, x + 1, y - 1) << 3
+                    | at(mark, x + 2, y - 1) << 2
+                    | at(mark, x - 2, y) << 1
+                    | at(mark, x - 1, y);
+                mark.pixels[y as usize * mark.width + x as usize] = decide(context);
+            }
+        }
+    }
+
+    fn refined_pixel_by_pixel(
+        mark: &mut Bitmap,
+        reference: &Bitmap,
+        (dx, dy): (isize, isize),
+        mut decide: impl FnMut(usize) -> u8,
+    ) {
+        for y in 0..mark.height as isize {
+            let ry = y + dy;
+            for x in 0..mark.width as isize {
+                let rx = x + dx;
+                let context = at(mark, x - 1, y - 1) << 10
+                    | at(mark, x, y - 1) << 9
+                    | at(mark, x + 1, y - 1) << 8
+                    | at(mark, x - 1, y) << 7
+                    | at(reference, rx, ry - 1) << 6
+                    | at(reference, rx - 1, ry) << 5
+                    | at(reference, rx, ry) << 4
+                    | at(reference, rx + 1, ry) << 3
+                    | at(reference, rx - 1, ry + 1) << 2
+                    | at(reference, rx, ry + 1) << 1
+                    | at(reference, rx + 1, ry + 1);
+                mark.pixels[y as usize * mark.width + x as usize] = decide(context);
+            }
+        }
+    }
+
+    fn deciding(contexts: &mut Vec<usize>, black: u32) -> impl FnMut(usize) -> u8 + '_ {
+        let mut state = 0x9e37_79b9_u32;
+        move |context| {
+            contexts.push(context);
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            u8::from((state ^ context as u32) % 8 < black)
+        }
+    }
+
+    const SIZES: [(usize, usize); 9] = [
+        (0, 0),
+        (0, 4),
+        (4, 0),
+        (1, 1),
+        (1, 6),
+        (6, 1),
+        (2, 2),
+        (5, 3),
+        (37, 23),
+    ];
+
+    #[test]
+    fn decides_direct_pixels_in_the_contexts_of_the_template() {
+        for (width, height) in SIZES {
+            for black in [0, 1, 4, 7, 8] {
+                let (mut ours, mut theirs) = (Vec::new(), Vec::new());
+                let mut mark = Bitmap::blank(width, height).unwrap();
+                direct_pixels(&mut mark, deciding(&mut ours, black));
+                let mut expected = Bitmap::blank(width, height).unwrap();
+                direct_pixel_by_pixel(&mut expected, deciding(&mut theirs, black));
+                assert_eq!(ours, theirs, "{width}x{height} {black}");
+                assert_eq!(mark, expected, "{width}x{height} {black}");
+            }
+        }
+    }
+
+    #[test]
+    fn decides_refined_pixels_in_the_contexts_of_the_template() {
+        let mut references = Vec::new();
+        for (width, height) in SIZES {
+            let mut reference = Bitmap::blank(width, height).unwrap();
+            direct_pixels(&mut reference, deciding(&mut Vec::new(), 3));
+            references.push(reference);
+        }
+        for reference in &references {
+            for (width, height) in SIZES {
+                let dx = (reference.width as isize - 1) / 2 - (width as isize - 1) / 2;
+                let dy = reference.height as isize / 2 - height as isize / 2;
+                for offset in [(dx, dy), (-3, 2), (4, -5), (40, 30)] {
+                    let (mut ours, mut theirs) = (Vec::new(), Vec::new());
+                    let mut mark = Bitmap::blank(width, height).unwrap();
+                    refined_pixels(&mut mark, reference, offset, deciding(&mut ours, 4));
+                    let mut expected = Bitmap::blank(width, height).unwrap();
+                    refined_pixel_by_pixel(
+                        &mut expected,
+                        reference,
+                        offset,
+                        deciding(&mut theirs, 4),
+                    );
+                    let size = (reference.width, reference.height, width, height);
+                    assert_eq!(ours, theirs, "{size:?} {offset:?}");
+                    assert_eq!(mark, expected, "{size:?} {offset:?}");
+                }
+            }
         }
     }
 }
