@@ -31,12 +31,20 @@ const ROOT: usize = 0;
 const MANTISSA: usize = 97;
 
 /// The row and column of each of a block's 1024 coefficients, in their coding order.
-fn zigzag(index: usize) -> (usize, usize) {
-    let bit = |position: usize| (index >> position) & 1;
-    let row = bit(1) << 4 | bit(3) << 3 | bit(5) << 2 | bit(7) << 1 | bit(9);
-    let column = bit(0) << 4 | bit(2) << 3 | bit(4) << 2 | bit(6) << 1 | bit(8);
-    (row, column)
-}
+const ZIGZAG: [(u8, u8); 1024] = {
+    const fn bit(index: usize, position: usize) -> u8 {
+        ((index >> position) & 1) as u8
+    }
+    let mut zigzag = [(0, 0); 1024];
+    let mut i = 0;
+    while i < 1024 {
+        let row = bit(i, 1) << 4 | bit(i, 3) << 3 | bit(i, 5) << 2 | bit(i, 7) << 1 | bit(i, 9);
+        let column = bit(i, 0) << 4 | bit(i, 2) << 3 | bit(i, 4) << 2 | bit(i, 6) << 1 | bit(i, 8);
+        zigzag[i] = (row, column);
+        i += 1;
+    }
+    zigzag
+};
 
 /// The coefficients of one colour component and the state of their decoding.
 struct Component {
@@ -275,9 +283,8 @@ impl Component {
             };
             let x0 = (block % self.blocks_wide) * BLOCK;
             let y0 = (block / self.blocks_wide) * BLOCK;
-            for (i, &coefficient) in data.iter().enumerate() {
-                let (row, column) = zigzag(i);
-                let (x, y) = (x0 + column, y0 + row);
+            for (&coefficient, &(row, column)) in data.iter().zip(&ZIGZAG) {
+                let (x, y) = (x0 + usize::from(column), y0 + usize::from(row));
                 if x < width && y < height {
                     values[y * width + x] = i32::from(coefficient);
                 }
@@ -285,11 +292,17 @@ impl Component {
         }
         let mut scale = 16;
         while scale >= 1 {
-            for x in (0..width).step_by(scale) {
-                inverse(&mut values, x, width * scale, (height - 1) / scale);
+            if width > 0 {
+                let columns = (0..width).step_by(scale);
+                inverse(&mut values, columns, width * scale, (height - 1) / scale);
             }
             for y in (0..height).step_by(scale) {
-                inverse(&mut values, y * width, scale, (width - 1) / scale);
+                inverse(
+                    &mut values,
+                    std::iter::once(y * width),
+                    scale,
+                    (width - 1) / scale,
+                );
             }
             scale >>= 1;
         }
@@ -297,11 +310,16 @@ impl Component {
     }
 }
 
-/// The inverse of the interpolating (4, 4) wavelet along one row or column of the values at a
-/// scale: `last + 1` values from `start`, `stride` apart. Lifting restores the even ones,
-/// prediction the odd ones from them (10.6.4).
-fn inverse(values: &mut [i32], start: usize, stride: usize, last: usize) {
-    let at = |values: &[i32], k: isize| -> i32 {
+/// The inverse of the interpolating (4, 4) wavelet along rows or columns of the values at a
+/// scale, all of them a step at a time: `last + 1` values from each of `starts`, `stride`
+/// apart. Lifting restores the even ones, prediction the odd ones from them (10.6.4).
+fn inverse(
+    values: &mut [i32],
+    starts: impl Iterator<Item = usize> + Clone,
+    stride: usize,
+    last: usize,
+) {
+    let at = |values: &[i32], start: usize, k: isize| -> i32 {
         if k < 0 || k as usize > last {
             0
         } else {
@@ -309,23 +327,27 @@ fn inverse(values: &mut [i32], start: usize, stride: usize, last: usize) {
         }
     };
     for k in (0..=last).step_by(2) {
-        let k = k as isize;
-        let near = at(values, k - 1) + at(values, k + 1);
-        let far = at(values, k - 3) + at(values, k + 3);
-        values[start + k as usize * stride] -= (9 * near - far + 16) >> 5;
+        for start in starts.clone() {
+            let k = k as isize;
+            let near = at(values, start, k - 1) + at(values, start, k + 1);
+            let far = at(values, start, k - 3) + at(values, start, k + 3);
+            values[start + k as usize * stride] -= (9 * near - far + 16) >> 5;
+        }
     }
     for k in (1..=last).step_by(2) {
-        let previous = values[start + (k - 1) * stride];
-        let prediction = if k >= 3 && k + 3 <= last {
-            let near = previous + values[start + (k + 1) * stride];
-            let far = values[start + (k - 3) * stride] + values[start + (k + 3) * stride];
-            (9 * near - far + 8) >> 4
-        } else if k < last {
-            (previous + values[start + (k + 1) * stride] + 1) >> 1
-        } else {
-            previous
-        };
-        values[start + k * stride] += prediction;
+        for start in starts.clone() {
+            let previous = values[start + (k - 1) * stride];
+            let prediction = if k >= 3 && k + 3 <= last {
+                let near = previous + values[start + (k + 1) * stride];
+                let far = values[start + (k - 3) * stride] + values[start + (k + 3) * stride];
+                (9 * near - far + 8) >> 4
+            } else if k < last {
+                (previous + values[start + (k + 1) * stride] + 1) >> 1
+            } else {
+                previous
+            };
+            values[start + k * stride] += prediction;
+        }
     }
 }
 
@@ -444,5 +466,122 @@ impl Layer {
         }
         Ok(GrayImage::from_raw(width as u32, height as u32, pixels)
             .expect("the pixels fill the image"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn zigzag(index: usize) -> (usize, usize) {
+        let bit = |position: usize| (index >> position) & 1;
+        let row = bit(1) << 4 | bit(3) << 3 | bit(5) << 2 | bit(7) << 1 | bit(9);
+        let column = bit(0) << 4 | bit(2) << 3 | bit(4) << 2 | bit(6) << 1 | bit(8);
+        (row, column)
+    }
+
+    fn inverse_one(values: &mut [i32], start: usize, stride: usize, last: usize) {
+        let at = |values: &[i32], k: isize| -> i32 {
+            if k < 0 || k as usize > last {
+                0
+            } else {
+                values[start + k as usize * stride]
+            }
+        };
+        for k in (0..=last).step_by(2) {
+            let k = k as isize;
+            let near = at(values, k - 1) + at(values, k + 1);
+            let far = at(values, k - 3) + at(values, k + 3);
+            values[start + k as usize * stride] -= (9 * near - far + 16) >> 5;
+        }
+        for k in (1..=last).step_by(2) {
+            let previous = values[start + (k - 1) * stride];
+            let prediction = if k >= 3 && k + 3 <= last {
+                let near = previous + values[start + (k + 1) * stride];
+                let far = values[start + (k - 3) * stride] + values[start + (k + 3) * stride];
+                (9 * near - far + 8) >> 4
+            } else if k < last {
+                (previous + values[start + (k + 1) * stride] + 1) >> 1
+            } else {
+                previous
+            };
+            values[start + k * stride] += prediction;
+        }
+    }
+
+    fn reconstruct_column_by_column(
+        component: &Component,
+        width: usize,
+        height: usize,
+    ) -> Vec<i32> {
+        let mut values = vec![0i32; width * height];
+        for (block, data) in component.coefficients.iter().enumerate() {
+            let Some(data) = data else {
+                continue;
+            };
+            let x0 = (block % component.blocks_wide) * BLOCK;
+            let y0 = (block / component.blocks_wide) * BLOCK;
+            for (i, &coefficient) in data.iter().enumerate() {
+                let (row, column) = zigzag(i);
+                let (x, y) = (x0 + column, y0 + row);
+                if x < width && y < height {
+                    values[y * width + x] = i32::from(coefficient);
+                }
+            }
+        }
+        let mut scale = 16;
+        while scale >= 1 {
+            for x in (0..width).step_by(scale) {
+                inverse_one(&mut values, x, width * scale, (height - 1) / scale);
+            }
+            for y in (0..height).step_by(scale) {
+                inverse_one(&mut values, y * width, scale, (width - 1) / scale);
+            }
+            scale >>= 1;
+        }
+        values
+    }
+
+    #[test]
+    fn places_coefficients_by_the_zigzag_table() {
+        for (i, &(row, column)) in ZIGZAG.iter().enumerate() {
+            assert_eq!((usize::from(row), usize::from(column)), zigzag(i), "{i}");
+        }
+    }
+
+    #[test]
+    fn reconstructs_row_by_row_as_column_by_column() {
+        let sizes = [
+            (0, 0),
+            (1, 1),
+            (1, 40),
+            (40, 1),
+            (2, 3),
+            (31, 33),
+            (64, 32),
+            (75, 97),
+        ];
+        let mut seed = 0x2545_f491_u32;
+        for (width, height) in sizes {
+            let mut component = Component::new(width, height);
+            for (block, data) in component.coefficients.iter_mut().enumerate() {
+                if block % 3 == 2 {
+                    continue;
+                }
+                let mut coefficients = Box::new([0i16; 1024]);
+                for coefficient in coefficients.iter_mut() {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    *coefficient = (seed % 4096) as i16 - 2048;
+                }
+                *data = Some(coefficients);
+            }
+            assert_eq!(
+                component.reconstruct(width, height),
+                reconstruct_column_by_column(&component, width, height),
+                "{width}x{height}"
+            );
+        }
     }
 }
