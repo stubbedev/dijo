@@ -115,19 +115,41 @@ impl Normalizer {
             out.extend_from_slice(bytes);
             return;
         }
-        if self.undecoded.is_empty() {
-            let consumed = self.decode(bytes);
-            self.undecoded.extend_from_slice(&bytes[consumed..]);
-        } else {
-            let mut undecoded = std::mem::take(&mut self.undecoded);
-            undecoded.extend_from_slice(bytes);
-            let consumed = self.decode(&undecoded);
-            undecoded.drain(..consumed);
-            self.undecoded = undecoded;
+        if let Some(rest) = self.complete_split_char(bytes) {
+            let consumed = self.decode(rest);
+            self.undecoded.extend_from_slice(&rest[consumed..]);
         }
-        let rest = self.held.split_off(self.stable_prefix_len());
-        let ready = std::mem::replace(&mut self.held, rest);
-        self.release(&ready, out);
+        let ready = self.stable_prefix_len();
+        let held = std::mem::take(&mut self.held);
+        self.release(&held[..ready], out);
+        self.held = held;
+        self.held.drain(..ready);
+    }
+
+    /// Decodes the character split between the bytes held undecoded and the first of `bytes`,
+    /// with what follows it in the next few, and returns the rest of `bytes`, or `None` where
+    /// `bytes` end before it does, which keeps them undecoded with it.
+    fn complete_split_char<'b>(&mut self, bytes: &'b [u8]) -> Option<&'b [u8]> {
+        let held = self.undecoded.len();
+        if held == 0 {
+            return Some(bytes);
+        }
+        let mut joined = [0; 8];
+        let taken = bytes.len().min(4);
+        joined[..held].copy_from_slice(&self.undecoded);
+        joined[held..held + taken].copy_from_slice(&bytes[..taken]);
+        let consumed = self.decode(&joined[..held + taken]);
+        match consumed.checked_sub(held) {
+            Some(decoded) => {
+                self.undecoded.clear();
+                Some(&bytes[decoded..])
+            }
+            None => {
+                self.undecoded.drain(..consumed);
+                self.undecoded.extend_from_slice(bytes);
+                None
+            }
+        }
     }
 
     /// Normalises everything still held into `out`, at the end of the text.
@@ -285,44 +307,38 @@ enum Held {
 
 impl Dehyphenator {
     fn push(&mut self, character: char, out: &mut Vec<u8>) {
-        match std::mem::take(&mut self.held) {
+        match &mut self.held {
             Held::Nothing => {}
-            Held::Hyphen(hyphen) if is_line_break(character) => {
-                self.held = Held::Break {
-                    hyphen,
-                    text: character.to_string(),
-                    word: String::new(),
-                };
-                return;
+            Held::Hyphen(hyphen) => {
+                let hyphen = *hyphen;
+                if is_line_break(character) {
+                    self.held = Held::Break {
+                        hyphen,
+                        text: character.to_string(),
+                        word: String::new(),
+                    };
+                    return;
+                }
+                self.held = Held::Nothing;
+                self.pass(hyphen, out);
             }
-            Held::Hyphen(hyphen) => self.pass(hyphen, out),
-            Held::Break {
-                hyphen,
-                mut text,
-                mut word,
-            } => {
-                let starts_lowercase = word.chars().next().is_some_and(char::is_lowercase);
+            Held::Break { hyphen, text, word } => {
                 if character.is_alphabetic()
                     && (!word.is_empty() || character.is_lowercase())
                     && word.chars().count() < MAX_WORD_CHARS
                 {
                     word.push(character);
-                    self.held = Held::Break { hyphen, text, word };
                     return;
                 }
                 if word.is_empty() && is_space(character) {
                     text.push(character);
-                    self.held = Held::Break { hyphen, text, word };
                     return;
                 }
-                if starts_lowercase && !character.is_alphabetic() {
-                    self.join(hyphen, &word, out);
-                } else {
-                    self.pass(hyphen, out);
-                    text.chars()
-                        .chain(word.chars())
-                        .for_each(|held| self.pass(held, out));
-                }
+                let hyphen = *hyphen;
+                let text = std::mem::take(text);
+                let word = std::mem::take(word);
+                self.held = Held::Nothing;
+                self.release_break(hyphen, &text, &word, !character.is_alphabetic(), out);
             }
         }
         if is_hyphen(character) && self.token.chars().last().is_some_and(char::is_alphabetic) {
@@ -337,17 +353,31 @@ impl Dehyphenator {
             Held::Nothing => {}
             Held::Hyphen(hyphen) => self.pass(hyphen, out),
             Held::Break { hyphen, text, word } => {
-                if word.chars().next().is_some_and(char::is_lowercase) {
-                    self.join(hyphen, &word, out);
-                } else {
-                    self.pass(hyphen, out);
-                    text.chars()
-                        .chain(word.chars())
-                        .for_each(|held| self.pass(held, out));
-                }
+                self.release_break(hyphen, &text, &word, true, out)
             }
         }
         self.end_token();
+    }
+
+    /// Writes a hyphen held with the line break after it and the spaces and `word` of the next
+    /// line in `text`: the word joined to the one before where it starts in lower case and
+    /// `ended` by what follows it, else all as it stands.
+    fn release_break(
+        &mut self,
+        hyphen: char,
+        text: &str,
+        word: &str,
+        ended: bool,
+        out: &mut Vec<u8>,
+    ) {
+        if ended && word.chars().next().is_some_and(char::is_lowercase) {
+            self.join(hyphen, word, out);
+        } else {
+            self.pass(hyphen, out);
+            text.chars()
+                .chain(word.chars())
+                .for_each(|held| self.pass(held, out));
+        }
     }
 
     /// Joins the word before the line break with `next`, the word after it.
@@ -702,5 +732,56 @@ mod tests {
         normalizer.push(b"a\xffb\xe2\x82", &mut out);
         normalizer.finish(&mut out);
         assert_eq!(String::from_utf8(out).unwrap(), "a\u{fffd}b\u{fffd}");
+    }
+
+    /// Bytes split anywhere, inside characters and invalid sequences, decode as the whole does,
+    /// with U+FFFD for each invalid sequence as a lossy conversion writes it.
+    #[test]
+    fn bytes_split_anywhere_decode_as_the_whole() {
+        const PIECES: &[&[u8]] = &[
+            b"a",
+            b" ",
+            b"\n",
+            "\u{e9}".as_bytes(),
+            "e\u{301}".as_bytes(),
+            "\u{6f22}".as_bytes(),
+            "\u{1f389}".as_bytes(),
+            b"\xf0\x9f",
+            b"\xf0\x9f\x8e",
+            b"\xe2\x82",
+            b"\xc3",
+            b"\xff",
+            b"\x80",
+            b"\xed\xa0\x80",
+        ];
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..500 {
+            let length = (next() % 12) as usize;
+            let bytes: Vec<u8> = (0..length)
+                .flat_map(|_| {
+                    PIECES[(next() % PIECES.len() as u64) as usize]
+                        .iter()
+                        .copied()
+                })
+                .collect();
+            let lossy = String::from_utf8_lossy(&bytes);
+            let whole = normalize(Steps::ALL, &lossy);
+            for size in 1..=6 {
+                let decoded = normalize_in_chunks(only(Step::Ligatures), &bytes, size);
+                assert_eq!(decoded, lossy.as_bytes(), "{bytes:?} in chunks of {size}");
+                let out = normalize_in_chunks(Steps::ALL, &bytes, size);
+                assert_eq!(
+                    String::from_utf8(out).unwrap(),
+                    whole,
+                    "{bytes:?} in chunks of {size}"
+                );
+            }
+        }
     }
 }
