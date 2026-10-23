@@ -192,14 +192,23 @@ impl Decoder for Bitmap {
     fn push_pixels(&mut self, white: bool, count: u32) {
         let start = self.column;
         self.column += count as usize;
-        if white {
+        let end = self.column.min(self.stride * 8);
+        if white || start >= end {
             return;
         }
         let row = self.row * self.stride;
-        for column in start..self.column.min(self.stride * 8) {
-            if let Some(byte) = self.rows.get_mut(row + column / 8) {
-                *byte |= 0x80 >> (column % 8);
-            }
+        let Some(bytes) = self.rows.get_mut(row..row + self.stride) else {
+            return;
+        };
+        let (first, last) = (start / 8, (end - 1) / 8);
+        let head = 0xFFu8 >> (start % 8);
+        let tail = 0xFFu8 << (7 - (end - 1) % 8);
+        if first == last {
+            bytes[first] |= head & tail;
+        } else {
+            bytes[first] |= head;
+            bytes[first + 1..last].fill(0xFF);
+            bytes[last] |= tail;
         }
     }
 
@@ -309,6 +318,45 @@ mod tests {
     /// The rasters PDFBox's JBIG2 plugin reads of the fixtures: each file's name, width,
     /// height, raster length and MD5 (`Jbig2Rasters.java`).
     const JBIG2_RASTERS: &str = include_str!("../../../../tests/fixtures/pdf/jbig2-rasters.tsv");
+
+    #[test]
+    fn sets_the_bits_of_black_runs_as_one_bit_at_a_time_does() {
+        let runs: Vec<(bool, u32)> = (0..400u32)
+            .map(|i| (i % 3 == 0, (i * 7 + i / 5) % 23))
+            .collect();
+        for columns in [1usize, 7, 8, 9, 16, 33, 64, 100] {
+            let stride = columns.div_ceil(8);
+            let rows = 4;
+            let mut bitmap = Bitmap {
+                rows: vec![0; stride * rows],
+                stride,
+                row: 0,
+                column: 0,
+            };
+            let mut expected = vec![0u8; stride * rows];
+            let (mut row, mut column) = (0, 0);
+            for (i, &(white, count)) in runs.iter().enumerate() {
+                if i % 11 == 10 {
+                    bitmap.next_line();
+                    (row, column) = (row + 1, 0);
+                    continue;
+                }
+                bitmap.push_pixels(white, count);
+                let start = column;
+                column += count as usize;
+                if white {
+                    continue;
+                }
+                for pixel in start..column.min(stride * 8) {
+                    if let Some(byte) = expected.get_mut(row * stride + pixel / 8) {
+                        *byte |= 0x80 >> (pixel % 8);
+                    }
+                }
+            }
+            assert!(row > rows);
+            assert_eq!(bitmap.rows, expected, "{columns} columns");
+        }
+    }
 
     #[test]
     fn reads_jbig2_rasters_as_pdfbox_s_plugin_does() {
