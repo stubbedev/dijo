@@ -92,11 +92,23 @@ impl Row {
         Ok(())
     }
 
-    /// `count` bytes of `value` from `start`.
+    /// `count` bytes of `value` from `start`, failing at the first index outside the row.
     fn fill(&mut self, start: i64, count: i64, value: u8) -> Result<(), Thrown> {
-        for index in start..start + count {
-            self.set(index, value)?;
+        if count <= 0 {
+            return Ok(());
         }
+        let length = self.bytes.len();
+        let size = i64::try_from(length).expect("an array's length fits");
+        let end = start + count;
+        if start < 0 {
+            return Err(out_of_bounds(start, length));
+        }
+        if end > size {
+            return Err(out_of_bounds(start.max(size), length));
+        }
+        let start = usize::try_from(start).expect("not negative");
+        let end = usize::try_from(end).expect("not negative");
+        self.bytes[start..end].fill(value);
         Ok(())
     }
 }
@@ -291,5 +303,27 @@ mod tests {
         assert_eq!(row, b"aaazbcaaa\0");
         assert_eq!(copy_of_range(b"abc", 1, 5).unwrap(), b"bc\0\0");
         assert!(copy_of_range(b"abc", 4, 5).is_err());
+    }
+
+    #[test]
+    fn fills_runs_as_byte_by_byte_writes_do() {
+        for length in 0..5 {
+            for start in -3..8 {
+                for count in -2..8 {
+                    let mut filled = Row {
+                        bytes: vec![1; length],
+                    };
+                    let mut written = Row {
+                        bytes: vec![1; length],
+                    };
+                    let fill = filled.fill(start, count, 7);
+                    let set = (start..start + count).try_for_each(|index| written.set(index, 7));
+                    assert_eq!(fill, set, "{length} {start} {count}");
+                    if set.is_ok() {
+                        assert_eq!(filled.bytes, written.bytes, "{length} {start} {count}");
+                    }
+                }
+            }
+        }
     }
 }
