@@ -7,6 +7,8 @@ use std::borrow::Cow;
 use std::cell::OnceCell;
 use std::collections::HashSet;
 
+use crate::hash::FastSet;
+
 mod write;
 
 pub use write::{write, Node, Storage};
@@ -73,19 +75,36 @@ fn int_at(bytes: &[u8], offset: usize) -> i32 {
 }
 
 /// POI's `ChainLoopDetector`: a block claimed twice is a loop; blocks past the data are not
-/// tracked. A bit per block.
+/// tracked. A bit per block, or for a chain much shorter than the blocks, the blocks claimed.
 struct LoopDetector {
-    used: Vec<u64>,
+    claimed: Claimed,
     blocks: usize,
+}
+
+/// The blocks a [`LoopDetector`] has claimed.
+enum Claimed {
+    Bits(Vec<u64>),
+    Set(FastSet<usize>),
 }
 
 impl LoopDetector {
     fn new(raw_size: usize, block_size: usize) -> LoopDetector {
+        Self::for_chain(raw_size, block_size, usize::MAX)
+    }
+
+    /// A detector for a chain of about `length` blocks, which keeps the blocks claimed rather
+    /// than a bit per block where the bits would take more words than that.
+    fn for_chain(raw_size: usize, block_size: usize, length: usize) -> LoopDetector {
         let blocks = raw_size.div_ceil(block_size);
-        LoopDetector {
-            used: vec![0; blocks.div_ceil(64)],
-            blocks,
-        }
+        let words = blocks.div_ceil(64);
+        let claimed = if words <= length {
+            Claimed::Bits(vec![0; words])
+        } else {
+            let mut set = FastSet::default();
+            set.reserve(length);
+            Claimed::Set(set)
+        };
+        LoopDetector { claimed, blocks }
     }
 
     fn claim(&mut self, block: i32) -> Result<()> {
@@ -94,11 +113,18 @@ impl LoopDetector {
         }
         let slot =
             usize::try_from(block).map_err(|_| Unreadable("a chain names a negative block"))?;
-        let (word, bit) = (slot / 64, 1u64 << (slot % 64));
-        if self.used[word] & bit != 0 {
+        let fresh = match &mut self.claimed {
+            Claimed::Bits(used) => {
+                let (word, bit) = (slot / 64, 1u64 << (slot % 64));
+                let fresh = used[word] & bit == 0;
+                used[word] |= bit;
+                fresh
+            }
+            Claimed::Set(used) => used.insert(slot),
+        };
+        if !fresh {
             return Err(Unreadable("a chain loops"));
         }
-        self.used[word] |= bit;
         Ok(())
     }
 }
@@ -583,7 +609,11 @@ impl<'a> Ole2<'a> {
         if entry.size < BIG_BLOCK_MINIMUM_DOCUMENT_SIZE {
             let root_size = usize::try_from(self.entry(self.root()).size)
                 .map_err(|_| Unreadable("the mini stream's size is negative"))?;
-            let mut detector = LoopDetector::new(root_size, SMALL_BLOCK_SIZE);
+            let mut detector = LoopDetector::for_chain(
+                root_size,
+                SMALL_BLOCK_SIZE,
+                size.div_ceil(SMALL_BLOCK_SIZE),
+            );
             let mut next = entry.start;
             while !runs.is_full() {
                 if next == END_OF_CHAIN {
@@ -608,7 +638,11 @@ impl<'a> Ole2<'a> {
                 next = self.next_in(&self.sbats, next)?;
             }
         } else {
-            let mut detector = LoopDetector::new(self.data.len(), self.block_size);
+            let mut detector = LoopDetector::for_chain(
+                self.data.len(),
+                self.block_size,
+                size.div_ceil(self.block_size),
+            );
             let mut next = entry.start;
             while !runs.is_full() {
                 if next == END_OF_CHAIN {
@@ -1061,5 +1095,34 @@ pub mod tests {
             })
         );
         assert_eq!(Declared::read(&data[..511]), None);
+    }
+
+    #[test]
+    fn detects_loops_by_the_blocks_claimed_as_by_a_bit_per_block() {
+        let claims = [
+            0, 5, 199, 200, 1000, -1, 5, 63, 64, 0, -2, 199, 128, 128, 192, 193, 192,
+        ];
+        let sizes: [(usize, usize); 4] = [
+            (512 * 200, 512),
+            (512 * 64 * 3 + 1, 512),
+            (0, 512),
+            (640, 64),
+        ];
+        for (raw_size, block_size) in sizes {
+            let words = raw_size.div_ceil(block_size).div_ceil(64);
+            for length in [0, 2] {
+                let mut bits = LoopDetector::for_chain(raw_size, block_size, usize::MAX);
+                let mut set = LoopDetector::for_chain(raw_size, block_size, length);
+                assert!(matches!(bits.claimed, Claimed::Bits(_)));
+                assert_eq!(matches!(set.claimed, Claimed::Set(_)), words > length);
+                for block in claims {
+                    assert_eq!(
+                        set.claim(block),
+                        bits.claim(block),
+                        "{raw_size} {length} {block}"
+                    );
+                }
+            }
+        }
     }
 }
