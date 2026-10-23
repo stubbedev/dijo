@@ -61,10 +61,21 @@ const COLOR_SPACES: [(&[u8; 4], usize); 25] = [
     (b"ECLR", 14),
     (b"FCLR", 15),
 ];
+const MAX_COMPONENTS: usize = {
+    let mut max = 0;
+    let mut i = 0;
+    while i < COLOR_SPACES.len() {
+        if COLOR_SPACES[i].1 > max {
+            max = COLOR_SPACES[i].1;
+        }
+        i += 1;
+    }
+    max
+};
 
 /// Converts interleaved RGB samples in place from an embedded profile to sRGB, as the JDK's
 /// JPEG reader does.
-pub(crate) fn to_srgb(profile: &[u8], samples: &mut [u8]) -> Result<(), String> {
+pub(crate) fn to_srgb(profile: &[u8], samples: &mut Vec<u8>) -> Result<(), String> {
     let Some(components) = accepted_components(profile) else {
         return Ok(());
     };
@@ -104,7 +115,7 @@ pub(crate) fn to_srgb(profile: &[u8], samples: &mut [u8]) -> Result<(), String> 
             pixels,
         );
     }
-    samples.copy_from_slice(&converted);
+    *samples = converted;
     Ok(())
 }
 
@@ -206,17 +217,13 @@ impl IccToRgb {
 
     /// The sRGB colour of `value`, each component from 0 to 1.
     pub fn to_rgb(&self, value: &[f32]) -> [f32; 3] {
-        let input: Vec<u16> = self
-            .minimum
-            .iter()
-            .zip(&self.maximum)
-            .enumerate()
-            .map(|(i, (&min, &max))| {
-                let scaled =
-                    (value.get(i).copied().unwrap_or(0.0) - min) * (65535.0 / (max - min)) + 0.5;
-                scaled as i32 as u16
-            })
-            .collect();
+        let mut input = [0u16; MAX_COMPONENTS];
+        let ranges = self.minimum.iter().zip(&self.maximum);
+        for (i, (slot, (&min, &max))) in input.iter_mut().zip(ranges).enumerate() {
+            let scaled =
+                (value.get(i).copied().unwrap_or(0.0) - min) * (65535.0 / (max - min)) + 0.5;
+            *slot = scaled as i32 as u16;
+        }
         let mut output = [0u16; 3];
         unsafe {
             lcms::cmsDoTransform(
@@ -372,5 +379,77 @@ mod tests {
     #[test]
     fn accepts_the_jdks_srgb_profile() {
         assert_eq!(accepted_components(JDK_SRGB), Some(3));
+    }
+
+    fn to_rgb_through_a_vec(conversion: &IccToRgb, value: &[f32]) -> [f32; 3] {
+        let input: Vec<u16> = conversion
+            .minimum
+            .iter()
+            .zip(&conversion.maximum)
+            .enumerate()
+            .map(|(i, (&min, &max))| {
+                let scaled =
+                    (value.get(i).copied().unwrap_or(0.0) - min) * (65535.0 / (max - min)) + 0.5;
+                scaled as i32 as u16
+            })
+            .collect();
+        let mut output = [0u16; 3];
+        unsafe {
+            lcms::cmsDoTransform(
+                conversion.transform.0,
+                input.as_ptr().cast::<c_void>(),
+                output.as_mut_ptr().cast::<c_void>(),
+                1,
+            );
+        }
+        output.map(|component| f32::from(component) / 65535.0)
+    }
+
+    #[test]
+    fn converts_a_colour_as_through_a_vec() {
+        assert_eq!(MAX_COMPONENTS, 15);
+        let conversion = IccToRgb::new(JDK_SRGB).expect("the JDK's sRGB profile converts");
+        let values: [&[f32]; 9] = [
+            &[],
+            &[0.5],
+            &[0.0, 0.0, 0.0],
+            &[1.0, 1.0, 1.0],
+            &[0.25, 0.5, 0.75],
+            &[0.1, 0.9, 0.3, 0.7],
+            &[-0.5, 1.5, 0.5],
+            &[2.0, -3.0, 0.999],
+            &[f32::NAN, 0.2, 0.4],
+        ];
+        for value in values {
+            let found = conversion.to_rgb(value).map(f32::to_bits);
+            let expected = to_rgb_through_a_vec(&conversion, value).map(f32::to_bits);
+            assert_eq!(found, expected, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn converts_samples_to_srgb_as_through_a_copy() {
+        let original: Vec<u8> = (0..=255u8).chain([7, 11]).collect();
+        let mut converted = original.clone();
+        to_srgb(JDK_SRGB, &mut converted).expect("the JDK's sRGB profile converts");
+        let (embedded, srgb) = (
+            Profile::open(JDK_SRGB).unwrap(),
+            Profile::open(JDK_SRGB).unwrap(),
+        );
+        let intent = lcms::Intent::Perceptual;
+        let transform =
+            Transform::new(&embedded, format(3, 1), &srgb, format(3, 1), intent).unwrap();
+        let mut copied = original;
+        let mut buffer = vec![0u8; copied.len()];
+        unsafe {
+            lcms::cmsDoTransform(
+                transform.0,
+                copied.as_ptr().cast::<c_void>(),
+                buffer.as_mut_ptr().cast::<c_void>(),
+                u32::try_from(copied.len() / 3).unwrap(),
+            );
+        }
+        copied.copy_from_slice(&buffer);
+        assert_eq!(converted, copied);
     }
 }

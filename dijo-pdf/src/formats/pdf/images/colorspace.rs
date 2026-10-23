@@ -325,11 +325,13 @@ impl ColorSpace {
             Self::CalRgb(_) | Self::CalGray(_) => {
                 let components = self.components();
                 per_pixel(&samples, components, |pixel| {
-                    let value: Vec<f32> = pixel
-                        .iter()
-                        .map(|&sample| f32::from(sample) / 255.0)
-                        .collect();
-                    Ok(self.to_rgb(&value)?.map(|c| (c * 255.0) as i32 as u8))
+                    let mut value = [0.0; 3];
+                    for (component, &sample) in value.iter_mut().zip(pixel) {
+                        *component = f32::from(sample) / 255.0;
+                    }
+                    Ok(self
+                        .to_rgb(&value[..components])?
+                        .map(|c| (c * 255.0) as i32 as u8))
                 })?
             }
             Self::Pattern => return Err(unsupported()),
@@ -378,11 +380,12 @@ impl ColorSpace {
                 if !is_unit(cal.white) {
                     return Ok([component(0)?, component(1)?, component(2)?]);
                 }
-                let powered: Vec<f32> = (0..3)
-                    .map(|i| Ok(f64::from(component(i)?).powf(f64::from(cal.gamma[i])) as f32))
-                    .collect::<Result<_, Unwritten>>()?;
+                let mut powered = [0.0; 3];
+                for (i, power) in powered.iter_mut().enumerate() {
+                    *power = f64::from(component(i)?).powf(f64::from(cal.gamma[i])) as f32;
+                }
                 let m = cal.matrix;
-                let (a, b, c) = (powered[0], powered[1], powered[2]);
+                let [a, b, c] = powered;
                 let x = m[0] * a + m[3] * b + m[6] * c;
                 let y = m[1] * a + m[4] * b + m[7] * c;
                 let z = m[2] * a + m[5] * b + m[8] * c;
