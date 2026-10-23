@@ -748,19 +748,18 @@ impl Target<'_> {
                     .strip_prefix('_')
                     .is_some_and(|digits| digits.bytes().all(|b| b.is_ascii_digit())));
         let is_value = namespace == NS_RDF && local == "value";
-        let mut node = XmpNode::new(Name::property(namespace, local), value);
-        let (children, parent_is_array) = match self {
+        let (children, parent_is_array, alias) = match self {
             Target::Top(tree) => {
                 let schema = tree.schema(namespace);
-                if ALIASES.iter().any(|a| a.0 == namespace && a.1 == local) {
-                    node.alias = true;
+                let alias = ALIASES.iter().any(|a| a.0 == namespace && a.1 == local);
+                if alias {
                     tree.has_aliases = true;
                     tree.schemas[schema].has_aliases = true;
                 }
                 if is_value {
                     return bad("Misplaced rdf:value element");
                 }
-                (&mut tree.schemas[schema].properties, false)
+                (&mut tree.schemas[schema].properties, false, alias)
             }
             Target::Node(parent) => {
                 if is_value {
@@ -770,19 +769,23 @@ impl Target<'_> {
                     parent.has_value_child = true;
                 }
                 let is_array = parent.form.array;
-                (&mut parent.children, is_array)
+                (&mut parent.children, is_array, false)
             }
         };
+        let name = match (parent_is_array, is_array_item) {
+            (true, true) => Name::Item,
+            (true, false) => return bad("Arrays cannot have arbitrary child names"),
+            (false, _) => Name::property(namespace, local),
+        };
+        let mut node = XmpNode::new(name, value);
+        node.alias = alias;
         let index = match is_value {
             true => 0,
             false => children.len(),
         };
         XmpNode::add_child(children, index, node)?;
-        match (parent_is_array, is_array_item) {
-            (true, true) => children[index].name = Name::Item,
-            (false, true) => return bad("Misplaced rdf:li element"),
-            (true, false) => return bad("Arrays cannot have arbitrary child names"),
-            (false, false) => {}
+        if is_array_item && !parent_is_array {
+            return bad("Misplaced rdf:li element");
         }
         Ok(&mut children[index])
     }
@@ -1571,6 +1574,44 @@ mod tests {
         );
         assert_eq!(unported.len(), 1, "{unported:?}");
         assert_eq!(unported[0].0, "throws");
+    }
+
+    fn counted(property: &str) -> Result<i32, String> {
+        let packet = format!(
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF \
+             xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description \
+             rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\">{property}\
+             </rdf:Description></rdf:RDF></x:xmpmeta>"
+        );
+        value_count(packet.as_bytes()).map_err(|failure| match failure {
+            Failure::Xmp(message) => message,
+            Failure::Unported(reason) => panic!("{reason:?}"),
+        })
+    }
+
+    /// An array's items are added without looking for a duplicate among them, and a child of
+    /// an array or of a struct is refused with the message it was refused with before.
+    #[test]
+    fn adds_children_checked_against_their_parent() {
+        let items = |count: usize| {
+            let items: String = (0..count).map(|_| "<rdf:li>a</rdf:li>").collect();
+            format!("<dc:subject><rdf:Bag>{items}</rdf:Bag></dc:subject>")
+        };
+        assert_eq!(counted(&items(1)), Ok(1));
+        assert_eq!(counted(&items(3)), Ok(3));
+        assert_eq!(counted(&items(5000)), Ok(5000));
+        assert_eq!(
+            counted("<dc:subject><rdf:Bag><rdf:li>a</rdf:li><dc:a>b</dc:a></rdf:Bag></dc:subject>"),
+            Err("Arrays cannot have arbitrary child names".to_owned())
+        );
+        assert_eq!(
+            counted("<dc:s><rdf:Description><rdf:li>a</rdf:li></rdf:Description></dc:s>"),
+            Err("Misplaced rdf:li element".to_owned())
+        );
+        assert_eq!(
+            counted("<dc:s><rdf:Description><dc:a>1</dc:a><dc:a>2</dc:a></rdf:Description></dc:s>"),
+            Err("Duplicate property or field node 'http://purl.org/dc/elements/1.1/a'".to_owned())
+        );
     }
 
     fn hex(text: &str) -> Vec<u8> {
