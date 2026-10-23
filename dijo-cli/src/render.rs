@@ -108,19 +108,6 @@ pub fn open_spooling(extractor: &Extractor, path: &Path, spool: &EmbeddedSpool) 
         .map_err(|e| ExtractionError::from_error(&e))
 }
 
-/// Writes the extraction of `path` to `sink`. Extraction failures are reported in the returned
-/// outcome; an `Err` means the sink itself could not be written.
-pub fn render(
-    extractor: &Extractor,
-    path: &Path,
-    display: &str,
-    options: RenderOptions,
-    sink: &mut dyn Write,
-) -> io::Result<Outcome> {
-    let source = source(path, display, None);
-    render_opened(open(extractor, path), &source, options, sink)
-}
-
 /// Writes an extraction that was already opened, reporting it under `source`.
 pub fn render_opened(
     opened: Opened,
@@ -445,13 +432,11 @@ fn write_field(sink: &mut dyn Write, name: &str, value: &impl serde::Serialize) 
 /// The provenance of a document: the input it came from, where inside it when embedded, and its
 /// size and BLAKE3 hash.
 pub fn source(path: &Path, display: &str, embedded_path: Option<String>) -> Source {
-    let digest = fs::File::open(path).and_then(|mut file| {
-        let mut hasher = blake3::Hasher::new();
-        let size = io::copy(&mut file, &mut hasher)?;
-        Ok((size, hasher.finalize().to_hex().to_string()))
-    });
-    let (size, blake3) = match digest {
-        Ok((size, hash)) => (Some(size), Some(hash)),
+    let (size, blake3) = match hash_file(path) {
+        Ok(hasher) => (
+            Some(hasher.count()),
+            Some(hasher.finalize().to_hex().to_string()),
+        ),
         Err(_) => (None, None),
     };
     Source {
@@ -460,6 +445,14 @@ pub fn source(path: &Path, display: &str, embedded_path: Option<String>) -> Sour
         size,
         blake3,
     }
+}
+
+/// A BLAKE3 hasher fed the whole content of the file at `path`, read in blocks wide enough for
+/// every SIMD implementation.
+pub fn hash_file(path: &Path) -> io::Result<blake3::Hasher> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_reader(fs::File::open(path)?)?;
+    Ok(hasher)
 }
 
 /// Splits the extracted XHTML into pages or elements, normalises each, moves running headers and
@@ -704,5 +697,22 @@ mod tests {
         let text = "quote \" backslash \\ newline \n tab \t bell \u{7} backspace \u{8} feed \u{c} æøå 漢字 🎉";
         let expected = serde_json::to_string(text).unwrap();
         assert_eq!(format!("\"{}\"", escape(text)), expected);
+    }
+
+    #[test]
+    fn hashing_a_file_matches_copying_it_into_a_hasher() {
+        let spool = crate::spool::Spool::create(None).unwrap();
+        for size in [0, 1, 1023, 1024, 8192, 65535, 65536, 65537, 200_000] {
+            let content: Vec<u8> = (0..size).map(|i| (i * 31 % 251) as u8).collect();
+            let path = spool.path(&format!("input-{size}"));
+            fs::write(&path, &content).unwrap();
+            let mut copied = blake3::Hasher::new();
+            let mut file = fs::File::open(&path).unwrap();
+            let copied_size = io::copy(&mut file, &mut copied).unwrap();
+            let hashed = hash_file(&path).unwrap();
+            assert_eq!(hashed.count(), copied_size, "size of {size}");
+            assert_eq!(hashed.finalize(), copied.finalize(), "hash of {size}");
+        }
+        assert!(hash_file(&spool.path("missing")).is_err());
     }
 }

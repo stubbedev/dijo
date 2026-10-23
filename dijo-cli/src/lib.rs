@@ -487,21 +487,19 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
     let keep_failed = matches!(args.format, Format::Json | Format::Pages | Format::Elements);
     let rendered = write_sink(&sink, keep_failed, |writer| match args.embedded {
         Embedded::Inline => {
+            let source = render::source(path, &input.display, None);
             let render = |writer: &mut dyn Write| {
-                render::render(extractor, path, &input.display, options, writer)
+                render::render_opened(render::open(extractor, path), &source, options, writer)
             };
             match cache {
-                Some(cache) => {
-                    let source = render::source(path, &input.display, None);
-                    cache.render(
-                        path,
-                        &input.display,
-                        &source,
-                        output_settings(args),
-                        writer,
-                        render,
-                    )
-                }
+                Some(cache) => cache.render(
+                    path,
+                    &input.display,
+                    &source,
+                    output_settings(args),
+                    writer,
+                    render,
+                ),
                 None => render(writer),
             }
         }

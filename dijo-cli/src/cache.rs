@@ -117,8 +117,9 @@ impl Cache {
             .map_err(|e| format!("Failed to locate the running executable: {e}"))?;
         let mut build = blake3::Hasher::new();
         build.update(
-            hash_file(&executable)
+            render::hash_file(&executable)
                 .map_err(|e| format!("Failed to hash {}: {e}", executable.display()))?
+                .finalize()
                 .as_bytes(),
         );
         build.update(tesseract_version().as_bytes());
@@ -147,19 +148,22 @@ impl Cache {
         sink: &mut dyn Write,
         render: impl FnOnce(&mut dyn Write) -> io::Result<Outcome>,
     ) -> io::Result<Outcome> {
-        match self.lookup(path, name, settings)? {
+        match self.lookup(path, name, source, settings)? {
             Lookup::Hit(hit) => hit.replay(sink, source),
             Lookup::Miss(miss) => miss.store(sink, source, render),
         }
     }
 
+    /// Looks up the input at `path`, known as `display`, whose provenance `source` carries its
+    /// content hash when it could be read.
     pub fn lookup(
         &self,
         path: &Path,
         display: &str,
+        source: &Source,
         settings: OutputSettings,
     ) -> io::Result<Lookup<'_>> {
-        let entry = self.entry(path, display, settings)?;
+        let entry = self.entry(path, display, source, settings)?;
         match OpenOptions::new().read(true).write(true).open(&entry) {
             Ok(file) => Ok(Lookup::Hit(Hit { file, entry })),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -229,11 +233,21 @@ impl Cache {
         Ok(())
     }
 
-    fn entry(&self, path: &Path, display: &str, settings: OutputSettings) -> io::Result<PathBuf> {
+    fn entry(
+        &self,
+        path: &Path,
+        display: &str,
+        source: &Source,
+        settings: OutputSettings,
+    ) -> io::Result<PathBuf> {
         let mut key = blake3::Hasher::new();
         key.update(self.build.as_bytes());
         key.update(format!("{}\0{display}\0", settings.key()).as_bytes());
-        key.update(self.content_hash(path)?.as_bytes());
+        let hashed = source
+            .blake3
+            .as_deref()
+            .and_then(|hash| blake3::Hash::from_hex(hash).ok());
+        key.update(self.content_hash(path, hashed)?.as_bytes());
         let key = key.finalize().to_hex();
         Ok(self.dir.join(&key[..2]).join(key.as_str()))
     }
@@ -241,10 +255,17 @@ impl Cache {
 
 impl Cache {
     /// The BLAKE3 hash of the input's content, from the record of its last hashing when the
-    /// policy trusts modification times and the record still matches.
-    fn content_hash(&self, path: &Path) -> io::Result<blake3::Hash> {
+    /// policy trusts modification times and the record still matches, or else `hashed`, the
+    /// hash already taken of it, if any.
+    fn content_hash(&self, path: &Path, hashed: Option<blake3::Hash>) -> io::Result<blake3::Hash> {
+        let hash_now = || -> io::Result<blake3::Hash> {
+            match hashed {
+                Some(hash) => Ok(hash),
+                None => Ok(render::hash_file(path)?.finalize()),
+            }
+        };
         if !self.policy.trust_mtime {
-            return hash_file(path);
+            return hash_now();
         }
         let metadata = fs::metadata(path)?;
         let modified = metadata
@@ -268,7 +289,7 @@ impl Cache {
         if let Some(hash) = recorded {
             return Ok(hash);
         }
-        let hash = hash_file(path)?;
+        let hash = hash_now()?;
         fs::create_dir_all(&records)?;
         let temporary = records.join(format!(
             "{TEMPORARY_PREFIX}{}-{}",
@@ -511,12 +532,6 @@ impl Write for Tee<'_> {
     fn flush(&mut self) -> io::Result<()> {
         self.sink.flush()
     }
-}
-
-fn hash_file(path: &Path) -> io::Result<blake3::Hash> {
-    let mut hasher = blake3::Hasher::new();
-    io::copy(&mut File::open(path)?, &mut hasher)?;
-    Ok(hasher.finalize())
 }
 
 /// The version tesseract reports, or why there is none, since OCR output depends on it.

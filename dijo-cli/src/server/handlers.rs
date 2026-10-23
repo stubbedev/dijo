@@ -166,7 +166,7 @@ fn extract(
         return;
     }
     let source = render::source(&files.path, &files.display, None);
-    let lookup = cache.map(|cache| cache.lookup(&files.path, &files.display, settings));
+    let lookup = cache.map(|cache| cache.lookup(&files.path, &files.display, &source, settings));
     let miss = match lookup {
         None => None,
         Some(Ok(Lookup::Hit(hit))) => {
