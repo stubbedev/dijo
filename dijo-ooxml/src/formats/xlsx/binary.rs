@@ -7,7 +7,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::cell::CellAddress;
 use super::header_footer;
 use super::sheet::{SheetOutput, SheetSettings};
 use super::{excel, refuse_strict, sheet_kind, Sheet, Workbook};
@@ -431,7 +430,7 @@ impl Styles {
 
     /// `getNumberFormatIndex` and `getNumberFormatString` of a cell's style, the general format
     /// where POI knows none; a style it lacks fails.
-    fn number_format(&self, style: usize) -> Result<(i16, String), Failure> {
+    fn number_format(&self, style: usize) -> Result<(i16, &str), Failure> {
         let index = *self.style_formats.get(style).ok_or_else(|| {
             Failure::Malformed(format!(
                 "IndexOutOfBoundsException: Index {style} out of bounds for length {}",
@@ -441,11 +440,11 @@ impl Styles {
         let format = self
             .formats
             .get(&index)
-            .cloned()
-            .or_else(|| builtin_format(i32::from(index)).map(str::to_owned));
+            .map(String::as_str)
+            .or_else(|| builtin_format(i32::from(index)));
         Ok(match format {
             Some(format) => (index, format),
-            None => (0, "General".to_owned()),
+            None => (0, "General"),
         })
     }
 }
@@ -611,7 +610,6 @@ fn write_sheets(
             formatter: &mut formatter,
             output: &mut output,
             xhtml: &mut *xhtml,
-            row: 0,
             last_started: -1,
             last_ended: -1,
         };
@@ -646,7 +644,6 @@ struct SheetReader<'r, 'x, 'h> {
     formatter: &'r mut DataFormatter,
     output: &'r mut SheetOutput,
     xhtml: &'x mut Xhtml<'h>,
-    row: i32,
     last_started: i32,
     last_ended: i32,
 }
@@ -673,23 +670,22 @@ impl SheetReader<'_, '_, '_> {
                         "XSSFBParseException: Row number beyond allowable range: {row}"
                     )));
                 }
-                self.row = row;
                 self.start_row(row)?;
             }
             record::CELL_ISST => {
                 let column = self.column(data)?;
                 let index = cast_to_int(u32_at(data, CELL_HEADER)?)?;
+                let strings = self.strings;
                 let text = usize::try_from(index)
                     .ok()
-                    .and_then(|index| self.strings.get(index))
+                    .and_then(|index| strings.get(index))
                     .ok_or_else(|| {
                         Failure::Malformed(format!(
                             "IndexOutOfBoundsException: Index {index} out of bounds for length {}",
-                            self.strings.len()
+                            strings.len()
                         ))
-                    })?
-                    .clone();
-                self.cell(column, &text)?;
+                    })?;
+                self.cell(column, text)?;
             }
             record::CELL_ST | record::FORMULA_STRING => {
                 let column = self.column(data)?;
@@ -768,14 +764,9 @@ impl SheetReader<'_, '_, '_> {
         Ok(())
     }
 
+    /// A cell in `column`, which a cell's header holds from 0.
     fn cell(&mut self, column: i32, text: &str) -> Result<(), Failure> {
-        let reference = CellAddress {
-            row: self.row,
-            column,
-        }
-        .format();
-        self.output
-            .cell(Some(&reference), Some(text), None, self.xhtml)
+        self.output.cell(Some(column), Some(text), None, self.xhtml)
     }
 
     /// A number written in its cell's style's number format.
@@ -785,7 +776,7 @@ impl SheetReader<'_, '_, '_> {
             Failure::Malformed("NullPointerException: the workbook has no styles".to_owned())
         })?;
         let (index, format) = styles.number_format(style)?;
-        let text = match self.formatter.format_raw(value, i32::from(index), &format) {
+        let text = match self.formatter.format_raw(value, i32::from(index), format) {
             Ok(text) => text,
             Err(FormatError::Thrown(reason)) => return Err(Failure::Malformed(reason)),
             Err(FormatError::Unported(what)) => {

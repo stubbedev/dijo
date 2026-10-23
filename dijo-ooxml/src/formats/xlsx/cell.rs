@@ -154,31 +154,62 @@ impl CellAddress {
         (self.row, self.column).cmp(&(other.row, other.column))
     }
 
-    /// `formatAsString`: the column's letters and the row from 1.
-    pub(crate) fn format(&self) -> String {
-        format!("{}{}", column_letters(self.column), i64::from(self.row) + 1)
+    /// `formatAsString` read back by [`reference_column`]: the column, where a column before the
+    /// first is written without letters.
+    pub(crate) fn written_column(&self) -> i32 {
+        self.column.max(-1)
     }
-}
-
-/// `CellReference.convertNumToColString`.
-fn column_letters(column: i32) -> String {
-    let mut excel = i64::from(column) + 1;
-    let mut letters = Vec::new();
-    while excel > 0 {
-        let mut digit = excel % 26;
-        if digit == 0 {
-            digit = 26;
-        }
-        letters.push(char::from(b'A' + u8::try_from(digit - 1).unwrap_or(0)));
-        excel = (excel - digit) / 26;
-    }
-    letters.iter().rev().collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// `CellAddress.formatAsString`: the column's letters, by
+    /// `CellReference.convertNumToColString`, and the row from 1.
+    fn format(address: CellAddress) -> String {
+        let mut excel = i64::from(address.column) + 1;
+        let mut letters = Vec::new();
+        while excel > 0 {
+            let mut digit = excel % 26;
+            if digit == 0 {
+                digit = 26;
+            }
+            letters.push(char::from(b'A' + u8::try_from(digit - 1).unwrap_or(0)));
+            excel = (excel - digit) / 26;
+        }
+        let letters: String = letters.iter().rev().collect();
+        format!("{letters}{}", i64::from(address.row) + 1)
+    }
+
+    #[test]
+    fn reads_the_written_column_as_from_the_formatted_address() {
+        let columns = [
+            i32::MIN,
+            -20,
+            -2,
+            -1,
+            0,
+            1,
+            25,
+            26,
+            27,
+            701,
+            702,
+            16383,
+            i32::MAX - 1,
+        ];
+        for column in columns {
+            for row in [-1, 0, 41, 0x0010_0000, i32::MAX - 1] {
+                let address = CellAddress { row, column };
+                assert_eq!(
+                    address.written_column(),
+                    reference_column(&format(address)).unwrap(),
+                    "{address:?}"
+                );
+            }
+        }
+    }
     /// A column past what an `int` holds is invalid, where POI's arithmetic wraps it around to
     /// a column of the sheet (#186).
     #[test]
@@ -206,7 +237,7 @@ mod tests {
     fn reads_and_writes_addresses_as_poi_does() {
         let address = CellAddress::parse("ab12").unwrap();
         assert_eq!((address.row, address.column), (11, 27));
-        assert_eq!(address.format(), "AB12");
+        assert_eq!(format(address), "AB12");
         assert!(CellAddress::parse("A").is_err());
         assert!(CellAddress::parse("A1x").is_err());
     }

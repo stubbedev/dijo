@@ -109,17 +109,15 @@ impl SheetOutput {
         Ok(())
     }
 
+    /// A cell in `column`, the column after the last cell's where it has none.
     pub(crate) fn cell(
         &mut self,
-        reference: Option<&str>,
+        column: Option<i32>,
         value: Option<&str>,
         comment: Option<&Comment>,
         xhtml: &mut Xhtml,
     ) -> Result<(), Failure> {
-        let column = match reference {
-            None => self.last_seen_column.wrapping_add(1),
-            Some(reference) => reference_column(reference)?,
-        };
+        let column = column.unwrap_or_else(|| self.last_seen_column.wrapping_add(1));
         let mut gap = self.last_seen_column.wrapping_add(1);
         while gap < column {
             xhtml.start_element("td")?;
@@ -388,12 +386,9 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
             }
             None => None,
         };
-        self.output.cell(
-            self.has_reference.then_some(self.reference.as_str()),
-            text.as_deref(),
-            comment,
-            self.xhtml,
-        )
+        let column = self.reference().map(reference_column).transpose()?;
+        self.output
+            .cell(column, text.as_deref(), comment, self.xhtml)
     }
 
     /// The shared string the index `value` names, `None` for an index that is not an int.
@@ -467,9 +462,8 @@ impl<'r, 'x, 'h> SheetReader<'r, 'x, 'h> {
 
     fn output_empty_cell_comment(&mut self, cell: CellAddress) -> Result<(), Failure> {
         let comment = self.comments.and_then(|comments| comments.find(cell));
-        let reference = cell.format();
         self.output
-            .cell(Some(&reference), None, comment, self.xhtml)
+            .cell(Some(cell.written_column()), None, comment, self.xhtml)
     }
 }
 
