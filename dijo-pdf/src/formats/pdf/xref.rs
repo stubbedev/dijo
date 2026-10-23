@@ -884,10 +884,7 @@ impl<'a> Source<'a> {
     /// `%%%EOF`, and it returns a partial match that runs into the end (#115).
     fn find_string(&mut self, string: &[u8]) -> Option<i64> {
         let start = self.lexer.position().min(self.data.len());
-        let found = self.data[start..]
-            .windows(string.len())
-            .position(|window| window == string);
-        match found {
+        match memchr::memmem::find(&self.data[start..], string) {
             Some(at) => {
                 self.lexer.seek(start + at + string.len());
                 Some((start + at) as i64)
@@ -1522,9 +1519,7 @@ impl<'a> Parser<'a> {
 /// a partial match at the byte before the one that broke it, so it misses a match that
 /// overlaps the partial one (#115).
 fn last_index_of(pattern: &[u8], buffer: &[u8], end: usize) -> Option<usize> {
-    buffer[..end.min(buffer.len())]
-        .windows(pattern.len())
-        .rposition(|window| window == pattern)
+    memchr::memmem::rfind(&buffer[..end.min(buffer.len())], pattern)
 }
 
 /// Java's `String.trim`.
@@ -2071,6 +2066,42 @@ mod tests {
         assert_eq!(last_index_of(b"startxref", b"startxref", 8), None);
         assert_eq!(last_index_of(b"abab", b"xabababy", 8), Some(3));
         assert_eq!(last_index_of(b"%%EOF", b"%%EOFF", 6), Some(0));
+    }
+
+    #[test]
+    fn searches_as_windows_search() {
+        let buffers: [&[u8]; 8] = [
+            b"",
+            b"%%EO",
+            b"%%EOF",
+            b"%%%EOF%%EOF",
+            b"xref\nxrefxref",
+            b"trailer trailer\r\n%%EOFF",
+            b"abababab",
+            b"no match here",
+        ];
+        let patterns: [&[u8]; 6] = [b"%%EOF", b"xref", b"trailer", b"abab", b"a", b"startxref"];
+        for buffer in buffers {
+            for pattern in patterns {
+                for end in 0..=buffer.len() + 1 {
+                    let windows = buffer[..end.min(buffer.len())]
+                        .windows(pattern.len())
+                        .rposition(|window| window == pattern);
+                    assert_eq!(last_index_of(pattern, buffer, end), windows);
+                }
+                for start in 0..=buffer.len() {
+                    let mut source = Source::new(buffer);
+                    source.lexer.seek(start);
+                    let windows = buffer[start..]
+                        .windows(pattern.len())
+                        .position(|window| window == pattern);
+                    let found = source.find_string(pattern);
+                    assert_eq!(found, windows.map(|at| (start + at) as i64));
+                    let after = windows.map_or(buffer.len(), |at| start + at + pattern.len());
+                    assert_eq!(source.lexer.position(), after);
+                }
+            }
+        }
     }
 
     #[test]
