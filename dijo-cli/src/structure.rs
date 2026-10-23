@@ -339,7 +339,7 @@ impl Splitter<'_> {
             }
         }
         let current = self.current_text();
-        if text.trim().is_empty() && (current.is_empty() || current.ends_with('\n')) {
+        if blank && (current.is_empty() || current.ends_with('\n')) {
             return Ok(());
         }
         current.push_str(text);
@@ -600,21 +600,20 @@ pub fn split(
             }
             Event::Text(text) => splitter.text(&text.xml10_content())?,
             Event::CData(data) => splitter.text(&data.xml10_content())?,
-            Event::GeneralRef(reference) => {
-                let resolved = match reference.resolve_char_ref() {
-                    Ok(Some(character)) => character.to_string(),
-                    Ok(None) => {
-                        let name = reference.xml10_content();
-                        resolve_predefined_entity(&name)
-                            .map_or_else(|| format!("&{name};"), str::to_string)
+            Event::GeneralRef(reference) => match reference.resolve_char_ref() {
+                Ok(Some(character)) => splitter.text(character.encode_utf8(&mut [0; 4]))?,
+                Ok(None) => {
+                    let name = reference.xml10_content();
+                    match resolve_predefined_entity(&name) {
+                        Some(resolved) => splitter.text(resolved)?,
+                        None => splitter.text(&format!("&{name};"))?,
                     }
-                    Err(error) => {
-                        splitter.flush_open()?;
-                        return Ok(Err(SplitError::Malformed(error.to_string())));
-                    }
-                };
-                splitter.text(&resolved)?;
-            }
+                }
+                Err(error) => {
+                    splitter.flush_open()?;
+                    return Ok(Err(SplitError::Malformed(error.to_string())));
+                }
+            },
             Event::Eof => break,
             Event::Comment(_) | Event::Decl(_) | Event::PI(_) | Event::DocType(_) => {}
         }
@@ -698,6 +697,16 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn references_resolve_to_their_characters() {
+        let xhtml = r#"<html><body><div class="page"><p>a&#233;&#x1F389;&#65;&lt;&amp;&gt;&apos;&quot;&unknown;b</p></div></body></html>"#;
+        let pages: Vec<_> = parts(xhtml, Unit::Pages)
+            .into_iter()
+            .map(|part| part.text)
+            .collect();
+        assert_eq!(pages, ["a\u{e9}\u{1F389}A<&>'\"&unknown;b"]);
     }
 
     #[test]
