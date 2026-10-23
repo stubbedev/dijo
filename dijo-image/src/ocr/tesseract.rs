@@ -691,12 +691,7 @@ impl Tesseract {
             unsafe { (api.delete)(handle.as_ptr()) };
             return Err(unloadable());
         }
-        let variables: &[(&CStr, &CStr)] = if model == OSD_MODEL {
-            &[]
-        } else {
-            &[(c"page_separator", c"")]
-        };
-        for (name, value) in variables {
+        for (name, value) in engine_variables(model) {
             unsafe { (api.set_variable)(handle.as_ptr(), name.as_ptr(), value.as_ptr()) };
         }
         Ok(Engine(handle))
@@ -721,6 +716,14 @@ impl Drop for Tesseract {
         for idle in idle.into_values().flatten() {
             unsafe { (self.api.delete)(idle.engine.0.as_ptr()) };
         }
+    }
+}
+
+fn engine_variables(model: &str) -> &'static [(&'static CStr, &'static CStr)] {
+    if model == OSD_MODEL {
+        &[]
+    } else {
+        &[(c"page_separator", c""), (c"textord_all_prop", c"1")]
     }
 }
 
@@ -908,6 +911,7 @@ impl Drop for MonitorGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::c_void;
 
     /// `ci/tesseract-library` builds the bundled library to export the functions this module calls,
     /// which it lists in `c-api.txt`.
@@ -1083,6 +1087,104 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[cfg(all(not(feature = "static"), not(windows)))]
+    fn address_of(tesseract: &Tesseract, symbol: &str) -> Result<*const c_void, String> {
+        unsafe { tesseract._library.get::<*const c_void>(symbol.as_bytes()) }
+            .map(|address| *address)
+            .map_err(|e| format!("tesseract's library has no {symbol}: {e}"))
+    }
+
+    #[cfg(all(not(feature = "static"), target_os = "linux"))]
+    #[test]
+    fn tesseract_keeps_word_images_as_pix_without_a_png_round_trip() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        address_of(tesseract, "_ZN9tesseract9ImageData6SetPixENS_5ImageE").unwrap();
+        for png_round_trip in [
+            "_ZN9tesseract9ImageData14SetPixInternalENS_5ImageEPSt6vectorIcSaIcEE",
+            "_ZN9tesseract9ImageData14GetPixInternalERKSt6vectorIcSaIcEE",
+        ] {
+            assert!(
+                address_of(tesseract, png_round_trip).is_err(),
+                "tesseract was built without TESSERACT_IMAGEDATA_AS_PIX: it has {png_round_trip}"
+            );
+        }
+    }
+
+    #[cfg(all(
+        not(feature = "static"),
+        not(windows),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    const SELECTED_INTEGER_KERNEL: &str = "_ZN9tesseract13IntSimdMatrix13intSimdMatrixE";
+
+    #[cfg(all(not(feature = "static"), not(windows), target_arch = "x86_64"))]
+    const SIMD_INTEGER_KERNELS: &[(&str, &str)] = &[
+        ("AVX2", "_ZN9tesseract13IntSimdMatrix17intSimdMatrixAVX2E"),
+        ("SSE4.1", "_ZN9tesseract13IntSimdMatrix16intSimdMatrixSSEE"),
+    ];
+
+    #[cfg(all(not(feature = "static"), not(windows), target_arch = "aarch64"))]
+    const SIMD_INTEGER_KERNELS: &[(&str, &str)] =
+        &[("NEON", "_ZN9tesseract13IntSimdMatrix17intSimdMatrixNEONE")];
+
+    fn kernel_named(
+        selected: *const c_void,
+        kernels: &[(&'static str, *const c_void)],
+    ) -> Option<&'static str> {
+        kernels
+            .iter()
+            .find(|(_, kernel)| !kernel.is_null() && *kernel == selected)
+            .map(|(name, _)| *name)
+    }
+
+    #[test]
+    fn names_the_simd_kernel_tesseract_selected_and_none_for_the_generic_one() {
+        let avx2 = 0x1000 as *const c_void;
+        let sse = 0x2000 as *const c_void;
+        let kernels = [("AVX2", avx2), ("SSE4.1", sse)];
+        assert_eq!(kernel_named(sse, &kernels), Some("SSE4.1"));
+        assert_eq!(kernel_named(avx2, &kernels), Some("AVX2"));
+        assert_eq!(kernel_named(std::ptr::null(), &kernels), None);
+        assert_eq!(kernel_named(0x3000 as *const _, &kernels), None);
+    }
+
+    #[cfg(all(
+        not(feature = "static"),
+        not(windows),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn the_linked_tesseract_selected_a_simd_dot_product_kernel() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let selected_slot = address_of(tesseract, SELECTED_INTEGER_KERNEL).unwrap();
+        let selected = unsafe { *selected_slot.cast::<*const c_void>() };
+        let kernels: Vec<_> = SIMD_INTEGER_KERNELS
+            .iter()
+            .map(|&(name, symbol)| (name, address_of(tesseract, symbol).unwrap()))
+            .collect();
+        assert!(
+            kernel_named(selected, &kernels).is_some(),
+            "tesseract {} selected the generic dot-product kernel, none of {:?}",
+            tesseract.version(),
+            kernels.iter().map(|(name, _)| name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn reading_engines_skip_the_fixed_pitch_test() {
+        for model in ["eng", "script/Latin", "eng+deu"] {
+            assert!(
+                engine_variables(model).contains(&(c"textord_all_prop", c"1")),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_orientation_engine_keeps_tesseracts_defaults() {
+        assert!(engine_variables(OSD_MODEL).is_empty());
     }
 
     #[test]

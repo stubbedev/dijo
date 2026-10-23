@@ -12,16 +12,21 @@
 //! kept, the long s of early modern print, which tesseract reads as f, is restored by the
 //! dictionary of the language's model.
 
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
+
+use image::GrayImage;
 
 use super::bitmap::{Bitmap, Density};
 use super::flatten::flatten;
 use super::prepare::{self, Orientation};
 use super::report::Report;
-use super::script::{installed_language, language, language_model, written_in};
+use super::script::{
+    installed_language, language, language_model, tagged_language, written_in, BLACKLETTER_SCRIPT,
+};
 use super::tesseract::{OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding};
-use super::text::{corrected, with_long_s};
+use super::text::{corrected, lexicality, with_long_s};
 use crate::config::TesseractOcrConfig;
 use crate::formats::embedded::OcrLanguage;
 use crate::language::{self as detection, DetectedLanguage};
@@ -52,6 +57,7 @@ const OVERLOOKED_SCRIPTS: [&str; 3] = ["Armenian", "Georgian", "Hebrew"];
 /// overlooked ones tried.
 const REPORTED_FOR: [(&str, &str); 1] = [("Malayalam", "Georgian")];
 const MIN_WORDS_TO_RETRY: usize = 20;
+const LANGUAGE_STRIP_LINES: usize = 6;
 /// Pages are segmented without tesseract's own orientation and script detection (mode 3, where
 /// Tika's default is 1): an image is turned upright before it is read, and detection runs only
 /// when a first reading needs it.
@@ -104,6 +110,27 @@ impl OcrSettings {
     /// Whether each image's script is detected, and its first script is learned.
     pub fn auto(&self) -> bool {
         self.language == Language::Auto
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LanguageHint {
+    code: &'static str,
+    script: &'static str,
+}
+
+impl LanguageHint {
+    pub fn tagged(tag: &str) -> Option<Self> {
+        tagged_language(tag).map(|(code, script)| Self { code, script })
+    }
+
+    pub fn detected(text: &str) -> Option<Self> {
+        detection::detect(text)
+            .filter(|detected| detected.reliable)
+            .map(|detected| Self {
+                code: detected.code,
+                script: detected.script,
+            })
     }
 }
 
@@ -447,20 +474,7 @@ impl<'t> Recognizer<'t> {
     ) -> Result<Recognized, OcrError> {
         let auto = self.settings.auto();
         let oriented = Oriented::of(image);
-        let first_language = match (auto, assumed) {
-            (false, _) => None,
-            (true, Some(assumed)) => Some(assumed.clone()),
-            (true, None) => Some(OcrLanguage {
-                script: ASSUMED_SCRIPT.to_owned(),
-                model: self.model(Some(ASSUMED_SCRIPT))?,
-            }),
-        };
-        let first = match &first_language {
-            Some(OcrLanguage { script, model }) => {
-                finish(image, &oriented, Some(script.clone()), model.clone(), 0)
-            }
-            None => finish(image, &oriented, None, self.model(None)?, 0),
-        };
+        let first = self.first_preparation(image, &oriented, assumed)?;
         if image.file_size > MAX_FILE_SIZE {
             return Ok(Recognized {
                 read: Attempt {
@@ -471,13 +485,19 @@ impl<'t> Recognizer<'t> {
                 language: None,
             });
         }
-        let optimistic = Attempt::read(first.clone(), self.read(image, &first)?);
+        let seeded = match (auto, assumed) {
+            (true, None) => self.in_language_of_strip(&first)?,
+            _ => None,
+        };
+        let (optimistic, unconfident_seeded) = self.read_first(image, first, seeded)?;
         let best = match optimistic.confident() || optimistic.in_a_language() {
             true => optimistic,
             false => self.read_detected(optimistic, image, &oriented)?,
         };
         let (best, detected) = match auto {
-            true => self.read_in_detected_language(best, image, &oriented)?,
+            true => {
+                self.read_in_detected_language(best, unconfident_seeded.as_ref(), image, &oriented)?
+            }
             false => (best, None),
         };
         let best = best.without_noise();
@@ -489,11 +509,115 @@ impl<'t> Recognizer<'t> {
             .as_ref()
             .map_or(&best.prepared.model, |language| &language.model)
             .clone();
+        let read_with_f = best.text().map(str::to_owned);
         let best = self.with_long_s(best, &dictionary)?;
+        let best = match best.text() == read_with_f.as_deref() {
+            true => best,
+            false => self.in_blackletter(best, image, &dictionary)?,
+        };
         Ok(Recognized {
             read: best,
             language,
         })
+    }
+
+    pub fn assumed(&self, hint: LanguageHint) -> Result<Option<OcrLanguage>, OcrError> {
+        match self.settings.auto() {
+            true => self.installed_language_model(hint.code, hint.script),
+            false => Ok(None),
+        }
+    }
+
+    fn installed_language_model(
+        &self,
+        code: &str,
+        script: &str,
+    ) -> Result<Option<OcrLanguage>, OcrError> {
+        let installed = self.tesseract.languages()?;
+        Ok(
+            language_model(&installed, code, script).map(|model| OcrLanguage {
+                script: script.to_owned(),
+                model: model.to_owned(),
+            }),
+        )
+    }
+
+    fn first_preparation(
+        &self,
+        image: &Image<'_>,
+        oriented: &Oriented,
+        assumed: Option<&OcrLanguage>,
+    ) -> Result<Prepared, OcrError> {
+        let first_language = match (self.settings.auto(), assumed) {
+            (false, _) => None,
+            (true, Some(assumed)) => Some(assumed.clone()),
+            (true, None) => Some(OcrLanguage {
+                script: ASSUMED_SCRIPT.to_owned(),
+                model: self.model(Some(ASSUMED_SCRIPT))?,
+            }),
+        };
+        Ok(match first_language {
+            Some(OcrLanguage { script, model }) => finish(image, oriented, Some(script), model, 0),
+            None => finish(image, oriented, None, self.model(None)?, 0),
+        })
+    }
+
+    fn read_first(
+        &self,
+        image: &Image<'_>,
+        first: Prepared,
+        seeded: Option<Prepared>,
+    ) -> Result<(Attempt, Option<Attempt>), OcrError> {
+        let Some(seeded) = seeded else {
+            return Ok((
+                Attempt::read(first.clone(), self.read(image, &first)?),
+                None,
+            ));
+        };
+        let seeded = Attempt::read(seeded.clone(), self.read(image, &seeded)?);
+        if seeded.confident() {
+            return Ok((seeded, None));
+        }
+        let unseeded = Attempt::read(first.clone(), self.read(image, &first)?);
+        Ok((unseeded.or(seeded.clone()), Some(seeded)))
+    }
+
+    fn in_language_of_strip(&self, first: &Prepared) -> Result<Option<Prepared>, OcrError> {
+        let Some(language) = self.language_of_strip(first)? else {
+            return Ok(None);
+        };
+        Ok((language.model != first.model)
+            .then(|| first.read_in(Some(language.script), language.model)))
+    }
+
+    fn language_of_strip(&self, first: &Prepared) -> Result<Option<OcrLanguage>, OcrError> {
+        let Some(Bitmap::Gray(prepared)) = first.image.as_deref() else {
+            return Ok(None);
+        };
+        let Some(rows) = language_strip(prepared) else {
+            return Ok(None);
+        };
+        let width = prepared.width() as usize;
+        let strip = Pixels::Gray {
+            data: &prepared.as_raw()[rows.start * width..rows.end * width],
+            width: prepared.width(),
+            height: rows.len() as u32,
+        };
+        let read = Attempt::read(first.clone(), self.read_pixels(strip, first)?);
+        match read.in_a_language() {
+            true => self.model_of_detected_language(&read),
+            false => Ok(None),
+        }
+    }
+
+    fn model_of_detected_language(&self, read: &Attempt) -> Result<Option<OcrLanguage>, OcrError> {
+        let Some(script) = read.prepared.script.as_deref() else {
+            return Ok(None);
+        };
+        let Some(detected) = read.language_in_its_script() else {
+            return Ok(None);
+        };
+        self.installed_language_model(detected.code, script)
     }
 
     /// Runs orientation and script detection on an image tesseract did not read confidently
@@ -552,32 +676,28 @@ impl<'t> Recognizer<'t> {
     fn read_in_detected_language(
         &self,
         best: Attempt,
+        read_before: Option<&Attempt>,
         image: &Image<'_>,
         oriented: &Oriented,
     ) -> Result<(Attempt, Option<OcrLanguage>), OcrError> {
-        let Some(script) = best.prepared.script.clone() else {
+        let Some(language) = self.model_of_detected_language(&best)? else {
             return Ok((best, None));
         };
-        let Some(detected) = best.language_in_its_script() else {
-            return Ok((best, None));
-        };
-        let installed = self.tesseract.languages()?;
-        let Some(model) = language_model(&installed, detected.code, &script) else {
-            return Ok((best, None));
-        };
-        let language = OcrLanguage {
-            script: script.clone(),
-            model: model.to_owned(),
-        };
-        if model == best.prepared.model {
+        if language.model == best.prepared.model {
             return Ok((best, Some(language)));
+        }
+        if let Some(read_before) = read_before.filter(|read_before| {
+            read_before.prepared.model == language.model
+                && read_before.prepared.quarter_turns == best.prepared.quarter_turns
+        }) {
+            return Ok((best.or(read_before.clone()), Some(language)));
         }
         let retried = prepare_again(
             &best.prepared,
             image,
             oriented,
-            Some(script),
-            model.to_owned(),
+            Some(language.script.clone()),
+            language.model.clone(),
             best.prepared.quarter_turns,
         );
         let reading = self.read(image, &retried)?;
@@ -633,6 +753,38 @@ impl<'t> Recognizer<'t> {
         Ok(attempt)
     }
 
+    fn in_blackletter(
+        &self,
+        modern: Attempt,
+        image: &Image<'_>,
+        dictionary: &str,
+    ) -> Result<Attempt, OcrError> {
+        if !self.settings.auto() {
+            return Ok(modern);
+        }
+        let installed = self.tesseract.languages()?;
+        let Some(model) = installed_language(&installed, BLACKLETTER_SCRIPT) else {
+            return Ok(modern);
+        };
+        if model == modern.prepared.model {
+            return Ok(modern);
+        }
+        let detected = self
+            .tesseract
+            .detect(pixels_of(image, &modern.prepared), modern.prepared.density)?;
+        if detected.script.as_deref() != Some(BLACKLETTER_SCRIPT) {
+            return Ok(modern);
+        }
+        let prepared = modern
+            .prepared
+            .read_in(modern.prepared.script.clone(), model);
+        let reading = self.read(image, &prepared)?;
+        let blackletter = Attempt::read(prepared, reading);
+        self.tesseract.with_dictionary(dictionary, |is_word| {
+            more_lexical(modern, blackletter, is_word)
+        })
+    }
+
     /// The model to read a script with: with the automatic language, the one for the script,
     /// else the configured one, which must be installed.
     fn model(&self, script: Option<&str>) -> Result<String, OcrError> {
@@ -646,8 +798,12 @@ impl<'t> Recognizer<'t> {
     }
 
     fn read(&self, image: &Image<'_>, prepared: &Prepared) -> Result<Reading, OcrError> {
+        self.read_pixels(pixels_of(image, prepared), prepared)
+    }
+
+    fn read_pixels(&self, pixels: Pixels<'_>, prepared: &Prepared) -> Result<Reading, OcrError> {
         let reading = self.tesseract.read(
-            pixels_of(image, prepared),
+            pixels,
             prepared.density,
             &prepared.model,
             SEGMENTATION,
@@ -678,6 +834,14 @@ fn pixels_of<'a>(image: &Image<'a>, prepared: &'a Prepared) -> Pixels<'a> {
     }
 }
 
+fn more_lexical(read: Attempt, replacement: Attempt, is_word: &dyn Fn(&str) -> bool) -> Attempt {
+    let lexicality_of = |attempt: &Attempt| lexicality(attempt.text().unwrap_or_default(), is_word);
+    match lexicality_of(&replacement) > lexicality_of(&read) {
+        true => replacement,
+        false => read,
+    }
+}
+
 /// The scripts to try when no reading is confident: the one detection reported, when another
 /// was read in its place, then those detection overlooks, except the scripts already read
 /// upright.
@@ -689,6 +853,24 @@ fn overlooked(reported: Option<&str>, tried: &[&str]) -> Vec<String> {
         }
     }
     scripts
+}
+
+fn language_strip(image: &GrayImage) -> Option<Range<usize>> {
+    let lines = prepare::ink_runs(image);
+    if lines.len() < LANGUAGE_STRIP_LINES {
+        return None;
+    }
+    let first = (lines.len() - LANGUAGE_STRIP_LINES) / 2;
+    let last = first + LANGUAGE_STRIP_LINES - 1;
+    let height = image.height() as usize;
+    let top = match first.checked_sub(1) {
+        Some(above) => lines[above].end.midpoint(lines[first].start),
+        None => 0,
+    };
+    let bottom = lines
+        .get(last + 1)
+        .map_or(height, |below| lines[last].end.midpoint(below.start));
+    (2 * (bottom - top) <= height).then_some(top..bottom)
 }
 
 fn reducible(script: Option<&str>) -> bool {
@@ -719,8 +901,8 @@ fn prepared<'b>(made: &'b Option<Arc<Bitmap>>, original: &'b Bitmap) -> &'b Bitm
 }
 
 /// Turns an oriented image by the quarter turns detection found, inverts light text on a dark
-/// ground, clears specks, whitens faint marks unless the lighting is uneven, corrects its skew
-/// and scales its text to a readable size.
+/// ground, clears specks, normalises the background when the lighting is uneven and whitens
+/// faint marks otherwise, corrects its skew and scales its text to a readable size.
 fn finish(
     image: &Image<'_>,
     oriented: &Oriented,
@@ -750,11 +932,11 @@ fn finish(
         )))));
     }
     let uneven_lighting = prepare::uneven_lighting(prepared(&made, original));
-    if !uneven_lighting {
-        made = Some(Arc::new(Bitmap::Gray(prepare::whiten_faint_marks(
-            prepared(&made, original),
-        ))));
-    }
+    made = Some(Arc::new(Bitmap::Gray(if uneven_lighting {
+        prepare::normalise_background(prepared(&made, original))
+    } else {
+        prepare::whiten_faint_marks(prepared(&made, original))
+    })));
     let skew_degrees = prepare::skew_degrees(prepared(&made, original));
     if skew_degrees != 0.0 {
         made = Some(Arc::new(prepared(&made, original).rotated(skew_degrees)));
@@ -892,5 +1074,191 @@ mod tests {
             overlooked(Some("Cyrillic"), &["Latin"]),
             ["Cyrillic", "Armenian", "Georgian", "Hebrew"]
         );
+    }
+
+    #[test]
+    fn evens_out_the_lighting_of_a_page_in_shadow() {
+        let page = prepare::tests::shadowed_page(800, 600);
+        let image = Image::of(&page, None, 0, None, None);
+        let oriented = Oriented {
+            image: Upright::AsItIs,
+            exif_orientation: None,
+            flattened: false,
+        };
+        let prepared = finish(&image, &oriented, None, "eng".to_owned(), 0);
+        assert!(prepared.uneven_lighting);
+        assert_eq!(prepared.thresholding(), Thresholding::Sauvola);
+        let made = prepared.image.expect("a prepared image");
+        assert!(!prepare::uneven_lighting(&made));
+    }
+
+    fn german(word: &str) -> bool {
+        ["die", "der", "Zulassung", "Frauen", "zur", "Sitzung"].contains(&word)
+    }
+
+    #[test]
+    fn keeps_the_blackletter_reading_with_more_words_of_the_language() {
+        let modern = attempt("Die Zulafsung der Srauen zur Situng", 66);
+        let blackletter = attempt("Die Zulassung der Frauen zur Sitzung", 80);
+        assert_eq!(
+            more_lexical(modern, blackletter, &german).text(),
+            Some("Die Zulassung der Frauen zur Sitzung")
+        );
+    }
+
+    #[test]
+    fn keeps_the_reading_it_would_replace_unless_the_other_has_more_words() {
+        let modern = attempt("Die Zulassung der Frauen zur Sitzung", 80);
+        let blackletter = attempt("Die Zulafsung der Frauen zur Sitzung", 90);
+        assert_eq!(
+            more_lexical(modern.clone(), blackletter, &german).text(),
+            Some("Die Zulassung der Frauen zur Sitzung")
+        );
+        let same = attempt("Die Zulassung der Frauen zur Sitzung", 95);
+        assert_eq!(more_lexical(modern, same, &german).confidence(), 80);
+    }
+
+    fn lines(height: u32, tops: impl IntoIterator<Item = u32>) -> GrayImage {
+        let mut page = GrayImage::from_pixel(400, height, image::Luma([255]));
+        for top in tops {
+            for y in top..top + 10 {
+                for x in 20..380 {
+                    page.put_pixel(x, y, image::Luma([0]));
+                }
+            }
+        }
+        page
+    }
+
+    #[test]
+    fn cuts_a_strip_of_lines_about_the_middle_between_lines() {
+        let page = lines(1000, (0..20).map(|line| 100 + line * 20));
+        assert_eq!(language_strip(&page), Some(235..355));
+    }
+
+    #[test]
+    fn cuts_no_strip_of_a_page_of_few_lines_or_of_most_of_it() {
+        assert_eq!(
+            language_strip(&lines(1000, (0..5).map(|line| 100 + line * 20))),
+            None
+        );
+        assert_eq!(
+            language_strip(&lines(400, (0..8).map(|line| 20 + line * 45))),
+            None
+        );
+    }
+
+    fn auto_settings() -> OcrSettings {
+        OcrSettings::of(&TesseractOcrConfig::new().set_language(TesseractOcrConfig::AUTO_LANGUAGE))
+    }
+
+    fn scan(name: &str) -> Bitmap {
+        Bitmap::Gray(
+            image::open(format!("../quality/corpus/{name}"))
+                .unwrap()
+                .to_luma8(),
+        )
+    }
+
+    fn first_model(name: &str, assumed: Option<&OcrLanguage>) -> String {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let settings = auto_settings();
+        let recognizer = Recognizer::new(tesseract, &settings);
+        let bitmap = scan(name);
+        let image = Image::of(&bitmap, None, 0, None, Density::per_inch(300.0, 300.0));
+        let oriented = Oriented::of(&image);
+        let first = recognizer
+            .first_preparation(&image, &oriented, assumed)
+            .unwrap();
+        match assumed {
+            Some(_) => first.model,
+            None => recognizer
+                .in_language_of_strip(&first)
+                .unwrap()
+                .map_or(first.model, |seeded| seeded.model),
+        }
+    }
+
+    #[test]
+    fn reads_a_first_image_first_with_the_model_of_the_language_of_a_strip() {
+        assert_eq!(first_model("spanish-scan.png", None), "spa");
+        assert_eq!(first_model("german-scan.png", None), "deu");
+    }
+
+    #[test]
+    fn reads_a_first_image_in_no_language_first_with_the_script_model() {
+        assert_eq!(
+            first_model("prose-scan-upside-down.png", None),
+            "script/Latin"
+        );
+        assert_eq!(first_model("russian-scan.png", None), "script/Latin");
+    }
+
+    #[test]
+    fn reads_a_first_image_first_with_the_model_of_the_language_hinted() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let settings = auto_settings();
+        let recognizer = Recognizer::new(tesseract, &settings);
+        let assumed = recognizer
+            .assumed(LanguageHint::tagged("es-ES").unwrap())
+            .unwrap();
+        let spanish = OcrLanguage {
+            script: "Latin".to_owned(),
+            model: "spa".to_owned(),
+        };
+        assert_eq!(assumed.as_ref(), Some(&spanish));
+        assert_eq!(first_model("spanish-scan.png", assumed.as_ref()), "spa");
+        let configured = OcrSettings::of(&TesseractOcrConfig::new());
+        let hint = LanguageHint::detected(SPANISH).unwrap();
+        assert_eq!(
+            Recognizer::new(tesseract, &configured)
+                .assumed(hint)
+                .unwrap(),
+            None
+        );
+        assert_eq!(recognizer.assumed(hint).unwrap(), Some(spanish));
+    }
+
+    #[test]
+    fn reads_a_first_image_once_in_the_language_of_a_strip_as_it_read_it_before() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let settings = auto_settings();
+        let bitmap = scan("spanish-scan.png");
+        let image = Image::of(&bitmap, None, 0, None, Density::per_inch(300.0, 300.0));
+        let Recognized { read, language } = Recognizer::new(tesseract, &settings)
+            .recognize(&image, None)
+            .unwrap();
+        assert_eq!(
+            language,
+            Some(OcrLanguage {
+                script: "Latin".to_owned(),
+                model: "spa".to_owned(),
+            })
+        );
+        let text = read.text().unwrap();
+        assert!(
+            text.contains("Declaración Universal de Derechos Humanos"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn keeps_the_script_reading_of_a_first_image_its_languages_model_reads_unconfidently() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let settings = auto_settings();
+        let bitmap = scan("luxembourgish-scan.png");
+        let image = Image::of(&bitmap, None, 0, None, Density::per_inch(300.0, 300.0));
+        assert_eq!(first_model("luxembourgish-scan.png", None), "ltz");
+        let Recognized { read, language } = Recognizer::new(tesseract, &settings)
+            .recognize(&image, None)
+            .unwrap();
+        assert_eq!(read.prepared.model, "script/Latin");
+        assert_eq!(
+            language.map(|language| language.model).as_deref(),
+            Some("ltz")
+        );
+        let text = read.text().unwrap();
+        assert!(text.starts_with("UNIVERSAL - DEKLARATIOUN"), "{text}");
+        assert!(text.contains("Dignitéit, déi all Mêmber"), "{text}");
     }
 }

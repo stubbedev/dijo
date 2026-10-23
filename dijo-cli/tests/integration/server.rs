@@ -171,8 +171,18 @@ fn a_worker_process_whose_extraction_timed_out_is_replaced() {
         .post_file("/extract?format=json&ocr=always", &[], "2022_Q3_AAPL.pdf")
         .json();
     assert_eq!(document["errors"][0]["category"], "timeout");
-    let metrics = server.request("GET", "/metrics", &[], b"").text();
-    assert!(metrics.contains("dijo_workers 0"), "{metrics}");
+    let started = Instant::now();
+    loop {
+        let metrics = server.request("GET", "/metrics", &[], b"").text();
+        if metrics.contains("dijo_workers 0") {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the worker process was not stopped: {metrics}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let next = server.post_file("/extract", &[], "simple.odt");
     assert!(next
         .text()

@@ -6,6 +6,8 @@
 //! threshold. Turning and rotating keep the colours of an image ([`Bitmap`]); the other
 //! corrections make it grey.
 
+use std::ops::Range;
+
 use image::GrayImage;
 
 use super::bitmap::Bitmap;
@@ -26,6 +28,8 @@ const MIN_INK_RUN_PIXELS: usize = 3;
 const LIGHTING_TILES: u32 = 8;
 const BACKGROUND_PERCENTILE: f64 = 0.9;
 const UNEVEN_BACKGROUND_LEVELS: u32 = 48;
+const BACKGROUND_BLOCK_PIXELS: u32 = 16;
+const BACKGROUND_CLOSING_BLOCKS: usize = 2;
 const MIN_INVERTED_DARK_PERCENT: u64 = 85;
 const MIN_SPECKLE_PERCENT: u64 = 2;
 const INK_PERCENTILE: f64 = 0.005;
@@ -170,24 +174,7 @@ fn sharpness(points: &[(f64, f64)], degrees: f64, diagonal: i64, rows: &mut [u64
 pub(crate) fn scale_factor(image: &Bitmap, max_pixels: u64, reduce: bool) -> f64 {
     let image = image.gray();
     let (width, height) = image.dimensions();
-    let levels = image.as_raw();
-    let darkest: Vec<u8> = levels
-        .chunks_exact(width as usize)
-        .map(|row| row.iter().copied().min().unwrap_or(WHITE))
-        .collect();
-    let threshold = otsu_threshold(&histogram(levels));
-    let mut runs = Vec::new();
-    let mut run = 0;
-    for y in 0..=darkest.len() {
-        if y < darkest.len() && u32::from(darkest[y]) < threshold {
-            run += 1;
-            continue;
-        }
-        if run >= MIN_INK_RUN_PIXELS {
-            runs.push(run);
-        }
-        run = 0;
-    }
+    let mut runs: Vec<usize> = ink_runs(&image).into_iter().map(|run| run.len()).collect();
     if runs.is_empty() {
         return 1.0;
     }
@@ -216,6 +203,27 @@ pub(crate) fn scale_factor(image: &Bitmap, max_pixels: u64, reduce: bool) -> f64
     wanted.min(allowed).max(1.0)
 }
 
+pub(crate) fn ink_runs(image: &GrayImage) -> Vec<Range<usize>> {
+    let levels = image.as_raw();
+    let threshold = otsu_threshold(&histogram(levels));
+    let inked: Vec<bool> = levels
+        .chunks_exact(image.width() as usize)
+        .map(|row| row.iter().any(|&level| u32::from(level) < threshold))
+        .collect();
+    let mut runs = Vec::new();
+    let mut start = 0;
+    for y in 0..=inked.len() {
+        if y < inked.len() && inked[y] {
+            continue;
+        }
+        if y - start >= MIN_INK_RUN_PIXELS {
+            runs.push(start..y);
+        }
+        start = y + 1;
+    }
+    runs
+}
+
 /// Whether the image is lit unevenly, as a photographed page in shadow is: whether the
 /// background brightness of its regions differs by [`UNEVEN_BACKGROUND_LEVELS`] grey levels or
 /// more. The background of a region is the brightness its lightest tenth of pixels reaches.
@@ -242,6 +250,69 @@ pub(crate) fn uneven_lighting(image: &Bitmap) -> bool {
     lightest - darkest >= UNEVEN_BACKGROUND_LEVELS
 }
 
+pub(crate) fn normalise_background(image: &Bitmap) -> GrayImage {
+    let mut normalised = image.gray().into_owned();
+    let (width, height) = normalised.dimensions();
+    let background = resized(&block_background(&normalised), width, height);
+    for (level, &paper) in normalised.iter_mut().zip(background.as_raw()) {
+        let paper = u32::from(paper.max(1));
+        *level = ((u32::from(*level) * u32::from(WHITE) + paper / 2) / paper).min(u32::from(WHITE))
+            as u8;
+    }
+    normalised
+}
+
+fn block_background(image: &GrayImage) -> GrayImage {
+    let (width, height) = image.dimensions();
+    let blocks_wide = width.div_ceil(BACKGROUND_BLOCK_PIXELS);
+    let blocks_high = height.div_ceil(BACKGROUND_BLOCK_PIXELS);
+    let mut lightest = GrayImage::new(blocks_wide, blocks_high);
+    let block_row_pixels = (width * BACKGROUND_BLOCK_PIXELS) as usize;
+    for (blocks, rows) in lightest
+        .chunks_exact_mut(blocks_wide as usize)
+        .zip(image.chunks(block_row_pixels))
+    {
+        for row in rows.chunks_exact(width as usize) {
+            for (block, pixels) in blocks
+                .iter_mut()
+                .zip(row.chunks(BACKGROUND_BLOCK_PIXELS as usize))
+            {
+                *block = pixels.iter().copied().fold(*block, u8::max);
+            }
+        }
+    }
+    let lightened = extremes(&lightest, BACKGROUND_CLOSING_BLOCKS, u8::max);
+    extremes(&lightened, BACKGROUND_CLOSING_BLOCKS, u8::min)
+}
+
+fn extremes(image: &GrayImage, reach: usize, pick: fn(u8, u8) -> u8) -> GrayImage {
+    let (width, height) = image.dimensions();
+    let columns = width as usize;
+    let rows = height as usize;
+    let mut across = GrayImage::new(width, height);
+    for (row, out) in image
+        .chunks_exact(columns)
+        .zip(across.chunks_exact_mut(columns))
+    {
+        for (x, level) in out.iter_mut().enumerate() {
+            let window = &row[x.saturating_sub(reach)..(x + reach + 1).min(columns)];
+            *level = window.iter().copied().fold(window[0], pick);
+        }
+    }
+    let across = across.as_raw();
+    let mut down = GrayImage::new(width, height);
+    for (y, out) in down.chunks_exact_mut(columns).enumerate() {
+        let window = y.saturating_sub(reach)..(y + reach + 1).min(rows);
+        for (x, level) in out.iter_mut().enumerate() {
+            *level = window
+                .clone()
+                .map(|row| across[row * columns + x])
+                .fold(across[window.start * columns + x], pick);
+        }
+    }
+    down
+}
+
 /// The level at or below which a share of the counted levels lies.
 fn percentile(histogram: &[u64; 256], count: u64, share: f64) -> u32 {
     let wanted = (count as f64 * share).ceil() as u64;
@@ -264,6 +335,11 @@ pub(crate) fn scale(image: &Bitmap, factor: f64) -> GrayImage {
     let (width, height) = image.dimensions();
     let scaled_width = ((f64::from(width) * factor).round() as u32).max(1);
     let scaled_height = ((f64::from(height) * factor).round() as u32).max(1);
+    resized(&image, scaled_width, scaled_height)
+}
+
+fn resized(image: &GrayImage, scaled_width: u32, scaled_height: u32) -> GrayImage {
+    let (width, height) = image.dimensions();
     let columns = Taps::bicubic(width, scaled_width);
     let rows = Taps::bicubic(height, scaled_height);
     let levels = image.as_raw();
@@ -506,9 +582,41 @@ pub(crate) fn otsu_threshold(histogram: &[u64; 256]) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use image::Luma;
+
+    const SHADOWED_PAPER: u8 = 60;
+
+    pub(crate) fn shadowed_page(width: u32, height: u32) -> Bitmap {
+        Bitmap::Gray(GrayImage::from_fn(width, height, |x, y| {
+            let inked = y % 40 < 6 && (50..width - 50).contains(&x) && x % 30 < 24;
+            let paper = if x * 5 > width * 3 {
+                SHADOWED_PAPER
+            } else {
+                WHITE
+            };
+            Luma([if inked { 0 } else { paper }])
+        }))
+    }
+
+    #[test]
+    fn normalises_the_background_of_a_page_in_shadow() {
+        let page = shadowed_page(800, 600);
+        assert!(uneven_lighting(&page));
+        let normalised = normalise_background(&page);
+        let paper_in_shadow = normalised.get_pixel(700, 20).0[0];
+        let ink_in_shadow = normalised.get_pixel(700, 2).0[0];
+        assert!(paper_in_shadow >= 250, "{paper_in_shadow}");
+        assert_eq!(ink_in_shadow, 0);
+        assert!(!uneven_lighting(&Bitmap::Gray(normalised)));
+    }
+
+    #[test]
+    fn keeps_an_evenly_lit_page_as_it_is() {
+        let page = rows(800, 400, &[(50, 10), (90, 10), (130, 10)]);
+        assert_eq!(normalise_background(&page), *page.gray());
+    }
 
     #[test]
     fn thresholds_as_otsu() {

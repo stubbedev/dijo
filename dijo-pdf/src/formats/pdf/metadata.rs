@@ -22,6 +22,7 @@ use crate::java::is_blank;
 use crate::java::time::format_instant;
 
 const STARTXREF: &[u8] = b"startxref";
+pub(super) const DC_LANGUAGE: &str = "dc:language";
 /// `StartXRefScanner.MAX_LENGTH_LONG`.
 const MAX_LENGTH_LONG: usize = 19;
 
@@ -284,7 +285,7 @@ pub(super) fn document(
 ) -> Result<(), WriteFailure> {
     let catalog = pdf.catalog().expect("a loaded document has a catalog");
     if let Some(language) = pdf.text(catalog, b"Lang") {
-        metadata.set("dc:language", language);
+        metadata.set(DC_LANGUAGE, language);
     }
     if acro_form_fields {
         metadata.set("pdf:has-acro-form-fields", "true");

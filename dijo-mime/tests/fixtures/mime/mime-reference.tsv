@@ -240,10 +240,20 @@ quality	arabic-cp1256.txt	file	text/plain	tk:content-type-magic-detected=text/pl
 quality	arabic-cp1256.txt	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
 quality	arabic-scan-300dpi.png	file	image/png	tk:content-type-magic-detected=image/png
 quality	arabic-scan-300dpi.png	bytes	image/png	tk:content-type-magic-detected=image/png
+quality	arabic-wikipedia-dolphin-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	arabic-wikipedia-dolphin-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
+quality	arabic-wikipedia-village-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	arabic-wikipedia-village-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	arabic.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
 quality	arabic.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5977	zip:detector-zip-file-opened=true
 quality	arabic.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	arabic.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	arbeiter-zeitung-1895.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	arbeiter-zeitung-1895.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	armenian-dussap-1959-p28.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	armenian-dussap-1959-p28.png	bytes	image/png	tk:content-type-magic-detected=image/png
+quality	armenian-dussap-1959-p29.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	armenian-dussap-1959-p29.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	armenian-scan.png	file	image/png	tk:content-type-magic-detected=image/png
 quality	armenian-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	armenian.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
@@ -262,6 +272,8 @@ quality	belarusian.docx	file	application/vnd.openxmlformats-officedocument.wordp
 quality	belarusian.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=6653	zip:detector-zip-file-opened=true
 quality	belarusian.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	belarusian.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	betrayed-armenia-1910-p46.tif	file	image/tiff	tk:content-type-magic-detected=image/tiff
+quality	betrayed-armenia-1910-p46.tif	bytes	image/tiff	tk:content-type-magic-detected=image/tiff
 quality	bosnian-cp1250.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	bosnian-cp1250.txt	bytes	text/plain	tk:content-type-magic-detected=text/plain
 quality	bosnian-scan.png	file	image/png	tk:content-type-magic-detected=image/png
@@ -296,6 +308,8 @@ quality	chinese.docx	file	application/vnd.openxmlformats-officedocument.wordproc
 quality	chinese.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5947	zip:detector-zip-file-opened=true
 quality	chinese.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	chinese.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	colonial-florida-1892-p14.tif	file	image/tiff	tk:content-type-magic-detected=image/tiff
+quality	colonial-florida-1892-p14.tif	bytes	image/tiff	tk:content-type-magic-detected=image/tiff
 quality	croatian-cp1250.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	croatian-cp1250.txt	bytes	text/plain	tk:content-type-magic-detected=text/plain
 quality	croatian-scan.png	file	image/png	tk:content-type-magic-detected=image/png
@@ -400,6 +414,10 @@ quality	hebrew.docx	file	application/vnd.openxmlformats-officedocument.wordproce
 quality	hebrew.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5915	zip:detector-zip-file-opened=true
 quality	hebrew.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	hebrew.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	hindi-diksita-1895-01.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	hindi-diksita-1895-01.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	hindi-diksita-1895-02.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	hindi-diksita-1895-02.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	hindi-scan.png	file	image/png	tk:content-type-magic-detected=image/png
 quality	hindi-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	hindi.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
@@ -444,6 +462,10 @@ quality	italian.pdf	file	application/pdf	tk:content-type-magic-detected=applicat
 quality	italian.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	japanese-euc-jp.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	japanese-euc-jp.txt	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
+quality	japanese-ndl-1910s.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	japanese-ndl-1910s.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	japanese-ndl-1920s.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	japanese-ndl-1920s.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	japanese-scan.png	file	image/png	tk:content-type-magic-detected=image/png
 quality	japanese-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	japanese-shift_jis.txt	file	text/plain	tk:content-type-magic-detected=text/plain
@@ -494,6 +516,10 @@ quality	maltese.docx	file	application/vnd.openxmlformats-officedocument.wordproc
 quality	maltese.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=6360	zip:detector-zip-file-opened=true
 quality	maltese.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	maltese.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	neue-freie-presse-1895.tif	file	image/tiff	tk:content-type-magic-detected=image/tiff
+quality	neue-freie-presse-1895.tif	bytes	image/tiff	tk:content-type-magic-detected=image/tiff
+quality	more-epigrammata-1520.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	more-epigrammata-1520.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	norwegian-cp1252.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	norwegian-cp1252.txt	bytes	text/plain	tk:content-type-magic-detected=text/plain
 quality	norwegian-scan.png	file	image/png	tk:content-type-magic-detected=image/png
@@ -556,12 +582,18 @@ quality	prose-pandoc.docx	file	application/vnd.openxmlformats-officedocument.wor
 quality	prose-pandoc.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=11308	zip:detector-zip-file-opened=true
 quality	prose-photo-perspective.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	prose-photo-perspective.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	prose-photo-shadow.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	prose-photo-shadow.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	prose-photo-upside-down.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	prose-photo-upside-down.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	prose-scan-100dpi-degraded.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	prose-scan-100dpi-degraded.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	prose-scan-150dpi.png	file	image/png	tk:content-type-magic-detected=image/png
 quality	prose-scan-150dpi.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	prose-scan-300dpi.png	file	image/png	tk:content-type-magic-detected=image/png
 quality	prose-scan-300dpi.png	bytes	image/png	tk:content-type-magic-detected=image/png
+quality	prose-scan-600dpi.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	prose-scan-600dpi.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	prose-scan-72dpi.png	file	image/png	tk:content-type-magic-detected=image/png
 quality	prose-scan-72dpi.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	prose-scan-inverted.png	file	image/png	tk:content-type-magic-detected=image/png
@@ -596,6 +628,8 @@ quality	prose-scan.tga	file	image/x-tga	tk:content-type-magic-detected=image/x-t
 quality	prose-scan.tga	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
 quality	prose-scan.webp	file	image/webp	tk:content-type-magic-detected=image/webp
 quality	prose-scan.webp	bytes	image/webp	tk:content-type-magic-detected=image/webp
+quality	prose-typewriter-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	prose-typewriter-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	prose.doc	file	application/msword	tk:content-type-magic-detected=application/msword
 quality	prose.doc	bytes	application/msword	tk:content-type-magic-detected=application/x-tika-msoffice	Content-Length=12800
 quality	prose.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
@@ -648,6 +682,8 @@ quality	russian-koi8-r.txt	file	text/plain	tk:content-type-magic-detected=text/p
 quality	russian-koi8-r.txt	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
 quality	russian-scan.png	file	image/png	tk:content-type-magic-detected=image/png
 quality	russian-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
+quality	russian-vaska-1901.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	russian-vaska-1901.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	russian.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
 quality	russian.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5808	zip:detector-zip-file-opened=true
 quality	russian.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
@@ -734,6 +770,12 @@ quality	ukrainian.docx	file	application/vnd.openxmlformats-officedocument.wordpr
 quality	ukrainian.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=6612	zip:detector-zip-file-opened=true
 quality	ukrainian.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	ukrainian.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	unlv-8071-093.tif	file	image/tiff	tk:content-type-magic-detected=image/tiff
+quality	unlv-8071-093.tif	bytes	image/tiff	tk:content-type-magic-detected=image/tiff
+quality	unlv-8087-054.tif	file	image/tiff	tk:content-type-magic-detected=image/tiff
+quality	unlv-8087-054.tif	bytes	image/tiff	tk:content-type-magic-detected=image/tiff
+quality	zoologia-danica-1779.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	zoologia-danica-1779.png	bytes	image/png	tk:content-type-magic-detected=image/png
 tika	tika-parsers-extended/tika-parser-ocr-encode-module/src/test/resources/test-documents/testOCR_encode.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
 tika	tika-parsers-extended/tika-parser-ocr-encode-module/src/test/resources/test-documents/testOCR_encode.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
 tika	tika-parsers-extended/tika-parser-ocr-encode-module/src/test/resources/test-documents/testOCR_encode.png	file	image/png	tk:content-type-magic-detected=image/png

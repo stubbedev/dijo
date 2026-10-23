@@ -14,12 +14,15 @@
 //!   for *su casa*. On a page where at least [`MIN_LONG_S_WORDS`] words are not in the language's
 //!   dictionary as read but are with some of their f read as s, each becomes that word.
 
+use std::ops::Range;
+
 use unicode_script::Script;
 
 use crate::unicode::{is_letter, is_mark, script};
 
 const MICRO_SIGN: char = '\u{B5}';
 const MU: char = '\u{3BC}';
+const LONG_S: char = '\u{17F}';
 /// How many words of a page must be words of its language only with long s read as s for the
 /// page to be taken for early modern print. A modern page has at most one, a word its dictionary
 /// lacks (`wafted`, which reads as `wasted`); a page of early modern print has dozens.
@@ -29,7 +32,11 @@ const MAX_LONG_S: usize = 4;
 
 /// The text, corrected.
 pub(crate) fn corrected(text: &str) -> String {
-    lithuanian_into(&greek_mu(&romanian_commas(text)))
+    long_s_as_s(&lithuanian_into(&greek_mu(&romanian_commas(text))))
+}
+
+fn long_s_as_s(text: &str) -> String {
+    text.replace(LONG_S, "s")
 }
 
 fn romanian_commas(text: &str) -> String {
@@ -97,20 +104,9 @@ fn lithuanian_into(text: &str) -> String {
 /// with s, the fewest such f first and only when one word results, if at least
 /// [`MIN_LONG_S_WORDS`] words are; else the text as it is.
 pub(crate) fn with_long_s(text: &str, is_word: &dyn Fn(&str) -> bool) -> String {
-    let mut restored = Vec::new();
-    let mut start = None;
-    for (index, c) in text.char_indices().chain([(text.len(), ' ')]) {
-        match (start, is_letter(c) || is_mark(c)) {
-            (None, true) => start = Some(index),
-            (Some(from), false) => {
-                start = None;
-                if let Some(word) = long_s_word(&text[from..index], is_word) {
-                    restored.push((from..index, word));
-                }
-            }
-            _ => {}
-        }
-    }
+    let restored: Vec<(Range<usize>, String)> = word_ranges(text)
+        .filter_map(|range| long_s_word(&text[range.clone()], is_word).map(|word| (range, word)))
+        .collect();
     if restored.len() < MIN_LONG_S_WORDS {
         return text.to_owned();
     }
@@ -123,6 +119,35 @@ pub(crate) fn with_long_s(text: &str, is_word: &dyn Fn(&str) -> bool) -> String 
     }
     out.push_str(&text[copied..]);
     out
+}
+
+pub(crate) fn lexicality(text: &str, is_word: &dyn Fn(&str) -> bool) -> f64 {
+    let (words, known) = word_ranges(text).fold((0u64, 0u64), |(words, known), range| {
+        (words + 1, known + u64::from(is_word(&text[range])))
+    });
+    if words == 0 {
+        return 0.0;
+    }
+    known as f64 / words as f64
+}
+
+fn word_ranges(text: &str) -> impl Iterator<Item = Range<usize>> + '_ {
+    let mut start = None;
+    text.char_indices()
+        .chain([(text.len(), ' ')])
+        .filter_map(
+            move |(index, c)| match (start, is_letter(c) || is_mark(c)) {
+                (None, true) => {
+                    start = Some(index);
+                    None
+                }
+                (Some(from), false) => {
+                    start = None;
+                    Some(from..index)
+                }
+                _ => None,
+            },
+        )
 }
 
 /// The word `is_word` holds with the fewest of `word`'s f read as s, when `word` is no word as it
@@ -164,6 +189,17 @@ mod tests {
         assert_eq!(corrected("5 µm, µα"), "5 µm, μα");
         assert_eq!(corrected("ėjo j namus ų j"), "ėjo į namus ų į");
         assert_eq!(corrected("jo j namus"), "jo j namus");
+        assert_eq!(
+            corrected("Geſchichte ſeiner Zeit"),
+            "Geschichte seiner Zeit"
+        );
+    }
+
+    #[test]
+    fn lexicality_is_the_share_of_words_the_dictionary_holds() {
+        assert_eq!(lexicality("su casa, efta es", &spanish), 0.75);
+        assert_eq!(lexicality("su casa es esta", &spanish), 1.0);
+        assert_eq!(lexicality("12 345, ...", &spanish), 0.0);
     }
 
     fn spanish(word: &str) -> bool {

@@ -63,6 +63,7 @@ use crate::input::{Pages, Paging};
 
 use cos::{Document, Pdf};
 use engine::differ_past;
+use metadata::DC_LANGUAGE;
 use ocr::{OcrCheck, PageOcr, RejectedThresholds};
 use recording::Recording;
 use security::{Access, Encryption, Opening, Refusal, WRONG_PASSWORD};
@@ -88,7 +89,7 @@ const DELEGATES: [(&str, &str); 2] = [
 const MAX_RECURSION_DEPTH: usize = 100;
 
 pub(super) use crate::formats::Unported;
-use crate::ocr::{tesseract_runs as ocr_runs, OcrSettings};
+use crate::ocr::{tesseract_runs as ocr_runs, LanguageHint, OcrSettings};
 
 /// Tika's `PDFParser`, wrapped in our `TextLayerCheckingPdfParser` when tesseract runs.
 pub struct PdfParser;
@@ -384,13 +385,24 @@ fn write_read(
 ) -> Result<(), Failure> {
     let context = xhtml.context();
     let auto = OcrSettings::of(&configs.ocr).auto();
-    let assumed = auto.then(|| context.assumed_ocr_language()).flatten();
+    let assumed = auto
+        .then(|| {
+            context
+                .assumed_ocr_language()
+                .or_else(|| language_hint(recording).and_then(|hint| page_ocr.assumed(hint)))
+        })
+        .flatten();
     let (written, learned) =
         page_ocr.write_document(assumed, |page_ends| recording.flush(xhtml, Some(page_ends)));
     if let (Ok(()), Some(learned)) = (&written, learned) {
         context.learn_ocr_language(learned);
     }
     written
+}
+
+fn language_hint(recording: &Recording) -> Option<LanguageHint> {
+    LanguageHint::detected(&recording.doubtful_text())
+        .or_else(|| recording.get(DC_LANGUAGE).and_then(LanguageHint::tagged))
 }
 
 /// A document too large to record, extracted page by page as it is read from its start once
@@ -737,6 +749,29 @@ mod tests {
     use std::path::Path;
 
     pub(super) const CORPORA: [&str; 2] = ["../quality/corpus", "../test_files/documents"];
+
+    #[test]
+    fn hints_ocr_at_the_language_of_doubtful_text_layers_then_at_the_declared_one() {
+        let spanish = "En un lugar de la Mancha, de cuyo nombre no quiero acordarme, no ha \
+                       mucho tiempo que vivia un hidalgo de los de lanza en astillero, adarga \
+                       antigua, rocin flaco y galgo corredor.";
+        let mut recording = Recording::new(TikaMetadata::new());
+        assert_eq!(language_hint(&recording), None);
+        recording.set(DC_LANGUAGE, "en-US");
+        assert_eq!(language_hint(&recording), LanguageHint::tagged("en"));
+        recording.hold();
+        recording.characters(spanish).unwrap();
+        recording.release_read(0, ocr::PageCheck::Add);
+        assert_eq!(language_hint(&recording), LanguageHint::tagged("en"));
+        recording.hold();
+        recording.characters(spanish).unwrap();
+        let doubtful = quality::Assessment {
+            badness: quality::DOUBTFUL,
+            fault: "symbols",
+        };
+        recording.release_read(1, ocr::PageCheck::Weigh(doubtful));
+        assert_eq!(language_hint(&recording), LanguageHint::tagged("es"));
+    }
 
     /// Why OCR reads pages of a document of the corpora.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

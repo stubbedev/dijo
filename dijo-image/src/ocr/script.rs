@@ -11,10 +11,12 @@ use crate::unicode::{is_letter, script};
 /// The model read with when a script has none installed.
 const DEFAULT_LANGUAGE: &str = "eng";
 const SCRIPT_MODEL_PREFIX: &str = "script/";
+pub(crate) const BLACKLETTER_SCRIPT: &str = "Fraktur";
 
 /// The most common language of each script tesseract's detection reports.
-const LANGUAGE_BY_SCRIPT: [(&str, &str); 25] = [
+const LANGUAGE_BY_SCRIPT: [(&str, &str); 26] = [
     ("Latin", "eng"),
+    (BLACKLETTER_SCRIPT, "deu_latf"),
     ("Arabic", "ara"),
     ("Cyrillic", "rus"),
     ("Greek", "ell"),
@@ -90,6 +92,94 @@ const MODEL_BY_LANGUAGE: [(&str, &str, &str); 44] = [
     ("tur", "Latin", "tur"),
     ("ukr", "Cyrillic", "ukr"),
 ];
+
+const ISO_639_1_CODES: [(&str, &str); 44] = [
+    ("be", "bel"),
+    ("bs", "bos"),
+    ("bg", "bul"),
+    ("ca", "cat"),
+    ("cs", "ces"),
+    ("cy", "cym"),
+    ("da", "dan"),
+    ("de", "deu"),
+    ("el", "ell"),
+    ("en", "eng"),
+    ("et", "est"),
+    ("eu", "eus"),
+    ("fo", "fao"),
+    ("fi", "fin"),
+    ("fr", "fra"),
+    ("ga", "gle"),
+    ("gl", "glg"),
+    ("hr", "hrv"),
+    ("hu", "hun"),
+    ("hy", "hye"),
+    ("is", "isl"),
+    ("it", "ita"),
+    ("ka", "kat"),
+    ("lv", "lav"),
+    ("lt", "lit"),
+    ("lb", "ltz"),
+    ("mk", "mkd"),
+    ("mt", "mlt"),
+    ("nl", "nld"),
+    ("nn", "nno"),
+    ("nb", "nob"),
+    ("no", "nob"),
+    ("pl", "pol"),
+    ("pt", "por"),
+    ("ro", "ron"),
+    ("ru", "rus"),
+    ("sk", "slk"),
+    ("sl", "slv"),
+    ("es", "spa"),
+    ("sq", "sqi"),
+    ("sr", "srp"),
+    ("sv", "swe"),
+    ("tr", "tur"),
+    ("uk", "ukr"),
+];
+
+pub(crate) fn tagged_language(tag: &str) -> Option<(&'static str, &'static str)> {
+    let mut subtags = tag.trim().split(['-', '_']);
+    let primary = subtags.next()?.to_ascii_lowercase();
+    let code = ISO_639_1_CODES
+        .iter()
+        .find(|(two_letter, _)| *two_letter == primary)
+        .map(|(_, code)| *code)
+        .or_else(|| {
+            MODEL_BY_LANGUAGE
+                .iter()
+                .find(|(code, _, _)| *code == primary)
+                .map(|(code, _, _)| *code)
+        })?;
+    let named_script = subtags
+        .filter(|subtag| subtag.len() == 4)
+        .find_map(|subtag| Script::from_short_name(&title_case(subtag)));
+    let script = match named_script {
+        Some(script) => script.full_name(),
+        None => default_script(code)?,
+    };
+    Some((code, script))
+}
+
+fn title_case(subtag: &str) -> String {
+    let lower = subtag.to_ascii_lowercase();
+    let mut characters = lower.chars();
+    characters
+        .next()
+        .map(|first| first.to_ascii_uppercase())
+        .into_iter()
+        .chain(characters)
+        .collect()
+}
+
+fn default_script(code: &str) -> Option<&'static str> {
+    MODEL_BY_LANGUAGE
+        .iter()
+        .find(|(language, _, _)| *language == code)
+        .map(|(_, script, _)| *script)
+}
 
 /// The installed model of a language, by the detector's ISO 639-3 code, in a script, or none
 /// when it has none or none is installed.
@@ -167,6 +257,16 @@ mod tests {
     }
 
     #[test]
+    fn reads_blackletter_with_the_fraktur_model() {
+        let models = installed(&["deu", "deu_latf", "script/Latin"]);
+        assert_eq!(language(&models, Some(BLACKLETTER_SCRIPT)), "deu_latf");
+        assert_eq!(
+            installed_language(&installed(&["deu"]), BLACKLETTER_SCRIPT),
+            None
+        );
+    }
+
+    #[test]
     fn tells_the_script_most_letters_are_in() {
         assert!(written_in("Բարեւ աշխարհ, hi", "Armenian"));
         assert!(!written_in("hello world, Բարեւ", "Armenian"));
@@ -211,7 +311,7 @@ mod tests {
                 let (code, script) = match label.split_once('-') {
                     Some((code, "Latn")) => (code, "Latin"),
                     Some((_, other)) => panic!("unknown script suffix {other}"),
-                    None => (*label, default_script(label)),
+                    None => (*label, default_script(label).unwrap_or("Latin")),
                 };
                 language_model(&bundled, code, script).is_none()
             })
@@ -225,11 +325,24 @@ mod tests {
         }
     }
 
-    /// The script a language of the fixture without a script suffix is written in.
-    fn default_script(code: &str) -> &'static str {
-        MODEL_BY_LANGUAGE
-            .iter()
-            .find(|(language, _, _)| *language == code)
-            .map_or("Latin", |(_, script, _)| script)
+    #[test]
+    fn reads_the_language_and_script_a_tag_names() {
+        assert_eq!(tagged_language("es-ES"), Some(("spa", "Latin")));
+        assert_eq!(tagged_language(" EN "), Some(("eng", "Latin")));
+        assert_eq!(tagged_language("de_DE"), Some(("deu", "Latin")));
+        assert_eq!(tagged_language("sr"), Some(("srp", "Cyrillic")));
+        assert_eq!(tagged_language("sr-latn-RS"), Some(("srp", "Latin")));
+        assert_eq!(tagged_language("no"), Some(("nob", "Latin")));
+        assert_eq!(tagged_language("fao"), Some(("fao", "Latin")));
+        assert_eq!(tagged_language("zh-Hans"), None);
+        assert_eq!(tagged_language("x-default"), None);
+        assert_eq!(tagged_language(""), None);
+    }
+
+    #[test]
+    fn every_language_a_two_letter_tag_names_has_a_model() {
+        for (two_letter, code) in ISO_639_1_CODES {
+            assert!(default_script(code).is_some(), "{two_letter} names {code}");
+        }
     }
 }

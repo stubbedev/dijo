@@ -21,8 +21,8 @@ use crate::formats::image::PREPARING_OCR_PARSER;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Difference, Failure};
 use crate::ocr::{
-    self, Attempt, Bitmap, Image, Learning, OcrSettings, Outputs, PdfPages, Recognized, Recognizer,
-    Resolution,
+    self, Attempt, Bitmap, Image, LanguageHint, Learning, OcrSettings, Outputs, PdfPages,
+    Recognized, Recognizer, Resolution,
 };
 
 /// Each page whose text layer was replaced by OCR text, as `page:fault`.
@@ -346,6 +346,20 @@ impl PageOcr {
             tesseract,
             settings: OcrSettings::of(&configs.ocr),
         })
+    }
+
+    pub(super) fn assumed(&self, hint: LanguageHint) -> Option<OcrLanguage> {
+        let Reader::Tesseract {
+            tesseract: Ok(tesseract),
+            settings,
+        } = &self.reader
+        else {
+            return None;
+        };
+        Recognizer::new(tesseract, settings)
+            .assumed(hint)
+            .ok()
+            .flatten()
     }
 
     /// Writes the document with `write`, the pages to read rendered and read side by side

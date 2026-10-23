@@ -48,6 +48,7 @@ table.pdf	table	tables
 prose-scan-300dpi.png	prose	ocr		
 prose-columns-scan.png	prose	ocr		
 prose-newspaper-scan.png	prose	ocr		
+prose-typewriter-scan.png	prose	ocr		
 prose-scan-150dpi.png	prose	ocr		
 prose-scan-skewed.png	prose	ocr		
 prose-scan-rotated.png	prose	ocr		
@@ -72,7 +73,10 @@ hyphenated.pdf	hyphenated	hyphenation
 hyphenated.pdf	hyphenated	hyphenation		--no-normalize hyphenation
 prose-scan-inverted.png	prose	ocr		
 prose-scan-72dpi.png	prose	ocr		
+prose-scan-100dpi-degraded.png	prose	ocr		
+prose-scan-600dpi.png	prose	ocr		
 prose-scan-shadow.png	prose	ocr		
+prose-photo-shadow.png	prose	ocr		
 report-scan.tif	report	ocr		
 report-scan-skewed.tif	report	ocr		
 arabic-cp1256.txt	arabic	legacy-encoding		
@@ -216,6 +220,23 @@ thai-scan.png	thai	ocr
 hindi-scan.png	hindi	ocr		
 hebrew-scan.png	hebrew	ocr		
 quixote-1605.pdf	quixote	ocr		
+arbeiter-zeitung-1895.jpg	arbeiter-zeitung-1895	ocr		
+neue-freie-presse-1895.tif	neue-freie-presse-1895	ocr		
+more-epigrammata-1520.jpg	more-epigrammata-1520	ocr		
+zoologia-danica-1779.png	zoologia-danica-1779	ocr		
+unlv-8087-054.tif	unlv-8087-054	ocr		
+unlv-8071-093.tif	unlv-8071-093	ocr		
+betrayed-armenia-1910-p46.tif	betrayed-armenia-1910-p46	ocr		
+colonial-florida-1892-p14.tif	colonial-florida-1892-p14	ocr		
+hindi-diksita-1895-01.jpg	hindi-diksita-1895-01	ocr		
+hindi-diksita-1895-02.jpg	hindi-diksita-1895-02	ocr		
+arabic-wikipedia-dolphin-scan.png	arabic-wikipedia-dolphin	ocr		
+arabic-wikipedia-village-scan.png	arabic-wikipedia-village	ocr		
+japanese-ndl-1910s.jpg	japanese-ndl-1910s	ocr		
+japanese-ndl-1920s.jpg	japanese-ndl-1920s	ocr		
+russian-vaska-1901.jpg	russian-vaska-1901	ocr		
+armenian-dussap-1959-p28.png	armenian-dussap-1959-p28	ocr		
+armenian-dussap-1959-p29.png	armenian-dussap-1959-p29	ocr		
 french-cp1252.txt	french	legacy-encoding		
 spanish-cp1252.txt	spanish	legacy-encoding		
 italian-cp1252.txt	italian	legacy-encoding		

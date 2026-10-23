@@ -380,19 +380,34 @@ impl Dehyphenator {
     }
 
     /// Remembers the words and hyphenated compounds of the token that just ended.
+    /// Only a word or compound not remembered yet is copied: the text of a long document repeats
+    /// most of its words.
     fn end_token(&mut self) {
-        let token = std::mem::take(&mut self.token).to_lowercase();
-        let words: Vec<&str> = token
+        if self.token.is_empty() {
+            return;
+        }
+        let token = self.token.to_lowercase();
+        self.token.clear();
+        let words = token
             .split(|character: char| !character.is_alphabetic() && !is_hyphen(character))
-            .filter(|word| !word.is_empty())
-            .collect();
+            .filter(|word| !word.is_empty());
         for word in words {
+            if !word.contains(is_hyphen) {
+                if self.words.len() < MAX_REMEMBERED_WORDS && !self.words.contains(word) {
+                    self.words.insert(word.to_string());
+                }
+                continue;
+            }
             let parts: Vec<&str> = word
                 .split(is_hyphen)
                 .filter(|part| !part.is_empty())
                 .collect();
             if self.words.len() < MAX_REMEMBERED_WORDS {
-                self.words.extend(parts.iter().map(|part| part.to_string()));
+                for part in &parts {
+                    if !self.words.contains(*part) {
+                        self.words.insert((*part).to_string());
+                    }
+                }
             }
             if self.compounds.len() < MAX_REMEMBERED_WORDS {
                 for pair in parts.windows(2) {

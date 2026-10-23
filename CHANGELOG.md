@@ -1,3 +1,36 @@
+# 0.2.7 (2026-10-22)
+
+### Added
+
+* Blackletter (Fraktur) is read with tessdata's `deu_latf`, now bundled: a page whose reading shows the long-s
+  signature and that detection reports as Fraktur is read again with it, and the reading with more words of the
+  language is kept. Two 1895 Fraktur newspaper pages read with a character error rate of 0.057 and 0.162 instead of
+  0.118 and 0.213 (#225).
+* A PDF's first page read by OCR starts in the language its doubtful text layers show or its `/Lang` declares.
+
+### Changed
+
+* With the automatic OCR language, the first image of a file is read once, in the language of a strip of six of its
+  lines, rather than whole in `script/Latin` and again: about a fifth less CPU on Latin-script scans (#218).
+* Tesseract is built to keep word images as Pix rather than round-trip them through PNG (#217), its LSTM writes
+  convolution windows and int8 time steps in place (#223), and it skips its fixed-pitch test (#219): a page reads with
+  up to a quarter fewer instructions and the same text. A test fails when tesseract selected no SIMD dot-product
+  kernel (#224).
+* Rotating and resizing an image for OCR reads its pixels without matching its kind for each one: a skewed scan takes
+  about a fifth less CPU (#216). Dehyphenation copies only words it has not seen, about 15% less CPU on long
+  documents (#215).
+* The command line holds glibc's allocator to as many arenas as the process's processors, so a long-running server's
+  memory stays level.
+
+### Fixed
+
+* A page under uneven lighting has its grey image divided by its background, so the recogniser no longer reads the
+  shadow: a page under a sharp-edged shadow reads without errors instead of a character error rate of 0.301 (#227).
+* A large OOXML package is opened at the offset its end record gives instead of being scanned, so a 512 MiB DOCX peaks
+  at 78 MiB again instead of 526 MiB.
+* A worker process whose extraction overran its timeout is replaced, so the parse it left behind can no longer keep
+  allocating.
+
 # 0.2.6 (2026-10-20)
 
 ### Added
