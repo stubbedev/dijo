@@ -3,6 +3,7 @@
 //! again in a later group replacing the earlier one; and the property sets of the objects, as
 //! the suite's `ObjectSpaceObjectPropSet` reads them.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -653,20 +654,89 @@ fn missing_data(group: &ObjectGroup<'_>, index: usize) -> Result<(), Failure> {
 fn remove_superseded(groups: &mut [Vec<Rc<Object<'_>>>]) {
     let mut places: HashMap<GuidKey, (usize, usize)> = HashMap::new();
     for group in 0..groups.len() {
-        let mut index = 0;
-        while index < groups[group].len() {
-            let object = groups[group][index].clone();
-            match object.id.map(ExGuid::key) {
-                Some(key) if places.contains_key(&key) => {
-                    let (earlier, at) = places[&key];
-                    groups[earlier][at] = object;
-                    groups[group].remove(index);
+        let mut kept = 0;
+        for index in 0..groups[group].len() {
+            if let Some(key) = groups[group][index].id.map(ExGuid::key) {
+                match places.entry(key) {
+                    Entry::Occupied(place) => {
+                        let (earlier, at) = *place.get();
+                        let object = groups[group][index].clone();
+                        groups[earlier][at] = object;
+                        continue;
+                    }
+                    Entry::Vacant(place) => {
+                        place.insert((group, kept));
+                    }
                 }
-                Some(key) => {
-                    places.insert(key, (group, index));
-                    index += 1;
+            }
+            groups[group].swap(kept, index);
+            kept += 1;
+        }
+        groups[group].truncate(kept);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remove_superseded_one_at_a_time(groups: &mut [Vec<Rc<Object<'_>>>]) {
+        let mut places: HashMap<GuidKey, (usize, usize)> = HashMap::new();
+        for group in 0..groups.len() {
+            let mut index = 0;
+            while index < groups[group].len() {
+                let object = groups[group][index].clone();
+                match object.id.map(ExGuid::key) {
+                    Some(key) if places.contains_key(&key) => {
+                        let (earlier, at) = places[&key];
+                        groups[earlier][at] = object;
+                        groups[group].remove(index);
+                    }
+                    Some(key) => {
+                        places.insert(key, (group, index));
+                        index += 1;
+                    }
+                    None => index += 1,
                 }
-                None => index += 1,
+            }
+        }
+    }
+
+    #[test]
+    fn removes_superseded_objects_as_removing_them_one_at_a_time_does() {
+        let mut seed = 0x2545_F491_u32;
+        for _ in 0..500 {
+            let mut groups: Vec<Vec<Rc<Object<'_>>>> = Vec::new();
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            for _ in 0..(seed >> 16) % 5 {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                let group = (0..(seed >> 16) % 7)
+                    .map(|_| {
+                        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                        let pick = (seed >> 16) % 6;
+                        let id = (pick > 0).then(|| ExGuid {
+                            kind: i32::try_from(seed >> 29).unwrap(),
+                            value: i32::try_from(pick).unwrap(),
+                            guid: Uuid::EMPTY,
+                        });
+                        Rc::new(Object {
+                            id,
+                            ..Object::default()
+                        })
+                    })
+                    .collect();
+                groups.push(group);
+            }
+            let mut expected = groups.clone();
+            remove_superseded_one_at_a_time(&mut expected);
+            remove_superseded(&mut groups);
+            assert_eq!(groups.len(), expected.len());
+            for (group, expected) in groups.iter().zip(&expected) {
+                assert_eq!(group.len(), expected.len());
+                assert!(group
+                    .iter()
+                    .zip(expected)
+                    .all(|(object, expected)| Rc::ptr_eq(object, expected)));
             }
         }
     }
