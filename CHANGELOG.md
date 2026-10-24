@@ -1,3 +1,28 @@
+# 0.2.11 (2026-10-24)
+
+### Changed
+
+* Every build reads with the tesseract it carries and never with one found on `PATH`: the static executable links it,
+  and every other build embeds the OCR bundle, which a build now requires (`DIJO_OCR_BUNDLE`; `just ocr-bundle`
+  assembles one, and the Nix development shell provides one). A source build without it fails to compile, and HEIC
+  and AVIF images are decoded by the bundled decoder, not `heif-dec` (#317).
+* A document its parser fails on is the client's to fix: the server answers `422` with category `corrupt`, not `500`
+  with `internal`, unless its cause says it is encrypted, too large, too slow or unsupported (#314).
+
+### Fixed
+
+* A page tesseract splits into many small words, such as a scan decoded to noise, no longer hangs paragraph
+  detection, which walked the page from its start once a line: such a page now reads in seconds (#316).
+* A damaged AV1 frame no longer aborts the process from inside the AV1 decoder: rav1d is pinned to its unreleased fix
+  (#313).
+* A server whose executable was replaced or deleted while it ran still starts workers, from the running image (#312).
+* OCR uses less memory: no more readings and pages run at once in a process than its processors, idle tesseract engines
+  share one bound list, an engine keeps no adapted classes or universal ambiguities its model never uses (a chi_sim
+  engine takes 9 MiB instead of 43), and glibc maps blocks of 4 MiB or more on their own (#305, #307, #308, #309,
+  #311).
+* Small text beside photos is enlarged for OCR by the height of the runs shaped as lines of text (#306).
+* XLSX sheets are searched for protection as they inflate, spooling none to disk (#247).
+
 # 0.2.10 (2026-10-23)
 
 ### Fixed
