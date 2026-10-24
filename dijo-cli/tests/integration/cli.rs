@@ -1398,7 +1398,9 @@ fn images_tesseract_cannot_read_are_decoded_for_it() {
 
 /// A scan whose lower part decodes to blocky noise, which tesseract splits into a great many
 /// small words, reads in time: its paragraph detection walked the page from its start for each
-/// line, and never finished such a page (#316).
+/// line, and never finished such a page (#316). The damaged HEIC decodes to that page with
+/// libheif; macOS's `sips` rejects it.
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn a_page_of_noise_reads_in_time() {
     let scan = fs::read("../quality/corpus/prose-scan.heic").unwrap();
