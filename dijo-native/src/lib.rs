@@ -94,13 +94,16 @@ fn unpack(staging: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether an embedded file is a program the build runs: the bundled heif-png.
+/// The embedded files that are programs the build runs: the bundled heif-png, where the build
+/// bundles one.
+#[cfg(all(not(feature = "static"), not(target_os = "macos")))]
+const PROGRAMS: &[&str] = &[OCR_HEIF_DECODER];
+#[cfg(any(feature = "static", target_os = "macos"))]
+const PROGRAMS: &[&str] = &[];
+
+/// Whether an embedded file is a program the build runs.
 fn is_program(name: &str) -> bool {
-    #[cfg(all(not(feature = "static"), not(target_os = "macos")))]
-    let program = OCR_HEIF_DECODER == name;
-    #[cfg(any(feature = "static", target_os = "macos"))]
-    let program = false;
-    program
+    PROGRAMS.contains(&name)
 }
 
 #[cfg(unix)]
