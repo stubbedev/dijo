@@ -34,3 +34,5 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# rav1d's fix for a panic through its C API is not yet released (#313).
+allow-git = ["https://github.com/memorysafety/rav1d"]

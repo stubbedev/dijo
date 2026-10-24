@@ -26,6 +26,10 @@ debug = "line-tables-only"
 opt-level = 3
 debug = false
 
+# rav1d decodes damaged streams with the wrapping arithmetic of dav1d, as the release build does.
+[profile.dev.package.rav1d]
+overflow-checks = false
+
 [profile.release]
 opt-level = 3
 lto = "thin"
@@ -34,3 +38,8 @@ codegen-units = 1
 [profile.release.build-override]
 opt-level = 3
 
+
+[patch.crates-io]
+# rav1d 1.1.0 panics through its C API, aborting the process, when a damaged frame fails before
+# its header is read; the fix (memorysafety/rav1d 6c6f4637) is not yet released (#313).
+rav1d = { git = "https://github.com/memorysafety/rav1d", rev = "6c6f463785a546dea18fd9ca0f14634c2ee0557c" }

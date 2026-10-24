@@ -12,11 +12,10 @@ use rav1d::include::dav1d::headers::{
     DAV1D_PIXEL_LAYOUT_I444,
 };
 use rav1d::include::dav1d::picture::Dav1dPicture;
-use rav1d::src::lib::{
+use rav1d::{
     dav1d_close, dav1d_data_create, dav1d_data_unref, dav1d_default_settings, dav1d_get_picture,
-    dav1d_open, dav1d_picture_unref, dav1d_send_data,
+    dav1d_open, dav1d_picture_unref, dav1d_send_data, Dav1dResult,
 };
-use rav1d::Dav1dResult;
 
 use super::decode::MAX_DECODED_PIXELS;
 

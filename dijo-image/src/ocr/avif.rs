@@ -1049,6 +1049,15 @@ mod tests {
         assert!(matches!(decode(&heic), Ok(Avif::OfOtherCodecs)));
     }
 
+    /// A frame damaged so that it fails before its header is read is an error, not an abort of
+    /// the process (#313).
+    #[test]
+    fn fails_on_frames_damaged_before_their_header() {
+        let mut avif = std::fs::read("../quality/corpus/prose-scan.avif").unwrap();
+        avif[43878] ^= 0x20;
+        assert!(decode(&avif).is_err());
+    }
+
     fn same(a: &Bitmap, b: &Bitmap) -> bool {
         match (a, b) {
             (Bitmap::Gray(a), Bitmap::Gray(b)) => a == b,
