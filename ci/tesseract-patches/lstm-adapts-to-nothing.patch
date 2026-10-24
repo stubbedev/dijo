@@ -1,0 +1,57 @@
+diff --git a/src/classify/adaptmatch.cpp b/src/classify/adaptmatch.cpp
+index 09e9d31..4ce188a 100644
+--- a/src/classify/adaptmatch.cpp
++++ b/src/classify/adaptmatch.cpp
+@@ -79,6 +79,16 @@ constexpr bool CLASSIFY_ENABLE_ADAPTIVE_MATCHER_OVERRIDE = true;
+ 
+ constexpr const char *ADAPT_TEMPLATE_SUFFIX = ".a";
+ 
++// New adapted templates, with an empty class for each unichar of unicharset
++// when the classifier adapts at all: without pre-trained templates, as for an
++// LSTM model, it never classifies, and an empty class for each of the
++// thousands of unichars of a CJK model took tens of megabytes per engine.
++static ADAPT_TEMPLATES_STRUCT *NewAdaptedTemplates(UNICHARSET &unicharset,
++                                                   bool adapts) {
++  static UNICHARSET unadapted;
++  return new ADAPT_TEMPLATES_STRUCT(adapts ? unicharset : unadapted);
++}
++
+ constexpr int MAX_MATCHES = 10;
+ constexpr int UNLIKELY_NUM_FEAT = 200;
+ constexpr int NO_DEBUG = 0;
+@@ -575,7 +585,7 @@ void Classify::InitAdaptiveClassifier(TessdataManager *mgr) {
+     std::string Filename = imagefile;
+     Filename += ADAPT_TEMPLATE_SUFFIX;
+     if (!fp.Open(Filename.c_str(), nullptr)) {
+-      AdaptedTemplates = new ADAPT_TEMPLATES_STRUCT(unicharset);
++      AdaptedTemplates = NewAdaptedTemplates(unicharset, PreTrainedTemplates != nullptr);
+     } else {
+       tprintf("\nReading pre-adapted templates from %s ...\n", Filename.c_str());
+       fflush(stdout);
+@@ -589,7 +599,7 @@ void Classify::InitAdaptiveClassifier(TessdataManager *mgr) {
+     }
+   } else {
+     delete AdaptedTemplates;
+-    AdaptedTemplates = new ADAPT_TEMPLATES_STRUCT(unicharset);
++    AdaptedTemplates = NewAdaptedTemplates(unicharset, PreTrainedTemplates != nullptr);
+   }
+ } /* InitAdaptiveClassifier */
+ 
+@@ -598,7 +608,7 @@ void Classify::ResetAdaptiveClassifierInternal() {
+     tprintf("Resetting adaptive classifier (NumAdaptationsFailed=%d)\n", NumAdaptationsFailed);
+   }
+   delete AdaptedTemplates;
+-  AdaptedTemplates = new ADAPT_TEMPLATES_STRUCT(unicharset);
++  AdaptedTemplates = NewAdaptedTemplates(unicharset, PreTrainedTemplates != nullptr);
+   delete BackupAdaptedTemplates;
+   BackupAdaptedTemplates = nullptr;
+   NumAdaptationsFailed = 0;
+@@ -624,7 +634,7 @@ void Classify::SwitchAdaptiveClassifier() {
+ // Resets the backup adaptive classifier to empty.
+ void Classify::StartBackupAdaptiveClassifier() {
+   delete BackupAdaptedTemplates;
+-  BackupAdaptedTemplates = new ADAPT_TEMPLATES_STRUCT(unicharset);
++  BackupAdaptedTemplates = NewAdaptedTemplates(unicharset, PreTrainedTemplates != nullptr);
+ }
+ 
+ /*---------------------------------------------------------------------------*/

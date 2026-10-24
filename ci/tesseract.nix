@@ -9,7 +9,9 @@
 # file is mapped read-only and its dictionaries, almost all of its bytes (88.8 of script/Latin's
 # 89.4 MB), are read in place rather than copied (tesseract-patches/mmap-models.patch): every
 # process reading with a model shares one copy of them in the page cache, and loading one copies
-# nothing large, so reading a Latin page peaks at 191 MB instead of 305 MB (#211).
+# nothing large, so reading a Latin page peaks at 191 MB instead of 305 MB (#211). An engine for an
+# LSTM model keeps no empty adapted class for each unichar, for the legacy classifier it never runs
+# (tesseract-patches/lstm-adapts-to-nothing.patch): a chi_sim engine takes 15 MiB instead of 43 (#308).
 # Its internal headers and the configuration it was built with are installed in
 # include/tesseract-internal, for code that reads its results while it recognizes a page.
 static:

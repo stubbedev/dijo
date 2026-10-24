@@ -1192,6 +1192,44 @@ mod tests {
         }
     }
 
+    /// An engine for an LSTM model keeps no empty adapted class for each of its unichars, which
+    /// the legacy classifier it never runs would adapt (tesseract-patches/lstm-adapts-to-nothing):
+    /// for the 6,500 of chi_sim they took 28 of its engine's 43 MiB.
+    #[cfg(all(not(feature = "static"), target_os = "linux", target_env = "gnu"))]
+    #[test]
+    fn an_lstm_engine_keeps_no_adapted_class_for_each_unichar() {
+        #[repr(C)]
+        struct Mallinfo2 {
+            arena: usize,
+            ordblks: usize,
+            smblks: usize,
+            hblks: usize,
+            hblkhd: usize,
+            usmblks: usize,
+            fsmblks: usize,
+            uordblks: usize,
+            fordblks: usize,
+            keepcost: usize,
+        }
+        extern "C" {
+            fn mallinfo2() -> Mallinfo2;
+        }
+        let allocated = || {
+            let info = unsafe { mallinfo2() };
+            info.hblkhd + info.uordblks
+        };
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let before = allocated();
+        let engine = tesseract.create("chi_sim").unwrap();
+        let taken = allocated().saturating_sub(before);
+        tesseract.delete(engine);
+        assert!(
+            taken < 24 << 20,
+            "a chi_sim engine took {} MiB",
+            taken >> 20
+        );
+    }
+
     #[cfg(all(
         not(feature = "static"),
         not(windows),
