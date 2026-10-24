@@ -27,6 +27,7 @@ use super::report::Report;
 use super::script::{
     installed_language, language, language_model, tagged_language, written_in, BLACKLETTER_SCRIPT,
 };
+use super::slots;
 use super::tesseract::{OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding};
 use super::text::{corrected, lexicality, with_long_s};
 use crate::config::TesseractOcrConfig;
@@ -521,12 +522,14 @@ impl<'t> Recognizer<'t> {
     /// one is installed, whichever reading is kept, so that the next images, read first with
     /// that model, need no second reading; else on the script and model of the reading kept.
     ///
-    /// The images prepared to read it are freed once it is read: what was read keeps none.
+    /// The images prepared to read it are freed once it is read: what was read keeps none. It is
+    /// read once a slot of the process's readings is free, or on the one this thread holds.
     pub fn recognize(
         &self,
         image: &Image<'_>,
         assumed: Option<&OcrLanguage>,
     ) -> Result<Recognized, OcrError> {
+        let _slot = slots::slot();
         let mut recognized = self.recognize_preparing(image, assumed)?;
         recognized.read.prepared.image = None;
         recognized.read.prepared.png = OnceLock::new();

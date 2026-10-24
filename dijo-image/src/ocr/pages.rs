@@ -8,8 +8,9 @@
 //! load the assumed script's model for each page read side by side.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Condvar, LazyLock, Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard};
 
+use super::slots;
 use crate::formats::embedded::OcrLanguage;
 use crate::memory;
 
@@ -264,50 +265,6 @@ pub fn read_pages<S, T: Send, E: Send, R, L: Clone + PartialEq + Send + Sync>(
     })
 }
 
-/// How many pages may be read at once, counted across every document this process reads.
-struct Slots {
-    free: Mutex<usize>,
-    released: Condvar,
-}
-
-/// A page being read, which frees its slot when dropped.
-struct Slot<'a>(&'a Slots);
-
-impl Slots {
-    const fn new(capacity: usize) -> Self {
-        Self {
-            free: Mutex::new(capacity),
-            released: Condvar::new(),
-        }
-    }
-
-    fn free(&self) -> MutexGuard<'_, usize> {
-        self.free.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// A slot, once one is free.
-    fn acquire(&self) -> Slot<'_> {
-        let mut free = self.free();
-        while *free == 0 {
-            free = self.released.wait(free).unwrap_or_else(|e| e.into_inner());
-        }
-        *free -= 1;
-        Slot(self)
-    }
-}
-
-impl Drop for Slot<'_> {
-    fn drop(&mut self) {
-        *self.0.free() += 1;
-        self.0.released.notify_one();
-    }
-}
-
-/// The pages read at once in this process: as many as the processors it may use, however many
-/// documents are read side by side, each on as many threads, so that the rasters and tesseract
-/// engines pages take do not multiply with the documents read at once (#305).
-static SLOTS: LazyLock<Slots> = LazyLock::new(|| Slots::new(crate::process::processors()));
-
 /// Reads the next page not yet taken, on this thread, until none is left or they are given up.
 /// The page is taken once a slot is free, so the earliest page not read yet always holds one: a
 /// page waiting for the pages before it waits only for pages being read.
@@ -322,7 +279,7 @@ fn read_in_turn<S, T, E, L: Clone + PartialEq>(
     let _reading = Reading(shared);
     let mut own = None;
     loop {
-        let _slot = SLOTS.acquire();
+        let _slot = slots::slot();
         if shared.abandoned.load(Ordering::SeqCst) {
             return;
         }

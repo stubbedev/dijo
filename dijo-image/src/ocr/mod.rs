@@ -18,6 +18,7 @@ mod recognize;
 mod render;
 mod report;
 mod script;
+mod slots;
 mod tesseract;
 mod text;
 
