@@ -31,13 +31,16 @@ and Windows (x86_64), plus `SHA256SUMS`, an SBOM and build provenance
   detection finds (`amh ara ben bod chi_sim guj heb hin jpn kan khm kor lao mal mya pan sin tam tel tha`), `deu_latf`
   for blackletter (Fraktur), and `script/Latin`, `script/Cyrillic`, `script/Greek` and `script/Armenian`.
 
-From source:
+From source, every build embeds its own OCR: tesseract patched as the release binaries' is, the language data and,
+except on macOS, a HEIC/AVIF decoder. It never uses a `tesseract` installed on the system. Assemble that bundle once
+(vcpkg builds it) and name it when building:
 
 ```sh
-cargo install --locked --git https://github.com/stubbedev/dijo dijo
+just ocr-bundle target/ocr-bundle
+DIJO_OCR_BUNDLE=$PWD/target/ocr-bundle cargo install --locked --git https://github.com/stubbedev/dijo dijo
 ```
 
-A source build runs `tesseract` from `PATH` for OCR, and `heif-dec` for HEIC/AVIF images when it is installed.
+The Nix development shell (`nix develop`) sets `DIJO_OCR_BUNDLE` to a bundle it builds itself.
 
 ## Command line
 

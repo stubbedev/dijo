@@ -1220,27 +1220,6 @@ fn running_headers_and_footers_leave_the_page_text() {
     assert!(kept[0]["text"].as_str().unwrap().starts_with(first));
 }
 
-#[cfg(unix)]
-#[test]
-fn no_ocr_means_no_tesseract_run() {
-    let scratch = Scratch::new("no-ocr");
-    let log = scratch.0.join("calls");
-    let path = scratch.path_with_tesseract(&format!("echo \"$*\" >> '{}'", log.display()));
-    let output = Command::new(env!("CARGO_BIN_EXE_dijo"))
-        .args(["--ocr", "never", &document("science-exploration-1p.pptx")])
-        .env("PATH", path)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", stderr(&output));
-    let calls = fs::read_to_string(&log).unwrap_or_default();
-    assert!(
-        calls.lines().all(|line| !line.contains("--psm")
-            && !line.contains(".png")
-            && !line.contains("apache-tika")),
-        "tesseract ran on an image although OCR is off:\n{calls}"
-    );
-}
-
 #[test]
 fn a_worker_memory_limit_needs_process_isolation() {
     let output = dijo(&["serve", "--worker-max-rss-bytes", "1000000"]);

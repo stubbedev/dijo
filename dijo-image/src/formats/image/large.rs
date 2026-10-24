@@ -99,7 +99,6 @@ fn large_tiff() -> (LargeFile, u32) {
 /// far below its size.
 #[test]
 fn extracts_tiffs_too_large_to_read_whole_in_bounded_memory() {
-    assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
     let (file, pages) = large_tiff();
     let skipping = Extractor::new().set_ocr_config(TesseractOcrConfig::new().set_skip_ocr(true));
     let (text, metadata) = file.extract_with(&skipping, BUDGET, "dijo::TiffParser");
@@ -272,7 +271,6 @@ fn extracts_jpeg_xl_images_too_large_to_read_whole_in_bounded_memory() {
         assert_eq!(metadata[name], [expected], "{name}: {metadata:?}");
     }
     assert!(!metadata.contains_key("tk:exception:warn"), "{metadata:?}");
-    assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
     let (_, metadata) = file.extract_with(&Extractor::new(), BUDGET, super::PREPARING_OCR_PARSER);
     let [report] = metadata[crate::ocr::REPORT].as_slice() else {
         panic!("one reading: {metadata:?}");

@@ -21,13 +21,6 @@
           pkgs.cargo-fuzz
           pkgs.pkg-config
           pkgs.openssl
-          (pkgs.tesseract.override {
-            enableLanguages = [ "eng" ];
-            tesseractBase = pkgs.tesseract5.passthru.tesseractBase.overrideAttrs (
-              import ../ci/tesseract-build.nix
-            );
-          })
-          pkgs.libheif.bin
           pkgs.git
           pkgs.jre_headless
           pkgs.gnumake
@@ -47,8 +40,7 @@
 
         env = {
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
-          OMP_THREAD_LIMIT = "1";
-          TESSDATA_PREFIX = "${import ../ci/tessdata.nix { inherit pkgs; }}";
+          DIJO_OCR_BUNDLE = "${import ../ci/ocr-loaded.nix { inherit pkgs; }}";
         }
         // lib.optionalAttrs isLinux {
           "CARGO_TARGET_${hostTarget}_LINKER" = lib.getExe pkgs.clang;

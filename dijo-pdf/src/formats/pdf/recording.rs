@@ -76,8 +76,6 @@ pub(super) struct Recording {
     read_pages: Vec<Vec<Event>>,
     text: String,
     spans: Vec<Span>,
-    /// The pages Tika's PDF parser wants OCR for that no tesseract reads, so far.
-    unrecognized: usize,
     /// The first `IOException` Tika's writer caught and recorded, which fails the extraction
     /// once the document is written.
     caught: Option<Exception>,
@@ -94,7 +92,6 @@ impl Recording {
             read_pages: Vec::new(),
             text: String::new(),
             spans: Vec::new(),
-            unrecognized: 0,
             caught: None,
         }
     }
@@ -293,16 +290,6 @@ impl Recording {
     /// The first `IOException` caught, if any.
     pub(super) fn caught(&self) -> Option<&Exception> {
         self.caught.as_ref()
-    }
-
-    /// Counts a page Tika's PDF parser wants OCR for that no tesseract reads.
-    pub(super) fn count_unrecognized(&mut self) {
-        self.unrecognized += 1;
-    }
-
-    /// The pages Tika's PDF parser wants OCR for that no tesseract reads.
-    pub(super) fn unrecognized_pages(&self) -> usize {
-        self.unrecognized
     }
 
     /// Whether a page is read by OCR.

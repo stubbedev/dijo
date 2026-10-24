@@ -168,9 +168,6 @@ pub(crate) enum Decoded<'a> {
 /// Why an image file was not decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Undecoded {
-    /// No decoder of its format is bundled or installed, as the static executable links them.
-    #[cfg(not(feature = "static"))]
-    NoDecoder,
     /// It could not be decoded, for this reason.
     Failed(String),
     /// libheif, which Tika decodes it with as well, cannot decode it, failing with this

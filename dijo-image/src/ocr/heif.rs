@@ -1,7 +1,7 @@
 //! HEIC and HEIF images decoded for OCR by libheif, as our Java `HeifDecoder` has them decoded,
 //! since no decoder of HEVC in Rust is proven yet: by the libheif linked into the static
-//! executable, and otherwise by macOS's own `sips`, by the heif-png the OCR bundle carries, or
-//! by libheif's `heif-dec` on the `PATH`, each writing a PNG file this module reads back.
+//! executable, and otherwise by macOS's own `sips` or the heif-png the OCR bundle carries, each
+//! writing a PNG file this module reads back.
 
 use std::time::Duration;
 
@@ -13,9 +13,10 @@ pub(crate) fn decode(input: &[u8], timeout: Option<Duration>) -> Result<Bitmap, 
     imp::decode(input, timeout)
 }
 
-/// The primary image of a HEIC or HEIF file decoded by libheif on every platform, the decoder
-/// the native AVIF decoder is held to.
-#[cfg(test)]
+/// The primary image of a HEIC or HEIF file decoded by libheif, the decoder the native AVIF
+/// decoder is held to, on the platforms whose builds carry it: all but macOS, which decodes with
+/// its own `sips`.
+#[cfg(all(test, any(feature = "static", not(target_os = "macos"))))]
 pub(crate) fn libheif(input: &[u8]) -> Result<Bitmap, Undecoded> {
     imp::libheif(input, None)
 }
@@ -218,11 +219,11 @@ mod imp {
     use crate::ocr::bitmap::Bitmap;
     use crate::ocr::decode::{bitmap, decodable, Undecoded};
 
-    /// libheif's decoder.
-    const PROGRAM: &str = "heif-dec";
     /// Where libheif loads decoder plugins from, which the bundled heif-png, linked statically
     /// with its own decoders, must not load: a plugin built for another libheif and C library.
+    #[cfg(not(target_os = "macos"))]
     const PLUGIN_PATH: &str = "LIBHEIF_PLUGIN_PATH";
+    #[cfg(target_os = "macos")]
     const MAC_OS_PROGRAM: &str = "/usr/bin/sips";
     /// How much of a failed program's standard error its failure reports.
     const MAX_REPORTED_ERROR_CHARS: usize = 2000;
@@ -256,24 +257,22 @@ mod imp {
         }
     }
 
-    /// How a program the decoding runs ended.
-    enum Outcome {
-        NotStarted,
-        Finished { success: bool, failure: String },
+    /// How a program the decoding runs ended: whether it succeeded, and why not if it did not.
+    struct Outcome {
+        success: bool,
+        failure: String,
     }
 
     /// Runs a program to its end or its timeout, whichever comes first, with its standard
     /// error kept for its failure.
     fn run(command: &mut Command, timeout: Option<Duration>) -> Result<Outcome, Undecoded> {
         let program = command.get_program().to_string_lossy().into_owned();
-        let Ok(mut child) = command
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-        else {
-            return Ok(Outcome::NotStarted);
-        };
+            .map_err(|e| Undecoded::Failed(format!("Starting {program} failed: {e}")))?;
         let mut errors = child.stderr.take().expect("standard error is piped");
         let reader = std::thread::spawn(move || {
             let mut text = Vec::new();
@@ -286,7 +285,7 @@ mod imp {
                 Ok(None) if timeout.is_some_and(|timeout| started.elapsed() >= timeout) => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Ok(Outcome::Finished {
+                    return Ok(Outcome {
                         success: false,
                         failure: format!(
                             "{program} did not finish within {} ms",
@@ -316,7 +315,7 @@ mod imp {
             errors.chars().skip(skip).collect()
         };
         let status = exit_value(status);
-        Ok(Outcome::Finished {
+        Ok(Outcome {
             success: status == 0,
             failure: match tail.is_empty() {
                 true => format!("{program} exited with status {status}"),
@@ -339,64 +338,48 @@ mod imp {
 
     /// The PNG a program decoded the image to, in the colours ImageIO reads it in.
     fn decoded(outcome: Outcome, png: &Path) -> Result<Bitmap, Undecoded> {
-        match outcome {
-            Outcome::NotStarted => Err(Undecoded::NoDecoder),
-            Outcome::Finished {
-                success: false,
-                failure,
-            } => Err(Undecoded::Rejected(format!(
-                "Decoding the image for OCR failed: {failure}"
-            ))),
-            Outcome::Finished { success: true, .. } => {
-                let unreadable = |e: &dyn std::fmt::Display| {
-                    Undecoded::Failed(format!("Cannot read the decoded {}: {e}", png.display()))
-                };
-                let (width, height) = image::image_dimensions(png).map_err(|e| unreadable(&e))?;
-                decodable(width, height).map_err(Undecoded::Failed)?;
-                let mut reader = image::ImageReader::open(png).map_err(|e| unreadable(&e))?;
-                reader.no_limits();
-                Ok(bitmap(reader.decode().map_err(|e| unreadable(&e))?))
-            }
+        if !outcome.success {
+            return Err(Undecoded::Rejected(format!(
+                "Decoding the image for OCR failed: {}",
+                outcome.failure
+            )));
         }
+        let unreadable = |e: &dyn std::fmt::Display| {
+            Undecoded::Failed(format!("Cannot read the decoded {}: {e}", png.display()))
+        };
+        let (width, height) = image::image_dimensions(png).map_err(|e| unreadable(&e))?;
+        decodable(width, height).map_err(Undecoded::Failed)?;
+        let mut reader = image::ImageReader::open(png).map_err(|e| unreadable(&e))?;
+        reader.no_limits();
+        Ok(bitmap(reader.decode().map_err(|e| unreadable(&e))?))
     }
 
-    /// The primary image decoded by the platform's decoder: macOS's `sips`, and elsewhere
-    /// libheif.
+    /// The primary image decoded by macOS's own `sips`.
+    #[cfg(target_os = "macos")]
     pub(super) fn decode(input: &[u8], timeout: Option<Duration>) -> Result<Bitmap, Undecoded> {
-        if cfg!(target_os = "macos") {
-            return converted(input, timeout, |image, png| {
-                let mut command = Command::new(MAC_OS_PROGRAM);
-                command
-                    .args(["-s", "format", "png"])
-                    .arg(image)
-                    .arg("--out")
-                    .arg(png);
-                Ok(command)
-            });
-        }
-        libheif(input, timeout)
+        converted(input, timeout, |image, png| {
+            let mut command = Command::new(MAC_OS_PROGRAM);
+            command
+                .args(["-s", "format", "png"])
+                .arg(image)
+                .arg("--out")
+                .arg(png);
+            Ok(command)
+        })
     }
 
-    /// The primary image decoded by libheif: the bundled heif-png, or else `heif-dec` on the
-    /// `PATH`.
+    #[cfg(not(target_os = "macos"))]
+    pub(super) use libheif as decode;
+
+    /// The primary image decoded by libheif: the heif-png the build bundles.
+    #[cfg(not(target_os = "macos"))]
     pub(super) fn libheif(input: &[u8], timeout: Option<Duration>) -> Result<Bitmap, Undecoded> {
         converted(input, timeout, |image, png| {
-            let bundled = crate::bundle::bundled_heif_decoder().map_err(|e| {
+            let decoder = crate::bundle::bundled_heif_decoder().map_err(|e| {
                 Undecoded::Failed(format!("Cannot unpack the bundled heif-png: {e}"))
             })?;
-            let mut command = match bundled {
-                Some(bundled) => {
-                    let mut command = Command::new(bundled);
-                    command.env_remove(PLUGIN_PATH);
-                    command
-                }
-                None => {
-                    let mut command = Command::new(PROGRAM);
-                    command.arg("--quiet");
-                    command
-                }
-            };
-            command.arg(image).arg(png);
+            let mut command = Command::new(decoder);
+            command.env_remove(PLUGIN_PATH).arg(image).arg(png);
             Ok(command)
         })
     }

@@ -24,44 +24,6 @@ impl Scratch {
         fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }
-
-    /// A PATH on which `tesseract` first runs `before`, a shell snippet that sees tesseract's
-    /// arguments as `$@`, and then the real tesseract.
-    #[cfg(unix)]
-    pub fn path_with_tesseract(&self, before: &str) -> String {
-        self.tesseract_wrapper(before);
-        format!(
-            "{}:{}",
-            self.0.display(),
-            std::env::var("PATH").unwrap_or_default()
-        )
-    }
-
-    /// Writes a tesseract into this directory that runs `before`, then the installed one.
-    #[cfg(unix)]
-    fn tesseract_wrapper(&self, before: &str) {
-        use std::process::Command;
-        let real = String::from_utf8(
-            Command::new("sh")
-                .args(["-c", "command -v tesseract"])
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap();
-        let real = real.trim();
-        assert!(!real.is_empty(), "tesseract is not installed");
-        self.program("tesseract", &format!("{before}\nexec '{real}' \"$@\""));
-    }
-
-    /// Writes an executable shell script named `name` into this directory.
-    #[cfg(unix)]
-    fn program(&self, name: &str, script: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        let path = self.0.join(name);
-        fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
 }
 
 impl Drop for Scratch {

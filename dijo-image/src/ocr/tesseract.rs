@@ -1,7 +1,7 @@
-//! Tesseract through its C API (`capi.h`), in the process: linked into the static executable,
-//! or else the library of the `tesseract` on the `PATH`, with the language data that program
-//! reads. An engine per model is loaded once and reused by one reading at a time, as our Java
-//! `LinkedTesseract` keeps them, so that reading an image starts no process and loads no model.
+//! Tesseract through its C API (`capi.h`), in the process: linked into the static executable, or
+//! else the library the build bundles, with the language data the build bundles. An engine per
+//! model is loaded once and reused by one reading at a time, as our Java `LinkedTesseract` keeps
+//! them, so that reading an image starts no process and loads no model.
 //!
 //! A reading runs to its end, as the `tesseract` program's does: the C API offers no safe way to
 //! judge the words recognized so far while recognition runs, since a result iterator orders
@@ -154,9 +154,6 @@ c_api! {
     clear = TessBaseAPIClear(*mut BaseApi);
     detect_orientation_script = TessBaseAPIDetectOrientationScript(
         *mut BaseApi, *mut c_int, *mut c_float, *mut *const c_char, *mut c_float) -> c_int;
-    available_languages = TessBaseAPIGetAvailableLanguagesAsVector(*const BaseApi)
-        -> *mut *mut c_char;
-    delete_text_array = TessDeleteTextArray(*mut *mut c_char);
     create_monitor = TessMonitorCreate() -> *mut Monitor;
     delete_monitor = TessMonitorDelete(*mut Monitor);
     set_deadline = TessMonitorSetDeadlineMSecs(*mut Monitor, c_int);
@@ -312,8 +309,7 @@ pub enum OcrError {
     Failed { image: String, model: String },
     /// It could not load a model.
     Model { model: String },
-    /// A model asked for is not installed: neither bundled with the build nor where the
-    /// tesseract on the `PATH` reads its models.
+    /// A model asked for is not among those the build bundles.
     NotInstalled {
         model: String,
         installed: Vec<String>,
@@ -421,8 +417,10 @@ impl<E> IdleEngines<E> {
 /// Tesseract in this process, and its engines.
 pub struct Tesseract {
     api: Api,
-    /// Where the models are, or none for where tesseract looks by itself.
-    datapath: Option<CString>,
+    /// Where the models are: the language data the build carries.
+    data_dir: std::path::PathBuf,
+    /// `data_dir` as tesseract takes it.
+    datapath: CString,
     idle: Mutex<IdleEngines<Engine>>,
     languages: Mutex<Option<Arc<BTreeSet<String>>>>,
     #[cfg(not(feature = "static"))]
@@ -432,26 +430,24 @@ pub struct Tesseract {
 impl fmt::Debug for Tesseract {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Tesseract")
-            .field("datapath", &self.datapath)
+            .field("data_dir", &self.data_dir)
             .finish_non_exhaustive()
     }
 }
 
 impl Tesseract {
-    /// The tesseract linked into the static executable, with the language data under `datapath`.
+    /// The tesseract linked into the static executable, with the language data under `data_dir`.
     #[cfg(feature = "static")]
-    pub(crate) fn linked(datapath: &std::path::Path) -> Result<Self, String> {
-        Ok(Self::new(Api::linked(), Some(c_path(datapath)?)))
+    pub(crate) fn linked(data_dir: &std::path::Path) -> Result<Self, String> {
+        Self::new(Api::linked(), data_dir)
     }
 
-    /// The tesseract of a library, with the language data under `datapath`, or else where it
-    /// looks by itself.
+    /// The tesseract of a library, with the language data under `data_dir`.
     #[cfg(not(feature = "static"))]
     pub(crate) fn loaded(
         library: &std::path::Path,
-        datapath: Option<&std::path::Path>,
+        data_dir: &std::path::Path,
     ) -> Result<Self, String> {
-        let datapath = datapath.map(c_path).transpose()?;
         let loaded = unsafe { libloading::Library::new(library) }.map_err(|e| {
             format!(
                 "Loading tesseract's library {} failed: {}",
@@ -461,23 +457,25 @@ impl Tesseract {
         })?;
         let api = Api::resolved(&loaded)
             .map_err(|e| format!("tesseract's library {} is unusable: {e}", library.display()))?;
-        Ok(Self::new(api, datapath, loaded))
+        Self::new(api, data_dir, loaded)
     }
 
     fn new(
         api: Api,
-        datapath: Option<CString>,
+        data_dir: &std::path::Path,
         #[cfg(not(feature = "static"))] library: libloading::Library,
-    ) -> Self {
+    ) -> Result<Self, String> {
+        let datapath = c_path(data_dir)?;
         unsafe { (api.set_message_severity)(LEPTONICA_QUIET) };
-        Self {
+        Ok(Self {
             api,
+            data_dir: data_dir.to_path_buf(),
             datapath,
             idle: Mutex::new(IdleEngines::new(crate::process::processors())),
             languages: Mutex::new(None),
             #[cfg(not(feature = "static"))]
             _library: library,
-        }
+        })
     }
 
     /// The version of the tesseract, as `TessVersion` reports it.
@@ -640,10 +638,7 @@ impl Tesseract {
         if let Some(languages) = known.as_ref() {
             return Ok(Arc::clone(languages));
         }
-        let languages = Arc::new(match self.data_dir() {
-            Some(dir) => models_under(&dir)?,
-            None => self.listed_languages()?,
-        });
+        let languages = Arc::new(models_under(&self.data_dir)?);
         *known = Some(Arc::clone(&languages));
         Ok(languages)
     }
@@ -665,35 +660,6 @@ impl Tesseract {
             }),
             None => Ok(()),
         }
-    }
-
-    /// The directory tesseract reads its models from, when it is known without loading one: the
-    /// one it was given, or the one `TESSDATA_PREFIX` names.
-    fn data_dir(&self) -> Option<std::path::PathBuf> {
-        match &self.datapath {
-            Some(datapath) => Some(std::path::PathBuf::from(datapath.to_str().ok()?)),
-            None => std::env::var_os("TESSDATA_PREFIX").map(std::path::PathBuf::from),
-        }
-    }
-
-    /// The models an engine finds where tesseract looks by itself, as `--list-langs` lists them.
-    fn listed_languages(&self) -> Result<BTreeSet<String>, OcrError> {
-        let engine = self.take(OSD_MODEL)?;
-        let languages = unsafe {
-            let listed = (self.api.available_languages)(engine.0.as_ptr());
-            let mut languages = BTreeSet::new();
-            let mut cursor = listed;
-            while !cursor.is_null() && !(*cursor).is_null() {
-                languages.insert(CStr::from_ptr(*cursor).to_string_lossy().replace('\\', "/"));
-                cursor = cursor.add(1);
-            }
-            if !listed.is_null() {
-                (self.api.delete_text_array)(listed);
-            }
-            languages
-        };
-        self.release(OSD_MODEL, engine);
-        Ok(languages)
     }
 
     /// An idle engine for a model, the one used last, loaded when every engine for it is in use.
@@ -724,10 +690,7 @@ impl Tesseract {
         let language = CString::new(model).map_err(|_| unloadable())?;
         let api = &self.api;
         let handle = NonNull::new(unsafe { (api.create)() }).ok_or_else(unloadable)?;
-        let datapath = self
-            .datapath
-            .as_ref()
-            .map_or(std::ptr::null(), |path| path.as_ptr());
+        let datapath = self.datapath.as_ptr();
         let (mut names, mut values): (Vec<_>, Vec<_>) = init_variables(model)
             .iter()
             .map(|(name, value)| (name.as_ptr().cast_mut(), value.as_ptr().cast_mut()))
@@ -984,7 +947,6 @@ impl Drop for MonitorGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::c_void;
 
     /// `ci/tesseract-library` builds the bundled library to export the functions this module calls,
     /// which it lists in `c-api.txt`.
@@ -1103,15 +1065,6 @@ mod tests {
     }
 
     #[test]
-    fn lists_the_models_tesseract_lists() {
-        let tesseract = crate::ocr::tesseract().unwrap();
-        assert_eq!(
-            *tesseract.languages().unwrap(),
-            tesseract.listed_languages().unwrap()
-        );
-    }
-
-    #[test]
     fn a_models_dictionary_holds_the_words_of_its_language() {
         let tesseract = crate::ocr::tesseract().unwrap();
         let held = |model, words: [&str; 2]| {
@@ -1199,29 +1152,6 @@ mod tests {
         });
     }
 
-    #[cfg(all(not(feature = "static"), not(windows)))]
-    fn address_of(tesseract: &Tesseract, symbol: &str) -> Result<*const c_void, String> {
-        unsafe { tesseract._library.get::<*const c_void>(symbol.as_bytes()) }
-            .map(|address| *address)
-            .map_err(|e| format!("tesseract's library has no {symbol}: {e}"))
-    }
-
-    #[cfg(all(not(feature = "static"), target_os = "linux"))]
-    #[test]
-    fn tesseract_keeps_word_images_as_pix_without_a_png_round_trip() {
-        let tesseract = crate::ocr::tesseract().unwrap();
-        address_of(tesseract, "_ZN9tesseract9ImageData6SetPixENS_5ImageE").unwrap();
-        for png_round_trip in [
-            "_ZN9tesseract9ImageData14SetPixInternalENS_5ImageEPSt6vectorIcSaIcEE",
-            "_ZN9tesseract9ImageData14GetPixInternalERKSt6vectorIcSaIcEE",
-        ] {
-            assert!(
-                address_of(tesseract, png_round_trip).is_err(),
-                "tesseract was built without TESSERACT_IMAGEDATA_AS_PIX: it has {png_round_trip}"
-            );
-        }
-    }
-
     /// An engine keeps only what its readings use, as the tesseract the builds patch sets them up
     /// (#308, #311): one for an LSTM model no empty adapted class for each of its unichars, which
     /// the legacy classifier it never runs would adapt (tesseract-patches/adapts-only-while-
@@ -1264,66 +1194,6 @@ mod tests {
                 taken >> 20
             );
         }
-    }
-
-    #[cfg(all(
-        not(feature = "static"),
-        not(windows),
-        any(target_arch = "x86_64", target_arch = "aarch64")
-    ))]
-    const SELECTED_INTEGER_KERNEL: &str = "_ZN9tesseract13IntSimdMatrix13intSimdMatrixE";
-
-    #[cfg(all(not(feature = "static"), not(windows), target_arch = "x86_64"))]
-    const SIMD_INTEGER_KERNELS: &[(&str, &str)] = &[
-        ("AVX2", "_ZN9tesseract13IntSimdMatrix17intSimdMatrixAVX2E"),
-        ("SSE4.1", "_ZN9tesseract13IntSimdMatrix16intSimdMatrixSSEE"),
-    ];
-
-    #[cfg(all(not(feature = "static"), not(windows), target_arch = "aarch64"))]
-    const SIMD_INTEGER_KERNELS: &[(&str, &str)] =
-        &[("NEON", "_ZN9tesseract13IntSimdMatrix17intSimdMatrixNEONE")];
-
-    fn kernel_named(
-        selected: *const c_void,
-        kernels: &[(&'static str, *const c_void)],
-    ) -> Option<&'static str> {
-        kernels
-            .iter()
-            .find(|(_, kernel)| !kernel.is_null() && *kernel == selected)
-            .map(|(name, _)| *name)
-    }
-
-    #[test]
-    fn names_the_simd_kernel_tesseract_selected_and_none_for_the_generic_one() {
-        let avx2 = 0x1000 as *const c_void;
-        let sse = 0x2000 as *const c_void;
-        let kernels = [("AVX2", avx2), ("SSE4.1", sse)];
-        assert_eq!(kernel_named(sse, &kernels), Some("SSE4.1"));
-        assert_eq!(kernel_named(avx2, &kernels), Some("AVX2"));
-        assert_eq!(kernel_named(std::ptr::null(), &kernels), None);
-        assert_eq!(kernel_named(0x3000 as *const _, &kernels), None);
-    }
-
-    #[cfg(all(
-        not(feature = "static"),
-        not(windows),
-        any(target_arch = "x86_64", target_arch = "aarch64")
-    ))]
-    #[test]
-    fn the_linked_tesseract_selected_a_simd_dot_product_kernel() {
-        let tesseract = crate::ocr::tesseract().unwrap();
-        let selected_slot = address_of(tesseract, SELECTED_INTEGER_KERNEL).unwrap();
-        let selected = unsafe { *selected_slot.cast::<*const c_void>() };
-        let kernels: Vec<_> = SIMD_INTEGER_KERNELS
-            .iter()
-            .map(|&(name, symbol)| (name, address_of(tesseract, symbol).unwrap()))
-            .collect();
-        assert!(
-            kernel_named(selected, &kernels).is_some(),
-            "tesseract {} selected the generic dot-product kernel, none of {:?}",
-            tesseract.version(),
-            kernels.iter().map(|(name, _)| name).collect::<Vec<_>>()
-        );
     }
 
     #[test]

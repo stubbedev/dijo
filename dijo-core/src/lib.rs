@@ -26,19 +26,15 @@ pub use extractor::*;
 pub use ocr::tesseract_version;
 
 /// Fails, naming the models installed, unless every model of an OCR language, joined by `+` as
-/// `-l eng+deu` joins them, is installed where the tesseract OCR runs finds its models. The
-/// automatic language passes, and so does any language when no tesseract runs in this process,
-/// where OCR reads nothing.
+/// `-l eng+deu` joins them, is among those the build carries; fails too when the tesseract the
+/// build carries cannot be set up. The automatic language passes.
 pub fn check_ocr_language(language: &str) -> Result<(), String> {
     if language == TesseractOcrConfig::AUTO_LANGUAGE {
         return Ok(());
     }
-    match ocr::tesseract() {
-        Ok(tesseract) => tesseract
-            .check_installed(language)
-            .map_err(|error| error.to_string()),
-        Err(_) => Ok(()),
-    }
+    ocr::tesseract()
+        .and_then(|tesseract| tesseract.check_installed(language))
+        .map_err(|error| error.to_string())
 }
 
 pub use bundle::{bundled_ocr_licenses, linked_native_licenses};

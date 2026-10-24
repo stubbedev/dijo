@@ -1,5 +1,5 @@
 //! PDF documents, as Tika's `PDFParser` reads them with PDFBox, under dijo's
-//! `TextLayerCheckingPdfParser` when tesseract runs: the document's objects as PDFBox's
+//! `TextLayerCheckingPdfParser`: the document's objects as PDFBox's
 //! `COSParser` reads them, each when it is first needed, then the metadata `PDFParser` collects, and the text of each page as PDFBox's
 //! `PDFTextStripper` assembles it from the glyphs its content stream shows, written by
 //! `PDF2XHTML` in our reading order, or for a tagged document by `PDFMarkedContent2XHTML`
@@ -8,9 +8,8 @@
 //! embedded documents, and the form. The pages `TextLayerCheckingPdfParser` reads by OCR are
 //! rendered and read with tesseract ([`ocr`]). An encrypted document opens with the password
 //! the extraction gives, or the empty one, as PDFBox opens it ([`security`]), and fails as
-//! Tika fails it where that password does not open it. Documents with a page Tika would OCR
-//! with no tesseract to run, and documents with what the port does not do (fonts it cannot
-//! measure, among others), are not read.
+//! Tika fails it where that password does not open it. Documents with what the port does not do
+//! (fonts it cannot measure, among others) are not read.
 
 mod afm;
 mod attachment;
@@ -89,25 +88,17 @@ const DELEGATES: [(&str, &str); 2] = [
 const MAX_RECURSION_DEPTH: usize = 100;
 
 pub(super) use crate::formats::Unported;
-use crate::ocr::{tesseract_runs as ocr_runs, LanguageHint, OcrSettings};
+use crate::ocr::{LanguageHint, OcrSettings};
 
-/// Tika's `PDFParser`, wrapped in our `TextLayerCheckingPdfParser` when tesseract runs.
+/// Tika's `PDFParser`, wrapped in our `TextLayerCheckingPdfParser`.
 pub struct PdfParser;
 
 impl Parser for PdfParser {
     fn name(&self) -> &'static str {
-        if ocr_runs() {
-            TEXT_LAYER_CHECKING_PARSER
-        } else {
-            PDF_PARSER
-        }
+        TEXT_LAYER_CHECKING_PARSER
     }
     fn tika_name(&self) -> &'static str {
-        if ocr_runs() {
-            TIKA_TEXT_LAYER_CHECKING_PARSER
-        } else {
-            TIKA_PDF_PARSER
-        }
+        TIKA_TEXT_LAYER_CHECKING_PARSER
     }
     fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
         &DELEGATES
@@ -176,7 +167,7 @@ fn prepare<'a>(
                 let (written, recording) = streamed.write(metadata, xhtml);
                 let ocr_pages = match settings.ocr.dispatches_every_page() {
                     true => loaded.document.page_count(),
-                    false => recording.unrecognized_pages(),
+                    false => 0,
                 };
                 ended(xhtml, written, ocr_pages, recording.caught())
             })
@@ -238,7 +229,7 @@ impl Settings {
     /// The settings `configs` set, or the thresholds our Java rejects.
     fn of(configs: &ParserConfigs) -> Result<Self, RejectedThresholds> {
         let config = &configs.pdf;
-        let ocr = OcrCheck::of(config, ocr_runs())?;
+        let ocr = OcrCheck::of(config)?;
         let images = match config.extracts_inline_images() {
             false => ImageExtraction::Off,
             true if ocr.reads_only_ocr() => ImageExtraction::Off,
@@ -278,9 +269,7 @@ enum Recorded<'a> {
 /// `PasswordProvider` marks it once `PDFParser` asks it for the password `configs` give.
 fn new_recording(metadata: TikaMetadata, configs: &ParserConfigs) -> Recording {
     let mut recording = Recording::new(metadata);
-    if ocr_runs() {
-        recording.delegate_to(PDF_PARSER);
-    }
+    recording.delegate_to(PDF_PARSER);
     if configs.password.is_some() {
         recording.set(PASSWORD_USED, "true");
     }
@@ -342,7 +331,7 @@ fn record<'a>(
     );
     let ocr_pages = match settings.ocr.dispatches_every_page() {
         true => page_count,
-        false => recording.unrecognized_pages(),
+        false => 0,
     };
     let whole = Recorded::Whole {
         recording: Box::new(recording),
@@ -772,42 +761,6 @@ mod tests {
         recording.release_read(1, ocr::PageCheck::Weigh(doubtful));
         assert_eq!(language_hint(&recording), LanguageHint::tagged("es"));
     }
-
-    /// Why OCR reads pages of a document of the corpora.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Why {
-        /// Tika OCRs a page of next to no glyphs, whatever its text layer reads.
-        Ocr,
-        /// Tika OCRs a page of too many glyphs without characters: by their count, or for its
-        /// doubtful text layer when tesseract runs.
-        Unmapped,
-        /// Our `TextLayerCheckingPdfParser` doubts a page's text layer, when tesseract runs.
-        Doubtful,
-    }
-
-    impl Why {
-        /// Whether the port falls short of Tika on a document for this reason: one whose pages
-        /// Tika's PDF parser wants OCR for when no tesseract runs.
-        fn falls_short(self) -> bool {
-            match self {
-                Self::Ocr | Self::Unmapped => !ocr_runs(),
-                Self::Doubtful => false,
-            }
-        }
-    }
-
-    /// The documents of the corpora whose pages OCR reads, or on which the port falls short of
-    /// Tika, and why.
-    const NOT_THE_TEXT_LAYER: [(&str, Why); 8] = [
-        ("arabic.pdf", Why::Unmapped),
-        ("deu-ocr.pdf", Why::Ocr),
-        ("eng-ocr.pdf", Why::Ocr),
-        ("hindi.pdf", Why::Unmapped),
-        ("prose-broken-offset.pdf", Why::Doubtful),
-        ("prose-broken-private-use.pdf", Why::Doubtful),
-        ("prose-scan.pdf", Why::Ocr),
-        ("thai.pdf", Why::Unmapped),
-    ];
 
     fn corpora() -> Vec<&'static Path> {
         CORPORA.iter().map(Path::new).collect()
@@ -1740,33 +1693,6 @@ mod tests {
         }
     }
 
-    /// Without tesseract, a page Tika's PDF parser wants OCR for keeps its text layer and is
-    /// counted among the pages OCR was asked for, as Tika's parser does finding no OCR engine,
-    /// the difference noted.
-    #[test]
-    fn counts_the_pages_it_cannot_ocr_without_tesseract() {
-        let objects = page_objects("BT /F1 12 Tf 72 720 Td (Tre) Tj ET");
-        let objects: Vec<&str> = objects.iter().map(String::as_str).collect();
-        let input = document(&objects, b"", &[]);
-        let configs = ParserConfigs::default();
-        let loaded = load(&input, Pages::IN_MEMORY, &configs).unwrap();
-        let mut settings = Settings::of(&configs).unwrap();
-        settings.ocr = OcrCheck::of(&configs.pdf, false).unwrap();
-        let mut recording = new_recording(TikaMetadata::new(), &configs);
-        let written = extract(&loaded, &input, settings, &mut recording, &mut |_| {
-            ControlFlow::Continue(())
-        });
-        assert!(matches!(written, Ok(ControlFlow::Continue(()))));
-        assert_eq!(recording.unrecognized_pages(), 1);
-        let Some(Difference(difference)) = difference(&loaded.document) else {
-            panic!("no difference");
-        };
-        assert!(
-            difference.starts_with("page 1 shows 3 glyphs"),
-            "{difference}"
-        );
-    }
-
     /// Documents whose catalog names no page tree root, or one that is no dictionary, which
     /// PDFBox's `checkPages` throws on, and one whose page tree has a kid that reads as `null`,
     /// for which `PDPageTree` reads an empty page.
@@ -2141,36 +2067,15 @@ mod tests {
     }
 
     #[test]
-    fn falls_short_on_what_the_port_does_not_do() {
+    fn falls_short_on_no_document_of_the_corpora() {
         let (_, shortfalls) = documents(&PdfParser, &corpora());
-        let mut found: Vec<(String, String)> = shortfalls
+        let found: Vec<(String, String)> = shortfalls
             .iter()
             .map(|path| {
                 let name = path.file_name().unwrap().to_str().unwrap().to_owned();
                 (name, shortfall_of(path))
             })
             .collect();
-        found.sort();
-        let expected: Vec<(&str, Why)> = NOT_THE_TEXT_LAYER
-            .iter()
-            .copied()
-            .filter(|(_, why)| why.falls_short())
-            .collect();
-        assert_eq!(
-            found
-                .iter()
-                .map(|(name, _)| name.as_str())
-                .collect::<Vec<_>>(),
-            expected.iter().map(|(name, _)| *name).collect::<Vec<_>>()
-        );
-        for ((name, reason), (_, why)) in found.iter().zip(&expected) {
-            let as_expected = match why {
-                Why::Ocr | Why::Unmapped => {
-                    reason.starts_with("page ") && reason.contains("wants OCR")
-                }
-                Why::Doubtful => unreachable!("{name} falls short on a doubtful page"),
-            };
-            assert!(as_expected, "{name}: {reason}");
-        }
+        assert!(found.is_empty(), "{found:?}");
     }
 }

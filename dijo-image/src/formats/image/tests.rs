@@ -438,7 +438,6 @@ fn reads_the_header_and_boxes_of_jpeg_xl_images() {
 
 #[test]
 fn reads_jpeg_xl_scans_as_the_same_png() {
-    assert!(crate::ocr::tesseract_runs(), "tesseract is not installed");
     let text = |path: &str| {
         crate::Extractor::new()
             .extract_file_to_string(path)

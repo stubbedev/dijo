@@ -935,8 +935,9 @@ mod tests {
 
     /// The test cards of `tests/fixtures/avif`, coded with each layout, range, depth, matrix and
     /// transformative property the decoder reads, and the corpus's scan decode as libheif
-    /// decodes them, `heif-dec` in the development shell, but for the rounding
-    /// of a colour's grey; colour cards in colour.
+    /// decodes them, the bundled heif-png outside the static executable, but for the rounding of a
+    /// colour's grey; colour cards in colour.
+    #[cfg(any(feature = "static", not(target_os = "macos")))]
     #[test]
     fn decodes_as_libheif_does() {
         let fixtures = std::fs::read_dir("tests/fixtures/avif")

@@ -23,8 +23,6 @@ TessBaseAPIMeanTextConf
 TessBaseAPIIsValidWord
 TessBaseAPIClear
 TessBaseAPIDetectOrientationScript
-TessBaseAPIGetAvailableLanguagesAsVector
-TessDeleteTextArray
 TessMonitorCreate
 TessMonitorDelete
 TessMonitorSetDeadlineMSecs

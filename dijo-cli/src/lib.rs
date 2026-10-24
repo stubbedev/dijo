@@ -206,7 +206,7 @@ fn print_licenses() -> bool {
     let sections = [
         (
             "Bundled OCR: tesseract, the libraries it links and its language data",
-            dijo_core::bundled_ocr_licenses(),
+            Some(dijo_core::bundled_ocr_licenses()),
         ),
         (
             "Linked native libraries: fonts, HEIC and AVIF decoding",

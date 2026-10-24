@@ -45,17 +45,12 @@ pub(crate) struct OcrReader {
 }
 
 impl OcrReader {
-    /// The reader under the OCR settings of `configs`, or why this process cannot read.
-    pub(crate) fn of(configs: &ParserConfigs) -> Result<Self, Unported> {
-        let tesseract = ocr::reader().map_err(|reason| {
-            Unported::new(format!(
-                "OCR in this process, which needs tesseract's library: {reason}"
-            ))
-        })?;
-        Ok(Self {
-            tesseract,
+    /// The reader under the OCR settings of `configs`.
+    pub(crate) fn of(configs: &ParserConfigs) -> Self {
+        Self {
+            tesseract: ocr::tesseract(),
             settings: OcrSettings::of(&configs.ocr),
-        })
+        }
     }
 
     /// `PreparingOcrParser.parse` of a decoded image of `file_size` bytes, turned upright by
@@ -139,10 +134,6 @@ impl<'a> Enricher<'a> {
         let timeout = OcrSettings::of(&configs.ocr).timeout();
         let decoded =
             ocr::decode(input, memory, format, timeout).map_err(|undecoded| match undecoded {
-                #[cfg(not(feature = "static"))]
-                Undecoded::NoDecoder => Decline::from(Unported::new(format!(
-                    "an image of {base}, for which no decoder is bundled or installed"
-                ))),
                 Undecoded::Failed(reason) => Decline::from(Unported::new(format!(
                     "an image of {base} the port cannot decode for OCR: {reason}"
                 ))),
@@ -151,7 +142,7 @@ impl<'a> Enricher<'a> {
                 ),
             })?;
         Ok(Self::Reading {
-            reader: OcrReader::of(configs)?,
+            reader: OcrReader::of(configs),
             decoded,
         })
     }

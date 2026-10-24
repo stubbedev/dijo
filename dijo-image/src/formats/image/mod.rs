@@ -86,11 +86,11 @@ const OCR_TYPES: [&str; 22] = [
 /// `ContentEnrichers.MIN_PIXELS`: an image narrower or lower than this gets no enricher.
 const MIN_PIXELS: i32 = 2;
 
-/// Whether Tika hands an image of `content_type` to the OCR enricher: whether tesseract runs and
-/// the enricher reads the type.
+/// Whether Tika hands an image of `content_type` to the OCR enricher: whether the enricher reads
+/// the type.
 fn enriched(content_type: &str) -> bool {
     let base = content_type.split(';').next().unwrap_or_default().trim();
-    crate::ocr::tesseract_runs() && OCR_TYPES.contains(&base)
+    OCR_TYPES.contains(&base)
 }
 
 /// The zone an image's dates are read and written in: UTC, so that a date naming no zone, as

@@ -23,17 +23,13 @@ fn main() {
     let out_dir = PathBuf::from(required_env("OUT_DIR"));
     let platform = Platform::from_target_os(&required_env("CARGO_CFG_TARGET_OS"));
     if env::var_os("CARGO_FEATURE_STATIC").is_some() {
-        let ocr = ocr_bundle(&out_dir, platform, Tesseract::Linked).unwrap_or_else(|| {
-            panic!(
-                "The static build links tesseract and needs {OCR_BUNDLE_VARIABLE} for its language data"
-            )
-        });
+        let ocr = ocr_bundle(&out_dir, platform, Tesseract::Linked);
         let linked_licenses = static_licenses(&out_dir);
         link_static_libraries();
         write_static_native_module(&out_dir, &ocr, &linked_licenses);
     } else {
         let ocr = ocr_bundle(&out_dir, platform, platform.bundled_tesseract());
-        write_ocr_module(&out_dir, ocr.as_ref());
+        write_ocr_module(&out_dir, &ocr);
     }
 }
 
@@ -111,9 +107,16 @@ impl Tesseract {
     }
 }
 
-fn ocr_bundle(out_dir: &Path, platform: Platform, tesseract: Tesseract) -> Option<OcrBundle> {
+/// Every build reads with the tesseract it carries, never one it finds where it runs, so a build
+/// without the bundle fails.
+fn ocr_bundle(out_dir: &Path, platform: Platform, tesseract: Tesseract) -> OcrBundle {
     println!("cargo:rerun-if-env-changed={OCR_BUNDLE_VARIABLE}");
-    let dir = PathBuf::from(env::var_os(OCR_BUNDLE_VARIABLE)?);
+    let dir = PathBuf::from(env::var_os(OCR_BUNDLE_VARIABLE).unwrap_or_else(|| {
+        panic!(
+            "dijo embeds the tesseract it reads with: {OCR_BUNDLE_VARIABLE} must name an OCR \
+             bundle, as the development shell sets it or `just ocr-bundle` assembles one"
+        )
+    }));
     println!("cargo:rerun-if-changed={}", dir.display());
     let models = models_under(&dir.join(OCR_MODELS), OCR_MODELS);
     if models.is_empty() {
@@ -152,13 +155,13 @@ fn ocr_bundle(out_dir: &Path, platform: Platform, tesseract: Tesseract) -> Optio
     }
     let licenses = compressed_dir.join("LICENSES.md");
     write_licenses(&dir.join(OCR_LICENSES), OCR_BUNDLE_VARIABLE, &licenses);
-    Some(OcrBundle {
+    OcrBundle {
         tesseract,
         files,
         heif_decoder,
         licenses,
         fingerprint: format!("{:016x}", hasher.finish()),
-    })
+    }
 }
 
 /// The licenses of the native libraries the static build links beyond tesseract's, which
@@ -328,20 +331,16 @@ fn write_static_native_module(out_dir: &Path, ocr: &OcrBundle, linked_licenses: 
         "pub const NATIVE_FINGERPRINT: &str = {:?};\n\
          pub const LINKED_LICENSES: &str = include_str!({linked_licenses:?});\n{}",
         format!("static-ocr-{}", ocr.fingerprint),
-        ocr_items(Some(ocr))
+        ocr_items(ocr)
     );
     write_if_changed(&out_dir.join("native.rs"), &module);
 }
 
-/// The module of a build that links nothing statically: only the OCR bundle, if
-/// there is one.
-fn write_ocr_module(out_dir: &Path, ocr: Option<&OcrBundle>) {
-    let fingerprint = match ocr {
-        Some(ocr) => format!("ocr-{}", ocr.fingerprint),
-        None => "no-ocr".to_string(),
-    };
+/// The module of a build that links nothing statically: only the OCR bundle.
+fn write_ocr_module(out_dir: &Path, ocr: &OcrBundle) {
     let module = format!(
-        "pub const NATIVE_FINGERPRINT: &str = {fingerprint:?};\n{}",
+        "pub const NATIVE_FINGERPRINT: &str = {:?};\n{}",
+        format!("ocr-{}", ocr.fingerprint),
         ocr_items(ocr)
     );
     write_if_changed(&out_dir.join("native.rs"), &module);
@@ -349,31 +348,29 @@ fn write_ocr_module(out_dir: &Path, ocr: Option<&OcrBundle>) {
 
 /// The items of the generated module that describe the OCR bundle: the tesseract library it
 /// carries, unless tesseract is linked in, its heif-png, its language data and its licenses.
-fn ocr_items(ocr: Option<&OcrBundle>) -> String {
-    let ocr_files: &[(String, PathBuf)] = ocr.map_or(&[], |ocr| &ocr.files);
-    let ocr_entries: String = ocr_files
+fn ocr_items(ocr: &OcrBundle) -> String {
+    let ocr_entries: String = ocr
+        .files
         .iter()
         .map(|(name, path)| format!("    ({name:?}, include_bytes!({path:?})),\n"))
         .collect();
-    let ocr_licenses = match ocr {
-        Some(ocr) => format!("Some(include_str!({:?}))", ocr.licenses),
-        None => "None".to_string(),
-    };
-    let library = match ocr.map(|ocr| &ocr.tesseract) {
-        Some(Tesseract::Linked) => String::new(),
-        tesseract => format!(
-            "pub const OCR_TESSERACT_LIBRARY: Option<&str> = {:?};\n",
-            tesseract.and_then(Tesseract::library)
-        ),
-    };
-    let heif_decoder = ocr.and_then(|ocr| ocr.heif_decoder.as_deref());
+    let library = ocr
+        .tesseract
+        .library()
+        .map(|library| format!("pub const OCR_TESSERACT_LIBRARY: &str = {library:?};\n"))
+        .unwrap_or_default();
+    let heif_decoder = ocr
+        .heif_decoder
+        .as_ref()
+        .map(|decoder| format!("pub const OCR_HEIF_DECODER: &str = {decoder:?};\n"))
+        .unwrap_or_default();
     format!(
-        "{library}\
-         pub const OCR_HEIF_DECODER: Option<&str> = {heif_decoder:?};\n\
+        "{library}{heif_decoder}\
          pub const OCR_MODELS: &str = {OCR_MODELS:?};\n\
          pub static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\
-         pub const OCR_LICENSES: Option<&str> = {ocr_licenses};\n",
-        ocr_files.len()
+         pub const OCR_LICENSES: &str = include_str!({:?});\n",
+        ocr.files.len(),
+        ocr.licenses
     )
 }
 

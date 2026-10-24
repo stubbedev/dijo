@@ -29,9 +29,9 @@ test-large:
 test-fuzz:
     cargo nextest run --package dijo --cargo-profile release --run-ignored only --test integration -E 'test(/^fuzz::/)'
 
-# Assemble the tesseract library a build loads into its process (built with vcpkg, ci/ocr-vcpkg.sh), its
-# language data and their licenses, for a build that carries its own OCR:
-# DIJO_OCR_BUNDLE=<dir> cargo build --release.
+# Assemble the OCR bundle every build that is not the static executable embeds: the tesseract library it
+# loads into its process (built with vcpkg, ci/ocr-vcpkg.sh), its language data and their licenses:
+# DIJO_OCR_BUNDLE=<dir> cargo build --release. The development shell sets one of its own (ci/ocr-loaded.nix).
 [unix]
 ocr-bundle dir="target/ocr-bundle":
     ci/ocr-bundle.sh {{dir}}

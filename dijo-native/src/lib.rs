@@ -96,7 +96,11 @@ fn unpack(staging: &Path) -> io::Result<()> {
 
 /// Whether an embedded file is a program the build runs: the bundled heif-png.
 fn is_program(name: &str) -> bool {
-    OCR_HEIF_DECODER == Some(name)
+    #[cfg(all(not(feature = "static"), not(target_os = "macos")))]
+    let program = OCR_HEIF_DECODER == name;
+    #[cfg(any(feature = "static", target_os = "macos"))]
+    let program = false;
+    program
 }
 
 #[cfg(unix)]
@@ -110,79 +114,21 @@ fn make_executable(_: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The language data the build bundled, unpacked, or none when it bundled none.
-pub fn bundled_tessdata() -> Result<Option<PathBuf>, String> {
-    if OCR_FILES.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(unpacked()?.join(OCR_MODELS)))
+/// The language data the build bundled, unpacked.
+pub fn bundled_tessdata() -> Result<PathBuf, String> {
+    Ok(unpacked()?.join(OCR_MODELS))
 }
 
-/// Whether the build carries its own tesseract: linked into the static executable, or bundled as
-/// a library. OCR is then configured, whether or not that tesseract can be set up.
-pub fn carries_tesseract() -> bool {
-    #[cfg(feature = "static")]
-    let carried = true;
-    #[cfg(not(feature = "static"))]
-    let carried = OCR_TESSERACT_LIBRARY.is_some();
-    carried
-}
-
-/// The tesseract library the build bundled, unpacked, if it bundled one.
+/// The tesseract library the build bundled, unpacked.
 #[cfg(not(feature = "static"))]
-pub fn bundled_tesseract_library() -> Result<Option<PathBuf>, String> {
-    OCR_TESSERACT_LIBRARY
-        .map(|library| Ok(unpacked()?.join(library)))
-        .transpose()
+pub fn bundled_tesseract_library() -> Result<PathBuf, String> {
+    Ok(unpacked()?.join(OCR_TESSERACT_LIBRARY))
 }
 
-/// The heif-png the build bundled, unpacked, if it bundled one.
-#[cfg(not(feature = "static"))]
-pub fn bundled_heif_decoder() -> Result<Option<PathBuf>, String> {
-    OCR_HEIF_DECODER
-        .map(|decoder| Ok(unpacked()?.join(decoder)))
-        .transpose()
-}
-
-/// The version of the tesseract the build runs: the bundled library, or without a bundle the
-/// program on the PATH.
-#[cfg(not(feature = "static"))]
-pub fn tesseract_version() -> Result<String, String> {
-    match OCR_TESSERACT_LIBRARY {
-        Some(library) => library_version(&unpacked()?.join(library)),
-        None => program_version(Path::new("tesseract")),
-    }
-}
-
-#[cfg(not(feature = "static"))]
-fn program_version(program: &Path) -> Result<String, String> {
-    let output = process::Command::new(program)
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("Failed to run {}: {e}", program.display()))?;
-    Ok(format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    ))
-}
-
-#[cfg(not(feature = "static"))]
-fn library_version(library: &Path) -> Result<String, String> {
-    let fail = |e: libloading::Error| {
-        format!(
-            "Failed to load {}: {}",
-            library.display(),
-            loader_message(&e)
-        )
-    };
-    let loaded = unsafe { libloading::Library::new(library) }.map_err(fail)?;
-    let version =
-        unsafe { loaded.get::<unsafe extern "C" fn() -> *const std::ffi::c_char>(b"TessVersion") }
-            .map_err(fail)?;
-    Ok(linked_version(
-        &unsafe { std::ffi::CStr::from_ptr(version()) }.to_string_lossy(),
-    ))
+/// The heif-png the build bundled, unpacked.
+#[cfg(all(not(feature = "static"), not(target_os = "macos")))]
+pub fn bundled_heif_decoder() -> Result<PathBuf, String> {
+    Ok(unpacked()?.join(OCR_HEIF_DECODER))
 }
 
 /// What the system's loader said of a library it could not load, or of a symbol it could not
@@ -203,9 +149,8 @@ pub fn linked_version(version: &str) -> String {
     format!("tesseract {version} (linked)")
 }
 
-/// The licenses of the tesseract and the language data the build bundled, or None when it
-/// bundled none.
-pub fn bundled_ocr_licenses() -> Option<&'static str> {
+/// The licenses of the tesseract and the language data the build bundled.
+pub fn bundled_ocr_licenses() -> &'static str {
     OCR_LICENSES
 }
 

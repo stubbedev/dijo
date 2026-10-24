@@ -401,16 +401,6 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         };
         match check {
             PageCheck::Keep => self.page.out.release(),
-            PageCheck::Unrecognized => {
-                pdf.differ(Difference(format!(
-                    "page {} shows {glyphs} glyphs, {unmapped} of them without characters, \
-                     which Tika's PDF parser wants OCR for, read without OCR as no tesseract \
-                     runs",
-                    self.page_number
-                )));
-                self.page.out.count_unrecognized();
-                self.page.out.release();
-            }
             check => self.page.out.release_read(self.page_number - 1, check),
         }
         self.page.out.end_element("div")?;

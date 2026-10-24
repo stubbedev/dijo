@@ -83,11 +83,8 @@ impl Parser for DjvuParser {
         let document = DjvuDocument::read(input)
             .map_err(|error| Decline::Fails(Error::ParseError(error.message())))?;
         let blank = |page| page_text(&document, page).is_ok_and(|text| is_blank(&text));
-        let reader = match !configs.ocr.skips_ocr()
-            && crate::ocr::tesseract_runs()
-            && document.pages().iter().any(blank)
-        {
-            true => Some(OcrReader::of(configs)?),
+        let reader = match !configs.ocr.skips_ocr() && document.pages().iter().any(blank) {
+            true => Some(OcrReader::of(configs)),
             false => None,
         };
         Ok(Box::new(move |xhtml| {
