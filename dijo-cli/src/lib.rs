@@ -76,16 +76,40 @@ static ALLOCATOR: dijo_core::memory::CountingAllocator<std::alloc::System> =
 /// processor, and keeps what is freed in each for that arena: as readings run on threads of
 /// their own, a server's memory climbs towards every arena's high-water mark. As many arenas as
 /// the processors this process may use allocate as concurrently as its readings run.
+///
+/// Blocks of [`MMAP_THRESHOLD`] bytes or more are mapped on their own and unmapped when freed.
+/// glibc raises that threshold to the size of each large block freed, up to 32 MiB, after which
+/// rasters, prepared images and model buffers are carved from the arenas and stay there once
+/// freed: an idle server held 2.58 GB of them for 47 MB in use (#309). Setting the threshold
+/// keeps it fixed, and the trim threshold with it.
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn limit_allocator_arenas() -> Result<(), String> {
+fn configure_allocator() -> Result<(), String> {
     let processors = dijo_core::process::processors();
     let arenas = libc::c_int::try_from(processors).map_err(|_| {
         format!("{processors} processors are more allocator arenas than glibc counts")
     })?;
-    match unsafe { libc::mallopt(libc::M_ARENA_MAX, arenas) } {
-        0 => Err(format!(
-            "glibc refused to limit its allocator to {arenas} arenas"
-        )),
+    mallopt(
+        libc::M_ARENA_MAX,
+        arenas,
+        "the most arenas its allocator keeps",
+    )?;
+    mallopt(
+        libc::M_MMAP_THRESHOLD,
+        MMAP_THRESHOLD,
+        "the size from which it maps a block on its own",
+    )
+}
+
+/// The smallest block mapped on its own: a page's raster or a model's buffer, but not the
+/// smaller blocks whose mapping and faulting in on each allocation cost 8 to 12% more processor
+/// time at glibc's initial 128 KiB.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const MMAP_THRESHOLD: libc::c_int = 4 << 20;
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn mallopt(parameter: libc::c_int, value: libc::c_int, what: &str) -> Result<(), String> {
+    match unsafe { libc::mallopt(parameter, value) } {
+        0 => Err(format!("glibc refused to set {what} to {value}")),
         _ => Ok(()),
     }
 }
@@ -209,7 +233,7 @@ fn run_command(cli: Cli) -> bool {
             return false;
         }
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        if let Err(error) = limit_allocator_arenas() {
+        if let Err(error) = configure_allocator() {
             report("dijo", &error);
             return false;
         }
