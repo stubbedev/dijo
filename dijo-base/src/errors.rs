@@ -2,7 +2,7 @@ use std::io;
 use std::str::Utf8Error;
 
 /// Represent errors returned by dijo
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum Error {
     #[error("{0}")]
     Unknown(String),

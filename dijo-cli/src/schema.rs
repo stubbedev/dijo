@@ -146,7 +146,8 @@ fn summarize_stack_trace(trace: &str) -> String {
 
 impl ExtractionError {
     /// Classifies an error from the extraction library, by its kind where the library knows it
-    /// and by its cause chain otherwise.
+    /// and by its cause chain otherwise. A parser that fails on the document finds it corrupt
+    /// unless its cause chain says why else.
     pub fn from_error(error: &dijo_core::Error) -> Self {
         let message = error.to_string();
         let category = match error {
@@ -156,6 +157,10 @@ impl ExtractionError {
             dijo_core::Error::Timeout => ErrorCategory::Timeout,
             dijo_core::Error::MemoryLimit(_) => ErrorCategory::LimitExceeded,
             dijo_core::Error::Unsupported(_) => ErrorCategory::Unsupported,
+            dijo_core::Error::ParseError(_) => match category_by_cause(&message) {
+                ErrorCategory::Internal => ErrorCategory::Corrupt,
+                category => category,
+            },
             _ => return Self::from_message(message),
         };
         Self {
@@ -178,43 +183,48 @@ impl ExtractionError {
 
     /// Classifies an error by the Java exception classes in its cause chain.
     pub fn from_message(message: String) -> Self {
-        let category = if message.contains(DIFFERS_FROM_TIKA) {
-            ErrorCategory::DiffersFromTika
-        } else if message.contains("NoSuchFileException")
-            || message.contains("AccessDeniedException")
-        {
-            ErrorCategory::Unreadable
-        } else if message.contains("EncryptedDocumentException") {
-            ErrorCategory::Encrypted
-        } else if message.contains("UnsupportedFormatException") || message.contains("No parser") {
-            ErrorCategory::Unsupported
-        } else if message.contains("WriteLimitReachedException")
-            || message.contains("java.lang.OutOfMemoryError")
-            || message.contains(JAXP_LIMIT)
-            || message.contains("Suspected zip bomb")
-        {
-            ErrorCategory::LimitExceeded
-        } else if message.contains("TimeoutException")
-            || message.contains("timeout")
-            || message.contains("timed out")
-        {
-            ErrorCategory::Timeout
-        } else if message.contains("ZipException")
-            || message.contains("Truncated")
-            || message.contains("EOFException")
-            || message.contains("CorruptedFileException")
-            || message.contains("InvalidFormatException")
-            || message.contains("TIKA-198")
-        {
-            ErrorCategory::Corrupt
-        } else {
-            ErrorCategory::Internal
-        };
         Self {
-            category,
+            category: category_by_cause(&message),
             message,
             location: None,
         }
+    }
+}
+
+/// The category the Java exception classes in an error's cause chain put it in.
+fn category_by_cause(message: &str) -> ErrorCategory {
+    if message.contains(DIFFERS_FROM_TIKA) {
+        ErrorCategory::DiffersFromTika
+    } else if message.contains("NoSuchFileException") || message.contains("AccessDeniedException") {
+        ErrorCategory::Unreadable
+    } else if message.contains("EncryptedDocumentException") {
+        ErrorCategory::Encrypted
+    } else if message.contains("UnsupportedFormatException")
+        || message.contains("No parser")
+        || message.contains("does not yet support")
+    {
+        ErrorCategory::Unsupported
+    } else if message.contains("WriteLimitReachedException")
+        || message.contains("java.lang.OutOfMemoryError")
+        || message.contains(JAXP_LIMIT)
+        || message.contains("Suspected zip bomb")
+    {
+        ErrorCategory::LimitExceeded
+    } else if message.contains("TimeoutException")
+        || message.contains("timeout")
+        || message.contains("timed out")
+    {
+        ErrorCategory::Timeout
+    } else if message.contains("ZipException")
+        || message.contains("Truncated")
+        || message.contains("EOFException")
+        || message.contains("CorruptedFileException")
+        || message.contains("InvalidFormatException")
+        || message.contains("TIKA-198")
+    {
+        ErrorCategory::Corrupt
+    } else {
+        ErrorCategory::Internal
     }
 }
 
@@ -596,5 +606,34 @@ mod tests {
             ErrorCategory::DiffersFromTika
         );
         assert_eq!(classify("something else"), ErrorCategory::Internal);
+    }
+
+    /// A parser that fails on the document finds it corrupt unless its cause chain says why
+    /// else, and a failure that is no fault of the document is internal (#314).
+    #[test]
+    fn errors_are_classified_by_their_kind() {
+        use dijo_core::Error;
+        let classify = |error: Error| ExtractionError::from_error(&error).category;
+        let parse = |message: &str| Error::ParseError(message.to_owned());
+        assert_eq!(
+            classify(parse("image/png parse error: Invalid chunk length -16")),
+            ErrorCategory::Corrupt
+        );
+        assert_eq!(
+            classify(parse("Tika does not yet support rar version 5.")),
+            ErrorCategory::Unsupported
+        );
+        assert_eq!(
+            classify(parse(
+                "Reading an image failed: tesseract timed out after 10 ms"
+            )),
+            ErrorCategory::Timeout
+        );
+        assert_eq!(
+            classify(Error::Unknown(
+                "The native parser's thread ended without finishing its document".to_owned()
+            )),
+            ErrorCategory::Internal
+        );
     }
 }

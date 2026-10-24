@@ -3,7 +3,7 @@ use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
 use crate::common::server::{read_response, write_head, Server};
-use crate::common::Scratch;
+use crate::common::{Scratch, DOCUMENTS};
 
 #[test]
 fn health_and_readiness() {
@@ -64,6 +64,22 @@ fn encrypted_documents_need_the_password_header() {
     );
     assert_eq!(unlocked.status, 200);
     assert!(unlocked.text().contains("Call me Ishmael"));
+}
+
+/// A document its parser fails on is the client's to fix, not a fault of the server (#314).
+#[test]
+fn damaged_documents_are_unprocessable() {
+    let server = Server::start(&[]);
+    let mut png = std::fs::read(format!("{DOCUMENTS}/ara-ocr.png")).unwrap();
+    png[33..37].copy_from_slice(&0xFFFF_FFF0_u32.to_be_bytes());
+    let damaged = server.request("POST", "/extract", &[], &png);
+    assert_eq!(damaged.status, 422);
+    let document = damaged.json();
+    assert_eq!(document["errors"][0]["category"], "corrupt");
+    assert_eq!(
+        document["errors"][0]["message"],
+        "image/png parse error: Invalid chunk length -16"
+    );
 }
 
 #[test]

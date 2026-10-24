@@ -97,12 +97,19 @@ impl OcrReader {
     }
 }
 
-/// The failure of an extraction whose OCR failed: out of its memory budget, or with why
-/// tesseract read nothing.
+/// The failure of an extraction whose OCR failed: out of its memory budget, with why tesseract
+/// read nothing of the image, or with why it could not be set up to read, which is no fault of
+/// the document.
 fn ocr_failure(error: OcrError) -> Failure {
     match error {
         OcrError::MemoryLimit { limit, .. } => Failure::Stopped(Stop::MemoryLimit(limit)),
-        error => Failure::Extraction(Error::ParseError(error.to_string())),
+        OcrError::TimedOut { .. } | OcrError::Failed { .. } => {
+            Failure::Extraction(Error::ParseError(error.to_string()))
+        }
+        OcrError::Model { .. }
+        | OcrError::NotInstalled { .. }
+        | OcrError::Models { .. }
+        | OcrError::Unavailable { .. } => Failure::Extraction(Error::Unknown(error.to_string())),
     }
 }
 

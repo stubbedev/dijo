@@ -465,8 +465,12 @@ fn failure_error(parser: &dyn Parser, failure: Failure) -> Error {
         )),
         Failure::Stopped(Stop::MemoryLimit(limit)) => Error::MemoryLimit(limit),
         Failure::Stopped(Stop::ZipBomb(bomb)) => Error::LimitExceeded(bomb.to_string()),
-        Failure::Stopped(stop) => Error::ParseError(format!(
-            "{} stopped writing the document: {stop:?}",
+        Failure::Stopped(Stop::LimitReached) => Error::LimitExceeded(format!(
+            "{} stopped writing the document at the length limit",
+            parser.name()
+        )),
+        Failure::Stopped(Stop::ReaderGone) => Error::Unknown(format!(
+            "{} stopped writing the document: its reader went away",
             parser.name()
         )),
         Failure::Extraction(error) | Failure::Embedded(error) => error,
@@ -777,7 +781,7 @@ impl NativeStream {
     pub(crate) fn metadata(&self) -> ExtractResult<Metadata> {
         match &self.outcome {
             Some(Ok(metadata)) => Ok(metadata.clone()),
-            Some(Err(error)) => Err(copy(error)),
+            Some(Err(error)) => Err(error.clone()),
             None => Err(Error::StreamNotFinished),
         }
     }
@@ -813,23 +817,10 @@ impl NativeStream {
     }
 }
 
-/// A copy of the error a native extraction ended with, which the stream reports each time it
-/// is asked: the same kind with the same message.
-fn copy(error: &Error) -> Error {
-    match error {
-        Error::IoError(message) => Error::IoError(message.clone()),
-        Error::Encrypted(message) => Error::Encrypted(message.clone()),
-        Error::LimitExceeded(message) => Error::LimitExceeded(message.clone()),
-        Error::Timeout => Error::Timeout,
-        Error::MemoryLimit(limit) => Error::MemoryLimit(*limit),
-        other => Error::ParseError(other.to_string()),
-    }
-}
-
 /// What the parser's thread sends next, waiting at most until `deadline`; `ended` says what a
 /// thread that ended without sending it did not do.
 fn receive<T>(receiver: &Receiver<T>, deadline: Option<Instant>, ended: &str) -> ExtractResult<T> {
-    let disconnected = || Error::ParseError(ended.to_owned());
+    let disconnected = || Error::Unknown(ended.to_owned());
     match deadline {
         None => receiver.recv().map_err(|_| disconnected()),
         Some(deadline) => {
@@ -848,7 +839,7 @@ impl Read for NativeStream {
             if let Some(outcome) = &self.outcome {
                 return match outcome {
                     Ok(_) => Ok(0),
-                    Err(error) => Err(io::Error::other(copy(error))),
+                    Err(error) => Err(io::Error::other(error.clone())),
                 };
             }
             match self.next_message() {

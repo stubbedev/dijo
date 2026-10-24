@@ -356,7 +356,7 @@ impl Extractor {
             Err(unsupported) => return Ok(Err(unsupported)),
         };
         let max_length = usize::try_from(self.extract_string_max_length).map_err(|_| {
-            Error::ParseError(format!(
+            Error::Unknown(format!(
                 "The maximum string length must not be negative: {}",
                 self.extract_string_max_length
             ))
