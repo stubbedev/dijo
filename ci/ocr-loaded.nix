@@ -81,11 +81,13 @@ let
       cp heif-png $out/
     '';
   };
+  # The C++ runtime is linked into the library on Linux (-static-libstdc++); macOS's libc++ is the
+  # system's, loaded beside it.
   linked = [
     tesseract
     pkgs.leptonica
-    pkgs.stdenv.cc.cc
   ]
+  ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.stdenv.cc.cc ]
   ++ lib.optionals heifDecoded [
     decoders.libheif
     static.leptonica
