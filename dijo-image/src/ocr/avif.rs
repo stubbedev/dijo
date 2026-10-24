@@ -936,7 +936,7 @@ mod tests {
     /// The test cards of `tests/fixtures/avif`, coded with each layout, range, depth, matrix and
     /// transformative property the decoder reads, and the corpus's scan decode as libheif
     /// decodes them, the bundled heif-png outside the static executable, but for the rounding of a
-    /// colour's grey; colour cards in colour.
+    /// colour's grey.
     #[cfg(any(feature = "static", not(target_os = "macos")))]
     #[test]
     fn decodes_as_libheif_does() {
@@ -964,6 +964,11 @@ mod tests {
                 .unwrap_or_default();
             assert!(largest <= 1, "{}: {largest} levels off", path.display());
         }
+    }
+
+    /// A colour test card decodes in colour.
+    #[test]
+    fn decodes_colour_cards_in_colour() {
         let card = decoded(&std::fs::read("tests/fixtures/avif/limited-709-420.avif").unwrap());
         assert!(matches!(card, Ok(Bitmap::Rgb(_))));
     }
