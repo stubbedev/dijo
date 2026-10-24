@@ -113,7 +113,7 @@ impl Cache {
                 dir.display()
             )
         })?;
-        let executable = std::env::current_exe()
+        let executable = crate::this_program()
             .map_err(|e| format!("Failed to locate the running executable: {e}"))?;
         let mut build = blake3::Hasher::new();
         build.update(

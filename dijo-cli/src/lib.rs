@@ -114,6 +114,17 @@ fn mallopt(parameter: libc::c_int, value: libc::c_int, what: &str) -> Result<(),
     }
 }
 
+/// The program this process runs, to start worker processes with and to tell the build by: on
+/// Linux the image the process runs, which stays valid once its file is replaced or removed, as
+/// an upgrade under a running server does (#312), else the file it was started from.
+fn this_program() -> std::io::Result<std::path::PathBuf> {
+    if cfg!(target_os = "linux") {
+        Ok(std::path::PathBuf::from("/proc/self/exe"))
+    } else {
+        std::env::current_exe()
+    }
+}
+
 static ARGUMENTS: OnceLock<Vec<OsString>> = OnceLock::new();
 
 /// The arguments the program was run with, without the program name: those a worker process is

@@ -167,6 +167,18 @@ fn a_slow_extraction_ends_with_a_timeout_in_the_document() {
 #[test]
 fn a_worker_process_whose_extraction_timed_out_is_replaced() {
     let server = Server::start(&["--isolation", "process", "--workers", "1", "--timeout", "3"]);
+    stop_the_worker_by_its_timeout(&server);
+    let next = server.post_file("/extract", &[], "simple.odt");
+    assert!(next
+        .text()
+        .contains("These are a few of my favorite things"));
+    let metrics = server.request("GET", "/metrics", &[], b"").text();
+    assert!(metrics.contains("dijo_workers 1"), "{metrics}");
+}
+
+/// Times out the only worker process of `server`, whose timeout is 3 seconds, and waits until it
+/// is stopped.
+fn stop_the_worker_by_its_timeout(server: &Server) {
     let document = server
         .post_file("/extract?format=json&ocr=always", &[], "2022_Q3_AAPL.pdf")
         .json();
@@ -183,12 +195,28 @@ fn a_worker_process_whose_extraction_timed_out_is_replaced() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// A worker process is replaced from the program the server runs, though its file was replaced
+/// or removed meanwhile, as an upgrade under a running server does (#312).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_worker_process_is_replaced_once_the_servers_file_is_gone() {
+    let scratch = Scratch::new("replaced-executable");
+    let program = scratch.0.join("dijo");
+    std::fs::copy(env!("CARGO_BIN_EXE_dijo"), &program).unwrap();
+    let server = Server::start_program(
+        &program,
+        &["--isolation", "process", "--workers", "1", "--timeout", "3"],
+        &[],
+    );
+    std::fs::remove_file(&program).unwrap();
+    stop_the_worker_by_its_timeout(&server);
     let next = server.post_file("/extract", &[], "simple.odt");
+    assert_eq!(next.status, 200, "{}", next.text());
     assert!(next
         .text()
         .contains("These are a few of my favorite things"));
-    let metrics = server.request("GET", "/metrics", &[], b"").text();
-    assert!(metrics.contains("dijo_workers 1"), "{metrics}");
 }
 
 #[test]

@@ -242,7 +242,7 @@ pub struct WorkerProcess {
 impl WorkerProcess {
     /// Starts a worker process and waits until it is ready for jobs.
     pub fn start(options: &ProcessOptions) -> io::Result<Self> {
-        let executable = std::env::current_exe()?;
+        let executable = crate::this_program()?;
         let mut child = Command::new(&executable)
             .arg("worker")
             .args(&options.arguments)

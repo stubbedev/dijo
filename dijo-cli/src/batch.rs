@@ -293,7 +293,7 @@ struct Worker {
 
 impl Worker {
     fn start(spool_dir: &Path, setup: &str, processors: NonZeroUsize) -> io::Result<Self> {
-        let executable = std::env::current_exe()?;
+        let executable = crate::this_program()?;
         let mut child = Command::new(&executable)
             .args(crate::arguments())
             .env(WORKER_VARIABLE, spool_dir)
