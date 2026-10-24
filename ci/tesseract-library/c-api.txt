@@ -1,7 +1,7 @@
 TessVersion
 TessBaseAPICreate
 TessBaseAPIDelete
-TessBaseAPIInit3
+TessBaseAPIInit4
 TessBaseAPISetVariable
 TessBaseAPISetPageSegMode
 TessBaseAPISetImage

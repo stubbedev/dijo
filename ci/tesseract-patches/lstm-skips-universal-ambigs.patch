@@ -1,0 +1,18 @@
+diff --git a/src/ccmain/tessedit.cpp b/src/ccmain/tessedit.cpp
+index 7ec89bd..bb25fbc 100644
+--- a/src/ccmain/tessedit.cpp
++++ b/src/ccmain/tessedit.cpp
+@@ -213,7 +213,12 @@ bool Tesseract::init_tesseract_lang_data(const std::string &language, OcrEngineM
+   UNICHARSET encoder_unicharset;
+   encoder_unicharset.CopyFrom(unicharset);
+   unichar_ambigs.InitUnicharAmbigs(unicharset, use_ambigs_for_adaption);
+-  unichar_ambigs.LoadUniversal(encoder_unicharset, &unicharset);
++  // The universal ambiguities serve the legacy classifier and its dictionary
++  // checks, which an LSTM model never runs; loading them inserted their
++  // unichars into the unicharset's map, a few megabytes for every engine.
++  if (tessedit_ocr_engine_mode != OEM_LSTM_ONLY) {
++    unichar_ambigs.LoadUniversal(encoder_unicharset, &unicharset);
++  }
+ 
+   if (!tessedit_ambigs_training && mgr->GetComponent(TESSDATA_AMBIGS, &fp)) {
+     unichar_ambigs.LoadUnicharAmbigs(encoder_unicharset, &fp, ambigs_debug_level,

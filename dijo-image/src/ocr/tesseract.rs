@@ -26,6 +26,8 @@ use crate::memory;
 const IDLE: Duration = Duration::from_secs(5 * 60);
 /// The model orientation and script detection runs with.
 const OSD_MODEL: &str = "osd";
+/// `OEM_DEFAULT`: the engine a model's data has.
+const OEM_DEFAULT: c_int = 3;
 /// What joins the models of a language read with more than one, as `-l eng+deu` does.
 const MODEL_SEPARATOR: char = '+';
 /// The extension of a model's file.
@@ -126,7 +128,9 @@ c_api! {
     version = TessVersion() -> *const c_char;
     create = TessBaseAPICreate() -> *mut BaseApi;
     delete = TessBaseAPIDelete(*mut BaseApi);
-    init = TessBaseAPIInit3(*mut BaseApi, *const c_char, *const c_char) -> c_int;
+    init = TessBaseAPIInit4(
+        *mut BaseApi, *const c_char, *const c_char, c_int, *mut *mut c_char, c_int,
+        *mut *mut c_char, *mut *mut c_char, usize, c_int) -> c_int;
     set_variable = TessBaseAPISetVariable(*mut BaseApi, *const c_char, *const c_char) -> c_int;
     set_page_seg_mode = TessBaseAPISetPageSegMode(*mut BaseApi, c_int);
     set_image = TessBaseAPISetImage(*mut BaseApi, *const u8, c_int, c_int, c_int, c_int);
@@ -724,13 +728,28 @@ impl Tesseract {
             .datapath
             .as_ref()
             .map_or(std::ptr::null(), |path| path.as_ptr());
+        let (mut names, mut values): (Vec<_>, Vec<_>) = init_variables(model)
+            .iter()
+            .map(|(name, value)| (name.as_ptr().cast_mut(), value.as_ptr().cast_mut()))
+            .unzip();
         let initialized = unsafe {
             (api.set_variable)(
                 handle.as_ptr(),
                 c"debug_file".as_ptr(),
                 c"/dev/null".as_ptr(),
             );
-            (api.init)(handle.as_ptr(), datapath, language.as_ptr()) == 0
+            (api.init)(
+                handle.as_ptr(),
+                datapath,
+                language.as_ptr(),
+                OEM_DEFAULT,
+                std::ptr::null_mut(),
+                0,
+                names.as_mut_ptr(),
+                values.as_mut_ptr(),
+                names.len(),
+                0,
+            ) == 0
         };
         if !initialized {
             unsafe { (api.delete)(handle.as_ptr()) };
@@ -759,6 +778,17 @@ impl Drop for Tesseract {
             .drain()
             .collect();
         engines.into_iter().for_each(|engine| self.delete(engine));
+    }
+}
+
+/// The variables an engine for a model is set up with. The orientation and script model's engine
+/// only detects, so it never learns, and keeps no adapted class for each of the unichars of every
+/// script it tells apart (tesseract-patches/adapts-only-while-learning.patch).
+fn init_variables(model: &str) -> &'static [(&'static CStr, &'static CStr)] {
+    if model == OSD_MODEL {
+        &[(c"classify_enable_learning", c"0")]
+    } else {
+        &[]
     }
 }
 
@@ -1192,12 +1222,16 @@ mod tests {
         }
     }
 
-    /// An engine for an LSTM model keeps no empty adapted class for each of its unichars, which
-    /// the legacy classifier it never runs would adapt (tesseract-patches/lstm-adapts-to-nothing):
-    /// for the 6,500 of chi_sim they took 28 of its engine's 43 MiB.
+    /// An engine keeps only what its readings use, as the tesseract the builds patch sets them up
+    /// (#308, #311): one for an LSTM model no empty adapted class for each of its unichars, which
+    /// the legacy classifier it never runs would adapt (tesseract-patches/adapts-only-while-
+    /// learning.patch), nor the universal ambiguities, whose unichars grew its unicharset's map
+    /// (lstm-skips-universal-ambigs.patch), and the orientation engine, which never learns, no
+    /// adapted classes either. Each bound lies between what the engine took with and without them:
+    /// chi_sim 8.7 and 42.9 MiB, eng 1.8 and 10.2 MiB, osd 19.1 and 31.5 MiB.
     #[cfg(all(not(feature = "static"), target_os = "linux", target_env = "gnu"))]
     #[test]
-    fn an_lstm_engine_keeps_no_adapted_class_for_each_unichar() {
+    fn engines_keep_only_what_their_readings_use() {
         #[repr(C)]
         struct Mallinfo2 {
             arena: usize,
@@ -1219,15 +1253,17 @@ mod tests {
             info.hblkhd + info.uordblks
         };
         let tesseract = crate::ocr::tesseract().unwrap();
-        let before = allocated();
-        let engine = tesseract.create("chi_sim").unwrap();
-        let taken = allocated().saturating_sub(before);
-        tesseract.delete(engine);
-        assert!(
-            taken < 24 << 20,
-            "a chi_sim engine took {} MiB",
-            taken >> 20
-        );
+        for (model, most_mib) in [("chi_sim", 16), ("eng", 5), (OSD_MODEL, 25)] {
+            let before = allocated();
+            let engine = tesseract.create(model).unwrap();
+            let taken = allocated().saturating_sub(before);
+            tesseract.delete(engine);
+            assert!(
+                taken < most_mib << 20,
+                "a {model} engine took {} MiB",
+                taken >> 20
+            );
+        }
     }
 
     #[cfg(all(
@@ -1301,7 +1337,7 @@ mod tests {
     }
 
     #[test]
-    fn the_orientation_engine_keeps_tesseracts_defaults() {
+    fn the_orientation_engine_takes_none_of_the_reading_variables() {
         assert!(engine_variables(OSD_MODEL).is_empty());
     }
 
