@@ -203,15 +203,68 @@ fn parse_sax_paged(
     })
 }
 
-/// Whether the XML document `input` cannot hold an element or attribute named `name`, an ASCII
-/// name, as a search of its bytes tells: it is read as UTF-8, and neither the name nor a
-/// document type declaration, whose entities could spell the name, stands in its bytes. A
-/// document read otherwise may hold the name whatever its bytes are.
-pub fn lacks_name(input: &Input<'_>, name: &str) -> bool {
-    let paging = Paging::new(input.pages());
-    xml::is_read_as_utf8(input)
-        && paging.find(input, name.as_bytes()).is_none()
-        && paging.find(input, b"<!DOCTYPE").is_none()
+/// What opens a document type declaration.
+const DOCUMENT_TYPE: &[u8] = b"<!DOCTYPE";
+
+/// The bytes of a document's head [`NameSearch`] keeps, where its encoding is declared.
+const DECLARED_HEAD: usize = 1 << 10;
+
+/// Whether an XML document cannot hold an element or attribute named an ASCII name, as a search
+/// of its bytes tells, handed over a chunk at a time as they are decoded: it is read as UTF-8,
+/// and neither the name nor a document type declaration, whose entities could spell the name,
+/// stands in its bytes. A document read otherwise may hold the name whatever its bytes are. Only
+/// its head, where its encoding is declared, and the bytes a name may continue in the next
+/// chunk are kept.
+pub struct NameSearch<'n> {
+    names: [memchr::memmem::Finder<'n>; 2],
+    /// How many bytes at the end of a chunk a name may start in and continue past.
+    carried: usize,
+    head: Vec<u8>,
+    seam: Vec<u8>,
+    found: bool,
+}
+
+impl<'n> NameSearch<'n> {
+    pub fn new(name: &'n str) -> Self {
+        Self {
+            names: [
+                memchr::memmem::Finder::new(name.as_bytes()),
+                memchr::memmem::Finder::new(DOCUMENT_TYPE),
+            ],
+            carried: name.len().max(DOCUMENT_TYPE.len()) - 1,
+            head: Vec::with_capacity(DECLARED_HEAD),
+            seam: Vec::new(),
+            found: false,
+        }
+    }
+
+    /// Searches the next chunk of the document.
+    pub fn feed(&mut self, chunk: &[u8]) {
+        if self.found {
+            return;
+        }
+        let headed = chunk.len().min(DECLARED_HEAD - self.head.len());
+        self.head.extend_from_slice(&chunk[..headed]);
+        let carried = self.carried;
+        self.seam
+            .extend_from_slice(&chunk[..chunk.len().min(carried)]);
+        self.found = self
+            .names
+            .iter()
+            .any(|name| name.find(&self.seam).is_some() || name.find(chunk).is_some());
+        if chunk.len() >= carried {
+            self.seam.clear();
+            self.seam.extend_from_slice(&chunk[chunk.len() - carried..]);
+        } else {
+            let excess = self.seam.len().saturating_sub(carried);
+            self.seam.drain(..excess);
+        }
+    }
+
+    /// Whether the document fed cannot hold the name.
+    pub fn lacks(&self) -> bool {
+        !self.found && xml::is_read_as_utf8(&self.head)
+    }
 }
 
 /// Whether the XML document `input` declares a document type before its root element, under
@@ -384,9 +437,16 @@ mod tests {
         assert!(events(b"<?xml version=\"1.0\" encoding=\"no-such\"?><a/>").is_err());
     }
 
+    /// Whether `bytes`, fed in chunks of `chunk` bytes, cannot hold the name `lock`.
+    fn lacks_lock(bytes: &[u8], chunk: usize) -> bool {
+        let mut search = NameSearch::new("lock");
+        bytes.chunks(chunk).for_each(|piece| search.feed(piece));
+        search.lacks()
+    }
+
     #[test]
     fn tells_a_name_absent_only_from_bytes_read_as_utf8() {
-        let lacks = |bytes: &[u8]| lacks_name(&Input::Borrowed(bytes), "lock");
+        let lacks = |bytes: &[u8]| lacks_lock(bytes, bytes.len().max(1));
         assert!(lacks(b"<a><b/></a>"));
         assert!(lacks(
             b"\xef\xbb\xbf<?xml version=\"1.0\" encoding=\"utf-8\"?><a/>"
@@ -402,5 +462,16 @@ mod tests {
         assert!(!lacks(
             b"<!DOCTYPE a [<!ENTITY e \"&#60;lo&#99;k/&#62;\">]><a>&e;</a>"
         ));
+    }
+
+    /// A name or document type declaration split across the chunks the document is fed in is
+    /// found as it is in one.
+    #[test]
+    fn finds_a_name_across_the_chunks_it_is_fed_in() {
+        for chunk in 1..12 {
+            assert!(!lacks_lock(b"<a><b/><lock/></a>", chunk), "{chunk}");
+            assert!(!lacks_lock(b"<!DOCTYPE a><a/>", chunk), "{chunk}");
+            assert!(lacks_lock(b"<a><loc/><k/></a>", chunk), "{chunk}");
+        }
     }
 }

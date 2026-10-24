@@ -238,12 +238,7 @@ impl<'a> Archive<'a> {
     /// The content of the entry `index`: the archive's own bytes where it is stored, else
     /// decoded to a spool, in memory as far as a file is read whole and mapped beyond.
     fn read(&self, index: usize) -> Result<Input<'a>, Unported> {
-        let unread = |reason: &dyn std::fmt::Display| {
-            Unported(format!(
-                "the ZIP entry {} cannot be read: {reason}",
-                self.names[index]
-            ))
-        };
+        let unread = |reason: &dyn std::fmt::Display| self.unread(index, reason);
         match &self.entries {
             Entries::Directory(archive) => {
                 zip_file::read_entry(&mut archive.clone(), self.input, self.pages, index)
@@ -258,6 +253,29 @@ impl<'a> Archive<'a> {
                 Err(failure) => Err(unread(&format!("{failure:?}"))),
             },
         }
+    }
+
+    /// [`Archive::read`] of the entry `index`, its content handed to `each` a chunk at a time
+    /// and spooled nowhere where the archive is read by its directory.
+    fn scan(&self, index: usize, mut each: impl FnMut(&[u8])) -> Result<(), Unported> {
+        match &self.entries {
+            Entries::Directory(archive) => {
+                zip_file::scan_entry(&mut archive.clone(), self.input, self.pages, index, each)
+                    .map_err(|e| self.unread(index, &e))
+            }
+            Entries::Stream(_) => {
+                each(&self.read(index)?);
+                Ok(())
+            }
+        }
+    }
+
+    /// Why the entry `index` cannot be read.
+    fn unread(&self, index: usize, reason: &dyn std::fmt::Display) -> Unported {
+        Unported(format!(
+            "the ZIP entry {} cannot be read: {reason}",
+            self.names[index]
+        ))
     }
 
     /// The uncompressed size of the entry `index`.
@@ -384,6 +402,14 @@ impl<'a> Package<'a> {
     pub(crate) fn read(&self, part: usize) -> Result<Input<'a>, Failure> {
         self.archive
             .read(self.parts[part].entry)
+            .map_err(|Unported(reason)| Failure::Malformed(reason))
+    }
+
+    /// [`Package::read`] of `part`, its bytes handed to `each` a chunk at a time rather than
+    /// kept.
+    pub(crate) fn scan(&self, part: usize, each: impl FnMut(&[u8])) -> Result<(), Failure> {
+        self.archive
+            .scan(self.parts[part].entry, each)
             .map_err(|Unported(reason)| Failure::Malformed(reason))
     }
 

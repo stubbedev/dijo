@@ -504,21 +504,24 @@ impl<'a> Workbook<'a> {
     }
 
     /// Whether the sheet `part` is protected, as Tika notes once it has read the sheet: it has a
-    /// `sheetProtection` and its XML does not fail. The sheet is parsed here only where its
-    /// bytes may hold one; it is parsed once more as it is written, where a failure of its XML
-    /// is recorded. One declaring a document type, whose declarations Java reads and this port
-    /// skips, is [`Unported`].
+    /// `sheetProtection` and its XML does not fail. Its bytes are searched as they are inflated,
+    /// spooling none, and the sheet is read and parsed here only where they may hold one (#247);
+    /// it is parsed once more as it is written, where a failure of its XML is recorded. One
+    /// declaring a document type, whose declarations Java reads and this port skips, is
+    /// [`Unported`].
     fn is_protected(&self, part: usize) -> Result<bool, Unported> {
         let name = self.package.name(part);
-        let bytes = self
-            .package
-            .read(part)
-            .map_err(|_| Unported(format!("the part {name} cannot be read")))?;
+        let unreadable = |_| Unported(format!("the part {name} cannot be read"));
+        let mut search = xml::NameSearch::new(Protection::ELEMENT);
+        self.package
+            .scan(part, |chunk| search.feed(chunk))
+            .map_err(unreadable)?;
+        if search.lacks() {
+            return Ok(false);
+        }
+        let bytes = self.package.read(part).map_err(unreadable)?;
         if xml::has_document_type(&bytes) {
             return Err(Unported(format!("{name} declares a document type")));
-        }
-        if xml::lacks_name(&bytes, Protection::ELEMENT) {
-            return Ok(false);
         }
         let mut protection = Protection::default();
         Ok(xml::parse_part(&bytes, name, &mut protection).is_ok() && protection.protected)
