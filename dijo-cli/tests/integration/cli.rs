@@ -1417,6 +1417,26 @@ fn images_tesseract_cannot_read_are_decoded_for_it() {
     assert_eq!(read["status"], "failed", "{read}");
 }
 
+/// A scan whose lower part decodes to blocky noise, which tesseract splits into a great many
+/// small words, reads in time: its paragraph detection walked the page from its start for each
+/// line, and never finished such a page (#316).
+#[test]
+fn a_page_of_noise_reads_in_time() {
+    let scan = fs::read("../quality/corpus/prose-scan.heic").unwrap();
+    let mut damaged = scan[..539_218].to_vec();
+    damaged.extend_from_slice(&scan[302_875..305_232]);
+    damaged.extend_from_slice(&scan[539_218..]);
+    let scratch = Scratch::new("noise-scan");
+    let path = scratch.0.join("noise.heic");
+    fs::write(&path, damaged).unwrap();
+    let read = &json_objects(&["--ocr", "auto", "--timeout", "120", path.to_str().unwrap()])[0];
+    assert_eq!(read["status"], "complete", "{read}");
+    assert!(
+        read["text"].as_str().unwrap().contains("Lighthouse Keeper"),
+        "{read}"
+    );
+}
+
 #[test]
 fn each_ocred_image_reports_how_it_was_read() {
     let objects = json_objects(&[

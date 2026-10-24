@@ -14,7 +14,10 @@
 # (tesseract-patches/adapts-only-while-learning.patch), and one for an LSTM model loads no universal
 # ambiguities into its unicharset (tesseract-patches/lstm-skips-universal-ambigs.patch): a chi_sim
 # engine takes 9 MiB instead of 43, an eng one 2 instead of 10, and the orientation and script
-# engine 19 instead of 32 (#308, #311).
+# engine 19 instead of 32 (#308, #311). Its result iterators return to the start of a row or a
+# paragraph from where they entered it (tesseract-patches/rows-restart-in-place.patch), where they
+# walked the page from its start, once a line: a page tesseract splits into many small words, such
+# as one of noise, never finished its paragraph detection, and now reads in seconds (#316).
 # Its internal headers and the configuration it was built with are installed in
 # include/tesseract-internal, for code that reads its results while it recognizes a page.
 static:

@@ -1,0 +1,238 @@
+diff --git a/src/ccmain/pageiterator.cpp b/src/ccmain/pageiterator.cpp
+index 43cbebf..616a11f 100644
+--- a/src/ccmain/pageiterator.cpp
++++ b/src/ccmain/pageiterator.cpp
+@@ -111,7 +111,7 @@ void PageIterator::RestartParagraph() {
+   if (it_->block() == nullptr) {
+     return; // At end of the document.
+   }
+-  PAGE_RES_IT para(page_res_);
++  PAGE_RES_IT para = it_->paragraph_walk_start();
+   PAGE_RES_IT next_para(para);
+   next_para.forward_paragraph();
+   while (next_para.cmp(*it_) <= 0) {
+@@ -123,6 +123,13 @@ void PageIterator::RestartParagraph() {
+ }
+ 
+ bool PageIterator::IsWithinFirstTextlineOfParagraph() const {
++  // A paragraph never starts within a row, so a word's row is its paragraph's first exactly
++  // when the paragraph starts at the row's first word, which tells without walking to it.
++  if (it_->word() != nullptr) {
++    PAGE_RES_IT row_start(*it_);
++    row_start.restart_row();
++    return row_start.starts_paragraph_walk_step();
++  }
+   PageIterator p_start(*this);
+   p_start.RestartParagraph();
+   return p_start.it_->row() == it_->row();
+diff --git a/src/ccstruct/pageres.cpp b/src/ccstruct/pageres.cpp
+index 3d07ad1..4c12e93 100644
+--- a/src/ccstruct/pageres.cpp
++++ b/src/ccstruct/pageres.cpp
+@@ -1185,6 +1185,12 @@ void WERD_RES::ClearRatings() {
+   }
+ }
+ 
++// An iterator at the first word of a row, and the previous word's best choice it recorded there.
++struct PAGE_RES_IT::RowStart {
++  PAGE_RES_IT it;
++  WERD_CHOICE *prev_word_best_choice;
++};
++
+ int PAGE_RES_IT::cmp(const PAGE_RES_IT &other) const {
+   ASSERT_HOST(page_res == other.page_res);
+   if (other.block_res == nullptr) {
+@@ -1256,6 +1262,8 @@ int PAGE_RES_IT::cmp(const PAGE_RES_IT &other) const {
+ // with best_choice etc.
+ WERD_RES *PAGE_RES_IT::InsertSimpleCloneWord(const WERD_RES &clone_res,
+                                              WERD *new_word) {
++  row_start_ = nullptr;
++  paragraph_start_ = nullptr;
+   // Make a WERD_RES for the new_word.
+   auto *new_res = new WERD_RES(new_word);
+   new_res->CopySimpleFields(clone_res);
+@@ -1382,6 +1390,8 @@ static TBOX MoveAndClipBlob(C_BLOB_IT *src_it, C_BLOB_IT *dest_it,
+ // replaced with real blobs from the current word as much as possible.
+ void PAGE_RES_IT::ReplaceCurrentWord(
+     tesseract::PointerVector<WERD_RES> *words) {
++  row_start_ = nullptr;
++  paragraph_start_ = nullptr;
+   if (words->empty()) {
+     DeleteCurrentWord();
+     return;
+@@ -1491,6 +1501,8 @@ void PAGE_RES_IT::ReplaceCurrentWord(
+ 
+ // Deletes the current WERD_RES and its underlying WERD.
+ void PAGE_RES_IT::DeleteCurrentWord() {
++  row_start_ = nullptr;
++  paragraph_start_ = nullptr;
+   // Check that this word is as we expect. part_of_combos are NEVER iterated
+   // by the normal iterator, so we should never be trying to delete them.
+   ASSERT_HOST(!word_res->part_of_combo);
+@@ -1562,6 +1574,7 @@ WERD_RES *PAGE_RES_IT::start_page(bool empty_ok) {
+   next_block_res = nullptr;
+   next_row_res = nullptr;
+   next_word_res = nullptr;
++  past_first_word_ = false;
+   internal_forward(true, empty_ok);
+   return internal_forward(false, empty_ok);
+ }
+@@ -1574,6 +1587,8 @@ WERD_RES *PAGE_RES_IT::start_page(bool empty_ok) {
+ // anything to word_res_it, but it is still a good idea to reset the pointers
+ // word_res and prev_word_res, which are still in the current row.
+ void PAGE_RES_IT::ResetWordIterator() {
++  row_start_ = nullptr;
++  paragraph_start_ = nullptr;
+   if (row_res == next_row_res) {
+     // Reset the member iterator so it can move forward and detect the
+     // cycled_list state correctly.
+@@ -1621,6 +1636,11 @@ void PAGE_RES_IT::ResetWordIterator() {
+ 
+ WERD_RES *PAGE_RES_IT::internal_forward(bool new_block, bool empty_ok) {
+   bool new_row = false;
++  bool single_step = next_follows_directly_;
++  if (word_res != nullptr) {
++    past_first_word_ = true;
++  }
++  next_follows_directly_ = true;
+ 
+   prev_block_res = block_res;
+   prev_row_res = row_res;
+@@ -1638,9 +1658,12 @@ WERD_RES *PAGE_RES_IT::internal_forward(bool new_block, bool empty_ok) {
+       new_block = false;
+       row_res_it.set_to_list(&block_res_it.data()->row_res_list);
+       row_res_it.mark_cycle_pt();
+-      if (row_res_it.empty() && empty_ok) {
+-        next_block_res = block_res_it.data();
+-        break;
++      if (row_res_it.empty()) {
++        if (empty_ok) {
++          next_block_res = block_res_it.data();
++          break;
++        }
++        next_follows_directly_ = false;
+       }
+       new_row = true;
+     }
+@@ -1677,9 +1700,49 @@ foundword:
+                                            ? nullptr
+                                            : prev_word_res->best_choice;
+   }
++  if (word_res != nullptr && row_res != prev_row_res) {
++    if (prev_word_res != nullptr || prev_block_res == nullptr) {
++      WERD_CHOICE *best_choice =
++          page_res != nullptr && page_res->prev_word_best_choice != nullptr
++              ? *page_res->prev_word_best_choice
++              : nullptr;
++      row_start_ = std::make_shared<const RowStart>(RowStart{checkpoint(), best_choice});
++    } else {
++      row_start_ = nullptr;
++    }
++  }
++  bool page_start = prev_block_res == nullptr && word_res != nullptr;
++  if (page_start || (single_step && past_first_word_ && starts_paragraph_walk_step())) {
++    paragraph_start_ = std::make_shared<const PAGE_RES_IT>(checkpoint());
++  }
+   return word_res;
+ }
+ 
++PAGE_RES_IT PAGE_RES_IT::checkpoint() const {
++  PAGE_RES_IT copy = *this;
++  copy.row_start_ = nullptr;
++  copy.paragraph_start_ = nullptr;
++  return copy;
++}
++
++bool PAGE_RES_IT::starts_paragraph_walk_step() const {
++  if (prev_block_res == nullptr) {
++    return word_res != nullptr;
++  }
++  return !(prev_block_res == block_res && row_res != nullptr && row_res->row != nullptr &&
++           prev_row_res->row->para() == row_res->row->para());
++}
++
++PAGE_RES_IT PAGE_RES_IT::paragraph_walk_start() const {
++  if (paragraph_start_ != nullptr && paragraph_start_->starts_paragraph_walk_step() &&
++      paragraph_start_->cmp(*this) <= 0) {
++    PAGE_RES_IT start = *paragraph_start_;
++    start.paragraph_start_ = paragraph_start_;
++    return start;
++  }
++  return PAGE_RES_IT(page_res);
++}
++
+ /*************************************************************************
+  * PAGE_RES_IT::restart_row()
+  *
+@@ -1690,6 +1753,17 @@ WERD_RES *PAGE_RES_IT::restart_row() {
+   if (!row) {
+     return nullptr;
+   }
++  if (row_start_ != nullptr && row_start_->it.row_res == row) {
++    std::shared_ptr<const RowStart> start = row_start_;
++    std::shared_ptr<const PAGE_RES_IT> paragraph_start = paragraph_start_;
++    *this = start->it;
++    row_start_ = start;
++    paragraph_start_ = paragraph_start;
++    if (page_res != nullptr && page_res->prev_word_best_choice != nullptr) {
++      *page_res->prev_word_best_choice = start->prev_word_best_choice;
++    }
++    return word();
++  }
+   for (restart_page(); this->row() != row; forward()) {
+     // pass
+   }
+diff --git a/src/ccstruct/pageres.h b/src/ccstruct/pageres.h
+index 6375948..9d6401d 100644
+--- a/src/ccstruct/pageres.h
++++ b/src/ccstruct/pageres.h
+@@ -35,6 +35,7 @@
+ 
+ #include <cstdint>    // for int32_t, int16_t
+ #include <functional> // for std::function
++#include <memory>     // for std::shared_ptr
+ #include <set>        // for std::pair
+ #include <vector>     // for std::vector
+ 
+@@ -717,6 +718,13 @@ public:
+ 
+   WERD_RES *restart_row();
+ 
++  // Where a walk from the start of the page by forward_paragraph() to the paragraph of this
++  // word may start instead: a state that walk passes at or before this word.
++  PAGE_RES_IT paragraph_walk_start() const;
++
++  // Whether a walk from the start of the page by forward_paragraph() stops at this word.
++  bool starts_paragraph_walk_step() const;
++
+   // ============ Methods that mutate the underling structures ===========
+   // Note that these methods will potentially invalidate other PAGE_RES_ITs
+   // and are intended to be used only while a single PAGE_RES_IT is  active.
+@@ -803,6 +811,27 @@ private:
+   // Since word_res_it is 2 words further on, this is otherwise hard to do.
+   WERD_RES_IT wr_it_of_current_word;
+   WERD_RES_IT wr_it_of_next_word;
++  // A copy of this iterator without its own checkpoints, to keep as one.
++  PAGE_RES_IT checkpoint() const;
++
++  // The state at the first word of the current row, as restarting the page and moving forward
++  // to the row leaves it, which restart_row() returns to without walking the page again: a walk
++  // per row made reading the lines of a page quadratic in its words. None when the row was
++  // entered from an empty block, where the walk, which skips empty blocks, leaves another
++  // previous word, or after the words were changed.
++  struct RowStart;
++  std::shared_ptr<const RowStart> row_start_;
++  // The latest state this iterator stepped into that a walk from the start of the page by
++  // forward_paragraph() reaches alike: the start of the page, or a word it stepped into from the
++  // stop before it in that walk, that walk's paragraphs then starting there. None after the
++  // words were changed.
++  std::shared_ptr<const PAGE_RES_IT> paragraph_start_;
++  // Whether a word came before the current one since the page was started, as the stops of a
++  // walk from the start of the page are.
++  bool past_first_word_ = false;
++  // Whether the next word was found without skipping an empty block, so that moving to it is
++  // one step of a walk that visits empty blocks.
++  bool next_follows_directly_ = false;
+ };
+ 
+ } // namespace tesseract
