@@ -22,6 +22,7 @@ const MIN_LINE_PIXELS: usize = 20;
 const MAX_LINE_PIXELS: usize = 40;
 const TARGET_LINE_PIXELS: f64 = 32.0;
 const MIN_MEASURED_LINES: usize = 3;
+const MIN_LINE_ASPECT: usize = 4;
 const MAX_LINE_SHARE_OF_HEIGHT: usize = 10;
 const MAX_UPSCALE: f64 = 4.0;
 const MIN_INK_RUN_PIXELS: usize = 3;
@@ -184,35 +185,46 @@ impl Projection {
 /// above [`MAX_LINE_PIXELS`], since tesseract reads such text as well and faster once it is
 /// smaller. The line height is only trusted for reducing when at least [`MIN_MEASURED_LINES`]
 /// lines were measured, each under a tenth of the image's height: on an inverted page or one
-/// with a dark border, every row holds ink. It is only trusted for enlarging when most rows with
-/// ink lie in runs that short: on a page set solid, whose lines touch, the text reads as a few
-/// runs of hundreds of rows, and the specks and marks beside them as the shortest. 1 when the
-/// image has no lines of text.
+/// with a dark border, every row holds ink. For enlarging, the line height is the median of the
+/// runs that read as lines of text, their ink across [`MIN_LINE_ASPECT`] times as many columns
+/// as their rows, of which there must be [`MIN_MEASURED_LINES`]: the specks and marks beside the
+/// text of a page set solid, whose lines touch and read as a few runs of hundreds of rows, are
+/// about as wide as they are high (#199), while small text beside photos, as in a screenshot,
+/// outnumbers the photos' rows (#306). 1 when the image has no lines of text.
 pub(crate) fn scale_factor(image: &Bitmap, max_pixels: u64, reduce: bool) -> f64 {
     let image = image.gray();
     let (width, height) = image.dimensions();
-    let mut runs: Vec<usize> = ink_runs(&image).into_iter().map(|run| run.len()).collect();
-    if runs.is_empty() {
+    let threshold = ink_threshold(&image);
+    let runs = runs_of_ink(&image, threshold);
+    let mut heights: Vec<usize> = runs.iter().map(Range::len).collect();
+    if heights.is_empty() {
         return 1.0;
     }
-    runs.sort_unstable();
-    let line_height = runs[runs.len() / 2];
-    if line_height > MAX_LINE_PIXELS {
-        let measured = runs.len() >= MIN_MEASURED_LINES
-            && runs[runs.len() - 1] * MAX_LINE_SHARE_OF_HEIGHT < height as usize;
+    heights.sort_unstable();
+    let median = heights[heights.len() / 2];
+    if median > MAX_LINE_PIXELS {
+        let measured = heights.len() >= MIN_MEASURED_LINES
+            && heights[heights.len() - 1] * MAX_LINE_SHARE_OF_HEIGHT < height as usize;
         return if reduce && measured {
-            TARGET_LINE_PIXELS / line_height as f64
+            TARGET_LINE_PIXELS / median as f64
         } else {
             1.0
         };
     }
-    let (short_rows, rows) = runs.iter().fold((0, 0), |(short, all), &run| {
-        (
-            short + if run < MIN_LINE_PIXELS { run } else { 0 },
-            all + run,
-        )
-    });
-    if line_height >= MIN_LINE_PIXELS || short_rows * 2 <= rows {
+    let mut columns = vec![false; width as usize];
+    let mut lines: Vec<usize> = runs
+        .iter()
+        .filter(|run| {
+            inked_columns(&image, threshold, run, &mut columns) >= MIN_LINE_ASPECT * run.len()
+        })
+        .map(Range::len)
+        .collect();
+    if lines.len() < MIN_MEASURED_LINES {
+        return 1.0;
+    }
+    lines.sort_unstable();
+    let line_height = lines[lines.len() / 2];
+    if line_height >= MIN_LINE_PIXELS {
         return 1.0;
     }
     let wanted = MAX_UPSCALE.min(TARGET_LINE_PIXELS / line_height as f64);
@@ -221,9 +233,35 @@ pub(crate) fn scale_factor(image: &Bitmap, max_pixels: u64, reduce: bool) -> f64
 }
 
 pub(crate) fn ink_runs(image: &GrayImage) -> Vec<Range<usize>> {
-    let levels = image.as_raw();
-    let threshold = otsu_threshold(&histogram(levels));
-    let inked: Vec<bool> = levels
+    runs_of_ink(image, ink_threshold(image))
+}
+
+/// The grey level below which a pixel is ink.
+fn ink_threshold(image: &GrayImage) -> u32 {
+    otsu_threshold(&histogram(image.as_raw()))
+}
+
+/// How many columns hold ink in the rows `run`, `columns` marking them.
+fn inked_columns(
+    image: &GrayImage,
+    threshold: u32,
+    run: &Range<usize>,
+    columns: &mut [bool],
+) -> usize {
+    columns.fill(false);
+    let rows = image.as_raw().chunks_exact(image.width() as usize);
+    for row in rows.skip(run.start).take(run.len()) {
+        for (inked, &level) in columns.iter_mut().zip(row) {
+            *inked |= u32::from(level) < threshold;
+        }
+    }
+    columns.iter().filter(|&&inked| inked).count()
+}
+
+/// The runs of at least [`MIN_INK_RUN_PIXELS`] rows each holding a pixel darker than `threshold`.
+fn runs_of_ink(image: &GrayImage, threshold: u32) -> Vec<Range<usize>> {
+    let inked: Vec<bool> = image
+        .as_raw()
         .chunks_exact(image.width() as usize)
         .map(|row| row.iter().any(|&level| u32::from(level) < threshold))
         .collect();
@@ -700,10 +738,19 @@ pub(crate) mod tests {
 
     /// A white page with dark rows from each `(top, height)` across its width.
     fn rows(width: u32, height: u32, inked: &[(u32, u32)]) -> Bitmap {
+        let blocks: Vec<_> = inked
+            .iter()
+            .map(|&(top, rows)| (100, top, width - 200, rows))
+            .collect();
+        blocks_on(width, height, &blocks)
+    }
+
+    /// A white page with each dark `(left, top, width, height)` block.
+    fn blocks_on(width: u32, height: u32, blocks: &[(u32, u32, u32, u32)]) -> Bitmap {
         let mut image = GrayImage::from_pixel(width, height, Luma([WHITE]));
-        for &(top, rows) in inked {
+        for &(left, top, columns, rows) in blocks {
             for y in top..top + rows {
-                for x in 100..width - 100 {
+                for x in left..left + columns {
                     image.put_pixel(x, y, Luma([0]));
                 }
             }
@@ -718,20 +765,36 @@ pub(crate) mod tests {
         assert!((factor - 3.2).abs() < 1e-9, "{factor}");
     }
 
+    /// A page set solid reads as two runs of hundreds of rows, and the specks above it, each about
+    /// as wide as it is high, as the shortest (#199).
     #[test]
     fn keeps_solid_text_beside_specks() {
         let inked = [
-            (60, 4),
-            (90, 5),
-            (130, 7),
-            (170, 9),
-            (300, 900),
-            (1250, 1000),
+            (300, 60, 5, 4),
+            (900, 90, 6, 5),
+            (500, 130, 9, 7),
+            (1200, 170, 8, 9),
+            (100, 300, 1400, 900),
+            (100, 1250, 1400, 1000),
         ];
         assert_eq!(
-            scale_factor(&rows(1600, 2400, &inked), 60_000_000, true),
+            scale_factor(&blocks_on(1600, 2400, &inked), 60_000_000, true),
             1.0
         );
+    }
+
+    /// Lines of small text above and beside photos, as in a screenshot of a file browser, are
+    /// enlarged, though the photos' rows outnumber theirs (#306).
+    #[test]
+    fn enlarges_small_text_beside_photos() {
+        let mut inked: Vec<_> = (0..4).map(|line| (20, 20 + line * 24, 600, 12)).collect();
+        for row in 0..3 {
+            let top = 140 + row * 250;
+            inked.push((20, top, 120, 12));
+            inked.extend((0..4).map(|photo| (200 + photo * 270, top, 240, 220)));
+        }
+        let factor = scale_factor(&blocks_on(1314, 908, &inked), 60_000_000, true);
+        assert!(factor > 2.0, "{factor}");
     }
 
     #[test]
