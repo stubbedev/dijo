@@ -41,4 +41,4 @@ libc = "0.2.190"
 [dev-dependencies]
 crc32fast = "1.5.2"
 flate2 = "1.1.5"
-jsonschema = { version = "0.59.0", default-features = false }
+jsonschema = { version = "0.60.0", default-features = false }

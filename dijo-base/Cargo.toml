@@ -24,7 +24,7 @@ encoding_rs = "0.8.42"
 flate2 = "1.1.5"
 jiff-tzdb = "0.1.9"
 lz4_flex = "0.14.0"
-lzma-rust2 = { version = "0.22.0", default-features = false, features = ["std", "xz"] }
+lzma-rust2 = { version = "0.23.0", default-features = false, features = ["std", "xz"] }
 md-5 = "0.11.0"
 md2 = "0.11.0"
 md4 = "0.11.0"
@@ -50,5 +50,5 @@ zip = { version = "9.0.3", default-features = false, features = ["bzip2", "defla
 
 [dev-dependencies]
 brotli = "9.0.0"
-lzma-rust2 = { version = "0.22.0", default-features = false, features = ["std", "xz", "encoder"] }
+lzma-rust2 = { version = "0.23.0", default-features = false, features = ["std", "xz", "encoder"] }
 sevenz-rust2 = { version = "0.24.0", default-features = false, features = ["bzip2", "deflate", "compress"] }
