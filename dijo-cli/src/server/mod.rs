@@ -23,7 +23,7 @@ use dijo_core::Password;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Frame, Incoming};
-use hyper::header::{HeaderValue, CONTENT_TYPE, RETRY_AFTER};
+use hyper::header::{HeaderValue, CONTENT_DISPOSITION, CONTENT_TYPE, RETRY_AFTER};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
@@ -265,15 +265,13 @@ async fn handle(
         ),
         (&Method::POST, "/extract") => ("extract", extract(request, &state).await),
         (&Method::POST, "/detect") => ("detect", detect(request, &state).await),
-        (&Method::GET, "/tika") => (
-            "tika_hello",
-            full(200, "text/plain; charset=utf-8", tika::hello()),
-        ),
-        (&Method::PUT, "/tika") => ("tika", tika(request, &state).await),
-        _ => (
-            "unknown",
-            rejected(request, &state, error(404, "No such endpoint")).await,
-        ),
+        _ => match tika::route(&method, &path) {
+            Some(endpoint) => (endpoint.label(), tika(endpoint, request, &state).await),
+            None => (
+                "unknown",
+                rejected(request, &state, error(404, "No such endpoint")).await,
+            ),
+        },
     };
     state.metrics.request(endpoint, response.status().as_u16());
     eprintln!(
@@ -437,38 +435,86 @@ async fn extract(request: Request<Incoming>, state: &Arc<State>) -> Response<Res
         Ok(extract) => Task::Extract(extract),
         Err(message) => return rejected(request, state, error(400, &message)).await,
     };
-    run(task, request, state).await
+    run(task, request, state, None).await
 }
 
-async fn tika(request: Request<Incoming>, state: &Arc<State>) -> Response<ResponseBody> {
+/// How a tika-server endpoint is answered from an upload: as `/extract` answers in the format of
+/// a content handler, or by a worker's own output.
+enum TikaAnswer {
+    Content(tika::output::Handler),
+    Output(tika::output::Output),
+}
+
+/// Answers a tika-server endpoint: a listing at once, anything else from the upload, with the
+/// extraction Tika's headers ask for.
+async fn tika(
+    endpoint: tika::Endpoint,
+    request: Request<Incoming>,
+    state: &Arc<State>,
+) -> Response<ResponseBody> {
+    if let tika::Endpoint::Listing(listing) = &endpoint {
+        let (status, content_type, body) = tika::listings::answer(listing, request.headers());
+        return full(status, content_type, body);
+    }
+    match tika_task(endpoint, &request, state) {
+        Ok((task, relabel)) => run(task, request, state, relabel).await,
+        Err((status, message)) => rejected(request, state, error(status, &message)).await,
+    }
+}
+
+/// The task a tika-server endpoint asks of the upload, with the media type its answer is
+/// labelled with, or the status and message refusing the request.
+fn tika_task(
+    endpoint: tika::Endpoint,
+    request: &Request<Incoming>,
+    state: &State,
+) -> Result<(Task, Option<&'static str>), (u16, String)> {
     if request.uri().query().is_some_and(|query| !query.is_empty()) {
-        return rejected(
-            request,
-            state,
-            error(400, "/tika takes no query parameters"),
-        )
-        .await;
+        return Err((
+            400,
+            "tika-server's endpoints take no query parameters".to_string(),
+        ));
     }
-    if !tika::accepts_text(request.headers()) {
-        return rejected(
-            request,
-            state,
-            error(406, "PUT /tika answers only text/plain"),
-        )
-        .await;
-    }
-    let extract =
-        default_extract_request(&request, state, tika::PASSWORD_HEADER).and_then(|extract| {
-            tika::check_headers(request.headers())?;
+    let headers = request.headers();
+    let not_acceptable = || (406, "No form of this endpoint is acceptable".to_string());
+    let answer = match endpoint {
+        tika::Endpoint::Listing(_) => unreachable!("listings are answered without an upload"),
+        tika::Endpoint::Negotiated => {
+            TikaAnswer::Content(tika::negotiated_handler(headers).ok_or_else(not_acceptable)?)
+        }
+        tika::Endpoint::Content(handler) => TikaAnswer::Content(handler),
+        tika::Endpoint::Meta => TikaAnswer::Output(tika::output::Output::Meta(
+            tika::meta_form(headers).ok_or_else(not_acceptable)?,
+        )),
+        tika::Endpoint::MetaField(field) => TikaAnswer::Output(tika::output::Output::MetaField {
+            field,
+            form: tika::field_form(headers).ok_or_else(not_acceptable)?,
+        }),
+        tika::Endpoint::Upload(output) => TikaAnswer::Output(output),
+    };
+    let mut extract = default_extract_request(request, state, tika::PASSWORD_HEADER)
+        .and_then(|extract| {
+            tika::check_headers(headers)?;
             Ok(ExtractRequest {
-                ocr_lang: tika::ocr_language(request.headers())?,
+                ocr_lang: tika::ocr_language(headers)?,
                 ..extract
             })
-        });
-    match extract {
-        Ok(extract) => run(Task::Extract(extract), request, state).await,
-        Err(message) => rejected(request, state, error(400, &message)).await,
-    }
+        })
+        .map_err(|message| (400, message))?;
+    Ok(match answer {
+        TikaAnswer::Content(handler) => {
+            extract.render.format = handler.format();
+            (
+                Task::Extract(extract),
+                Some(tika::content_media_type(handler)),
+            )
+        }
+        TikaAnswer::Output(output @ tika::output::Output::Unpack { .. }) => {
+            extract.ocr = Ocr::Never;
+            (Task::Tika(extract, output), None)
+        }
+        TikaAnswer::Output(output) => (Task::Tika(extract, output), None),
+    })
 }
 
 /// Answers `request` with `response` once what is left of its body is read, which a rejection
@@ -491,13 +537,16 @@ async fn detect(request: Request<Incoming>, state: &Arc<State>) -> Response<Resp
         )
         .await;
     }
-    run(Task::Detect, request, state).await
+    run(Task::Detect, request, state, None).await
 }
 
+/// Runs a task on the upload of `request`; a successful answer is labelled `relabel` rather
+/// than with its format's own media type.
 async fn run(
     mut task: Task,
     request: Request<Incoming>,
     state: &Arc<State>,
+    relabel: Option<&'static str>,
 ) -> Response<ResponseBody> {
     let Some(admission) = Admission::try_new(state) else {
         return rejected(request, state, busy()).await;
@@ -505,7 +554,8 @@ async fn run(
     let deadline = state
         .timeout
         .map(|timeout| tokio::time::Instant::now() + timeout);
-    if let (Task::Extract(extract), Some(deadline)) = (&mut task, deadline) {
+    if let (Task::Extract(extract) | Task::Tika(extract, _), Some(deadline)) = (&mut task, deadline)
+    {
         extract.deadline = Some(deadline.into_std());
     }
     let header = |name| {
@@ -514,7 +564,9 @@ async fn run(
             .get(name)
             .and_then(|value: &HeaderValue| value.to_str().ok())
     };
-    let name = Name::from_hints(header(FILENAME_HEADER), header(CONTENT_TYPE.as_str()));
+    let file_name = header(FILENAME_HEADER)
+        .or_else(|| header(CONTENT_DISPOSITION.as_str()).and_then(upload::disposition_file_name));
+    let name = Name::from_hints(file_name, header(CONTENT_TYPE.as_str()));
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let received = upload::receive(
         request.into_body(),
@@ -569,7 +621,10 @@ async fn run(
     let Ok(head) = head else {
         return error(500, "The worker stopped before answering");
     };
-    let content_type = head.content_type.header();
+    let content_type = match relabel {
+        Some(relabel) if head.status == 200 => relabel,
+        _ => head.content_type.header(),
+    };
     match head.body {
         Some(body) => full(head.status, content_type, body),
         None => {

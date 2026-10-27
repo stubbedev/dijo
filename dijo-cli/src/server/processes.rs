@@ -14,6 +14,7 @@ use dijo_core::Password;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc as async_mpsc, oneshot};
 
+use super::tika::output as tika;
 use crate::cache::Cache;
 use crate::cli::{Embedded, Ocr, PROCESSORS_VARIABLE};
 use crate::render::RenderOptions;
@@ -42,59 +43,67 @@ struct WireJob {
 
 #[derive(Serialize, Deserialize)]
 enum WireTask {
-    Extract {
-        remaining: Option<Duration>,
-        embedded: Embedded,
-        limits: Limits,
-        render: RenderOptions,
-        ocr: Ocr,
-        ocr_lang: Option<String>,
-        passwords: Vec<String>,
-    },
+    Extract(WireExtract),
+    Tika(WireExtract, tika::Output),
     Detect,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireExtract {
+    remaining: Option<Duration>,
+    embedded: Embedded,
+    limits: Limits,
+    render: RenderOptions,
+    ocr: Ocr,
+    ocr_lang: Option<String>,
+    passwords: Vec<String>,
+}
+
+impl WireExtract {
+    fn of(request: &ExtractRequest) -> Self {
+        WireExtract {
+            remaining: request
+                .deadline
+                .map(|deadline| deadline.saturating_duration_since(Instant::now())),
+            embedded: request.embedded,
+            limits: request.limits,
+            render: request.render,
+            ocr: request.ocr,
+            ocr_lang: request.ocr_lang.clone(),
+            passwords: request
+                .passwords
+                .iter()
+                .map(|password| password.expose().to_string())
+                .collect(),
+        }
+    }
+
+    fn into_request(self) -> ExtractRequest {
+        ExtractRequest {
+            deadline: self.remaining.map(|remaining| Instant::now() + remaining),
+            embedded: self.embedded,
+            limits: self.limits,
+            render: self.render,
+            ocr: self.ocr,
+            ocr_lang: self.ocr_lang,
+            passwords: self.passwords.into_iter().map(Password::new).collect(),
+        }
+    }
 }
 
 impl WireTask {
     fn of(task: &Task) -> Self {
         match task {
-            Task::Extract(request) => WireTask::Extract {
-                remaining: request
-                    .deadline
-                    .map(|deadline| deadline.saturating_duration_since(Instant::now())),
-                embedded: request.embedded,
-                limits: request.limits,
-                render: request.render,
-                ocr: request.ocr,
-                ocr_lang: request.ocr_lang.clone(),
-                passwords: request
-                    .passwords
-                    .iter()
-                    .map(|password| password.expose().to_string())
-                    .collect(),
-            },
+            Task::Extract(request) => WireTask::Extract(WireExtract::of(request)),
+            Task::Tika(request, output) => WireTask::Tika(WireExtract::of(request), output.clone()),
             Task::Detect => WireTask::Detect,
         }
     }
 
     fn into_task(self) -> Task {
         match self {
-            WireTask::Extract {
-                remaining,
-                embedded,
-                limits,
-                render,
-                ocr,
-                ocr_lang,
-                passwords,
-            } => Task::Extract(ExtractRequest {
-                deadline: remaining.map(|remaining| Instant::now() + remaining),
-                embedded,
-                limits,
-                render,
-                ocr,
-                ocr_lang,
-                passwords: passwords.into_iter().map(Password::new).collect(),
-            }),
+            WireTask::Extract(request) => Task::Extract(request.into_request()),
+            WireTask::Tika(request, output) => Task::Tika(request.into_request(), output),
             WireTask::Detect => Task::Detect,
         }
     }
@@ -357,7 +366,9 @@ fn relay(
     options: &ProcessOptions,
 ) -> Option<WorkerProcess> {
     let deadline = match &job.task {
-        Task::Extract(request) => request.deadline.map(|deadline| deadline + options.grace),
+        Task::Extract(request) | Task::Tika(request, _) => {
+            request.deadline.map(|deadline| deadline + options.grace)
+        }
         Task::Detect => None,
     };
     let payload = serde_json::to_vec(&WireJob {

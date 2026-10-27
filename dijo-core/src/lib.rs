@@ -56,6 +56,8 @@ pub use formats::large;
 /// What the tests of the crates of the formats share.
 #[cfg(any(test, feature = "testing"))]
 pub use formats::testing;
+pub use formats::{parser_name, parsers, ListedParser};
+pub use mime::{declared_type, declared_types, Declared};
 /// The tests count allocations as the command line does, so that budgets are enforced in them.
 #[cfg(test)]
 #[global_allocator]

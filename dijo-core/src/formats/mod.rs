@@ -219,6 +219,33 @@ static PARSERS: &[&dyn Parser] = &[
     &empty::EmptyParser,
 ];
 
+/// A parser, as tika-server's `/parsers` lists it.
+pub struct ListedParser {
+    pub name: &'static str,
+    pub media_types: &'static [&'static str],
+}
+
+/// Every native parser, in the order they are tried, but Tika's fallback for a document no other
+/// parser reads.
+pub fn parsers() -> impl Iterator<Item = ListedParser> {
+    PARSERS
+        .iter()
+        .filter(|parser| parser.name() != empty::EmptyParser.name())
+        .map(|parser| ListedParser {
+            name: parser.name(),
+            media_types: parser.media_types(),
+        })
+}
+
+/// The name of the parser that reads a document of `media_type`; None when no parser does, or
+/// only Tika's fallback.
+pub fn parser_name(media_type: &str) -> Option<&'static str> {
+    parser_for(media_type)
+        .ok()
+        .map(|parser| parser.name())
+        .filter(|&name| name != empty::EmptyParser.name())
+}
+
 /// The native parser for a document of `media_type`, picked as `CompositeParser.getParser` picks
 /// Tika's: the parser of the first type of its [`mime::lineage`] a parser reads, else Tika's
 /// fallback, the [`empty::EmptyParser`]. A supertype's parser takes the document only where it

@@ -170,6 +170,62 @@ pub fn lineage(media_type: &MediaType) -> impl Iterator<Item = MediaType> {
     })
 }
 
+/// A type the default types declare, as tika-server's `/mime-types` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Declared {
+    pub name: &'static str,
+    pub aliases: Vec<&'static str>,
+    /// What `getSupertype` gives, but never `application/octet-stream`, which every type
+    /// specializes.
+    pub supertype: Option<MediaType>,
+    /// With their dots, the first the type's own.
+    pub extensions: &'static [&'static str],
+}
+
+/// Every type the default types declare, in order of name.
+pub fn declared_types() -> Vec<Declared> {
+    let types = mime_types();
+    let mut aliases: Vec<(&'static str, &'static str)> = types
+        .registry()
+        .aliases()
+        .map(|(alias, kind)| (kind, alias))
+        .collect();
+    aliases.sort_unstable();
+    let mut names: Vec<&'static str> = types.names().collect();
+    names.sort_unstable();
+    names
+        .into_iter()
+        .map(|name| declared(name, &aliases))
+        .collect()
+}
+
+/// The type the default types declare as `name`, or one of its aliases names.
+pub fn declared_type(name: &str) -> Option<Declared> {
+    let kind = MediaType::parse(name)?;
+    let canonical = mime_types().registry().normalize(&kind.base_type());
+    declared_types()
+        .into_iter()
+        .find(|declared| declared.name == canonical.as_str())
+}
+
+fn declared(name: &'static str, aliases: &[(&'static str, &'static str)]) -> Declared {
+    let kind = MediaType::named(name);
+    let start = aliases.partition_point(|&(of, _)| of < name);
+    Declared {
+        name,
+        aliases: aliases[start..]
+            .iter()
+            .take_while(|&&(of, _)| of == name)
+            .map(|&(_, alias)| alias)
+            .collect(),
+        supertype: mime_types()
+            .registry()
+            .supertype(&kind)
+            .filter(|supertype| supertype.as_str() != OCTET_STREAM),
+        extensions: mime_types().declared_extensions(name).unwrap_or_default(),
+    }
+}
+
 /// Whether the default types declare `kind`, or its base type, as a type or an alias.
 pub fn declares(kind: &MediaType) -> bool {
     mime_types().registry().declares(kind)
@@ -289,3 +345,22 @@ fn detect_with(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod declared_tests {
+    use super::*;
+
+    #[test]
+    fn declared_types_carry_their_aliases_supertypes_and_extensions() {
+        let types = declared_types();
+        assert!(types.windows(2).all(|pair| pair[0].name < pair[1].name));
+        let pdf = declared_type("application/x-pdf").unwrap();
+        assert_eq!(pdf.name, "application/pdf");
+        assert_eq!(pdf.aliases, ["application/x-pdf"]);
+        assert_eq!(pdf.extensions.first(), Some(&".pdf"));
+        assert_eq!(pdf.supertype, None);
+        let atom = declared_type("application/atom+xml; charset=utf-8").unwrap();
+        assert_eq!(atom.supertype, Some(MediaType::named("application/xml")));
+        assert_eq!(declared_type("no/such"), None);
+    }
+}

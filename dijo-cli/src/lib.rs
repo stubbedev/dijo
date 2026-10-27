@@ -545,11 +545,13 @@ fn run(context: &Context, index: usize, input: &Result<Resolved, InputError>) ->
                 extractor,
                 path,
                 &input.display,
-                options,
                 args.limits.limits(),
                 &scratch,
-                cache.map(|cache| (cache, output_settings(args))),
-                writer,
+                &mut tree::DijoRecords::new(
+                    options,
+                    cache.map(|cache| (cache, output_settings(args))),
+                    writer,
+                ),
             );
             fs::remove_dir_all(&scratch)?;
             rendered
@@ -729,7 +731,9 @@ fn emit(finished: Finished, format: Format, strict: bool) -> bool {
             report(&finished.display, &error);
         }
     }
-    if let (Some(metadata), Format::Text | Format::Xhtml) = (&finished.metadata, format) {
+    if let (Some(metadata), Format::Text | Format::Xhtml | Format::Markdown) =
+        (&finished.metadata, format)
+    {
         let mut stderr = io::stderr().lock();
         let _ = writeln!(stderr, "==> {} <==", finished.display);
         for (key, values) in metadata.iter().collect::<BTreeMap<_, _>>() {

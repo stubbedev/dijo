@@ -10,7 +10,7 @@ use tokio::io::AsyncWriteExt;
 use crate::server::handlers::Files;
 use crate::server::metrics::Metrics;
 
-const DEFAULT_NAME: &str = "upload";
+pub const DEFAULT_NAME: &str = "upload";
 const UNTYPED: &str = "application/octet-stream";
 const MAX_NAME_BYTES: usize = 255;
 const MAX_DISCARDED_BYTES: u64 = 16 << 20;
@@ -72,6 +72,17 @@ fn file_name(hint: &str) -> Option<String> {
 pub struct Name {
     file: String,
     display: String,
+}
+
+/// The file name a `Content-Disposition` header gives, such as `attachment; filename="a.pdf"`,
+/// as Tika clients name an upload.
+pub fn disposition_file_name(disposition: &str) -> Option<&str> {
+    disposition.split(';').skip(1).find_map(|parameter| {
+        let (name, value) = parameter.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("filename")
+            .then(|| value.trim().trim_matches('"'))
+    })
 }
 
 impl Name {
@@ -158,6 +169,20 @@ pub async fn discard(body: &mut Incoming, idle_timeout: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_content_disposition_names_the_upload() {
+        assert_eq!(
+            disposition_file_name("attachment; filename=\"report.pdf\""),
+            Some("report.pdf")
+        );
+        assert_eq!(
+            disposition_file_name("attachment;FILENAME=a.docx; size=3"),
+            Some("a.docx")
+        );
+        assert_eq!(disposition_file_name("attachment"), None);
+        assert_eq!(disposition_file_name("filename=a.pdf"), None);
+    }
 
     #[test]
     fn file_names_cannot_leave_the_upload_directory() {

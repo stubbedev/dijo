@@ -79,6 +79,18 @@ impl MimeTypes {
         &self.registry
     }
 
+    /// The declared types, in order of their printed forms.
+    pub(crate) fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.types.iter().map(|kind| kind.name)
+    }
+
+    /// The extensions of a declared type, with their dots, in the order they were read.
+    pub(crate) fn declared_extensions(&self, name: &str) -> Option<&'static [&'static str]> {
+        self.type_of(&MediaType::named(name))
+            .filter(|&id| self.types[id].name == name)
+            .map(|id| self.types[id].extensions)
+    }
+
     fn type_of(&self, media_type: &MediaType) -> Option<TypeId> {
         sorted_get(self.by_type, media_type.as_str())
     }

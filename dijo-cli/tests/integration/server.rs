@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
-use crate::common::server::{read_response, write_head, Server};
+use crate::common::server::{read_response, write_head, Response, Server};
 use crate::common::{Scratch, DOCUMENTS};
 
 #[test]
@@ -118,7 +118,7 @@ fn tika_clients_are_answered_unchanged() {
 
     assert_eq!(
         server
-            .request("PUT", "/tika", &[("Accept", "text/html")], b"x")
+            .request("PUT", "/tika", &[("Accept", "application/json")], b"x")
             .status,
         406
     );
@@ -131,6 +131,227 @@ fn tika_clients_are_answered_unchanged() {
         400
     );
     assert_eq!(server.request("PUT", "/tika?x=1", &[], b"x").status, 400);
+}
+
+fn put_file(server: &Server, target: &str, headers: &[(&str, &str)], name: &str) -> Response {
+    let body = std::fs::read(format!("{DOCUMENTS}/{name}")).unwrap();
+    server.request("PUT", target, headers, &body)
+}
+
+/// tika-server's content endpoints answer what `/extract` answers in the matching format, under
+/// tika-server's media types.
+#[test]
+fn tika_content_endpoints_answer_each_format() {
+    let server = Server::start(&[]);
+    let cases = [
+        ("/tika/text", "text", "text/plain; charset=utf-8"),
+        ("/tika/html", "xhtml", "text/html; charset=utf-8"),
+        ("/tika/xml", "xhtml", "text/xml; charset=utf-8"),
+        ("/tika/md", "markdown", "text/plain; charset=utf-8"),
+    ];
+    for (target, format, media_type) in cases {
+        let answer = put_file(&server, target, &[], "simple.odt");
+        assert_eq!(answer.status, 200, "{target}");
+        assert_eq!(answer.header("content-type"), Some(media_type), "{target}");
+        let expected = server
+            .post_file(&format!("/extract?format={format}"), &[], "simple.odt")
+            .text();
+        assert_eq!(answer.text(), expected, "{target}");
+    }
+    let markdown = put_file(&server, "/tika/md", &[], "simple.odt").text();
+    assert!(markdown.starts_with("# These are a few of my favorite things:\n\n"));
+    assert!(markdown.contains("\n- Hockey\n"));
+
+    let html = put_file(&server, "/tika", &[("Accept", "text/html")], "simple.odt");
+    assert_eq!(
+        html.header("content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert!(html.text().contains("<html"));
+}
+
+#[test]
+fn tika_metadata_endpoints_answer_tikas_objects() {
+    let server = Server::start(&[]);
+    let json = put_file(&server, "/tika/json/text", &[], "simple.odt").json();
+    assert_eq!(
+        json["Content-Type"],
+        "application/vnd.oasis.opendocument.text"
+    );
+    assert_eq!(json["tk:content-handler-type"], "TEXT");
+    assert!(json["tk:content"]
+        .as_str()
+        .unwrap()
+        .contains("These are a few of my favorite things"));
+    assert_eq!(json["tk:parsed-by"], "dijo::OpenDocumentParser");
+    assert!(json.get("tk:resource-name").is_none());
+
+    let meta = put_file(
+        &server,
+        "/meta",
+        &[("Content-Disposition", "attachment; filename=\"a.odt\"")],
+        "simple.odt",
+    )
+    .json();
+    assert!(meta.get("tk:content").is_none());
+    assert_eq!(meta["tk:resource-name"], "a.odt");
+
+    let csv = put_file(&server, "/meta", &[("Accept", "text/csv")], "simple.odt");
+    assert_eq!(csv.header("content-type"), Some("text/csv; charset=utf-8"));
+    assert!(csv.text().contains("Content-Length,7649\n"));
+    let field = put_file(
+        &server,
+        "/meta/Content-Type",
+        &[("Accept", "text/plain")],
+        "simple.odt",
+    );
+    assert_eq!(field.text(), "application/vnd.oasis.opendocument.text");
+    assert_eq!(
+        put_file(&server, "/meta/nope", &[], "simple.odt").status,
+        404
+    );
+
+    let locked = put_file(&server, "/tika/json", &[], "encrypted/password.docx");
+    assert_eq!(locked.status, 200);
+    assert!(locked.json()["tk:exception:container-exception"]
+        .as_str()
+        .unwrap()
+        .contains("encrypted"));
+    assert_eq!(
+        put_file(
+            &server,
+            "/meta/Content-Type",
+            &[],
+            "encrypted/password.docx"
+        )
+        .status,
+        422
+    );
+}
+
+/// Every document of the upload has an object, numbered in the order it is found, duplicates
+/// too, and `/unpack` names each file by its number.
+#[test]
+fn tika_reads_and_unpacks_embedded_documents() {
+    let server = Server::start(&[]);
+    let records = put_file(&server, "/rmeta/ignore", &[], "nested.zip").json();
+    let places: Vec<(String, String, String)> = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|record| {
+            let field = |key: &str| record[key].as_str().unwrap().to_string();
+            (
+                field("tk:embedded-id"),
+                field("tk:embedded-resource-path"),
+                field("tk:embedded-depth"),
+            )
+        })
+        .collect();
+    let expected = [
+        ("1", "/mail.eml", "1"),
+        ("2", "/mail.eml/numbers.xlsx", "2"),
+        ("3", "/mail.eml/numbers.xlsx/image1.png", "3"),
+        ("4", "/copy-a.txt", "1"),
+        ("5", "/copy-b.txt", "1"),
+        ("6", "/inner.zip", "1"),
+        ("7", "/inner.zip/notes.txt", "2"),
+    ]
+    .map(|(id, path, depth)| (id.to_string(), path.to_string(), depth.to_string()));
+    assert_eq!(places, expected);
+    assert_eq!(records[0]["tk:embedded-depth"], "0");
+    assert!(records[0].get("tk:content").is_none());
+
+    let text = put_file(&server, "/rmeta/text", &[], "nested.zip").json();
+    assert_eq!(text[4]["tk:content-handler-type"], "TEXT");
+    assert!(text[4]["tk:content"].is_string());
+
+    let unpacked = put_file(&server, "/unpack", &[], "nested.zip");
+    assert_eq!(unpacked.status, 200);
+    assert_eq!(unpacked.header("content-type"), Some("application/zip"));
+    let names = |archive: &[u8]| -> Vec<String> {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive.to_vec())).unwrap();
+        (0..zip.len())
+            .map(|index| zip.by_index(index).unwrap().name().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        names(&unpacked.body),
+        ["1.eml", "2.xlsx", "3.png", "4.txt", "5.txt", "6.zip", "7.txt"]
+    );
+    let all = names(&put_file(&server, "/unpack/all", &[], "nested.zip").body);
+    assert_eq!(all[..2], ["0.zip", "0.zip.metadata.json"]);
+    assert_eq!(all.len(), 16);
+
+    assert_eq!(put_file(&server, "/unpack", &[], "simple.odt").status, 204);
+    assert_eq!(
+        put_file(&server, "/unpack", &[], "encrypted/password.docx").status,
+        422
+    );
+}
+
+#[test]
+fn tika_detects_types_and_languages_and_lists_what_it_reads() {
+    let server = Server::start(&[]);
+    for target in ["/detect", "/detect/stream"] {
+        assert_eq!(
+            put_file(&server, target, &[], "simple.doc").text(),
+            "application/msword"
+        );
+    }
+    let danish = "Dette er en dansk tekst om vejret i København i dag.".as_bytes();
+    for (method, target) in [
+        ("PUT", "/language"),
+        ("POST", "/language/string"),
+        ("PUT", "/language/stream"),
+    ] {
+        assert_eq!(server.request(method, target, &[], danish).text(), "da");
+    }
+
+    assert!(server
+        .request("GET", "/version", &[], b"")
+        .text()
+        .starts_with("dijo "));
+    let parsers = server
+        .request(
+            "GET",
+            "/parsers/details",
+            &[("Accept", "application/json")],
+            b"",
+        )
+        .json();
+    assert_eq!(parsers["name"], "dijo::DefaultParser");
+    assert!(parsers["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|parser| parser["name"] == "dijo::OpenDocumentParser"
+            && parser["supportedTypes"]
+                .as_array()
+                .unwrap()
+                .contains(&"application/vnd.oasis.opendocument.text".into())));
+    let detectors = server.request("GET", "/detectors", &[], b"").text();
+    assert!(detectors.starts_with("dijo::DefaultDetector (Composite Detector):\n"));
+    let types = server
+        .request("GET", "/mime-types", &[("Accept", "application/json")], b"")
+        .json();
+    assert_eq!(types["application/pdf"]["alias"][0], "application/x-pdf");
+    assert_eq!(
+        types["application/atom+xml"]["supertype"],
+        "application/xml"
+    );
+    let pdf = server
+        .request("GET", "/mime-types/application/x-pdf", &[], b"")
+        .json();
+    assert_eq!(pdf["type"], "application/pdf");
+    assert_eq!(pdf["defaultExtension"], ".pdf");
+    assert_eq!(
+        server
+            .request("GET", "/mime-types/no/such", &[], b"")
+            .status,
+        404
+    );
 }
 
 #[test]
@@ -187,9 +408,14 @@ fn bad_requests_are_rejected() {
 #[test]
 fn rejections_are_answered_once_the_body_is_read() {
     let server = Server::start(&[]);
-    for target in ["/extract?format=pdf", "/detect?x=1", "/nope"] {
+    for (method, target) in [
+        ("POST", "/extract?format=pdf"),
+        ("POST", "/detect?x=1"),
+        ("PUT", "/tika?x=1"),
+        ("POST", "/nope"),
+    ] {
         let mut stream = server.connect();
-        write_head(&mut stream, "POST", target, &[], 5);
+        write_head(&mut stream, method, target, &[], 5);
         stream
             .set_read_timeout(Some(Duration::from_millis(300)))
             .unwrap();

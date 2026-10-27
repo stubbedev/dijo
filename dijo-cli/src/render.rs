@@ -35,7 +35,7 @@ impl RenderOptions {
     /// the page boundaries.
     pub fn needs_xhtml(self) -> bool {
         match self.format {
-            Format::Xhtml | Format::Pages | Format::Elements => true,
+            Format::Xhtml | Format::Markdown | Format::Pages | Format::Elements => true,
             Format::Text | Format::Json => self.normalization.contains(Step::Headers),
         }
     }
@@ -117,6 +117,7 @@ pub fn render_opened(
 ) -> io::Result<Outcome> {
     match options.format {
         Format::Text | Format::Xhtml => render_text(opened, options, sink),
+        Format::Markdown => render_markdown(opened, options, sink),
         Format::Json => render_json(opened, source, options, sink),
         Format::Pages => render_parts(opened, source, options, Unit::Pages, sink),
         Format::Elements => render_parts(opened, source, options, Unit::Elements, sink),
@@ -209,6 +210,57 @@ fn render_text(
             write,
         )?,
     };
+    let (metadata, embedded) = finish(&stream, &mut copied);
+    Ok(Outcome {
+        metadata: metadata.clone().filter(|_| options.metadata),
+        embedded,
+        ..outcome(Some(&copied), None, metadata.as_ref())
+    })
+}
+
+/// Writes the elements of an extraction as Markdown blocks, a blank line between two, except
+/// between the items of a list.
+fn render_markdown(
+    opened: Opened,
+    options: RenderOptions,
+    sink: &mut dyn Write,
+) -> io::Result<Outcome> {
+    let mut stream = match opened {
+        Ok((stream, _)) => stream,
+        Err(error) => return Ok(outcome(None, Some(error), None)),
+    };
+    let mut run = String::new();
+    let mut previous: Option<ElementKind> = None;
+    let mut emit = |place: PartPlace, part: running::Page| {
+        run.push_str(&part.text);
+        if place.continued {
+            return Ok(());
+        }
+        let text = std::mem::take(&mut run);
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(());
+        }
+        let (kind, level) = place.element.unwrap_or((ElementKind::Text, None));
+        match (previous, kind) {
+            (None, _) => {}
+            (Some(ElementKind::ListItem), ElementKind::ListItem) => sink.write_all(b"\n")?,
+            (Some(_), _) => sink.write_all(b"\n\n")?,
+        }
+        previous = Some(kind);
+        match (kind, level) {
+            (ElementKind::Heading, Some(level)) => {
+                write!(sink, "{} ", "#".repeat(usize::from(level)))?
+            }
+            (ElementKind::ListItem, _) => sink.write_all(b"- ")?,
+            _ => {}
+        }
+        sink.write_all(text.as_bytes())
+    };
+    let mut copied = split_parts(&mut stream, options, Unit::Elements, &mut emit)?;
+    if previous.is_some() {
+        sink.write_all(b"\n")?;
+    }
     let (metadata, embedded) = finish(&stream, &mut copied);
     Ok(Outcome {
         metadata: metadata.clone().filter(|_| options.metadata),

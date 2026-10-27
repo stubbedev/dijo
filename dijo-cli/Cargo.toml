@@ -31,6 +31,7 @@ hyper = { version = "1.12.0", features = ["server", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio", "server-graceful", "http1"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "net", "time", "signal", "fs", "sync", "macros", "io-util"] }
 walkdir = "2.5.0"
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 quick-xml = "0.42.0"
 unicode-normalization = "0.1.25"
 mimalloc = { version = "0.1.52", optional = true, features = ["override"] }

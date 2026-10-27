@@ -29,6 +29,14 @@ impl Registry {
         }
     }
 
+    /// Each alias with the type it names.
+    pub(crate) fn aliases(&self) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
+        self.canonical
+            .iter()
+            .filter(|(alias, kind)| alias != kind)
+            .copied()
+    }
+
     /// `normalize`: the canonical type an alias names, its parameters kept.
     pub(crate) fn normalize(&self, kind: &MediaType) -> MediaType {
         match sorted_get(&self.canonical, kind.base_str()) {

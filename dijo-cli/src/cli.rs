@@ -380,6 +380,8 @@ pub enum Format {
     Text,
     /// XHTML, in Apache Tika's layout.
     Xhtml,
+    /// Markdown: headings, list items and paragraphs, each a block of its own.
+    Markdown,
     /// One JSON object per input, one per line, following schema/output-v1.schema.json.
     Json,
     /// One JSON object per page (or the whole text when the format has no pages), then one
@@ -395,6 +397,7 @@ impl Format {
         match self {
             Format::Text => "txt",
             Format::Xhtml => "xhtml",
+            Format::Markdown => "md",
             Format::Json => "json",
             Format::Pages | Format::Elements => "ndjson",
         }

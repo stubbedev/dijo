@@ -1,3 +1,14 @@
+# Unreleased
+
+### Added
+
+* The server answers the rest of tika-server 4.1's API, so a Tika client can switch to dijo by its base URL alone
+  (#320): `/tika/{text,html,xml,md,json}`, `/rmeta`, `/meta`, `/unpack`, `/detect`, `/language`, `/version`,
+  `/parsers`, `/detectors` and `/mime-types`, and the `/detect/stream` and `/language/{stream,string}` paths and
+  `Accept` types of `PUT /tika` of tika-server 3. Uploads may be named in `Content-Disposition`. The README lists
+  where the answers differ from tika-server's.
+* `--format markdown` writes headings, list items and paragraphs as Markdown, as tika-server's `md` handler does.
+
 # 0.2.12 (2026-10-27)
 
 ### Added

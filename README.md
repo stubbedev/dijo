@@ -56,7 +56,7 @@ dijo detect mystery.bin                 # application/pdf
 
 | Option | Meaning |
 | --- | --- |
-| `-f, --format text\|xhtml\|json\|pages\|elements` | Plain text (default), XHTML, one JSON object per input, or one JSON line per page or per element |
+| `-f, --format text\|xhtml\|markdown\|json\|pages\|elements` | Plain text (default), XHTML, Markdown, one JSON object per input, or one JSON line per page or per element |
 | `-m, --metadata` | Include metadata: on standard error for text and xhtml, inline for json |
 | `--raw-metadata` | Add the raw, format-specific metadata keys to json output |
 | `-o, --output <DIR>` | Write one file per input into DIR, mirroring the input paths |
@@ -100,12 +100,38 @@ curl --data-binary @mystery.bin localhost:9998/detect
 | `POST /detect` | The detected media type, as text. |
 | `GET /healthz`, `GET /readyz` | Liveness, and whether a request would be accepted now. |
 | `GET /metrics` | Prometheus metrics. |
-| `PUT /tika`, `GET /tika` | tika-server's text extraction and greeting, so a Tika client can switch to dijo unchanged. See below. |
+| tika-server's API | The endpoints of tika-server 4.1, so a Tika client can switch to dijo by its base URL alone. See below. |
 
-`PUT /tika` answers as `POST /extract` does with plain text. It reads the passwords in `Password` headers and the
-tesseract languages in `X-Tika-OCRLanguage`. dijo decides when and how to OCR and when to stop, so it ignores
+### tika-server's API
+
+| Endpoint | Answer |
+| --- | --- |
+| `GET /tika` | The greeting Tika clients check the server is up by. |
+| `PUT /tika` | The text, as `POST /extract` answers it. `Accept: text/html` or `text/xml` answers the XHTML, as tika-server 3 did. |
+| `PUT /tika/text`, `/tika/html`, `/tika/xml`, `/tika/md` | The text, the XHTML (as `text/html` or `text/xml`) or Markdown. |
+| `PUT /tika/json[/{handler}]` | One JSON object: the metadata under Tika's keys, the content in `tk:content` as the handler (`text`, `html`, `xml`, `md`, the default, or `ignore`) writes it, and errors in `tk:exception:container-exception`. 200 even when the document could not be read. |
+| `PUT /rmeta[/{handler}]` | A JSON array of such objects: the upload, then every document embedded in it, with `tk:embedded-id`, `tk:embedded-resource-path`, `tk:embedded-depth` and `tk:resource-name`. |
+| `PUT /meta`, `PUT /meta/{field}` | The metadata alone, as JSON or, by `Accept`, CSV; one field also as plain text, 404 when the document has none. |
+| `PUT /unpack`, `PUT /unpack/all` | The embedded documents as a ZIP archive, each named by its `tk:embedded-id` and its type's extension; 204 when there are none. `/all` adds the upload as `0` and each document's metadata as `<name>.metadata.json`. |
+| `PUT /detect` (and `/detect/stream`) | The detected media type. |
+| `PUT` or `POST /language` (and `/language/stream`, `/language/string`) | The language of the body, which is text, as an ISO 639-1 code where there is one. |
+| `GET /version`, `/parsers`, `/parsers/details`, `/detectors`, `/mime-types`, `/mime-types/{type}/{subtype}` | dijo's version, parsers, detectors and media types, as JSON or plain text by `Accept`. |
+
+Every upload endpoint reads the passwords in `Password` headers, a file name in `Content-Disposition` and the tesseract
+languages in `X-Tika-OCRLanguage`. dijo decides when and how to OCR and when to stop, so it ignores
 `X-Tika-OCRskipOcr`, `X-Tika-PDFOcrStrategy`, `X-Tika-PDFocrDPI`, `X-Tika-OCRminFileSizeToOcr` and
-`X-Tika-Timeout-Millis`. Any other `X-Tika-` header is refused with 400, and an `Accept` without plain text with 406.
+`X-Tika-Timeout-Millis`; `/unpack` does not OCR at all. Any other `X-Tika-` header is refused with 400, and an `Accept`
+the endpoint has no form for with 406.
+
+Where the answers differ from tika-server's:
+
+- The metadata is dijo's: Tika's keys, but parsers named `dijo::…`, and none of the keys only Tika's own parsers record.
+- `/rmeta` lists the documents in the order they are found, each container before the documents in it; tika-server
+  lists a container after them, but the upload first.
+- `/unpack` names a document of type `text/plain; charset=…` `.txt`, where tika-server names it `.bin`.
+- An empty upload is a document without text, answered 200, where tika-server answers 422.
+- `/mime-types/{type}/{subtype}` has no description, acronym or links, which dijo's media types do not carry.
+- The presets, the `/config` and `/form` uploads, the XMP endpoints, `/translate`, `/pipes` and `/async` are not served.
 
 Responses stream as the document is extracted. A document that cannot be extracted gets a JSON error with 415
 (unsupported), 422 (corrupt or encrypted) or 500; partial results come back as 200 with their status in the JSON.

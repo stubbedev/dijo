@@ -5,6 +5,7 @@ use std::time::Instant;
 use dijo_core::Password;
 use serde::{Deserialize, Serialize};
 
+use super::tika::output as tika;
 use crate::cache::{Cache, Hit, Lookup, OutputSettings};
 use crate::cli::{Embedded, Format, Ocr};
 use crate::normalize::Steps;
@@ -13,7 +14,7 @@ use crate::schema::{self, ErrorCategory, Source};
 use crate::settings;
 use crate::tree::{self, Limits};
 
-const BODY_CHUNK_SIZE: usize = 64 * 1024;
+pub const BODY_CHUNK_SIZE: usize = 64 * 1024;
 
 pub struct ExtractRequest {
     pub deadline: Option<Instant>,
@@ -27,6 +28,8 @@ pub struct ExtractRequest {
 
 pub enum Task {
     Extract(ExtractRequest),
+    /// An extraction answered as tika-server answers one of its endpoints.
+    Tika(ExtractRequest, tika::Output),
     Detect,
 }
 
@@ -52,8 +55,11 @@ pub struct Head {
 pub enum ContentType {
     Text,
     Xhtml,
+    Markdown,
     Json,
     NdJson,
+    Csv,
+    Zip,
 }
 
 impl ContentType {
@@ -61,6 +67,7 @@ impl ContentType {
         match format {
             Format::Text => ContentType::Text,
             Format::Xhtml => ContentType::Xhtml,
+            Format::Markdown => ContentType::Markdown,
             Format::Json => ContentType::Json,
             Format::Pages | Format::Elements => ContentType::NdJson,
         }
@@ -70,8 +77,11 @@ impl ContentType {
         match self {
             ContentType::Text => "text/plain; charset=utf-8",
             ContentType::Xhtml => "application/xhtml+xml; charset=utf-8",
+            ContentType::Markdown => "text/markdown; charset=utf-8",
             ContentType::Json => "application/json",
             ContentType::NdJson => "application/x-ndjson",
+            ContentType::Csv => "text/csv; charset=utf-8",
+            ContentType::Zip => "application/zip",
         }
     }
 }
@@ -98,6 +108,7 @@ pub trait Respond {
 pub fn run(task: &Task, files: &Files, cache: Option<&Cache>, respond: &mut dyn Respond) {
     match task {
         Task::Extract(request) => extract(request, files, cache, respond),
+        Task::Tika(request, output) => tika::run(request, output, files, respond),
         Task::Detect => detect(files, respond),
     }
 }
@@ -124,7 +135,7 @@ pub fn error_head(status: u16, message: &str) -> Head {
     }
 }
 
-fn streaming(content_type: ContentType) -> Head {
+pub fn streaming(content_type: ContentType) -> Head {
     Head {
         status: 200,
         content_type,
@@ -283,11 +294,9 @@ fn extract_tree(
         extractor,
         &files.path,
         &files.display,
-        request.render,
         request.limits,
         &files.scratch,
-        cache,
-        &mut writer,
+        &mut tree::DijoRecords::new(request.render, cache, &mut writer),
     )
     .and_then(|outcome| writer.flush().map(|()| outcome));
     drop(writer);
@@ -298,14 +307,19 @@ fn extract_tree(
     }
 }
 
-fn detect(files: &Files, respond: &mut dyn Respond) {
+/// The media type of the upload.
+pub fn detected_type(files: &Files) -> Result<String, String> {
     let extractor = dijo_core::Extractor::new();
-    let detected = files
+    files
         .path
         .to_str()
         .ok_or_else(|| "The upload path is not valid UTF-8".to_string())
-        .and_then(|path| extractor.detect_file(path).map_err(|e| e.to_string()));
-    let head = match detected {
+        .and_then(|path| extractor.detect_file(path).map_err(|e| e.to_string()))
+        .map(|media_type| media_type.to_string())
+}
+
+fn detect(files: &Files, respond: &mut dyn Respond) {
+    let head = match detected_type(files) {
         Ok(media_type) => Head {
             status: 200,
             content_type: ContentType::Text,
@@ -317,8 +331,8 @@ fn detect(files: &Files, respond: &mut dyn Respond) {
 }
 
 /// Writes a streamed body through a responder.
-struct BodyWriter<'r> {
-    respond: &'r mut dyn Respond,
+pub struct BodyWriter<'r> {
+    pub respond: &'r mut dyn Respond,
 }
 
 impl Write for BodyWriter<'_> {
