@@ -50,6 +50,89 @@ fn extracts_text_json_pages_and_detects() {
     assert_eq!(detected.text(), "application/msword\n");
 }
 
+/// Requests as a Tika client sends them, here Kontainer's text pass and its OCR pass.
+#[test]
+fn tika_clients_are_answered_unchanged() {
+    let server = Server::start(&[]);
+    let hello = server.request("GET", "/tika", &[], b"");
+    assert_eq!(hello.status, 200);
+    assert!(hello.text().ends_with("Please PUT\n"));
+
+    let tika = |headers: &[(&str, &str)], name: &str| {
+        let body = std::fs::read(format!("{DOCUMENTS}/{name}")).unwrap();
+        let common = [
+            ("Accept", "text/plain"),
+            ("Connection", "close"),
+            ("X-Tika-Timeout-Millis", "120000"),
+        ];
+        server.request("PUT", "/tika", &[&common[..], headers].concat(), &body)
+    };
+    let text_pass = tika(
+        &[
+            ("Content-Type", "application/pdf"),
+            ("X-Tika-PDFOcrStrategy", "no_ocr"),
+        ],
+        "2022_Q3_AAPL.pdf",
+    );
+    assert_eq!(text_pass.status, 200);
+    assert_eq!(
+        text_pass.header("content-type"),
+        Some("text/plain; charset=utf-8")
+    );
+    assert_eq!(
+        text_pass.text(),
+        server.post_file("/extract", &[], "2022_Q3_AAPL.pdf").text()
+    );
+
+    let office = tika(
+        &[
+            ("Content-Type", "application/vnd.oasis.opendocument.text"),
+            ("X-Tika-OCRskipOcr", "true"),
+        ],
+        "simple.odt",
+    );
+    assert!(office
+        .text()
+        .contains("These are a few of my favorite things"));
+
+    let scan = tika(
+        &[
+            ("Content-Type", "application/pdf"),
+            ("X-Tika-OCRLanguage", "eng"),
+            ("X-Tika-PDFocrDPI", "150"),
+        ],
+        "eng-ocr.pdf",
+    );
+    assert_eq!(scan.status, 200);
+    assert_eq!(
+        scan.text(),
+        server
+            .post_file("/extract?ocr_lang=eng", &[], "eng-ocr.pdf")
+            .text()
+    );
+
+    let locked = tika(&[], "encrypted/password.docx");
+    assert_eq!(locked.status, 422);
+    let unlocked = tika(&[("Password", "extractous")], "encrypted/password.docx");
+    assert!(unlocked.text().contains("Call me Ishmael"));
+
+    assert_eq!(
+        server
+            .request("PUT", "/tika", &[("Accept", "text/html")], b"x")
+            .status,
+        406
+    );
+    assert_eq!(
+        tika(&[("X-Tika-PDFextractInlineImages", "true")], "simple.odt").status,
+        400
+    );
+    assert_eq!(
+        tika(&[("X-Tika-OCRLanguage", "klingon")], "simple.odt").status,
+        400
+    );
+    assert_eq!(server.request("PUT", "/tika?x=1", &[], b"x").status, 400);
+}
+
 #[test]
 fn encrypted_documents_need_the_password_header() {
     let server = Server::start(&[]);

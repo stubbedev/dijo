@@ -100,6 +100,12 @@ curl --data-binary @mystery.bin localhost:9998/detect
 | `POST /detect` | The detected media type, as text. |
 | `GET /healthz`, `GET /readyz` | Liveness, and whether a request would be accepted now. |
 | `GET /metrics` | Prometheus metrics. |
+| `PUT /tika`, `GET /tika` | tika-server's text extraction and greeting, so a Tika client can switch to dijo unchanged. See below. |
+
+`PUT /tika` answers as `POST /extract` does with plain text. It reads the passwords in `Password` headers and the
+tesseract languages in `X-Tika-OCRLanguage`. dijo decides when and how to OCR and when to stop, so it ignores
+`X-Tika-OCRskipOcr`, `X-Tika-PDFOcrStrategy`, `X-Tika-PDFocrDPI`, `X-Tika-OCRminFileSizeToOcr` and
+`X-Tika-Timeout-Millis`. Any other `X-Tika-` header is refused with 400, and an `Accept` without plain text with 406.
 
 Responses stream as the document is extracted. A document that cannot be extracted gets a JSON error with 415
 (unsupported), 422 (corrupt or encrypted) or 500; partial results come back as 200 with their status in the JSON.

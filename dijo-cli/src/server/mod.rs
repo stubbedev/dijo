@@ -3,6 +3,7 @@ mod metrics;
 mod processes;
 
 pub(crate) use processes::answer_channel;
+mod tika;
 mod upload;
 mod workers;
 
@@ -264,6 +265,11 @@ async fn handle(
         ),
         (&Method::POST, "/extract") => ("extract", extract(request, &state).await),
         (&Method::POST, "/detect") => ("detect", detect(request, &state).await),
+        (&Method::GET, "/tika") => (
+            "tika_hello",
+            full(200, "text/plain; charset=utf-8", tika::hello()),
+        ),
+        (&Method::PUT, "/tika") => ("tika", tika(request, &state).await),
         _ => ("unknown", error(404, "No such endpoint")),
     };
     state.metrics.request(endpoint, response.status().as_u16());
@@ -346,11 +352,14 @@ fn parse_flag(name: &str, value: &str) -> Result<bool, String> {
     }
 }
 
-fn parse_extract_request(
+/// The extraction a request asks for before its options: the server's limits, plain text with
+/// automatic OCR, and the passwords in the request's `password_header` headers.
+fn default_extract_request(
     request: &Request<Incoming>,
     state: &State,
+    password_header: &str,
 ) -> Result<ExtractRequest, String> {
-    let mut extract = ExtractRequest {
+    Ok(ExtractRequest {
         deadline: None,
         embedded: Embedded::Inline,
         limits: state.limits,
@@ -365,16 +374,23 @@ fn parse_extract_request(
         ocr_lang: None,
         passwords: request
             .headers()
-            .get_all(PASSWORD_HEADER)
+            .get_all(password_header)
             .iter()
             .map(|value| {
                 value
                     .to_str()
                     .map(Password::new)
-                    .map_err(|_| format!("{PASSWORD_HEADER} must be visible ASCII"))
+                    .map_err(|_| format!("{password_header} must be visible ASCII"))
             })
             .collect::<Result<_, _>>()?,
-    };
+    })
+}
+
+fn parse_extract_request(
+    request: &Request<Incoming>,
+    state: &State,
+) -> Result<ExtractRequest, String> {
+    let mut extract = default_extract_request(request, state, PASSWORD_HEADER)?;
     let mut raw = false;
     let mut skipped = Vec::new();
     for (key, value) in query_pairs(request.uri().query()) {
@@ -419,6 +435,27 @@ async fn extract(request: Request<Incoming>, state: &Arc<State>) -> Response<Res
         Err(message) => return error(400, &message),
     };
     run(task, request, state).await
+}
+
+async fn tika(request: Request<Incoming>, state: &Arc<State>) -> Response<ResponseBody> {
+    if request.uri().query().is_some_and(|query| !query.is_empty()) {
+        return error(400, "/tika takes no query parameters");
+    }
+    if !tika::accepts_text(request.headers()) {
+        return error(406, "PUT /tika answers only text/plain");
+    }
+    let extract =
+        default_extract_request(&request, state, tika::PASSWORD_HEADER).and_then(|extract| {
+            tika::check_headers(request.headers())?;
+            Ok(ExtractRequest {
+                ocr_lang: tika::ocr_language(request.headers())?,
+                ..extract
+            })
+        });
+    match extract {
+        Ok(extract) => run(Task::Extract(extract), request, state).await,
+        Err(message) => error(400, &message),
+    }
 }
 
 async fn detect(request: Request<Incoming>, state: &Arc<State>) -> Response<ResponseBody> {
