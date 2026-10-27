@@ -270,7 +270,10 @@ async fn handle(
             full(200, "text/plain; charset=utf-8", tika::hello()),
         ),
         (&Method::PUT, "/tika") => ("tika", tika(request, &state).await),
-        _ => ("unknown", error(404, "No such endpoint")),
+        _ => (
+            "unknown",
+            rejected(request, &state, error(404, "No such endpoint")).await,
+        ),
     };
     state.metrics.request(endpoint, response.status().as_u16());
     eprintln!(
@@ -432,17 +435,27 @@ fn parse_extract_request(
 async fn extract(request: Request<Incoming>, state: &Arc<State>) -> Response<ResponseBody> {
     let task = match parse_extract_request(&request, state) {
         Ok(extract) => Task::Extract(extract),
-        Err(message) => return error(400, &message),
+        Err(message) => return rejected(request, state, error(400, &message)).await,
     };
     run(task, request, state).await
 }
 
 async fn tika(request: Request<Incoming>, state: &Arc<State>) -> Response<ResponseBody> {
     if request.uri().query().is_some_and(|query| !query.is_empty()) {
-        return error(400, "/tika takes no query parameters");
+        return rejected(
+            request,
+            state,
+            error(400, "/tika takes no query parameters"),
+        )
+        .await;
     }
     if !tika::accepts_text(request.headers()) {
-        return error(406, "PUT /tika answers only text/plain");
+        return rejected(
+            request,
+            state,
+            error(406, "PUT /tika answers only text/plain"),
+        )
+        .await;
     }
     let extract =
         default_extract_request(&request, state, tika::PASSWORD_HEADER).and_then(|extract| {
@@ -454,13 +467,29 @@ async fn tika(request: Request<Incoming>, state: &Arc<State>) -> Response<Respon
         });
     match extract {
         Ok(extract) => run(Task::Extract(extract), request, state).await,
-        Err(message) => error(400, &message),
+        Err(message) => rejected(request, state, error(400, &message)).await,
     }
+}
+
+/// Answers `request` with `response` once what is left of its body is read, which a rejection
+/// answers before reading, so that closing the connection after it cannot lose the response.
+async fn rejected(
+    request: Request<Incoming>,
+    state: &State,
+    response: Response<ResponseBody>,
+) -> Response<ResponseBody> {
+    upload::discard(&mut request.into_body(), state.client_timeout).await;
+    response
 }
 
 async fn detect(request: Request<Incoming>, state: &Arc<State>) -> Response<ResponseBody> {
     if request.uri().query().is_some_and(|query| !query.is_empty()) {
-        return error(400, "/detect takes no query parameters");
+        return rejected(
+            request,
+            state,
+            error(400, "/detect takes no query parameters"),
+        )
+        .await;
     }
     run(Task::Detect, request, state).await
 }
@@ -471,7 +500,7 @@ async fn run(
     state: &Arc<State>,
 ) -> Response<ResponseBody> {
     let Some(admission) = Admission::try_new(state) else {
-        return busy();
+        return rejected(request, state, busy()).await;
     };
     let deadline = state
         .timeout

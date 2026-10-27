@@ -182,6 +182,34 @@ fn bad_requests_are_rejected() {
     assert_eq!(too_large.status, 413);
 }
 
+/// A request rejected before its body is read is answered once the body is, so that the
+/// connection closing after the answer cannot reset it and lose the answer, as macOS loses it.
+#[test]
+fn rejections_are_answered_once_the_body_is_read() {
+    let server = Server::start(&[]);
+    for target in ["/extract?format=pdf", "/detect?x=1", "/nope"] {
+        let mut stream = server.connect();
+        write_head(&mut stream, "POST", target, &[], 5);
+        stream
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        let mut early = [0; 1];
+        let answered_early = stream.read(&mut early).is_ok_and(|read| read > 0);
+        assert!(
+            !answered_early,
+            "{target} was answered before its body was sent"
+        );
+        stream.set_read_timeout(None).unwrap();
+        stream.write_all(b"hello").unwrap();
+        let answer = read_response(stream);
+        assert!(
+            matches!(answer.status, 400 | 404),
+            "{target}: {}",
+            answer.status
+        );
+    }
+}
+
 #[test]
 fn a_full_server_answers_503() {
     let server = Server::start(&["--workers", "1", "--queue", "0"]);
