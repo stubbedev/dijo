@@ -1,3 +1,11 @@
+# 0.2.12 (2026-10-27)
+
+### Added
+
+* The server answers tika-server's `PUT /tika` and `GET /tika`, so a Tika client can switch to dijo unchanged.
+  `PUT /tika` extracts plain text with the passwords of `Password` and the languages of `X-Tika-OCRLanguage`. It
+  ignores the OCR and timeout tuning headers, since dijo decides those itself, and refuses any other `X-Tika-` option.
+
 # 0.2.11 (2026-10-24)
 
 ### Changed
