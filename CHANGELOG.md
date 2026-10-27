@@ -1,4 +1,4 @@
-# Unreleased
+# 0.2.13 (2026-10-27)
 
 ### Added
 
@@ -8,6 +8,12 @@
   `Accept` types of `PUT /tika` of tika-server 3. Uploads may be named in `Content-Disposition`. The README lists
   where the answers differ from tika-server's.
 * `--format markdown` writes headings, list items and paragraphs as Markdown, as tika-server's `md` handler does.
+
+### Fixed
+
+* A request the server rejects before reading its body (an unknown endpoint, a bad query or header, a full server) is
+  answered once the body is read, so that the connection closing after the answer cannot reset it: macOS clients lost
+  the answer to such a reset.
 
 # 0.2.12 (2026-10-27)
 
