@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
+use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use crate::common::server::{read_response, write_head, Response, Server};
@@ -11,6 +12,72 @@ fn health_and_readiness() {
     assert_eq!(server.request("GET", "/healthz", &[], b"").text(), "ok\n");
     assert_eq!(server.request("GET", "/readyz", &[], b"").status, 200);
     assert_eq!(server.request("GET", "/nope", &[], b"").status, 404);
+}
+
+/// Runs `dijo health` with `args` and `DIJO_LISTEN` as given, or unset.
+fn health(args: &[&str], listen: Option<&str>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dijo"));
+    command.arg("health").args(args).env_remove("DIJO_LISTEN");
+    if let Some(listen) = listen {
+        command.env("DIJO_LISTEN", listen);
+    }
+    command.output().unwrap()
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8(output.stderr.clone()).unwrap()
+}
+
+#[test]
+fn the_health_command_passes_silently_against_a_running_server() {
+    let server = Server::start(&[]);
+    for output in [
+        health(&["--listen", &server.address], None),
+        health(&["--listen", &server.address, "--ready"], None),
+        health(&[], Some(&server.address)),
+    ] {
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn the_health_command_reaches_a_server_listening_on_every_address() {
+    let server = Server::start(&[]);
+    let port = server.address.rsplit_once(':').unwrap().1;
+    let output = health(&[], Some(&format!("0.0.0.0:{port}")));
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
+#[test]
+fn the_health_command_fails_without_a_server() {
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .to_string();
+    let output = health(&["--listen", &address], None);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains(&format!("http://{address}/healthz: Failed to connect")),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn the_health_command_fails_on_a_server_that_does_not_answer() {
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = silent.local_addr().unwrap().to_string();
+    let started = Instant::now();
+    let output = health(&["--listen", &address, "--timeout", "1"], None);
+    assert!(!output.status.success());
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(
+        stderr(&output).contains("did not answer within 1s"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -453,6 +520,16 @@ fn a_full_server_answers_503() {
     let rejected = server.request("POST", "/extract", &[], b"x");
     assert_eq!(rejected.status, 503);
     assert_eq!(rejected.header("retry-after"), Some("1"));
+    assert!(health(&["--listen", &server.address], None)
+        .status
+        .success());
+    let unready = health(&["--listen", &server.address, "--ready"], None);
+    assert!(!unready.status.success());
+    assert!(
+        stderr(&unready).contains("/readyz answered 503 Service Unavailable"),
+        "{}",
+        stderr(&unready)
+    );
 
     slow_upload.write_all(b"world").unwrap();
     assert_eq!(read_response(slow_upload).status, 200);

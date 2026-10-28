@@ -4,6 +4,7 @@
 mod batch;
 mod cache;
 mod cli;
+mod health;
 mod inputs;
 mod limit;
 mod normalize;
@@ -157,7 +158,7 @@ fn usage_conflict(cli: &Cli) -> Option<&'static str> {
     match &cli.command {
         None => cache_conflict(&cli.extract),
         Some(Command::Serve(args)) => isolation_conflict(args),
-        Some(Command::Detect(_) | Command::Worker(_)) => None,
+        Some(Command::Detect(_) | Command::Health(_) | Command::Worker(_)) => None,
     }
 }
 
@@ -230,7 +231,7 @@ fn run_command(cli: Cli) -> bool {
     let runtime = match &cli.command {
         Some(Command::Serve(args)) => Some(&args.runtime),
         Some(Command::Worker(args)) => Some(&args.runtime),
-        Some(Command::Detect(_)) => None,
+        Some(Command::Detect(_) | Command::Health(_)) => None,
         None => Some(&cli.extract.runtime),
     };
     if let Some(runtime) = runtime {
@@ -252,6 +253,7 @@ fn run_command(cli: Cli) -> bool {
     match cli.command {
         Some(Command::Detect(args)) => detect(&args),
         Some(Command::Serve(args)) => server::serve(&args),
+        Some(Command::Health(args)) => health::check(&args),
         Some(Command::Worker(args)) => server::work(&args),
         None => match &cli.extract.batch_worker {
             Some(spool_dir) => batch::serve(&cli.extract, spool_dir),

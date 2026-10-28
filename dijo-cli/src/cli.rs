@@ -40,6 +40,9 @@ pub enum Command {
     Detect(InputArgs),
     /// Run an HTTP server: POST a document to /extract or /detect.
     Serve(ServeArgs),
+    /// Check that a server is up: exit 0 when it answers its health check, 1 with the reason on
+    /// standard error when it does not. For container healthchecks, which have no curl.
+    Health(HealthArgs),
     /// Serve extraction requests from `serve --isolation process` over standard input and
     /// output.
     #[command(hide = true)]
@@ -65,10 +68,16 @@ pub enum Isolation {
     Process,
 }
 
+/// The address the server listens on unless told otherwise.
+const DEFAULT_LISTEN: &str = "127.0.0.1:9998";
+
+/// The variable `serve --listen` and `health --listen` read, so that one setting serves both.
+const LISTEN_VARIABLE: &str = "DIJO_LISTEN";
+
 #[derive(Debug, Args)]
 pub struct ServeArgs {
     /// Address and port to listen on; port 0 picks a free one.
-    #[arg(long, default_value = "127.0.0.1:9998", env = "DIJO_LISTEN")]
+    #[arg(long, default_value = DEFAULT_LISTEN, env = LISTEN_VARIABLE)]
     pub listen: std::net::SocketAddr,
 
     /// Extraction workers: threads, at most 4 by default, or with --isolation process,
@@ -133,6 +142,28 @@ pub struct ServeArgs {
         default_value_t = 30
     )]
     pub shutdown_grace: u64,
+}
+
+#[derive(Debug, Args)]
+pub struct HealthArgs {
+    /// The address the server listens on, as `serve --listen` takes it; an unspecified address,
+    /// such as 0.0.0.0, is reached through loopback.
+    #[arg(long, default_value = DEFAULT_LISTEN, env = LISTEN_VARIABLE)]
+    pub listen: std::net::SocketAddr,
+
+    /// Check that the server would accept a request now (GET /readyz), not only that it is up
+    /// (GET /healthz). A server busy with a full queue fails this check.
+    #[arg(long, env = "DIJO_HEALTH_READY")]
+    pub ready: bool,
+
+    /// Seconds the server has to answer.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        env = "DIJO_HEALTH_TIMEOUT",
+        default_value_t = NonZeroU64::new(5).expect("5 is not zero")
+    )]
+    pub timeout: NonZeroU64,
 }
 
 /// Bounds on the documents embedded in an input, when each is extracted as a document of its

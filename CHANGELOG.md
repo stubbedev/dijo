@@ -1,3 +1,12 @@
+# Unreleased
+
+### Added
+
+* `dijo health` checks that a server is up, for container healthchecks: it asks the server at `DIJO_LISTEN` (an
+  unspecified address through loopback) for `/healthz`, or with `--ready` for `/readyz`, and exits 0 when it answers
+  200, or 1 with the reason on standard error (#321). The image declares it as its healthcheck, so Docker and Compose
+  report the server's health with no configuration.
+
 # 0.2.13 (2026-10-27)
 
 ### Added

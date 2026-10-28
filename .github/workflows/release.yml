@@ -269,6 +269,17 @@ jobs:
             | tr -s '[:space:]' ' ' | grep -qi "the"
           docker run --rm --volume "$PWD/quality/corpus:/data:ro" dijo:local /data/danish-scan.png \
             | grep -q "tusmørket"
+      - name: Check that the server reports healthy
+        run: |
+          docker run --detach --name dijo-health --health-interval 1s dijo:local
+          trap 'docker rm --force dijo-health > /dev/null' EXIT
+          for _ in $(seq 60); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' dijo-health)
+            [ "$status" = healthy ] && break
+            sleep 1
+          done
+          [ "$status" = healthy ] || { docker logs dijo-health; exit 1; }
+          docker exec dijo-health /dijo health --ready
       - name: Check that nothing is written outside the cache and temporary directories
         run: |
           docker run --rm --read-only --tmpfs /tmp --tmpfs /var/cache/dijo:uid=10001,gid=10001 \

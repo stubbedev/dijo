@@ -153,6 +153,22 @@ docker run --rm -v "$PWD:/data:ro" ghcr.io/stubbedev/dijo:latest /data/report.pd
 ```
 
 The image (linux/amd64, linux/arm64) is the static binary `FROM scratch`, running the server as an unprivileged user.
+It declares a healthcheck, so `docker ps` and Compose report the server's health with no configuration: `dijo health`
+asks the server at `DIJO_LISTEN` for `/healthz` and exits 0 when it answers 200, or 1 with the reason on standard error.
+Set the address through `DIJO_LISTEN` rather than `--listen` so that the check finds it. `--ready` checks `/readyz`
+instead, which fails while every worker and queue slot is busy, and `--timeout` (5 seconds by default) bounds the wait.
+
+```yaml
+services:
+  dijo:
+    image: ghcr.io/stubbedev/dijo:latest
+    environment:
+      DIJO_LISTEN: 0.0.0.0:8080
+  indexer:
+    depends_on:
+      dijo:
+        condition: service_healthy
+```
 
 ## JSON output
 

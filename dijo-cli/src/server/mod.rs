@@ -45,6 +45,11 @@ use processes::ProcessOptions;
 use upload::{Name, UploadError};
 use workers::{Chunk, Job, Pool, Workers};
 
+/// Answered 200 while the server runs.
+pub(crate) const LIVENESS_PATH: &str = "/healthz";
+/// Answered 200 while the server would accept a request, 503 while every worker and queue slot
+/// is busy.
+pub(crate) const READINESS_PATH: &str = "/readyz";
 const PASSWORD_HEADER: &str = "x-dijo-password";
 const FILENAME_HEADER: &str = "x-dijo-filename";
 const RESPONSE_CHUNKS_IN_FLIGHT: usize = 8;
@@ -253,8 +258,10 @@ async fn handle(
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let (endpoint, response) = match (&method, path.as_str()) {
-        (&Method::GET, "/healthz") => ("healthz", full(200, "text/plain; charset=utf-8", "ok\n")),
-        (&Method::GET, "/readyz") => ("readyz", ready(&state)),
+        (&Method::GET, LIVENESS_PATH) => {
+            ("healthz", full(200, "text/plain; charset=utf-8", "ok\n"))
+        }
+        (&Method::GET, READINESS_PATH) => ("readyz", ready(&state)),
         (&Method::GET, "/metrics") => (
             "metrics",
             full(
