@@ -580,6 +580,8 @@ quality	prose-newspaper.pdf	file	application/pdf	tk:content-type-magic-detected=
 quality	prose-newspaper.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	prose-pandoc.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
 quality	prose-pandoc.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=11308	zip:detector-zip-file-opened=true
+quality	prose-photo-curled.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
+quality	prose-photo-curled.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	prose-photo-perspective.jpg	file	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	prose-photo-perspective.jpg	bytes	image/jpeg	tk:content-type-magic-detected=image/jpeg
 quality	prose-photo-shadow.png	file	image/png	tk:content-type-magic-detected=image/png
