@@ -1474,7 +1474,7 @@
     "token_error_rate": 0.20930232558139536,
     "recall": 0.8172757475083057,
     "spurious": 0.18272425249169436,
-    "reading_order": 0.6
+    "reading_order": 0.4
   },
   "report-scan-skewed.tif": {
     "character_error_rate": 0.0,
