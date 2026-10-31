@@ -11,9 +11,9 @@
 //! language is taken for noise, such as a texture or blank paper, and dropped. In the reading
 //! kept, the long s of early modern print, which tesseract reads as f, is restored by the
 //! dictionary of the language's model. With the automatic language, a reading of 90 or less
-//! confidence is read again with its page flattened by UVDoc, and the more confident reading kept;
-//! then, in a script PP-OCRv5 reads but not in blackletter, it is read again with PP-OCRv5 and the
-//! more confident reading kept.
+//! confidence is read again with its page flattened by UVDoc, which is kept when it reads with at
+//! least 10 more confidence; then, in a script PP-OCRv5 reads but not in blackletter, the page is
+//! read again with PP-OCRv5 and the more confident reading kept.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -56,6 +56,7 @@ const MIN_CONFIDENCE: i32 = 80;
 /// scripts and pages upside down read at 50 or less and in no language.
 const MIN_TEXT_CONFIDENCE: i32 = 50;
 const MAX_REREAD_CONFIDENCE: i32 = 90;
+const MIN_UNWARPED_GAIN: i32 = 10;
 /// Scripts tesseract's detection takes for others (Armenian for upside-down Latin, Georgian for
 /// Malayalam, Hebrew for Thai), tried in turn when no reading of an image with plenty of text is
 /// confident.
@@ -919,7 +920,12 @@ impl<'t> Recognizer<'t> {
             ..read.prepared.clone()
         };
         let reading = self.read(image, &unwarped)?;
-        Ok(read.or(Attempt::read(unwarped, reading)))
+        Ok(
+            match reading.confidence >= read.confidence() + MIN_UNWARPED_GAIN {
+                true => Attempt::read(unwarped, reading),
+                false => read,
+            },
+        )
     }
 
     fn blackletter_model(&self) -> Result<Option<String>, OcrError> {

@@ -68,14 +68,14 @@
 | prose-photo-upside-down.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-perspective.jpg | ocr | 0.001 | 0.003 | 0.997 | 0.003 | 1.000 |
 | prose-photo-curled.jpg | ocr | 0.024 | 0.036 | 0.993 | 0.013 | 0.833 |
-| arabic-scan-300dpi.png | ocr | 0.128 | 0.125 | 0.875 | 0.020 | 1.000 |
+| arabic-scan-300dpi.png | ocr | 0.125 | 0.107 | 0.893 | 0.000 | 1.000 |
 | prose-broken-private-use.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-broken-offset.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hyphenated.pdf | hyphenation | 0.001 | 0.006 | 1.000 | 0.006 | 1.000 |
 | hyphenated.pdf --no-normalize hyphenation | hyphenation | 0.029 | 0.290 | 0.858 | 0.253 | 1.000 |
 | prose-scan-inverted.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan-72dpi.png | ocr | 0.001 | 0.007 | 0.993 | 0.007 | 1.000 |
-| prose-scan-100dpi-degraded.png | ocr | 0.011 | 0.049 | 0.951 | 0.049 | 0.833 |
+| prose-scan-100dpi-degraded.png | ocr | 0.011 | 0.046 | 0.954 | 0.046 | 0.833 |
 | prose-scan-600dpi.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan-shadow.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-shadow.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -224,14 +224,14 @@
 | quixote-1605.pdf | ocr | 0.058 | 0.209 | 0.817 | 0.183 | 0.600 |
 | arbeiter-zeitung-1895.jpg | ocr | 0.045 | 0.118 | 0.906 | 0.106 | 0.640 |
 | neue-freie-presse-1895.tif | ocr | 0.162 | 0.275 | 0.842 | 0.170 | 0.262 |
-| more-epigrammata-1520.jpg | ocr | 0.043 | 0.224 | 0.840 | 0.211 | 0.000 |
+| more-epigrammata-1520.jpg | ocr | 0.045 | 0.256 | 0.824 | 0.237 | 0.000 |
 | zoologia-danica-1779.png | ocr | 0.057 | 0.093 | 0.947 | 0.089 | 1.000 |
 | unlv-8087-054.tif | ocr | 0.018 | 0.016 | 0.993 | 0.016 | 0.889 |
 | unlv-8071-093.tif | ocr | 0.034 | 0.041 | 0.982 | 0.015 | 0.643 |
 | betrayed-armenia-1910-p46.tif | ocr | 0.031 | 0.033 | 0.985 | 0.021 | 1.000 |
 | colonial-florida-1892-p14.tif | ocr | 0.030 | 0.066 | 0.955 | 0.050 | 0.750 |
 | hindi-diksita-1895-01.jpg | ocr | 0.146 | 0.327 | 0.673 | 0.271 | 0.500 |
-| hindi-diksita-1895-02.jpg | ocr | 0.216 | 0.533 | 0.522 | 0.467 | 0.250 |
+| hindi-diksita-1895-02.jpg | ocr | 0.214 | 0.500 | 0.543 | 0.444 | 0.500 |
 | arabic-wikipedia-dolphin-scan.png | ocr | 0.073 | 0.180 | 0.861 | 0.134 | 0.600 |
 | arabic-wikipedia-village-scan.png | ocr | 0.365 | 0.822 | 0.887 | 0.452 | 0.000 |
 | japanese-ndl-1910s.jpg | ocr | 1.000 | 1.000 | 0.000 | 0.000 | 0.000 |

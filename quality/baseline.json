@@ -35,10 +35,10 @@
     "reading_order": 1.0
   },
   "arabic-scan-300dpi.png": {
-    "character_error_rate": 0.1277258566978193,
-    "token_error_rate": 0.125,
-    "recall": 0.875,
-    "spurious": 0.02,
+    "character_error_rate": 0.12461059190031153,
+    "token_error_rate": 0.10714285714285714,
+    "recall": 0.8928571428571429,
+    "spurious": 0.0,
     "reading_order": 1.0
   },
   "arabic-wikipedia-dolphin-scan.png": {
@@ -658,11 +658,11 @@
     "reading_order": 0.5
   },
   "hindi-diksita-1895-02.jpg": {
-    "character_error_rate": 0.21585160202360876,
-    "token_error_rate": 0.532608695652174,
-    "recall": 0.5217391304347826,
-    "spurious": 0.4666666666666667,
-    "reading_order": 0.25
+    "character_error_rate": 0.21416526138279932,
+    "token_error_rate": 0.5,
+    "recall": 0.5434782608695652,
+    "spurious": 0.4444444444444444,
+    "reading_order": 0.5
   },
   "hindi-scan.png": {
     "character_error_rate": 0.0,
@@ -1015,10 +1015,10 @@
     "reading_order": 1.0
   },
   "more-epigrammata-1520.jpg": {
-    "character_error_rate": 0.04312354312354312,
-    "token_error_rate": 0.224,
-    "recall": 0.84,
-    "spurious": 0.21052631578947367,
+    "character_error_rate": 0.045454545454545456,
+    "token_error_rate": 0.256,
+    "recall": 0.824,
+    "spurious": 0.23703703703703705,
     "reading_order": 0.0
   },
   "neue-freie-presse-1895.tif": {
@@ -1268,9 +1268,9 @@
   },
   "prose-scan-100dpi-degraded.png": {
     "character_error_rate": 0.011337868480725623,
-    "token_error_rate": 0.04918032786885246,
-    "recall": 0.9508196721311475,
-    "spurious": 0.04918032786885246,
+    "token_error_rate": 0.04590163934426229,
+    "recall": 0.9540983606557377,
+    "spurious": 0.04590163934426229,
     "reading_order": 0.8333333333333334
   },
   "prose-scan-150dpi.png": {
