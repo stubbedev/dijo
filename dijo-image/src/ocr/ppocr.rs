@@ -138,19 +138,19 @@ impl PpOcr {
         let reader = self.line_reader(model)?;
         let lines = self.lines(image)?;
         let mut read = Vec::with_capacity(lines.len());
-        let mut confidences = Vec::with_capacity(lines.len());
+        let (mut characters, mut confident) = (0f32, 0f32);
         for line in lines {
             let (text, confidence) = reader.read(&crop(image, line), model)?;
+            let length = text.chars().count() as f32;
+            characters += length;
+            confident += length * confidence;
             if confidence >= MIN_LINE_CONFIDENCE && !text.trim().is_empty() {
                 read.push((line, text));
-                confidences.push(confidence);
             }
         }
-        let confidence = match confidences.is_empty() {
-            true => 0,
-            false => {
-                (confidences.iter().sum::<f32>() / confidences.len() as f32 * 100.0).round() as i32
-            }
+        let confidence = match characters > 0.0 {
+            true => (confident / characters * 100.0).round() as i32,
+            false => 0,
         };
         let areas: Vec<Area> = read.iter().map(|&(line, _)| line).collect();
         let text = ordered(&areas, blocks)
@@ -313,25 +313,6 @@ fn detection_size(width: u32, height: u32) -> (u32, u32) {
 }
 
 fn text_areas(map: &[f32], width: usize, height: usize) -> Vec<Area> {
-    let mut sums = vec![0f64; (width + 1) * (height + 1)];
-    for y in 0..height {
-        let mut row = 0f64;
-        for x in 0..width {
-            row += f64::from(map[y * width + x]);
-            sums[(y + 1) * (width + 1) + x + 1] = sums[y * (width + 1) + x + 1] + row;
-        }
-    }
-    let mean = |area: &Area| {
-        let (left, top, right, bottom) = (
-            area.left as usize,
-            area.top as usize,
-            area.right as usize,
-            area.bottom as usize,
-        );
-        let at = |x: usize, y: usize| sums[y * (width + 1) + x];
-        let total = at(right, bottom) - at(left, bottom) - at(right, top) + at(left, top);
-        total / ((right - left) * (bottom - top)) as f64
-    };
     let mut seen = vec![false; width * height];
     let mut areas = Vec::new();
     let mut pending = Vec::new();
@@ -342,12 +323,15 @@ fn text_areas(map: &[f32], width: usize, height: usize) -> Vec<Area> {
         seen[start] = true;
         pending.push(start);
         let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
+        let (mut pixels, mut probability) = (0usize, 0f64);
         while let Some(index) = pending.pop() {
             let (x, y) = (index % width, index / width);
             left = left.min(x);
             right = right.max(x + 1);
             top = top.min(y);
             bottom = bottom.max(y + 1);
+            pixels += 1;
+            probability += f64::from(map[index]);
             for ny in y.saturating_sub(1)..(y + 2).min(height) {
                 for nx in x.saturating_sub(1)..(x + 2).min(width) {
                     let neighbour = ny * width + nx;
@@ -358,35 +342,26 @@ fn text_areas(map: &[f32], width: usize, height: usize) -> Vec<Area> {
                 }
             }
         }
-        let area = Area {
-            left: left as i32,
-            top: top as i32,
-            right: right as i32,
-            bottom: bottom as i32,
-        };
-        if area.width().min(area.height()) < MIN_BOX_SIDE as i32
-            || mean(&area) < f64::from(BOX_PROBABILITY)
+        let length = (right - left).max(bottom - top) as f64;
+        let thickness = pixels as f64 / length;
+        if thickness < f64::from(MIN_BOX_SIDE)
+            || probability / (pixels as f64) < f64::from(BOX_PROBABILITY)
         {
             continue;
         }
-        let unclipped = unclipped(area);
-        if unclipped.width().min(unclipped.height()) < MIN_UNCLIPPED_SIDE as i32 {
+        let distance = length * thickness * f64::from(UNCLIP_RATIO) / (2.0 * (length + thickness));
+        if thickness + 2.0 * distance < f64::from(MIN_UNCLIPPED_SIDE) {
             continue;
         }
-        areas.push(unclipped);
+        let distance = distance.round() as i32;
+        areas.push(Area {
+            left: left as i32 - distance,
+            top: top as i32 - distance,
+            right: right as i32 + distance,
+            bottom: bottom as i32 + distance,
+        });
     }
     areas
-}
-
-fn unclipped(area: Area) -> Area {
-    let (width, height) = (area.width() as f32, area.height() as f32);
-    let distance = (width * height * UNCLIP_RATIO / (2.0 * (width + height))).round() as i32;
-    Area {
-        left: area.left - distance,
-        top: area.top - distance,
-        right: area.right + distance,
-        bottom: area.bottom + distance,
-    }
 }
 
 fn scaled(
@@ -529,6 +504,21 @@ mod tests {
         }
         map[15 * width + 35] = 0.9;
         assert_eq!(text_areas(&map, width, height), [area(1, 2, 33, 13)]);
+    }
+
+    #[test]
+    fn keeps_a_slanted_line_whose_box_is_mostly_background() {
+        let (width, height) = (200, 60);
+        let mut map = vec![0f32; width * height];
+        for x in 10..190 {
+            let middle = 10 + x * 40 / 200;
+            for y in middle..middle + 5 {
+                map[y * width + x] = 0.9;
+            }
+        }
+        let areas = text_areas(&map, width, height);
+        assert_eq!(areas.len(), 1);
+        assert!(areas[0].left < 10 && areas[0].right > 190, "{areas:?}");
     }
 
     #[test]

@@ -651,17 +651,17 @@
     "reading_order": 1.0
   },
   "hindi-diksita-1895-01.jpg": {
-    "character_error_rate": 0.14893617021276595,
-    "token_error_rate": 0.3076923076923077,
-    "recall": 0.6923076923076923,
-    "spurious": 0.25,
+    "character_error_rate": 0.1458966565349544,
+    "token_error_rate": 0.3269230769230769,
+    "recall": 0.6730769230769231,
+    "spurious": 0.2708333333333333,
     "reading_order": 0.5
   },
   "hindi-diksita-1895-02.jpg": {
-    "character_error_rate": 0.224283305227656,
+    "character_error_rate": 0.21416526138279932,
     "token_error_rate": 0.5,
     "recall": 0.5434782608695652,
-    "spurious": 0.43820224719101125,
+    "spurious": 0.4444444444444444,
     "reading_order": 0.5
   },
   "hindi-scan.png": {
@@ -1015,10 +1015,10 @@
     "reading_order": 1.0
   },
   "more-epigrammata-1520.jpg": {
-    "character_error_rate": 0.04195804195804196,
-    "token_error_rate": 0.224,
-    "recall": 0.84,
-    "spurious": 0.21052631578947367,
+    "character_error_rate": 0.045454545454545456,
+    "token_error_rate": 0.256,
+    "recall": 0.824,
+    "spurious": 0.23703703703703705,
     "reading_order": 0.0
   },
   "neue-freie-presse-1895.tif": {
@@ -1260,10 +1260,10 @@
     "reading_order": 1.0
   },
   "prose-scan-100dpi-degraded.png": {
-    "character_error_rate": 0.008503401360544218,
-    "token_error_rate": 0.03278688524590164,
-    "recall": 0.9672131147540983,
-    "spurious": 0.03278688524590164,
+    "character_error_rate": 0.011337868480725623,
+    "token_error_rate": 0.04590163934426229,
+    "recall": 0.9540983606557377,
+    "spurious": 0.04590163934426229,
     "reading_order": 0.8333333333333334
   },
   "prose-scan-150dpi.png": {
@@ -1463,11 +1463,11 @@
     "reading_order": 1.0
   },
   "quixote-1605.pdf": {
-    "character_error_rate": 0.07242078976119869,
-    "token_error_rate": 0.2292358803986711,
-    "recall": 0.7990033222591362,
-    "spurious": 0.18681318681318682,
-    "reading_order": 0.4
+    "character_error_rate": 0.058061495239581706,
+    "token_error_rate": 0.20930232558139536,
+    "recall": 0.8172757475083057,
+    "spurious": 0.18272425249169436,
+    "reading_order": 0.6
   },
   "report-scan-skewed.tif": {
     "character_error_rate": 0.0,
@@ -1925,10 +1925,10 @@
     "reading_order": 0.8888888888888888
   },
   "zoologia-danica-1779.png": {
-    "character_error_rate": 0.0989433237271854,
-    "token_error_rate": 0.152317880794702,
-    "recall": 0.8874172185430463,
-    "spurious": 0.10666666666666667,
+    "character_error_rate": 0.056676272814601344,
+    "token_error_rate": 0.09271523178807947,
+    "recall": 0.9470198675496688,
+    "spurious": 0.08917197452229299,
     "reading_order": 1.0
   }
 }
