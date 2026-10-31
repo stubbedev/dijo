@@ -7,6 +7,9 @@
   with half the character errors or fewer (the 1520 *Epigrammata* 16.0% to 4.5%, the 1605 *Quixote* 12.0% to 5.8%,
   1895 Devanagari 52.8% to 21.4%). The models are embedded in the OCR bundle and run in process with rten; the OCR
   report of such a page names the recogniser in `ppocr`.
+* Such a page is first flattened by PaddleOCR's UVDoc and read again by tesseract, keeping the more confident reading
+  (#228): a curled page, as photographed in an open book, reads with 2.4% character errors where it read with 58%. The
+  OCR report of a flattened page says `unwarped`.
 
 # 0.2.14 (2026-10-28)
 

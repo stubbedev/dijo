@@ -227,6 +227,9 @@ magick "$work/scan-150.png" -colorspace Gray -resize 1240x \( +clone -fill '#555
     +swap -gravity center -compose over -composite -virtual-pixel background -background '#555555' \
     -distort Perspective '0,0 420,260  1736,0 1330,300  1736,2455 1700,2380  0,2455 40,2420' -quality 90 \
     "$corpus/prose-photo-perspective.jpg"
+magick "$work/scan-150.png" -colorspace Gray -virtual-pixel white \
+    -fx '(0.55 + 0.45*i/w) * u.p{i + 45*pow(1-i/w,3), j - 110*pow(1-i/w,3) + 50*pow(2*i/w-1,2)*(j/h)}' \
+    -quality 90 "$corpus/prose-photo-curled.jpg"
 for layout in columns newspaper; do
     pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/prose-$layout.pdf" "$work/$layout-300"
     magick "$work/$layout-300.png" -colorspace Gray -depth 8 "$corpus/prose-$layout-scan.png"

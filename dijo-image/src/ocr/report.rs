@@ -82,6 +82,13 @@ impl Report {
         }
     }
 
+    pub(crate) fn unwarped(self, unwarped: bool) -> Self {
+        match unwarped {
+            true => self.boolean("unwarped", true),
+            false => self,
+        }
+    }
+
     pub(crate) fn ppocr(self, recognizer: Option<&str>) -> Self {
         match recognizer {
             Some(recognizer) => self.string("ppocr", recognizer),

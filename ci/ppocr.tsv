@@ -5,3 +5,4 @@ devanagari.onnx	https://github.com/stubbedev/dijo/releases/download/ppocr-v5-mob
 devanagari.yml	https://huggingface.co/PaddlePaddle/devanagari_PP-OCRv5_mobile_rec/resolve/99dcce6d196bd4aaf268c7a5c72c3cc9f3ea4932/inference.yml	9bd172dd26440c8ce94d1cde5d5baea6aefdc7cf3c5c8492e0beedef656d4e54
 cjk.onnx	https://github.com/stubbedev/dijo/releases/download/ppocr-v5-mobile-1/cjk.onnx	0030c6b05fbe29b07a93701503938d637efe7423325e2efb2bd7c8f220d40a8d
 cjk.yml	https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_rec/resolve/682f20538d8c086cb2128e5cfac775e6c4904e85/inference.yml	5dfeb2777f6d0db8177d8128a8acfcf6e6276dc4ac73ea3bf0dc06d6a5e85d8e
+uvdoc.onnx	https://github.com/stubbedev/dijo/releases/download/ppocr-v5-mobile-1/uvdoc.onnx	54cab30dc2cf347b4f3d6971c833b1c3d84f5ef17280f1f6d15796bff20e63d6

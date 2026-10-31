@@ -220,6 +220,10 @@
                     "const": true,
                     "description": "Present when what tesseract read was taken for noise, such as a texture or blank paper, and dropped: it read it with low confidence, and no language was detected in it."
                   },
+                  "unwarped": {
+                    "const": true,
+                    "description": "Present when tesseract read the image with a confidence of 90 or less, UVDoc flattened its curled or bent page, and tesseract read the flattened page with more confidence."
+                  },
                   "ppocr": {
                     "enum": ["latin", "devanagari", "cjk"],
                     "description": "Present when tesseract read the image with a confidence of 90 or less and PP-OCRv5 read it again with its recogniser for this script, and that reading, read with more confidence, was kept."

@@ -317,6 +317,8 @@ pub struct OcrReport {
     pub thresholded: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub noise: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unwarped: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ppocr: Option<PpOcrRecognizer>,
 }

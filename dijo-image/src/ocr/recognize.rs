@@ -11,8 +11,9 @@
 //! language is taken for noise, such as a texture or blank paper, and dropped. In the reading
 //! kept, the long s of early modern print, which tesseract reads as f, is restored by the
 //! dictionary of the language's model. With the automatic language, a reading of 90 or less
-//! confidence in a script PP-OCRv5 reads, but not in blackletter, is read again with PP-OCRv5 and
-//! the more confident reading kept.
+//! confidence is read again with its page flattened by UVDoc, and the more confident reading kept;
+//! then, in a script PP-OCRv5 reads but not in blackletter, it is read again with PP-OCRv5 and the
+//! more confident reading kept.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -299,6 +300,7 @@ impl Attempt {
                 prepared.uneven_lighting,
             )
             .noise(self.noise)
+            .unwarped(prepared.unwarped)
             .ppocr(self.recognizer)
             .json()
     }
@@ -347,6 +349,7 @@ struct Prepared {
     /// Whether it was decoded to prepare it.
     decoded: bool,
     flattened: bool,
+    unwarped: bool,
     inverted: bool,
     despeckled: bool,
     quarter_turns: u8,
@@ -367,6 +370,7 @@ impl Prepared {
             exif_orientation: None,
             decoded: false,
             flattened: false,
+            unwarped: false,
             inverted: false,
             despeckled: false,
             quarter_turns: 0,
@@ -593,7 +597,7 @@ impl<'t> Recognizer<'t> {
             true => best,
             false => self.in_blackletter(best, image, &dictionary)?,
         };
-        let best = self.read_again(best, &dictionary)?;
+        let best = self.read_again(best, image, &dictionary)?;
         Ok(Recognized {
             read: best,
             language,
@@ -863,10 +867,16 @@ impl<'t> Recognizer<'t> {
         })
     }
 
-    fn read_again(&self, read: Attempt, dictionary: &str) -> Result<Attempt, OcrError> {
+    fn read_again(
+        &self,
+        read: Attempt,
+        image: &Image<'_>,
+        dictionary: &str,
+    ) -> Result<Attempt, OcrError> {
         if !self.settings.auto() || read.noise || read.confidence() > MAX_REREAD_CONFIDENCE {
             return Ok(read);
         }
+        let read = self.read_unwarped(read, image)?;
         let Some(model) = read
             .prepared
             .script
@@ -896,6 +906,20 @@ impl<'t> Recognizer<'t> {
             recognizer: Some(model.name()),
         };
         Ok(read.or(self.with_long_s(again, dictionary)?))
+    }
+
+    fn read_unwarped(&self, read: Attempt, image: &Image<'_>) -> Result<Attempt, OcrError> {
+        let Some(made) = read.prepared.image.as_deref() else {
+            return Ok(read);
+        };
+        let unwarped = Prepared {
+            image: Some(Arc::new(Bitmap::Gray(ppocr()?.unwarped(&made.gray())?))),
+            unwarped: true,
+            png: OnceLock::new(),
+            ..read.prepared.clone()
+        };
+        let reading = self.read(image, &unwarped)?;
+        Ok(read.or(Attempt::read(unwarped, reading)))
     }
 
     fn blackletter_model(&self) -> Result<Option<String>, OcrError> {
@@ -1051,6 +1075,7 @@ fn finish(
         exif_orientation: oriented.exif_orientation,
         decoded: true,
         flattened: oriented.flattened,
+        unwarped: false,
         inverted: unscaled.inverted,
         despeckled: unscaled.despeckled,
         quarter_turns,
@@ -1444,6 +1469,17 @@ mod tests {
         assert!(read.report(None).contains("\"ppocr\":\"latin\""));
         let text = read.text().unwrap();
         assert!(text.contains("picturæ lenocinio"), "{text}");
+    }
+
+    #[test]
+    fn reads_a_curled_page_flattened() {
+        let read = recognized("prose-photo-curled.jpg");
+        assert!(read.report(None).contains("\"unwarped\":true"));
+        let text = read.text().unwrap();
+        assert!(
+            text.contains("Every evening at dusk the keeper climbed the one hundred"),
+            "{text}"
+        );
     }
 
     #[test]

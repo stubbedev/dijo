@@ -14,7 +14,8 @@ Extract text and metadata from documents. One native binary, no JVM.
   detector and recogniser for its script, and the more confident reading kept. On the quality corpus this halves the
   character errors of the 1520 *Epigrammata* (16.0% to 4.5%), the 1605 *Quixote* (12.0% to 5.8%), the 1779 *Zoologia
   Danica* (10.3% to 5.7%) and two pages of 1895 Devanagari (33.1% to 14.6%, 52.8% to 21.4%); pages tesseract reads
-  confidently cost nothing more.
+  confidently cost nothing more. Such a page is first flattened by PaddleOCR's UVDoc and read again by tesseract, which
+  undoes the curl of a page photographed in an open book.
 - **Faster and lighter**: a 28-page PDF in 55 ms and 23 MiB, against 4.0 s and 301 MiB for `tika-app` 4.1.0; a DOCX in
   6 ms and 17 MiB, against 3.3 s and 213 MiB (`hyperfine` on `test_files/documents/2022_Q3_AAPL.pdf` and
   `ooxml/sorvino.docx`). Files of any size stream through bounded memory.

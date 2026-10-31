@@ -401,7 +401,7 @@ impl PageOcr {
         match Recognizer::new(tesseract, settings).recognize(&image, assumed) {
             Ok(Recognized { read, language }) => (
                 PageReading::Read {
-                    attempt: read,
+                    attempt: Box::new(read),
                     page: index as u32 + 1,
                 },
                 language,
@@ -414,7 +414,7 @@ impl PageOcr {
 /// What reading a page by OCR gave.
 pub(super) enum PageReading {
     /// The reading of the page, on its page number.
-    Read { attempt: Attempt, page: u32 },
+    Read { attempt: Box<Attempt>, page: u32 },
     /// Nothing, OCR being skipped.
     Skipped,
     /// The page could not be rendered or read, for this reason.

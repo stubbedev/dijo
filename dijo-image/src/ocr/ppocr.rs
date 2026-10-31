@@ -11,6 +11,8 @@ use super::tesseract::{Area, OcrError, Reading};
 use crate::{bundle, memory};
 
 const DETECTOR: &str = "det.onnx";
+const UNWARPER: &str = "uvdoc.onnx";
+const UNWARPING_BYTES_PER_PIXEL: u64 = 48;
 const RECOGNIZERS: [&str; 3] = ["latin", "devanagari", "cjk"];
 const RECOGNIZER_OF_SCRIPT: [(&str, &str); 4] = [
     ("Latin", "latin"),
@@ -37,6 +39,7 @@ const CHARACTER_ITEM: &str = "  - ";
 pub(crate) struct PpOcr {
     dir: PathBuf,
     detector: OnceLock<Result<Model, OcrError>>,
+    unwarper: OnceLock<Result<Model, OcrError>>,
     recognizers: [OnceLock<Result<LineReader, OcrError>>; RECOGNIZERS.len()],
 }
 
@@ -104,8 +107,60 @@ impl PpOcr {
         Self {
             dir,
             detector: OnceLock::new(),
+            unwarper: OnceLock::new(),
             recognizers: Default::default(),
         }
+    }
+
+    fn unwarper(&self) -> Result<&Model, OcrError> {
+        self.unwarper
+            .get_or_init(|| load(&self.dir.join(UNWARPER)))
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+
+    pub(crate) fn unwarped(&self, image: &GrayImage) -> Result<GrayImage, OcrError> {
+        let (width, height) = image.dimensions();
+        let plane = width as usize * height as usize;
+        let channel: Vec<f32> = image
+            .as_raw()
+            .iter()
+            .map(|&level| f32::from(level) / 255.0)
+            .collect();
+        let mut data = Vec::with_capacity(3 * plane);
+        for _ in 0..3 {
+            data.extend_from_slice(&channel);
+        }
+        drop(channel);
+        let tensor = NdTensor::from_data([1, 3, height as usize, width as usize], data);
+        let unwarper = self.unwarper()?;
+        let _reserved =
+            memory::reserve(plane as u64 * UNWARPING_BYTES_PER_PIXEL).map_err(|limit| {
+                OcrError::MemoryLimit {
+                    image: format!("a {width}x{height} image"),
+                    limit,
+                }
+            })?;
+        let output = unwarper
+            .run_one(tensor.into(), None)
+            .map_err(|error| failed(UNWARPER, error))?;
+        let unwarped: NdTensor<f32, 4> =
+            output.try_into().map_err(|error| failed(UNWARPER, error))?;
+        let [_, _, unwarped_height, unwarped_width] = unwarped.shape();
+        let levels: Vec<u8> = unwarped
+            .to_vec()
+            .into_iter()
+            .take(unwarped_height * unwarped_width)
+            .map(|value| (value * 255.0).round().clamp(0.0, 255.0) as u8)
+            .collect();
+        GrayImage::from_raw(unwarped_width as u32, unwarped_height as u32, levels).ok_or_else(
+            || {
+                failed(
+                    UNWARPER,
+                    format!("it made no image of {width}x{height} pixels"),
+                )
+            },
+        )
     }
 
     fn detector(&self) -> Result<&Model, OcrError> {
