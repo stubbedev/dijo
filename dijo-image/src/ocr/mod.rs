@@ -12,6 +12,7 @@ mod java2d;
 pub(crate) mod jbig2;
 pub mod jpeg;
 mod pages;
+mod ppocr;
 mod prepare;
 mod raster;
 mod recognize;

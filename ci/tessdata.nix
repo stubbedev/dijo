@@ -4,15 +4,7 @@
 { pkgs }:
 let
   inherit (pkgs) lib;
-  pinned = lib.listToAttrs (
-    map (
-      line:
-      let
-        pair = builtins.match "([A-Z0-9_]+)=([0-9a-f]+)" line;
-      in
-      lib.nameValuePair (builtins.elemAt pair 0) (builtins.elemAt pair 1)
-    ) (builtins.filter (line: line != "") (lib.splitString "\n" (builtins.readFile ./tessdata.env)))
-  );
+  pinned = import ./pinned.nix lib ./tessdata.env;
   base = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/${pinned.TESSDATA_COMMIT}";
   rows = builtins.filter (line: line != "" && !(lib.hasPrefix "#" line)) (
     lib.splitString "\n" (builtins.readFile ./tessdata.tsv)

@@ -82,6 +82,13 @@ impl Report {
         }
     }
 
+    pub(crate) fn ppocr(self, recognizer: Option<&str>) -> Self {
+        match recognizer {
+            Some(recognizer) => self.string("ppocr", recognizer),
+            None => self,
+        }
+    }
+
     fn key(mut self, name: &str) -> Self {
         if self.json.len() > 1 {
             self.json.push(',');

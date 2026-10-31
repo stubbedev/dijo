@@ -402,7 +402,7 @@ pub(crate) fn scale(image: &Bitmap, factor: f64) -> GrayImage {
     resized(&image, scaled_width, scaled_height)
 }
 
-fn resized(image: &GrayImage, scaled_width: u32, scaled_height: u32) -> GrayImage {
+pub(crate) fn resized(image: &GrayImage, scaled_width: u32, scaled_height: u32) -> GrayImage {
     let (width, height) = image.dimensions();
     let columns = Taps::bicubic(width, scaled_width);
     let rows = Taps::bicubic(height, scaled_height);

@@ -1,3 +1,13 @@
+# Unreleased
+
+### Added
+
+* OCR reads a page again with PP-OCRv5 when tesseract reads it with a confidence of 90 or less, in Latin script,
+  Devanagari, Chinese or Japanese, and keeps the more confident reading (#207): worn, early and degraded print reads
+  with half the character errors or fewer (the 1520 *Epigrammata* 16.0% to 4.2%, the 1605 *Quixote* 12.0% to 7.2%,
+  1895 Devanagari 52.8% to 22.4%). The models are embedded in the OCR bundle and run in process with rten; the OCR
+  report of such a page names the recogniser in `ppocr`.
+
 # 0.2.14 (2026-10-28)
 
 ### Added

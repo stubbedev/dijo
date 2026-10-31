@@ -36,6 +36,12 @@ test-fuzz:
 ocr-bundle dir="target/ocr-bundle":
     ci/ocr-bundle.sh {{dir}}
 
+# Convert PaddleOCR's PP-OCRv5 weights of ci/ppocr-weights.tsv to the ONNX models of ci/ppocr.tsv the OCR bundle
+# fetches, failing unless they come out as pinned there. Needs python3.12.
+[unix]
+ppocr-models dir="target/ppocr-models":
+    ci/convert-ppocr.sh {{dir}}
+
 # Regenerate the encrypted Word documents and workbooks of dijo-office/tests/fixtures/crypt:
 # LibreOffice writes the plain ones, and encrypt.py encrypts them with XOR obfuscation and RC4
 # CryptoAPI, checked against what msoffcrypto-tool decrypts. Needs soffice and python3.

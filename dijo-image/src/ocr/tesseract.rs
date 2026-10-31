@@ -289,6 +289,7 @@ impl Pixels<'_> {
 pub(crate) struct Reading {
     pub(crate) text: String,
     pub(crate) confidence: i32,
+    pub(crate) blocks: Vec<Area>,
 }
 
 /// What orientation and script detection found in an image.
@@ -304,23 +305,43 @@ pub(crate) struct Detection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OcrError {
     /// It did not finish within the time the reading was given.
-    TimedOut { image: String, millis: u128 },
+    TimedOut {
+        image: String,
+        millis: u128,
+    },
     /// It could not read the image.
-    Failed { image: String, model: String },
+    Failed {
+        image: String,
+        model: String,
+    },
     /// It could not load a model.
-    Model { model: String },
+    Model {
+        model: String,
+    },
     /// A model asked for is not among those the build bundles.
     NotInstalled {
         model: String,
         installed: Vec<String>,
     },
+    Rereading {
+        model: String,
+        reason: String,
+    },
     /// The models it reads with could not be listed.
-    Models { dir: String, reason: String },
+    Models {
+        dir: String,
+        reason: String,
+    },
     /// The tesseract the build carries could not be set up, for this reason.
-    Unavailable { reason: String },
+    Unavailable {
+        reason: String,
+    },
     /// Reading the image would take more memory than is left of the extraction's budget, of
     /// `limit` bytes.
-    MemoryLimit { image: String, limit: u64 },
+    MemoryLimit {
+        image: String,
+        limit: u64,
+    },
 }
 
 impl fmt::Display for OcrError {
@@ -340,6 +361,9 @@ impl fmt::Display for OcrError {
                 "The OCR language {model} is not installed; the installed ones are {}",
                 installed.join(", ")
             ),
+            Self::Rereading { model, reason } => {
+                write!(f, "Reading again with PP-OCR's {model} failed: {reason}")
+            }
             Self::Models { dir, reason } => {
                 write!(f, "Listing tesseract's models under {dir} failed: {reason}")
             }
@@ -797,13 +821,14 @@ fn models_under(dir: &std::path::Path) -> Result<BTreeSet<String>, OcrError> {
 /// The text an engine recognized, and its words' mean confidence.
 unsafe fn text_of(api: &Api, handle: *mut BaseApi) -> Option<Reading> {
     let blocks = blocks_of(api, handle)?;
-    let text = reading_order(&blocks)
-        .into_iter()
-        .map(|block| blocks[block].text.as_str())
-        .collect();
+    let order = reading_order(&blocks);
     Some(Reading {
-        text,
+        text: order
+            .iter()
+            .map(|&block| blocks[block].text.as_str())
+            .collect(),
         confidence: (api.mean_text_conf)(handle),
+        blocks: order.iter().map(|&block| blocks[block].area).collect(),
     })
 }
 
@@ -816,14 +841,33 @@ struct Block {
 
 /// A rectangle on an image, in pixels from its top left corner, `right` and `bottom` exclusive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Area {
-    left: c_int,
-    top: c_int,
-    right: c_int,
-    bottom: c_int,
+pub(crate) struct Area {
+    pub(crate) left: c_int,
+    pub(crate) top: c_int,
+    pub(crate) right: c_int,
+    pub(crate) bottom: c_int,
 }
 
 impl Area {
+    pub(crate) fn width(&self) -> c_int {
+        self.right - self.left
+    }
+
+    pub(crate) fn height(&self) -> c_int {
+        self.bottom - self.top
+    }
+
+    pub(crate) fn centre(&self) -> (c_int, c_int) {
+        (
+            self.left.midpoint(self.right),
+            self.top.midpoint(self.bottom),
+        )
+    }
+
+    pub(crate) fn contains(&self, x: c_int, y: c_int) -> bool {
+        self.left <= x && x < self.right && self.top <= y && y < self.bottom
+    }
+
     /// Whether this area starts higher than `other` and shares some of its width: whether it is
     /// read before it on a page, as a heading or a verse is before the prose under it, even when
     /// tightly set lines make their areas overlap. No column shares width with one beside it.

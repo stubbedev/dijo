@@ -10,7 +10,9 @@
 //! are first read with that model. A reading tesseract is not confident of and that is in no
 //! language is taken for noise, such as a texture or blank paper, and dropped. In the reading
 //! kept, the long s of early modern print, which tesseract reads as f, is restored by the
-//! dictionary of the language's model.
+//! dictionary of the language's model. With the automatic language, a reading of 90 or less
+//! confidence in a script PP-OCRv5 reads, but not in blackletter, is read again with PP-OCRv5 and
+//! the more confident reading kept.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -22,6 +24,7 @@ use image::GrayImage;
 
 use super::bitmap::{Bitmap, Density};
 use super::flatten::flatten;
+use super::ppocr::{ppocr, LineModel};
 use super::prepare::{self, Orientation};
 use super::report::Report;
 use super::script::{
@@ -51,6 +54,7 @@ const MIN_CONFIDENCE: i32 = 80;
 /// detected with confidence stands too: worn, old or faxed type reads at 55 to 85, while other
 /// scripts and pages upside down read at 50 or less and in no language.
 const MIN_TEXT_CONFIDENCE: i32 = 50;
+const MAX_REREAD_CONFIDENCE: i32 = 90;
 /// Scripts tesseract's detection takes for others (Armenian for upside-down Latin, Georgian for
 /// Malayalam, Hebrew for Thai), tried in turn when no reading of an image with plenty of text is
 /// confident.
@@ -193,6 +197,7 @@ pub struct Attempt {
     reading: Option<Reading>,
     /// Whether what tesseract read was taken for noise and dropped.
     noise: bool,
+    recognizer: Option<&'static str>,
 }
 
 impl Attempt {
@@ -201,6 +206,7 @@ impl Attempt {
             prepared,
             reading: Some(reading),
             noise: false,
+            recognizer: None,
         }
     }
 
@@ -293,6 +299,7 @@ impl Attempt {
                 prepared.uneven_lighting,
             )
             .noise(self.noise)
+            .ppocr(self.recognizer)
             .json()
     }
 
@@ -551,6 +558,7 @@ impl<'t> Recognizer<'t> {
                     prepared: first,
                     reading: None,
                     noise: false,
+                    recognizer: None,
                 },
                 language: None,
             });
@@ -585,6 +593,7 @@ impl<'t> Recognizer<'t> {
             true => best,
             false => self.in_blackletter(best, image, &dictionary)?,
         };
+        let best = self.read_again(best, &dictionary)?;
         Ok(Recognized {
             read: best,
             language,
@@ -832,8 +841,7 @@ impl<'t> Recognizer<'t> {
         if !self.settings.auto() {
             return Ok(modern);
         }
-        let installed = self.tesseract.languages()?;
-        let Some(model) = installed_language(&installed, BLACKLETTER_SCRIPT) else {
+        let Some(model) = self.blackletter_model()? else {
             return Ok(modern);
         };
         if model == modern.prepared.model {
@@ -853,6 +861,46 @@ impl<'t> Recognizer<'t> {
         self.tesseract.with_dictionary(dictionary, |is_word| {
             more_lexical(modern, blackletter, is_word)
         })
+    }
+
+    fn read_again(&self, read: Attempt, dictionary: &str) -> Result<Attempt, OcrError> {
+        if !self.settings.auto() || read.noise || read.confidence() > MAX_REREAD_CONFIDENCE {
+            return Ok(read);
+        }
+        let Some(model) = read
+            .prepared
+            .script
+            .as_deref()
+            .and_then(LineModel::of_script)
+        else {
+            return Ok(read);
+        };
+        if self.blackletter_model()?.as_deref() == Some(read.prepared.model.as_str()) {
+            return Ok(read);
+        }
+        let (Some(image), Some(reading)) = (read.prepared.image.as_deref(), read.reading.as_ref())
+        else {
+            return Ok(read);
+        };
+        if reading.text.trim().is_empty() {
+            return Ok(read);
+        }
+        let reread = ppocr()?.read(&image.gray(), model, &reading.blocks)?;
+        let again = Attempt {
+            prepared: read.prepared.clone(),
+            reading: Some(Reading {
+                text: corrected(&reread.text),
+                ..reread
+            }),
+            noise: false,
+            recognizer: Some(model.name()),
+        };
+        Ok(read.or(self.with_long_s(again, dictionary)?))
+    }
+
+    fn blackletter_model(&self) -> Result<Option<String>, OcrError> {
+        let installed = self.tesseract.languages()?;
+        Ok(installed_language(&installed, BLACKLETTER_SCRIPT))
     }
 
     /// The model to read a script with: with the automatic language, the one for the script,
@@ -882,7 +930,7 @@ impl<'t> Recognizer<'t> {
         )?;
         Ok(Reading {
             text: corrected(&reading.text),
-            confidence: reading.confidence,
+            ..reading
         })
     }
 }
@@ -1051,6 +1099,7 @@ mod tests {
             Reading {
                 text: text.to_owned(),
                 confidence,
+                blocks: Vec::new(),
             },
         )
     }
@@ -1376,6 +1425,32 @@ mod tests {
             None
         );
         assert_eq!(recognizer.assumed(hint).unwrap(), Some(spanish));
+    }
+
+    fn recognized(name: &str) -> Attempt {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let settings = auto_settings();
+        let bitmap = scan(name);
+        let image = Image::of(&bitmap, None, 0, None, Density::per_inch(300.0, 300.0));
+        Recognizer::new(tesseract, &settings)
+            .recognize(&image, None)
+            .unwrap()
+            .read
+    }
+
+    #[test]
+    fn reads_worn_early_print_again_with_pp_ocr_and_keeps_its_more_confident_reading() {
+        let read = recognized("more-epigrammata-1520.jpg");
+        assert!(read.report(None).contains("\"ppocr\":\"latin\""));
+        let text = read.text().unwrap();
+        assert!(text.contains("picturæ lenocinio"), "{text}");
+    }
+
+    #[test]
+    fn leaves_a_page_tesseract_reads_confidently_to_tesseract() {
+        assert!(!recognized("spanish-scan.png")
+            .report(None)
+            .contains("ppocr"));
     }
 
     #[test]

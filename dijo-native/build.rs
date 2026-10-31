@@ -11,6 +11,7 @@ const OCR_TESSERACT_LIBRARY_STEM: &str = "dijo_tesseract";
 const OCR_HEIF_DECODER_STEM: &str = "heif-png";
 const OCR_MODELS: &str = "tessdata";
 const OCR_MODEL_EXTENSION: &str = "traineddata";
+const OCR_RECOGNIZERS: &str = "ppocr";
 const OCR_LICENSES: &str = "licenses";
 const STATIC_LICENSES_VARIABLE: &str = "DIJO_STATIC_LICENSES";
 const STATIC_LIBS_VARIABLE: &str = "DIJO_STATIC_LIBS";
@@ -74,8 +75,8 @@ fn link_static_libraries() {
 
 /// The OCR bundle `ci/ocr-bundle.sh` assembles, which `DIJO_OCR_BUNDLE` names: tesseract as
 /// a library of the C API native readings call unless the static executable links it, heif-png
-/// on the platforms that need it, the language data and the licenses of what they link, each
-/// compressed.
+/// on the platforms that need it, the language data, the PP-OCR models pages tesseract reads
+/// poorly are read again with, and the licenses of what they hold, each compressed.
 struct OcrBundle {
     /// How the built program runs the bundled tesseract.
     tesseract: Tesseract,
@@ -118,18 +119,13 @@ fn ocr_bundle(out_dir: &Path, platform: Platform, tesseract: Tesseract) -> OcrBu
         )
     }));
     println!("cargo:rerun-if-changed={}", dir.display());
-    let models = models_under(&dir.join(OCR_MODELS), OCR_MODELS);
-    if models.is_empty() {
-        panic!(
-            "{OCR_BUNDLE_VARIABLE} names {}, which holds no {OCR_MODELS}/**/*.{OCR_MODEL_EXTENSION}",
-            dir.display()
-        );
-    }
+    let models = bundled_models(&dir, OCR_MODELS, Some(OCR_MODEL_EXTENSION));
+    let recognizers = bundled_models(&dir, OCR_RECOGNIZERS, None);
     let compressed_dir = out_dir.join("ocr");
     remove_dir_if_exists(&compressed_dir);
     create_dir(&compressed_dir.join(OCR_MODELS));
     let mut hasher = DefaultHasher::new();
-    let mut files = Vec::with_capacity(models.len() + 1);
+    let mut files = Vec::with_capacity(models.len() + recognizers.len() + 2);
     let heif_decoder = (tesseract != Tesseract::Linked && platform.heif_decoder_bundled())
         .then(|| platform.executable(OCR_HEIF_DECODER_STEM));
     let named = tesseract
@@ -141,7 +137,8 @@ fn ocr_bundle(out_dir: &Path, platform: Platform, tesseract: Tesseract) -> OcrBu
             let path = dir.join(&name);
             (name, path)
         })
-        .chain(models);
+        .chain(models)
+        .chain(recognizers);
     for (name, path) in named {
         let content = read_file(&path);
         hasher.write(name.as_bytes());
@@ -268,9 +265,22 @@ fn read_file(path: &Path) -> Vec<u8> {
     fs::read(path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
-/// The language models under `dir`, in subdirectories too (tesseract's script models are in
-/// `script/`), each named by its path below `prefix` with `/` separators, in sorted order.
-fn models_under(dir: &Path, prefix: &str) -> Vec<(String, PathBuf)> {
+fn bundled_models(bundle: &Path, kind: &str, extension: Option<&str>) -> Vec<(String, PathBuf)> {
+    let models = models_under(&bundle.join(kind), kind, extension);
+    if models.is_empty() {
+        panic!(
+            "{OCR_BUNDLE_VARIABLE} names {}, which holds no {kind}/**/*.{}",
+            bundle.display(),
+            extension.unwrap_or("*")
+        );
+    }
+    models
+}
+
+/// The files under `dir` with `extension`, or all of them, in subdirectories too (tesseract's
+/// script models are in `script/`), each named by its path below `prefix` with `/` separators, in
+/// sorted order.
+fn models_under(dir: &Path, prefix: &str, extension: Option<&str>) -> Vec<(String, PathBuf)> {
     let mut models = Vec::new();
     for path in list_dir(dir) {
         let file = path
@@ -279,8 +289,9 @@ fn models_under(dir: &Path, prefix: &str) -> Vec<(String, PathBuf)> {
             .unwrap_or_else(|| panic!("OCR model path {} is not UTF-8", path.display()));
         let name = format!("{prefix}/{file}");
         if path.is_dir() {
-            models.extend(models_under(&path, &name));
-        } else if path.extension() == Some(OsStr::new(OCR_MODEL_EXTENSION)) {
+            models.extend(models_under(&path, &name, extension));
+        } else if extension.is_none_or(|extension| path.extension() == Some(OsStr::new(extension)))
+        {
             models.push((name, path));
         }
     }
@@ -347,7 +358,8 @@ fn write_ocr_module(out_dir: &Path, ocr: &OcrBundle) {
 }
 
 /// The items of the generated module that describe the OCR bundle: the tesseract library it
-/// carries, unless tesseract is linked in, its heif-png, its language data and its licenses.
+/// carries, unless tesseract is linked in, its heif-png, its language data, its PP-OCR models and
+/// its licenses.
 fn ocr_items(ocr: &OcrBundle) -> String {
     let ocr_entries: String = ocr
         .files
@@ -367,6 +379,7 @@ fn ocr_items(ocr: &OcrBundle) -> String {
     format!(
         "{library}{heif_decoder}\
          pub const OCR_MODELS: &str = {OCR_MODELS:?};\n\
+         pub const OCR_RECOGNIZERS: &str = {OCR_RECOGNIZERS:?};\n\
          pub static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\
          pub const OCR_LICENSES: &str = include_str!({:?});\n",
         ocr.files.len(),

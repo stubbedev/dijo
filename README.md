@@ -9,6 +9,11 @@ Extract text and metadata from documents. One native binary, no JVM.
 - **Automatic language detection** of the text, for OCR and in the output, covering every national language of Europe:
   86.7% of single sentences right, where Tika's detector gets 80.5%. OCR reads each page with the model of the
   language it detects there.
+- **Worn and old print read twice**: a page tesseract reads with a confidence of 90 or less, in Latin script,
+  Devanagari, Chinese or Japanese, is read again with [PP-OCRv5](https://github.com/PaddlePaddle/PaddleOCR)'s text
+  detector and recogniser for its script, and the more confident reading kept. On the quality corpus this halves the
+  character errors of the 1520 *Epigrammata* (16.0% to 4.2%), the 1605 *Quixote* (12.0% to 7.2%) and two pages of
+  1895 Devanagari (33.1% to 14.9%, 52.8% to 22.4%); pages tesseract reads confidently cost nothing more.
 - **Faster and lighter**: a 28-page PDF in 55 ms and 23 MiB, against 4.0 s and 301 MiB for `tika-app` 4.1.0; a DOCX in
   6 ms and 17 MiB, against 3.3 s and 213 MiB (`hyperfine` on `test_files/documents/2022_Q3_AAPL.pdf` and
   `ooxml/sorvino.docx`). Files of any size stream through bounded memory.
@@ -29,10 +34,12 @@ and Windows (x86_64), plus `SHA256SUMS`, an SBOM and build provenance
   language of Europe (`bel bos bul cat ces cym dan deu ell eng est eus fao fin fra gle glg hrv hun hye isl ita kat lav
   lit ltz mkd mlt nld nor pol por ron rus slk slv spa sqi srp srp_latn swe tur ukr`), one for each other script
   detection finds (`amh ara ben bod chi_sim guj heb hin jpn kan khm kor lao mal mya pan sin tam tel tha`), `deu_latf`
-  for blackletter (Fraktur), and `script/Latin`, `script/Cyrillic`, `script/Greek` and `script/Armenian`.
+  for blackletter (Fraktur), and `script/Latin`, `script/Cyrillic`, `script/Greek` and `script/Armenian`; and the
+  PP-OCRv5 models of [`ci/ppocr.tsv`](ci/ppocr.tsv), converted to ONNX (`just ppocr-models` reproduces them) and run
+  with [rten](https://github.com/robertknight/rten), a runtime written in Rust.
 
-From source, every build embeds its own OCR: tesseract patched as the release binaries' is, the language data and,
-except on macOS, a HEIC/AVIF decoder. It never uses a `tesseract` installed on the system. Assemble that bundle once
+From source, every build embeds its own OCR: tesseract patched as the release binaries' is, the language data, the
+PP-OCRv5 models and, except on macOS, a HEIC/AVIF decoder. It never uses a `tesseract` installed on the system. Assemble that bundle once
 (vcpkg builds it) and name it when building:
 
 ```sh

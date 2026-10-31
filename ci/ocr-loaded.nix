@@ -10,6 +10,7 @@ let
   static = import ./static-packages.nix pkgs;
   decoders = import ./image-decoders.nix static;
   tessdata = import ./tessdata.nix { inherit pkgs; };
+  ppocr = import ./ppocr.nix { inherit pkgs; };
   licenses = import ./licenses.nix "$out/licenses";
   tesseract = pkgs.tesseract5.passthru.tesseractBase;
   source = pkgs.applyPatches {
@@ -99,10 +100,12 @@ let
 in
 pkgs.runCommand "dijo-ocr-bundle-loaded" { } (
   ''
-    mkdir -p $out/tessdata $out/licenses/tessdata_fast
+    mkdir -p $out/tessdata $out/ppocr $out/licenses/tessdata_fast $out/licenses/PaddleOCR
     cp ${library}/* $out/
     cp -rL ${tessdata}/. $out/tessdata/
     cp ${tessdata.license} $out/licenses/tessdata_fast/LICENSE
+    cp -rL ${ppocr}/. $out/ppocr/
+    cp ${ppocr.license} $out/licenses/PaddleOCR/LICENSE
   ''
   + lib.optionalString heifDecoded ''
     cp ${heifPng}/heif-png $out/

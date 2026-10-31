@@ -317,6 +317,16 @@ pub struct OcrReport {
     pub thresholded: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub noise: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ppocr: Option<PpOcrRecognizer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PpOcrRecognizer {
+    Latin,
+    Devanagari,
+    Cjk,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]

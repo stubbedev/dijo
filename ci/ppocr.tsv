@@ -1,0 +1,7 @@
+det.onnx	https://github.com/stubbedev/dijo/releases/download/ppocr-v5-mobile-1/det.onnx	d5de5df358366210d16419b9636a2fc1efa5d7a20688f38a7869ec7b1a4f4f7d
+latin.onnx	https://github.com/stubbedev/dijo/releases/download/ppocr-v5-mobile-1/latin.onnx	995b0f5f28d2073896a78c03b5b863eae6af3744bafa0245b8522beea6994927
+latin.yml	https://huggingface.co/PaddlePaddle/latin_PP-OCRv5_mobile_rec/resolve/ab2cd5cc5fa6309be2e5acdfe66eca2c2c127d57/inference.yml	0bbe984570f597af3638e50bdf2e8276f3ab26a61966096538b3b0d1849f5c84
+devanagari.onnx	https://github.com/stubbedev/dijo/releases/download/ppocr-v5-mobile-1/devanagari.onnx	50fe8277f3b8fa6668e60aa67cb2bd966fb0bdc5be388ebdfd43e66f8f552eb1
+devanagari.yml	https://huggingface.co/PaddlePaddle/devanagari_PP-OCRv5_mobile_rec/resolve/99dcce6d196bd4aaf268c7a5c72c3cc9f3ea4932/inference.yml	9bd172dd26440c8ce94d1cde5d5baea6aefdc7cf3c5c8492e0beedef656d4e54
+cjk.onnx	https://github.com/stubbedev/dijo/releases/download/ppocr-v5-mobile-1/cjk.onnx	0030c6b05fbe29b07a93701503938d637efe7423325e2efb2bd7c8f220d40a8d
+cjk.yml	https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_rec/resolve/682f20538d8c086cb2128e5cfac775e6c4904e85/inference.yml	5dfeb2777f6d0db8177d8128a8acfcf6e6276dc4ac73ea3bf0dc06d6a5e85d8e

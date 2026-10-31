@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The OCR bundle a build embeds through DIJO_OCR_BUNDLE: the language data and its licence,
+# The OCR bundle a build embeds through DIJO_OCR_BUNDLE: the language data, the PP-OCR models and their licences,
 # and either tesseract as a library the process loads with heif-png beside it (ci/ocr-vcpkg.sh),
 # or, with --linked, the licences of the tesseract and libraries the static executable links
 # (ci/ocr-static.nix, which builds that whole bundle, Linux only).
@@ -36,14 +36,8 @@ if "$linked"; then
     cp -R "$bundle/." "$staging/"
     chmod -R u+w "$staging"
 else
-    # shellcheck source=ci/fetch-pinned.sh
-    source "$here/fetch-pinned.sh"
-    # shellcheck source=ci/tessdata.env
-    source "$here/tessdata.env"
     "$here/ocr-vcpkg.sh" "$staging"
-    fetch_pinned "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$TESSDATA_COMMIT/LICENSE" \
-        "$TESSDATA_LICENSE_SHA256" "$staging/licenses/tessdata_fast/LICENSE"
-    "$here/fetch-tessdata.sh" "$staging/tessdata"
+    "$here/fetch-models.sh" "$staging"
 fi
 rm -rf "$output"
 mv "$staging" "$output"

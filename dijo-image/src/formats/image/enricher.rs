@@ -104,6 +104,7 @@ fn ocr_failure(error: OcrError) -> Failure {
         OcrError::Model { .. }
         | OcrError::NotInstalled { .. }
         | OcrError::Models { .. }
+        | OcrError::Rereading { .. }
         | OcrError::Unavailable { .. } => Failure::Extraction(Error::Unknown(error.to_string())),
     }
 }

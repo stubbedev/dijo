@@ -122,6 +122,10 @@ pub fn bundled_tessdata() -> Result<PathBuf, String> {
     Ok(unpacked()?.join(OCR_MODELS))
 }
 
+pub fn bundled_recognizers() -> Result<PathBuf, String> {
+    Ok(unpacked()?.join(OCR_RECOGNIZERS))
+}
+
 /// The tesseract library the build bundled, unpacked.
 #[cfg(not(feature = "static"))]
 pub fn bundled_tesseract_library() -> Result<PathBuf, String> {
@@ -152,7 +156,7 @@ pub fn linked_version(version: &str) -> String {
     format!("tesseract {version} (linked)")
 }
 
-/// The licenses of the tesseract and the language data the build bundled.
+/// The licenses of the tesseract, the language data and the PP-OCR models the build bundled.
 pub fn bundled_ocr_licenses() -> &'static str {
     OCR_LICENSES
 }
