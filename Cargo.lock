@@ -1175,6 +1175,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
 
 [[package]]
+name = "flatbuffers"
+version = "24.12.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f1baf0dbf96932ec9a3038d57900329c015b0bfb7b63d904f3bc27e2b02a096"
+dependencies = [
+ "bitflags 1.3.2",
+ "rustc_version",
+]
+
+[[package]]
 name = "flate2"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3007,17 +3017,16 @@ dependencies = [
 
 [[package]]
 name = "rten"
-version = "0.27.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "639c5d2ce961f3e154878d1d48c2ac3451e5a6ea5d9c0b0d5f0da362f4c57dab"
+checksum = "77480f7c0fdff9e506df33b90ee4e1b385c79a15646779340a3d0441a5d6c7eb"
 dependencies = [
+ "flatbuffers",
  "num_cpus",
  "rayon",
  "rten-base",
  "rten-gemm",
  "rten-onnx",
- "rten-parallel",
- "rten-shape-inference",
  "rten-simd",
  "rten-tensor",
  "rten-vecmath",
@@ -3029,73 +3038,54 @@ dependencies = [
 
 [[package]]
 name = "rten-base"
-version = "0.27.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d03e46486326bd528b70e87095b920ab09b6b8d25064d4b3e80cddc18052686"
+checksum = "3fcbed7f93c6f43e50e387dbcb727e9f3d1d6f0c35fb3ac25ea79cd657616578"
+dependencies = [
+ "rayon",
+]
 
 [[package]]
 name = "rten-gemm"
-version = "0.27.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "648ac7ea5e2a7937630eb5e36e64ae46398871b9761e5312e5e856950fca5af8"
+checksum = "5ee054a1d7dc8f835a75f5369651b0162db0ab966d93c59e5ea9d5bcfa37b392"
 dependencies = [
  "rayon",
  "rten-base",
- "rten-parallel",
  "rten-simd",
  "rten-tensor",
 ]
 
 [[package]]
 name = "rten-onnx"
-version = "0.27.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f5e1b53db6b98229a00ea28d0868c5d8078e4f8e891ae5e15bc519f526d9b43"
-
-[[package]]
-name = "rten-parallel"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75e29f5ffc5bfd9a53dc31dbbbb1e18d7adebf4ac6c97f0e4778db0c92fad7ac"
-dependencies = [
- "rayon",
- "rten-base",
-]
-
-[[package]]
-name = "rten-shape-inference"
-version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a11dc044d2062a73da9600699f5f94e14bf330bed2b417852ff49ccbda281062"
-dependencies = [
- "rten-tensor",
- "smallvec",
-]
+checksum = "0db8b347e7fdfebb0ecdda15cd8eb5690b3e500d9c9432673b641020e03adb20"
 
 [[package]]
 name = "rten-simd"
-version = "0.27.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b45ecd18c74788450eff4bb40b290e7b4ed95fbd243745028048960b4bd18fa"
+checksum = "3459e4fdcb59d89d6d5fb004bdfd2a08347042cd690a3e9c22d98710a89839bd"
 
 [[package]]
 name = "rten-tensor"
-version = "0.27.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38d6dc7c9e8164f73399bf71c8d638d18478365be3d682b65a9af52b166603ff"
+checksum = "2b48ad9ca3086aa8227fe2f51094ec3cddb5b0615dcc57e6dbae1a22f887a543"
 dependencies = [
  "rayon",
  "rten-base",
- "rten-parallel",
  "smallvec",
  "typeid",
 ]
 
 [[package]]
 name = "rten-vecmath"
-version = "0.27.0"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdaec2ab84d663ce7c77cacfa68187683532808eabad844e3213571df5fdd11d"
+checksum = "94dec3e2a336592686dadf169aeeb24d677e82a29f469b30227cc7bae335b80f"
 dependencies = [
  "rten-base",
  "rten-simd",
@@ -3119,6 +3109,15 @@ name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
+
+[[package]]
+name = "rustc_version"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
+dependencies = [
+ "semver",
+]
 
 [[package]]
 name = "rustls"
@@ -3184,6 +3183,12 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"

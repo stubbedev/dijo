@@ -439,7 +439,6 @@ impl<'c> Database<'c> {
             .map_err(|error| malformed(&format!("querying table {table}"), error))?;
         let columns: Vec<Column> = statement
             .columns()
-            .iter()
             .map(|column| Column::new(column.name(), column.decl_type()))
             .collect();
         let mut rows = statement
