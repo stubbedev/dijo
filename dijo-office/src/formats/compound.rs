@@ -1,8 +1,9 @@
-//! Compound documents whose content Tika's `OfficeParser` does not read: Works, Project and
-//! SolidWorks documents, StarOffice documents, Corel presentations, Quattro Pro 7 and 8
-//! workbooks, OLE objects embedded whole and compound documents of no known kind. Tika writes
-//! their summary information as metadata and, where POI names their kind, sets it as the content
-//! type.
+//! Compound documents whose content Tika's `OfficeParser` does not read: Works and SolidWorks
+//! documents, StarOffice documents, Corel presentations, Quattro Pro 7 and 8 workbooks, OLE
+//! objects embedded whole and compound documents of no known kind. Tika writes their summary
+//! information as metadata and, where POI names their kind, sets it as the content type. A
+//! Project file, by its `CompObj`, is read by [`ProjectParser`] whatever its detected type, as
+//! Tika's detection takes a Project 2010 file for a compound document of no known kind.
 
 use crate::config::ParserConfigs;
 use crate::formats::crypt;
@@ -14,6 +15,7 @@ use crate::formats::ole2::vba::Macros;
 use crate::formats::ole2::Summaries;
 use crate::formats::poi::Unread;
 use crate::formats::ppt::PptParser;
+use crate::formats::project::{self, ProjectParser};
 use crate::formats::publisher::PublisherParser;
 use crate::formats::visio::VisioParser;
 use crate::formats::xls::XlsParser;
@@ -74,7 +76,6 @@ impl Parser for CompoundDocumentParser {
     fn media_types(&self) -> &'static [&'static str] {
         &[
             "application/vnd.ms-works",
-            "application/vnd.ms-project",
             "application/sldworks",
             "application/vnd.stardivision.calc",
             "application/vnd.stardivision.draw",
@@ -85,6 +86,10 @@ impl Parser for CompoundDocumentParser {
             UNKNOWN_COMPOUND,
             DRM_ENCRYPTED,
         ]
+    }
+
+    fn tika_delegates(&self) -> &'static [(&'static str, &'static str)] {
+        &[("dijo::ProjectParser", "dijo::ProjectParser")]
     }
 
     fn media_types_with_subtypes(&self) -> &'static [&'static str] {
@@ -102,9 +107,16 @@ impl Parser for CompoundDocumentParser {
     fn prepare<'a>(
         &self,
         input: &'a [u8],
-        _metadata: &TikaMetadata,
+        metadata: &TikaMetadata,
         configs: &'a ParserConfigs,
     ) -> Result<Prepared<'a>, Decline<'a>> {
+        if office::open_file(input).is_ok_and(|file| project::is_project(&file)) {
+            let reading = ProjectParser.prepare(input, metadata, configs)?;
+            return Ok(Box::new(move |xhtml| {
+                xhtml.delegate_to(ProjectParser.name());
+                reading(xhtml)
+            }));
+        }
         let (summaries, document_type, macros) = read(input, configs)?;
         Macros::followed_by(
             Ok(Box::new(move |xhtml| {

@@ -228,6 +228,8 @@ documents	table-multi-row-column-cells.png	file	image/png	tk:content-type-magic-
 documents	table-multi-row-column-cells.png	bytes	image/png	tk:content-type-magic-detected=image/png
 documents	table.fods	file	application/vnd.oasis.opendocument.flat.spreadsheet	tk:content-type-magic-detected=application/vnd.oasis.opendocument.flat.spreadsheet
 documents	table.fods	bytes	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
+documents	testPROJECT2007.mpp	file	application/vnd.ms-project	tk:content-type-magic-detected=application/vnd.ms-project
+documents	testPROJECT2007.mpp	bytes	application/vnd.ms-project	tk:content-type-magic-detected=application/x-tika-msoffice	Content-Length=147968
 documents	truncated.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=false
 documents	truncated.docx	bytes	application/x-tika-ooxml	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5610	zip:detector-zip-file-opened=false
 documents	unnormalized.txt	file	text/plain	tk:content-type-magic-detected=text/plain

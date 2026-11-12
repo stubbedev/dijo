@@ -1810,6 +1810,39 @@ fn cabinets_are_read_for_the_files_they_hold_whole() {
     }
 }
 
+/// `testPROJECT2007.mpp` is Apache Tika's test document of that name
+/// (`tika-parser-microsoft-module/src/test/resources/test-documents`, Apache-2.0), saved by
+/// Project 2007 (MPP12): a summary task with RTF notes, three tasks and two resources.
+#[test]
+fn project_files_are_read_for_their_tasks_and_resources() {
+    let objects = json_objects(&[&document("testPROJECT2007.mpp")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "application/vnd.ms-project");
+    assert_eq!(
+        objects[0]["raw_metadata"]["extended-properties:Manager"][0],
+        "Mr Burns"
+    );
+    assert_eq!(
+        objects[0]["text"],
+        "The quick brown fox jumps over the lazy dog\nComment Vulpes vulpes comment\n\
+         Aquire fox\nObtain Dog\nFox does his jump\nFox\nDog\n"
+    );
+    let output = dijo(&["--format", "xhtml", &document("testPROJECT2007.mpp")]);
+    let xhtml = stdout(&output);
+    let summary_task = concat!(
+        r#"<ul class="tasks">	<li><p>The quick brown fox jumps over the lazy dog</p>"#,
+        "\n<p>Comment Vulpes vulpes comment</p>\n",
+    );
+    assert!(xhtml.contains(summary_task), "{xhtml}");
+    let tasks = concat!(
+        r#"<ul class="tasks">	<li><p>Aquire fox</p>"#,
+        "\n</li>\n\t<li><p>Obtain Dog</p>\n</li>\n\t<li><p>Fox does his jump</p>\n</li>\n</ul>",
+    );
+    assert!(xhtml.contains(tasks), "{xhtml}");
+    let resources = r#"<ul class="resources">	<li><p>Fox</p>"#;
+    assert!(xhtml.contains(resources), "{xhtml}");
+}
+
 #[test]
 fn notebooks_are_read_cell_by_cell() {
     let objects = json_objects(&[&document("notebook.ipynb")]);

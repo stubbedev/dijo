@@ -36,6 +36,7 @@ pub(crate) use dijo_office::formats::doc;
 pub(crate) use dijo_office::formats::hwp;
 pub(crate) use dijo_office::formats::msg;
 pub(crate) use dijo_office::formats::ppt;
+pub(crate) use dijo_office::formats::project;
 pub(crate) use dijo_office::formats::pst;
 pub(crate) use dijo_office::formats::publisher;
 pub(crate) use dijo_office::formats::rtf;
@@ -196,6 +197,7 @@ static PARSERS: &[&dyn Parser] = &[
     &postscript::PostScriptParser,
     &ppt::PptParser,
     &pptx::PptxParser,
+    &project::ProjectParser,
     &protected::ProtectedParser,
     &pst::OutlookPstParser,
     &publisher::PublisherParser,

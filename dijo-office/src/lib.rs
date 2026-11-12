@@ -1,6 +1,7 @@
 //! dijo's native parsers of Microsoft Office's binary (OLE2) formats: Word, Excel, PowerPoint,
-//! Visio, Publisher and Access documents, Outlook messages and PST/OST files, TNEF, RTF, and the OLE2
-//! embedding they share; and of Hancom Office 5 documents, which are OLE2 compound files too.
+//! Visio, Publisher, Project and Access documents, Outlook messages and PST/OST files, TNEF, RTF,
+//! and the OLE2 embedding they share; and of Hancom Office 5 documents, which are OLE2 compound
+//! files too.
 
 use dijo_base::*;
 #[cfg(test)]
@@ -34,6 +35,7 @@ pub mod formats {
     pub mod ole2;
     pub mod poi;
     pub mod ppt;
+    pub mod project;
     pub mod pst;
     pub mod publisher;
     pub mod rtf;

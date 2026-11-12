@@ -145,6 +145,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/vnd.ms-powerpoint.template.macroenabled.12",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
     ),
+    ("application/vnd.ms-project", "dijo::ProjectParser"),
     (
         "application/vnd.ms-spreadsheetml",
         "org.apache.tika.parser.microsoft.xml.SpreadsheetMLParser",

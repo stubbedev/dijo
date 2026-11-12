@@ -16,9 +16,11 @@ const TIMEOUT_SECONDS: &str = "60";
 
 /// The parsers of ours that read a format differently from Tika on purpose (iWork text Tika
 /// leaves out, dropping subtitle timings, notebook JSON, FB2 styles, email headers, the Kindle
-/// books and HWPX documents Tika does not read), so their text is not compared with Tika's:
-/// tests of their own check it. The native port of one counts as it does.
-const OWN_PARSERS: [&str; 20] = [
+/// books, HWPX documents and Project plans Tika does not read), so their text is not compared
+/// with Tika's: tests of their own check it. The native port of one counts as it does.
+const OWN_PARSERS: [&str; 22] = [
+    "dijo::ProjectParser",
+    "dijo::ProjectParser",
     "dijo::CabParser",
     "dijo::CabParser",
     "dijo::PostScriptParser",

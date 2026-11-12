@@ -35,6 +35,12 @@
   text, and each file of the cpio payload, compressed with gzip, bzip2, xz, lzma or zstd, as an embedded document.
   The stripped payloads of packages of files of 4 GiB or more, and of format 6 packages, are read by the files the
   header lists.
+* Microsoft Project files are read for their plan (#341), where Tika reads only their summary information: MPP9
+  (Project 2000 to 2003), MPP12 (2007) and MPP14 (2010 and later), the tasks in the plan's order as lists nested by
+  outline level, each its name and its RTF notes, then the resources, each its name and notes. The project's
+  properties its summary information lacks come from its own. A Project 2010 file is read whatever type its
+  detection names; a file protected by a password to open it fails as encrypted, and one of an older format, as
+  Project 98's, is not read.
 
 # 0.2.14 (2026-10-28)
 
