@@ -1,0 +1,23 @@
+The keeper's log of the lighthouse
+
+The lighthouse keeper's log: what the lamp needed each night
+and how the storms passed the tower.
+
+The Keeper <keeper@example.org> - 1.2-3
+
+- Record the storm of the north-west.
+
+
+./usr/share/lighthouse/1890s/storm.txt
+
+Storm from the north-west; the lamp burned until dawn.
+
+
+
+
+./usr/share/lighthouse/ReadMe.txt
+
+Every evening at dusk the keeper climbed the tower and lit the lamp.
+
+
+

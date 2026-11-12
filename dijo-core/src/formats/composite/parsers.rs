@@ -477,6 +477,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/x-rar-compressed",
         "org.apache.tika.parser.pkg.RarParser",
     ),
+    ("application/x-rpm", "dijo::RpmParser"),
     (
         "application/x-sas-data",
         "org.apache.tika.parser.sas.SAS7BDATParser",

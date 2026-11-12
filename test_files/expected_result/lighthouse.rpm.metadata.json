@@ -1,0 +1,38 @@
+{
+    "Content-Type": [
+        "application/x-rpm"
+    ],
+    "tk:parsed-by": [
+        "dijo::RpmParser"
+    ],
+    "dc:title": [
+        "lighthouse-log"
+    ],
+    "rpm:version": [
+        "1.2"
+    ],
+    "rpm:release": [
+        "3"
+    ],
+    "rpm:arch": [
+        "noarch"
+    ],
+    "dc:description": [
+        "The keeper's log of the lighthouse"
+    ],
+    "dc:rights": [
+        "CC0-1.0"
+    ],
+    "rpm:url": [
+        "https://example.org/lighthouse"
+    ],
+    "dc:creator": [
+        "The Keeper <keeper@example.org>"
+    ],
+    "dc:publisher": [
+        "Lighthouse Press"
+    ],
+    "dcterms:created": [
+        "2026-11-12T12:00:00Z"
+    ]
+}

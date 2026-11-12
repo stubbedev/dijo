@@ -4,6 +4,8 @@
 //! ([`package`]), 7z archives with `SevenZParser` ([`seven_z`]) and RAR archives with
 //! `RarParser` ([`rar`]); and ISO 9660 disc images and Microsoft Cabinet archives, which Tika
 //! does not read, with `Iso9660Parser` ([`iso9660`]) and `CabParser` ([`cab`]).
+//!
+//! RPM packages, which Tika does not read either, are read with `RpmParser` ([`rpm`]).
 
 mod cab;
 mod compressor;
@@ -12,6 +14,7 @@ mod iso9660;
 pub(crate) mod large;
 mod package;
 mod rar;
+mod rpm;
 mod seven_z;
 mod zip;
 
@@ -20,6 +23,7 @@ pub use compressor::CompressorParser;
 pub use iso9660::Iso9660Parser;
 pub use package::PackageParser;
 pub use rar::RarParser;
+pub use rpm::RpmParser;
 pub use seven_z::SevenZParser;
 pub use zip::ZipParser;
 

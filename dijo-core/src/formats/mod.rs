@@ -118,6 +118,7 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::Iso9660Parser,
     &archive::PackageParser,
     &archive::RarParser,
+    &archive::RpmParser,
     &archive::SevenZParser,
     &archive::ZipParser,
     &chm::ChmParser,

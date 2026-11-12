@@ -5,6 +5,10 @@
 //! them.
 //!
 //! Names are read as UTF-8, which commons-compress, decoding names as US-ASCII, rejects.
+//!
+//! The payload of an RPM package may be a stripped archive, whose entries' headers give only
+//! the index of the file in the package's header: [`package_files`] reads it with the files
+//! that header lists.
 
 use super::{throws, ArchiveFile, Undecoded};
 use crate::input::{Input, Pages};
@@ -12,6 +16,9 @@ use crate::input::{Input, Pages};
 const NEW: &[u8; 6] = b"070701";
 const NEW_CRC: &[u8; 6] = b"070702";
 const OLD_ASCII: &[u8; 6] = b"070707";
+const STRIPPED: &[u8; 6] = b"07070X";
+/// The index a stripped entry ends the archive with.
+const STRIPPED_END: u32 = u32::MAX;
 const TRAILER: &str = "TRAILER!!!";
 const FILE_TYPE: u32 = 0o170000;
 const DIRECTORY: u32 = 0o040000;
@@ -24,13 +31,45 @@ fn fail(error: std::io::Error) -> Undecoded {
 /// or why they are not read natively. Each entry is read in the format its own magic names, as
 /// `getNextCPIOEntry` reads it.
 pub fn files<'a>(data: &'a [u8], pages: Pages<'a>) -> Result<Vec<ArchiveFile<'a>>, Undecoded> {
+    read(data, pages, None)
+}
+
+/// A file a package lists, which a stripped entry stands for by its index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub name: String,
+    pub mode: u64,
+    /// The modification time in seconds since the epoch.
+    pub mtime: i64,
+    /// The bytes of its data in the archive.
+    pub size: u64,
+}
+
+/// The files of the payload `data` of an RPM package, whose pages are `pages`, each file's data
+/// in place, or why they are not read: entries in the new ASCII format, and stripped ones,
+/// each the file `listed` gives for its index.
+pub fn package_files<'a>(
+    data: &'a [u8],
+    pages: Pages<'a>,
+    listed: &dyn Fn(u32) -> Result<Listed, Undecoded>,
+) -> Result<Vec<ArchiveFile<'a>>, Undecoded> {
+    read(data, pages, Some(listed))
+}
+
+/// The files of the archive `data`, whose pages are `pages`, a stripped entry read as the file
+/// `listed` gives for its index, where it is given.
+fn read<'a>(
+    data: &'a [u8],
+    pages: Pages<'a>,
+    listed: Option<&dyn Fn(u32) -> Result<Listed, Undecoded>>,
+) -> Result<Vec<ArchiveFile<'a>>, Undecoded> {
     let mut input = data;
     let mut files = Vec::new();
     loop {
-        let (entry, rest) = if input.starts_with(NEW) || input.starts_with(NEW_CRC) {
-            new_entry(input)?
-        } else {
-            OldFormat::of(input)?.entry(input)?
+        let (entry, rest) = match listed {
+            _ if input.starts_with(NEW) || input.starts_with(NEW_CRC) => new_entry(input)?,
+            Some(listed) if input.starts_with(STRIPPED) => stripped_entry(input, listed)?,
+            _ => OldFormat::of(input)?.entry(input)?,
         };
         let Some(entry) = entry else {
             return Ok(files);
@@ -89,9 +128,7 @@ fn new_entry(input: &[u8]) -> Result<(Option<Entry<'_>>, &[u8]), Undecoded> {
             return Err(throws("CRC Error"));
         }
     }
-    let rest = rest
-        .get(size + (4 - size % 4) % 4..)
-        .ok_or_else(ends_inside)?;
+    let rest = rest.get(size + padding(size)..).ok_or_else(ends_inside)?;
     let entry = Entry {
         name: entry.name().to_owned(),
         mode: u64::from(entry.mode()),
@@ -99,6 +136,51 @@ fn new_entry(input: &[u8]) -> Result<(Option<Entry<'_>>, &[u8]), Undecoded> {
         content,
     };
     Ok((Some(entry), rest))
+}
+
+/// The stripped entry at the start of `input`, the file `listed` gives for the index its
+/// header holds, none for the index that ends the archive, and what follows it.
+fn stripped_entry<'a>(
+    input: &'a [u8],
+    listed: &dyn Fn(u32) -> Result<Listed, Undecoded>,
+) -> Result<(Option<Entry<'a>>, &'a [u8]), Undecoded> {
+    let mut cursor = Cursor(input);
+    cursor.take(STRIPPED.len())?;
+    let field = cursor.take(8)?;
+    let index = std::str::from_utf8(field)
+        .ok()
+        .and_then(|digits| u32::from_str_radix(digits, 16).ok())
+        .ok_or_else(|| {
+            throws(format!(
+                "the index [{}] of a stripped entry is not hexadecimal",
+                super::ascii(field)
+            ))
+        })?;
+    cursor.take(padding(STRIPPED.len() + field.len()))?;
+    if index == STRIPPED_END {
+        return Ok((None, &[]));
+    }
+    let file = listed(index)?;
+    let size = usize::try_from(file.size).map_err(|_| {
+        throws(format!(
+            "the file {} of {} bytes does not fit in memory",
+            file.name, file.size
+        ))
+    })?;
+    let content = cursor.take(size)?;
+    cursor.take(padding(size))?;
+    let entry = Entry {
+        name: file.name,
+        mode: file.mode,
+        mtime: file.mtime,
+        content,
+    };
+    Ok((Some(entry), cursor.0))
+}
+
+/// The bytes that pad `length` bytes to the four the new and stripped formats align to.
+fn padding(length: usize) -> usize {
+    (4 - length % 4) % 4
 }
 
 /// The old formats, which the cpio crate does not read: binary, in the byte order of the machine
@@ -262,6 +344,99 @@ pub mod tests {
         }
         cpio::newc::trailer(&mut out).unwrap();
         out
+    }
+
+    /// A stripped archive, as rpm writes the payload of a package of large files: each entry
+    /// the index of a file and its data, then the trailer in the new ASCII format.
+    pub fn stripped(entries: &[(u32, &[u8])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (index, content) in entries {
+            out.extend_from_slice(format!("07070X{index:08x}\0\0").as_bytes());
+            out.extend_from_slice(content);
+            out.resize(out.len().next_multiple_of(4), 0);
+        }
+        cpio::newc::trailer(&mut out).unwrap();
+        out
+    }
+
+    #[cfg(test)]
+    fn listed(index: u32) -> Result<Listed, Undecoded> {
+        match index {
+            0 => Ok(Listed {
+                name: "./usr/share/doc".to_owned(),
+                mode: 0o040755,
+                mtime: 1_700_000_000,
+                size: 0,
+            }),
+            1 => Ok(Listed {
+                name: "./usr/share/doc/odd.txt".to_owned(),
+                mode: 0o100644,
+                mtime: 1_700_000_000,
+                size: 3,
+            }),
+            other => Err(Undecoded::Fails(format!("no file {other}"))),
+        }
+    }
+
+    #[test]
+    fn reads_stripped_entries_as_the_package_lists_their_files() {
+        let data = stripped(&[(0, b""), (1, b"odd")]);
+        let found: Vec<(String, bool, Vec<u8>, Option<i64>)> =
+            package_files(&data, Pages::IN_MEMORY, &listed)
+                .unwrap()
+                .into_iter()
+                .map(|file| {
+                    (
+                        file.name,
+                        file.directory,
+                        file.content.to_vec(),
+                        file.modified_millis,
+                    )
+                })
+                .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    "./usr/share/doc".to_owned(),
+                    true,
+                    Vec::new(),
+                    Some(1_700_000_000_000)
+                ),
+                (
+                    "./usr/share/doc/odd.txt".to_owned(),
+                    false,
+                    b"odd".to_vec(),
+                    Some(1_700_000_000_000)
+                ),
+            ]
+        );
+        let mixed = [cpio(&[("a.txt", b"text")]), stripped(&[])].concat();
+        assert_eq!(
+            package_files(&mixed, Pages::IN_MEMORY, &listed)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn fails_on_stripped_entries_it_cannot_resolve_or_that_are_cut_short() {
+        fn read(data: &[u8]) -> Result<Vec<ArchiveFile<'_>>, Undecoded> {
+            package_files(data, Pages::IN_MEMORY, &listed)
+        }
+        let unlisted = read(&stripped(&[(7, b"")])).unwrap_err();
+        assert_eq!(unlisted, Undecoded::Fails("no file 7".to_owned()));
+        let data = stripped(&[(1, b"odd")]);
+        assert!(matches!(read(&data[..18]), Err(Undecoded::Fails(_))));
+        let Err(Undecoded::Fails(reason)) = read(b"07070Xzzzzzzzz\0\0") else {
+            panic!("an index that is not hexadecimal is read");
+        };
+        assert!(reason.contains("[zzzzzzzz]"), "{reason}");
+        let Err(Undecoded::Fails(reason)) = files(&data, Pages::IN_MEMORY) else {
+            panic!("a stripped entry is read outside a package");
+        };
+        assert_eq!(reason, "Unknown magic [07070X]");
     }
 
     #[test]

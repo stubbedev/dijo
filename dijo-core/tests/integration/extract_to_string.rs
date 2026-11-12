@@ -20,6 +20,7 @@ use crate::test_utils;
 #[test_case("subtitled.mkv", 0.9; "Test MKV file")]
 #[test_case("cabinet.cab", 0.9; "Test CAB file")]
 #[test_case("lighthouse.iso", 0.9; "Test ISO 9660 image")]
+#[test_case("lighthouse.rpm", 0.9; "Test RPM package")]
 //#[test_case("eng-ocr.pdf", 0.9; "Test eng-ocr PDF file")]
 fn test_extract_file_to_string(file_name: &str, target_dist: f64) {
     let extractor = Extractor::new().set_extract_string_max_length(1000000);

@@ -76,6 +76,8 @@ documents	lighthouse.fodp	file	application/vnd.oasis.opendocument.flat.presentat
 documents	lighthouse.fodp	bytes	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
 documents	lighthouse.iso	file	application/x-iso9660-image	tk:content-type-magic-detected=application/x-iso9660-image
 documents	lighthouse.iso	bytes	application/x-iso9660-image	tk:content-type-magic-detected=application/x-iso9660-image
+documents	lighthouse.rpm	file	application/x-rpm	tk:content-type-magic-detected=application/x-rpm
+documents	lighthouse.rpm	bytes	application/x-rpm	tk:content-type-magic-detected=application/x-rpm
 documents	mail.emlx	file	message/x-emlx	tk:content-type-magic-detected=message/x-emlx
 documents	mail.emlx	bytes	message/x-emlx	tk:content-type-magic-detected=message/x-emlx
 documents	malayalam-scan.png	file	image/png	tk:content-type-magic-detected=image/png

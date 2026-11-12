@@ -30,6 +30,11 @@
   and LZX folders, decoded a block at a time in bounded memory. OneNote packages, which are cabinets, are read the
   same way. A file of a Quantum folder, or one that starts or ends in another cabinet of a set, is recorded as
   unread, and the cabinets before and after are named in `cab:previous-cabinet` and `cab:next-cabinet`.
+* RPM packages are read (#340), where Tika reads nothing of them: the name, version, release, architecture, summary,
+  license, URL, packager, vendor and build time of the header as metadata, the summary, description and changelog as
+  text, and each file of the cpio payload, compressed with gzip, bzip2, xz, lzma or zstd, as an embedded document.
+  The stripped payloads of packages of files of 4 GiB or more, and of format 6 packages, are read by the files the
+  header lists.
 
 # 0.2.14 (2026-10-28)
 

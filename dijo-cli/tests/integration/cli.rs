@@ -1738,6 +1738,42 @@ fn iso9660_images_are_read_as_archives() {
     );
 }
 
+/// `lighthouse.rpm` was built with rpmbuild 4.20.1 from
+/// `dijo-mail/tests/fixtures/rpm/lighthouse-log.spec` (`SOURCE_DATE_EPOCH=1794484800 rpmbuild
+/// -bb --define "_binary_payload w19.zstdio" --define "use_source_date_epoch_as_buildtime 1"
+/// --define "build_mtime_policy clamp_to_source_date_epoch" --define "_buildhost
+/// lighthouse.example.org"`): a noarch package of two text files, its payload compressed with
+/// zstd.
+#[test]
+fn rpm_packages_are_read_for_their_header_and_files() {
+    let objects = json_objects(&["--embedded", "separate", &document("lighthouse.rpm")]);
+    for object in &objects {
+        assert_matches_schema(object);
+    }
+    assert_eq!(objects[0]["mime_type"], "application/x-rpm");
+    assert_eq!(objects[0]["metadata"]["title"], "lighthouse-log");
+    assert_eq!(objects[0]["raw_metadata"]["rpm:version"][0], "1.2");
+    assert_eq!(objects[0]["raw_metadata"]["dc:rights"][0], "CC0-1.0");
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(text.contains("what the lamp needed each night"), "{text}");
+    assert!(
+        text.contains("Record the storm of the north-west."),
+        "{text}"
+    );
+    assert_eq!(
+        embedded_paths(&objects),
+        [
+            "<root>",
+            "./usr/share/lighthouse/1890s/storm.txt",
+            "./usr/share/lighthouse/ReadMe.txt",
+        ]
+    );
+    assert_eq!(
+        objects[1]["text"],
+        "Storm from the north-west; the lamp burned until dawn.\n"
+    );
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]
