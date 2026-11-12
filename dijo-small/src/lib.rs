@@ -53,6 +53,7 @@ pub mod formats {
     pub mod sas;
     pub mod source_code;
     pub mod subtitle;
+    pub mod svg;
     pub mod translation;
     pub mod tsd;
     pub mod wordperfect;

@@ -52,6 +52,12 @@
   are given in UTC, resolved by the calendar's own `VTIMEZONE` or the bundled time zone database; floating times are
   marked floating and dates stay dates. The calendar's name, description and product are its `dc:title`,
   `dc:description` and `xmp:CreatorTool`.
+* SVG images are read for the text they show (#345), where Tika reads all the character data of their XML, style
+  sheets, scripts and RDF included: each `<text>` a paragraph, its tspans, text paths and links in document order,
+  whitespace collapsed as SVG renders it unless `xml:space` preserves it, Inkscape's lines (and flowed paragraphs)
+  broken as they are drawn, and the XHTML of a `<foreignObject>` a paragraph to each block. The root's `<title>` and
+  `<desc>` and the Dublin Core of Inkscape's RDF metadata are metadata, a nested title a paragraph; images in `data:`
+  URIs are handed on as embedded documents, for OCR. Nothing a link or the DTD names is fetched.
 
 # 0.2.14 (2026-10-28)
 

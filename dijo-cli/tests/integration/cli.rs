@@ -1808,6 +1808,36 @@ fn icalendar_files_are_read_for_their_entries_with_times_in_utc() {
     }
 }
 
+/// `lighthouse.svg` was written by `dijo-small/tests/fixtures/svg/lighthouse.py`: an image as
+/// Inkscape 1.3 saves one, with RDF metadata, multi-line text, text on a path, a style sheet, a
+/// script, a foreign object of XHTML and a PNG in a `data:` URI. Whether OCR reads the PNG's word
+/// is the image parser's to test; that it is handed on as an embedded image is this one's.
+#[test]
+fn svg_images_are_read_for_the_text_they_show() {
+    let objects = json_objects(&["--embedded", "separate", &document("lighthouse.svg")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "image/svg+xml");
+    assert_eq!(objects[0]["metadata"]["title"], "The Lighthouse Keeper's Chart");
+    assert_eq!(objects[0]["metadata"]["authors"][0], "Anna Berg");
+    assert_eq!(
+        objects[0]["raw_metadata"]["dc:description"][0],
+        "A chart of the harbour approaches, drawn for the keeper."
+    );
+    assert_eq!(
+        objects[0]["raw_metadata"]["dc:subject"],
+        serde_json::json!(["lighthouse", "chart"])
+    );
+    assert_eq!(
+        objects[0]["text"],
+        "Beware the reef\nEvery evening at dusk\nthe keeper climbed the tower.\n\
+         Along the coast, the harbour master\u{2019}s boats\nH2O and E = mc2\nTide tables\n\
+         Fyret lyser om natten\nThe light shines at night\nHarbour wall\n\
+         Lamp oil: 40 litres\nWick trimmed\nLens polished\n"
+    );
+    assert_eq!(embedded_paths(&objects), ["<root>", "embedded-0"]);
+    assert_eq!(objects[1]["source"]["size"], 282);
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]
