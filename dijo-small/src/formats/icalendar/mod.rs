@@ -16,7 +16,7 @@ mod moment;
 
 use crate::config::ParserConfigs;
 use crate::formats::auto_detect_reader::{self, AutoDetectReader};
-use crate::formats::content_line::{unfold, ContentLine};
+use crate::formats::content_line::{unfold, ContentLine, Person};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{unless_different, Decline, Failure, Footprint, Parser, Prepared};
@@ -306,38 +306,9 @@ impl EntryKind {
     }
 }
 
-/// Someone an entry names: an organiser or an attendee.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Person {
-    name: Option<String>,
-    address: String,
-}
-
-impl Person {
-    /// The person of an `ORGANIZER` or `ATTENDEE` line: its `CN`, and its address, a `mailto:`
-    /// URI as the email address it names.
-    fn of(line: &ContentLine) -> Self {
-        let uri = line.raw.trim();
-        let address = match uri.get(..7) {
-            Some(scheme) if scheme.eq_ignore_ascii_case("mailto:") => &uri[7..],
-            _ => uri,
-        };
-        Self {
-            name: line.parameter("CN").map(str::to_owned),
-            address: address.to_owned(),
-        }
-    }
-}
-
-impl std::fmt::Display for Person {
-    /// `Name <address>`, as mail writes a mailbox, or the address alone.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match (&self.name, self.address.is_empty()) {
-            (Some(name), true) => f.write_str(name),
-            (Some(name), false) => write!(f, "{name} <{}>", self.address),
-            (None, _) => f.write_str(&self.address),
-        }
-    }
+/// The person of an `ORGANIZER` or `ATTENDEE` line: its `CN`, at the address its value names.
+fn person(line: &ContentLine) -> Person {
+    Person::new(line.parameter("CN").map(str::to_owned), line.raw)
 }
 
 /// What is written of an event, a to-do or a journal entry.
@@ -396,9 +367,9 @@ impl Entry {
         } else if line.is("RRULE") {
             self.rule = Some(line.raw.trim().to_owned());
         } else if line.is("ORGANIZER") {
-            self.organiser = Some(Person::of(line));
+            self.organiser = Some(person(line));
         } else if line.is("ATTENDEE") {
-            self.attendees.push(Person::of(line));
+            self.attendees.push(person(line));
         }
         Ok(())
     }

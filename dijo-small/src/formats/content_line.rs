@@ -259,6 +259,40 @@ impl<'a> ContentLine<'a> {
     }
 }
 
+/// Someone a directory entry names, as mail writes a mailbox: a calendar entry's organiser or
+/// attendee, or a card's holder at one of its email addresses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Person {
+    pub name: Option<String>,
+    pub address: String,
+}
+
+impl Person {
+    /// The person `name` at `uri`, a `mailto:` URI as the email address it names.
+    pub fn new(name: Option<String>, uri: &str) -> Self {
+        let uri = uri.trim();
+        let address = match uri.get(..7) {
+            Some(scheme) if scheme.eq_ignore_ascii_case("mailto:") => &uri[7..],
+            _ => uri,
+        };
+        Self {
+            name,
+            address: address.to_owned(),
+        }
+    }
+}
+
+impl std::fmt::Display for Person {
+    /// `Name <address>`, as mail writes a mailbox, or the address alone.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.name, self.address.is_empty()) {
+            (Some(name), true) => f.write_str(name),
+            (Some(name), false) => write!(f, "{name} <{}>", self.address),
+            (None, _) => f.write_str(&self.address),
+        }
+    }
+}
+
 /// The parameter at the start of `text`, after its semicolon, and what follows it, or `None`
 /// when it is malformed: an empty name or an unclosed quote.
 fn parse_parameter(text: &str) -> Option<(Parameter<'_>, &str)> {
@@ -465,6 +499,17 @@ mod tests {
         let line = ContentLine::parse("PHOTO;ENCODING=b;TYPE=png:aGk=").unwrap();
         assert_eq!(line.binary().unwrap(), b"hi");
         assert!(line.text().is_err());
+    }
+
+    #[test]
+    fn writes_people_as_mail_writes_mailboxes() {
+        let named = Person::new(Some("Keeper, The".to_owned()), " MAILTO:keeper@example.org");
+        assert_eq!(named.to_string(), "Keeper, The <keeper@example.org>");
+        assert_eq!(
+            Person::new(None, "bo@example.org").to_string(),
+            "bo@example.org"
+        );
+        assert_eq!(Person::new(Some("Ada".to_owned()), "").to_string(), "Ada");
     }
 
     #[test]

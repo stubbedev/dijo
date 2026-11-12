@@ -1838,6 +1838,64 @@ fn svg_images_are_read_for_the_text_they_show() {
     assert_eq!(objects[1]["source"]["size"], 282);
 }
 
+/// `lighthouse.vcf` was written by hand for dijo, its photo and logo 2-by-2 PNG images of one
+/// colour: a vCard 2.1 card of quoted-printable ISO-8859-1 values, a soft line break, bare
+/// parameters, a base64 photo and a nested agent card; a 3.0 card of escapes, typed addresses, a
+/// photo by URI and an agent card in its text; and a 4.0 card of a `tel:` URI, a quoted type list
+/// and a logo in a `data:` URI folded at 75 octets.
+#[test]
+fn vcard_files_are_read_for_their_cards() {
+    let objects = json_objects(&["--ocr", "never", &document("lighthouse.vcf")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "text/x-vcard");
+    assert_eq!(objects[0]["status"], "complete");
+    let text = objects[0]["text"].as_str().unwrap();
+    for expected in [
+        "Ove Gr\u{f8}n\nOrganisation: Skagen Fyr, Lantern room\nTitle: Lighthouse keeper\n",
+        "Born: 1958-04-12\nEmail: Ove Gr\u{f8}n <ove@lighthouse.example.org>\n",
+        "Phone (work, voice): +45 98 44 35 08\nPhone (cell): +45 20 11 22 33\n",
+        "Address (work): Fyrt\u{e5}rnet, Fyrvej 36, 9990 Skagen, Danmark\n",
+        "Lights the lamp at dusk and keeps the log.\nAsk for him at the k\u{f8}kken door.\n",
+        "Agent:\nHarbour office\nPhone (work): +45 98 44 00 00\n",
+        "Ada Lund\nOrganisation: Danish Maritime Authority, Lights, buoys and beacons\n",
+        "Nickname: Lamp Ada, Ada\n",
+        "Email (home): Ada Lund <ada@example.net>\n",
+        "Address (work): Caspar Brands Plads 9, 4220 Kors\u{f8}r, Denmark\n",
+        "Agent:\nBo \u{d8}rsted\nEmail: Bo \u{d8}rsted <bo@maritime.example.org>\n",
+        "Photo: https://maritime.example.org/staff/ada.jpg\n",
+        "Anniversary: 1858-01-01\n",
+        "Phone (work, voice): +45-98-44-35-08\n",
+    ] {
+        assert!(text.contains(expected), "{expected:?} is not in {text}");
+    }
+    for noise in ["BEGIN:", "VERSION", "=F8", "iVBOR", "data:", "\\,", "LABEL"] {
+        assert!(!text.contains(noise), "kept {noise:?}: {text}");
+    }
+    let separate = json_objects(&[
+        "--embedded",
+        "separate",
+        "--ocr",
+        "never",
+        &document("lighthouse.vcf"),
+    ]);
+    let embedded: Vec<(&str, &str)> = separate[1..]
+        .iter()
+        .map(|object| {
+            (
+                object["source"]["embedded_path"].as_str().unwrap(),
+                object["mime_type"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        embedded,
+        [
+            ("Ove Gr\u{f8}n photo.png", "image/png"),
+            ("Skagen Lighthouse Society logo.png", "image/png")
+        ]
+    );
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

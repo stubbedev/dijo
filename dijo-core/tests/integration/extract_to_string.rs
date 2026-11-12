@@ -23,6 +23,7 @@ use crate::test_utils;
 #[test_case("testPROJECT2007.mpp", 0.9; "Test Microsoft Project file")]
 #[test_case("lighthouse.rpm", 0.9; "Test RPM package")]
 #[test_case("lighthouse.ics", 0.9; "Test iCalendar file")]
+#[test_case("lighthouse.vcf", 0.9; "Test vCard file")]
 #[test_case("lighthouse.svg", 0.9; "Test SVG image")]
 #[test_case("works4.wps", 0.9; "Test Works 4 document")]
 #[test_case("works7.wps", 0.9; "Test Works 7 document")]

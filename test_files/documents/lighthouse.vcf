@@ -1,0 +1,54 @@
+BEGIN:VCARD
+VERSION:2.1
+N;CHARSET=ISO-8859-1;ENCODING=QUOTED-PRINTABLE:Gr=F8n;Ove;;;
+FN;CHARSET=ISO-8859-1;ENCODING=QUOTED-PRINTABLE:Ove Gr=F8n
+ORG:Skagen Fyr;Lantern room
+TITLE:Lighthouse keeper
+TEL;WORK;VOICE:+45 98 44 35 08
+TEL;CELL:+45 20 11 22 33
+EMAIL;PREF;INTERNET:ove@lighthouse.example.org
+ADR;WORK;CHARSET=ISO-8859-1;ENCODING=QUOTED-PRINTABLE:;Fyrt=E5rnet;Fyrvej 36;Skagen;;9990;Danmark
+NOTE;CHARSET=ISO-8859-1;ENCODING=QUOTED-PRINTABLE:Lights the lamp at dusk and keeps the log.=0D=0A=
+Ask for him at the k=F8kken door.
+BDAY:19580412
+PHOTO;PNG;ENCODING=BASE64:
+ iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mM4IScHRAwQCgAf
+ JgQRSo6NIAAAAABJRU5ErkJggg==
+
+AGENT:
+BEGIN:VCARD
+VERSION:2.1
+FN:Harbour office
+TEL;WORK:+45 98 44 00 00
+END:VCARD
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+N:Lund;Ada;Marie;Dr.;
+FN:Ada Lund
+NICKNAME:Lamp Ada,Ada
+ORG:Danish Maritime Authority;Lights\, buoys and beacons
+TITLE:Inspector
+ROLE:Annual inspection
+EMAIL;TYPE=INTERNET,WORK:ada.lund@maritime.example.org
+EMAIL;TYPE=INTERNET,HOME:ada@example.net
+TEL;TYPE=WORK,VOICE:+45 72 19 60 00
+ADR;TYPE=WORK:;;Caspar Brands Plads 9;Korsør;;4220;Denmark
+URL:https://maritime.example.org/lights
+CATEGORIES:Inspectors,Maritime
+AGENT:BEGIN:VCARD\nVERSION:3.0\nFN:Bo Ørsted\nEMAIL\;TYPE=INTERNET:bo@maritime.example.org\nEND:VCARD\n
+PHOTO;VALUE=URI:https://maritime.example.org/staff/ada.jpg
+END:VCARD
+BEGIN:VCARD
+VERSION:4.0
+FN:Skagen Lighthouse Society
+KIND:org
+ORG:Skagen Lighthouse Society
+EMAIL;TYPE=work;PREF=1:info@lighthouse.example.org
+TEL;VALUE=uri;TYPE="work,voice":tel:+45-98-44-35-08
+ADR;TYPE=work;LABEL="Fyrvej 36\n9990 Skagen":;;Fyrvej 36;Skagen;;9990;Denmark
+ANNIVERSARY:18580101
+NOTE:Friends of the Grey Lighthouse\, founded to keep its lamp lit.
+LOGO:data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAA
+ EElEQVR42mOQszkBRAwQCgAdHgSJDEbUcwAAAABJRU5ErkJggg==
+END:VCARD

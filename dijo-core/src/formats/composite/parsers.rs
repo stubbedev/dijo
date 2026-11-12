@@ -634,6 +634,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "org.apache.tika.parser.code.SourceCodeParser",
     ),
     ("text/x-ssa", "dijo::SubtitleParser"),
+    ("text/x-vcard", "dijo::VCardParser"),
     ("video/3gpp", "org.apache.tika.parser.mp4.MP4Parser"),
     ("video/3gpp2", "org.apache.tika.parser.mp4.MP4Parser"),
     ("video/quicktime", "org.apache.tika.parser.mp4.MP4Parser"),

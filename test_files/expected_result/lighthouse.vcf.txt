@@ -1,0 +1,35 @@
+Ove Grøn
+Organisation: Skagen Fyr, Lantern room
+Title: Lighthouse keeper
+Born: 1958-04-12
+Email: Ove Grøn <ove@lighthouse.example.org>
+Phone (work, voice): +45 98 44 35 08
+Phone (cell): +45 20 11 22 33
+Address (work): Fyrtårnet, Fyrvej 36, 9990 Skagen, Danmark
+Lights the lamp at dusk and keeps the log.
+Ask for him at the køkken door.
+Agent:
+Harbour office
+Phone (work): +45 98 44 00 00
+Ada Lund
+Organisation: Danish Maritime Authority, Lights, buoys and beacons
+Title: Inspector
+Role: Annual inspection
+Nickname: Lamp Ada, Ada
+Email (work): Ada Lund <ada.lund@maritime.example.org>
+Email (home): Ada Lund <ada@example.net>
+Phone (work, voice): +45 72 19 60 00
+Address (work): Caspar Brands Plads 9, 4220 Korsør, Denmark
+Website: https://maritime.example.org/lights
+Categories: Inspectors, Maritime
+Agent:
+Bo Ørsted
+Email: Bo Ørsted <bo@maritime.example.org>
+Photo: https://maritime.example.org/staff/ada.jpg
+Skagen Lighthouse Society
+Organisation: Skagen Lighthouse Society
+Anniversary: 1858-01-01
+Email (work): Skagen Lighthouse Society <info@lighthouse.example.org>
+Phone (work, voice): +45-98-44-35-08
+Address (work): Fyrvej 36, 9990 Skagen, Denmark
+Friends of the Grey Lighthouse, founded to keep its lamp lit.

@@ -92,6 +92,7 @@ pub(crate) use dijo_small::formats::subtitle;
 pub(crate) use dijo_small::formats::svg;
 pub(crate) use dijo_small::formats::translation;
 pub(crate) use dijo_small::formats::tsd;
+pub(crate) use dijo_small::formats::vcard;
 pub(crate) use dijo_small::formats::wordperfect;
 pub(crate) use dijo_small::formats::xml_2003;
 
@@ -215,6 +216,7 @@ static PARSERS: &[&dyn Parser] = &[
     &text::TextAndCsvParser,
     &tnef::TnefParser,
     &tsd::TsdParser,
+    &vcard::VCardParser,
     &visio::VisioParser,
     &works::WorksParser,
     &xls::XlsParser,

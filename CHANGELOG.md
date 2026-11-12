@@ -52,6 +52,13 @@
   are given in UTC, resolved by the calendar's own `VTIMEZONE` or the bundled time zone database; floating times are
   marked floating and dates stay dates. The calendar's name, description and product are its `dc:title`,
   `dc:description` and `xmp:CreatorTool`.
+* vCard files are read for their cards (#344), where Tika reads their property lines as plain text: vCard 2.1, 3.0
+  and 4.0, lines unfolded, values unescaped and quoted-printable values decoded in their `CHARSET`. Each card is a
+  section of its name, nicknames, organisation, titles, roles, birthday, anniversary, email addresses (written as
+  mail writes a mailbox), phone numbers and addresses labelled with their types, websites, categories and notes, with
+  its agent cards nested in it. Photos, logos and sounds held in the card, in base64 or a `data:` URI, are handed on
+  as embedded documents named after the card; those held elsewhere are listed by their URI, never fetched. The name
+  of a file of one card is its `dc:title`.
 * SVG images are read for the text they show (#345), where Tika reads all the character data of their XML, style
   sheets, scripts and RDF included: each `<text>` a paragraph, its tspans, text paths and links in document order,
   whitespace collapsed as SVG renders it unless `xml:space` preserves it, Inkscape's lines (and flowed paragraphs)
