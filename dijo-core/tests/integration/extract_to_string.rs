@@ -16,6 +16,7 @@ use crate::test_utils;
 #[test_case("table-multi-row-column-cells.png", -1.0; "Test PNG file")]
 #[test_case("winter-sports.epub", 0.9; "Test EPUB file")]
 #[test_case("bug_16.docx", 0.9; "Test bug16 DOCX file")]
+#[test_case("subtitled.mkv", 0.9; "Test MKV file")]
 //#[test_case("eng-ocr.pdf", 0.9; "Test eng-ocr PDF file")]
 fn test_extract_file_to_string(file_name: &str, target_dist: f64) {
     let extractor = Extractor::new().set_extract_string_max_length(1000000);

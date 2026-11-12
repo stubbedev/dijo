@@ -1,0 +1,39 @@
+{
+    "Content-Type": [
+        "video/x-matroska"
+    ],
+    "tk:parsed-by": [
+        "dijo::MatroskaParser"
+    ],
+    "dc:title": [
+        "The Lighthouse Keeper"
+    ],
+    "dc:language": [
+        "eng",
+        "dan"
+    ],
+    "xmp:CreatorTool": [
+        "Lavf"
+    ],
+    "xmpDM:duration": [
+        "9.0"
+    ],
+    "xmpDM:artist": [
+        "The Keeper"
+    ],
+    "xmpDM:genre": [
+        "Documentary"
+    ],
+    "xmpDM:releaseDate": [
+        "2026"
+    ],
+    "xmpDM:videoCompressor": [
+        "V_VP9"
+    ],
+    "tiff:ImageWidth": [
+        "32"
+    ],
+    "tiff:ImageLength": [
+        "32"
+    ]
+}

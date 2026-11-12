@@ -73,6 +73,7 @@ pub(crate) use dijo_small::formats::iwork;
 pub(crate) use dijo_small::formats::iwork_package;
 pub(crate) use dijo_small::formats::markdown;
 pub(crate) use dijo_small::formats::mat;
+pub(crate) use dijo_small::formats::matroska;
 pub(crate) use dijo_small::formats::mif;
 pub(crate) use dijo_small::formats::mobi;
 pub(crate) use dijo_small::formats::ms_owner;
@@ -156,6 +157,7 @@ static PARSERS: &[&dyn Parser] = &[
     &mail::MboxParser,
     &markdown::MarkdownParser,
     &mat::MatParser,
+    &matroska::MatroskaParser,
     &media::FlacParser,
     &media::OpusParser,
     &media::VorbisParser,

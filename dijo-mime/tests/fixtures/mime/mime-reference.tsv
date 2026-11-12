@@ -206,6 +206,10 @@ documents	spanned.z01	file	application/zip	tk:content-type-magic-detected=applic
 documents	spanned.z01	bytes	application/zip	tk:content-type-magic-detected=application/zip	Content-Length=65536	zip:detector-zip-file-opened=false
 documents	storm.djvu	file	image/vnd.djvu	tk:content-type-magic-detected=image/vnd.djvu
 documents	storm.djvu	bytes	image/vnd.djvu	tk:content-type-magic-detected=image/vnd.djvu
+documents	subtitled.mkv	file	video/x-matroska	tk:content-type-magic-detected=video/x-matroska
+documents	subtitled.mkv	bytes	application/x-matroska	tk:content-type-magic-detected=application/x-matroska
+documents	subtitled.webm	file	video/webm	tk:content-type-magic-detected=video/webm
+documents	subtitled.webm	bytes	video/webm	tk:content-type-magic-detected=application/x-matroska
 documents	subtitles.ass	file	text/x-ssa	tk:content-type-magic-detected=text/x-ssa
 documents	subtitles.ass	bytes	text/x-ssa	tk:content-type-magic-detected=text/x-ssa
 documents	subtitles.srt	file	application/x-subrip	tk:content-type-magic-detected=application/x-subrip

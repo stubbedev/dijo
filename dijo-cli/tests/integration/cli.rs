@@ -1672,6 +1672,40 @@ fn subtitles_are_read_for_their_spoken_text() {
     }
 }
 
+/// `subtitled.mkv` and `subtitled.webm` were made with FFmpeg 9.0.2 (`-fflags +bitexact`) from a
+/// 9-second 32x32 VP9 picture of `lavfi color`: the first with an English SubRip track, a Danish
+/// SubStation Alpha track whose dialogues are out of time order, global tags and a text
+/// attachment, the second with an English WebVTT track.
+#[test]
+fn matroska_and_webm_are_read_for_their_subtitles_and_attachments() {
+    let objects = json_objects(&[&document("subtitled.mkv")]);
+    assert_eq!(objects[0]["mime_type"], "video/x-matroska");
+    assert_eq!(objects[0]["metadata"]["title"], "The Lighthouse Keeper");
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(
+        text.contains(
+            "Every evening at dusk\nthe keeper climbed the tower\nand lit the lamp.\n\
+             Ships passed safely through the night.\nHver aften i skumringen\n\
+             klatrede vogteren op i tårnet\nog tændte lampen.\n\
+             Skibe sejlede sikkert gennem natten."
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("Keeper's log: the lamp was lit at dusk"),
+        "{text}"
+    );
+    for noise in ["-->", "<i>", "{\\i1}", "Dialogue", "Default", "\\N"] {
+        assert!(!text.contains(noise), "kept {noise:?}: {text}");
+    }
+    let webm = extracted(&[&document("subtitled.webm")]);
+    assert!(
+        webm.contains("the keeper climbed the tower\nand lit the lamp."),
+        "{webm}"
+    );
+    assert!(!webm.contains("<v "), "{webm}");
+}
+
 #[test]
 fn notebooks_are_read_cell_by_cell() {
     let objects = json_objects(&[&document("notebook.ipynb")]);

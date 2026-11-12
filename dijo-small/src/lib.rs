@@ -39,6 +39,7 @@ pub mod formats {
     pub mod iwork_package;
     pub mod markdown;
     pub mod mat;
+    pub mod matroska;
     pub mod mif;
     pub mod mobi;
     pub mod ms_owner;

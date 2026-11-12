@@ -18,7 +18,9 @@ const TIMEOUT_SECONDS: &str = "60";
 /// leaves out, dropping subtitle timings, notebook JSON, FB2 styles, email headers, the Kindle
 /// books and HWPX documents Tika does not read), so their text is not compared with Tika's:
 /// tests of their own check it. The native port of one counts as it does.
-const OWN_PARSERS: [&str; 14] = [
+const OWN_PARSERS: [&str; 16] = [
+    "dijo::MatroskaParser",
+    "dijo::MatroskaParser",
     "dijo::IworkArchiveParser",
     "dijo::IworkArchiveParser",
     "dijo::SubtitleParser",

@@ -10,6 +10,10 @@
 * Such a page is first flattened by PaddleOCR's UVDoc and read again by tesseract, keeping that reading when it is at
   least 10 more confident (#228): a curled page, as photographed in an open book, reads with 2.4% character errors where it read with 58%. The
   OCR report of a flattened page says `unwarped`.
+* Matroska and WebM files are read (#337), where Tika reads nothing of them: the cues of their text subtitle tracks
+  (SubRip, SubStation Alpha and WebVTT, zlib-compressed or header-stripped), track by track in time order, the title,
+  date, writing application, duration and global tags, the codecs, picture size and languages of the tracks, and the
+  attachments, such as fonts and cover images, as embedded documents.
 
 # 0.2.14 (2026-10-28)
 

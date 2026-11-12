@@ -105,12 +105,33 @@ fn timed_cues(
         if !in_cue {
             continue;
         }
-        if !cue.is_empty() {
-            cue.push('\n');
-        }
-        cue.push_str(&clean(line));
+        push_cue_line(&mut cue, line);
     }
     end_cue(&mut cue, each)
+}
+
+/// The text of a SubRip or WebVTT cue held apart from its timing, as a Matroska block holds one:
+/// each of its lines without its markup, the cue stripped.
+pub(crate) fn timed_cue(text: &str) -> String {
+    let mut cue = String::with_capacity(text.len());
+    for line in text.lines() {
+        push_cue_line(&mut cue, line);
+    }
+    strip(&cue).to_owned()
+}
+
+/// Adds `line` without its markup to the lines of `cue`.
+fn push_cue_line(cue: &mut String, line: &str) {
+    if !cue.is_empty() {
+        cue.push('\n');
+    }
+    cue.push_str(&clean(line));
+}
+
+/// The text of the text field of a SubStation Alpha dialogue, `\N` and `\n` as line breaks,
+/// without its override blocks and stripped.
+pub(crate) fn substation_cue(field: &str) -> String {
+    clean(&escaped_line_breaks(field))
 }
 
 /// The text field of each Dialogue line of a SubStation Alpha script, `\N` and `\n` as line
@@ -129,7 +150,7 @@ fn substation_cues(
         else {
             continue;
         };
-        let mut cue = clean(&escaped_line_breaks(field));
+        let mut cue = substation_cue(field);
         end_cue(&mut cue, each)?;
     }
     Ok(())

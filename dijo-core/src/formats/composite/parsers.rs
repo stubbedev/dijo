@@ -451,6 +451,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/x-matlab-data",
         "org.apache.tika.parser.mat.MatParser",
     ),
+    ("application/x-matroska", "dijo::MatroskaParser"),
     ("application/x-mobipocket-ebook", "dijo::MobiParser"),
     (
         "application/x-ms-owner",
@@ -530,6 +531,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
     ("audio/vorbis", "org.apache.tika.parser.ogg.VorbisParser"),
     ("audio/x-aiff", "org.apache.tika.parser.audio.AudioParser"),
     ("audio/x-flac", "org.apache.tika.parser.ogg.FlacParser"),
+    ("audio/x-matroska", "dijo::MatroskaParser"),
     ("audio/x-oggflac", "org.apache.tika.parser.ogg.FlacParser"),
     ("image/avif", "org.apache.tika.parser.image.HeifParser"),
     ("image/bmp", "org.apache.tika.parser.image.ImageParser"),
@@ -628,5 +630,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
     ("video/3gpp2", "org.apache.tika.parser.mp4.MP4Parser"),
     ("video/quicktime", "org.apache.tika.parser.mp4.MP4Parser"),
     ("video/theora", "org.apache.tika.parser.ogg.TheoraParser"),
+    ("video/webm", "dijo::MatroskaParser"),
     ("video/x-flv", "org.apache.tika.parser.video.FLVParser"),
+    ("video/x-matroska", "dijo::MatroskaParser"),
 ];
