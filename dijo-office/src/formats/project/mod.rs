@@ -27,6 +27,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::compound::CompoundDocumentParser;
 use crate::formats::crypt;
+use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{add_multi, office, Summaries};
 use crate::formats::poi::Unread;
@@ -248,10 +249,19 @@ fn project_format(file: &Ole2<'_>) -> Result<Option<Format>, Malformed> {
     }))
 }
 
-/// Whether the compound document `file` is a Project file by its `CompObj`, which
-/// [`ProjectParser`] reads whatever type its detection names.
+/// Why the plan of a Project file of the format `format` is not read, which only its summary
+/// information is, as Tika reads every Project file.
+fn unread_plan(format: &str) -> String {
+    format!(
+        "the plan of a Project file of the format {format} is not read: only MPP9 (Project 2000 \
+         to 2003), MPP12 (Project 2007) and MPP14 (Project 2010 and later) are"
+    )
+}
+
+/// Whether the compound document `file` is a Project file of a format [`ProjectParser`] reads, by
+/// its `CompObj`, which it reads whatever type its detection names.
 pub(crate) fn is_project(file: &Ole2<'_>) -> bool {
-    matches!(project_format(file), Ok(Some(_)))
+    matches!(project_format(file), Ok(Some(Format::Read(_))))
 }
 
 /// Microsoft Project files.
@@ -284,10 +294,13 @@ impl Parser for ProjectParser {
         let version = match project_format(&file).map_err(malformed)? {
             None => return CompoundDocumentParser.prepare(input, metadata, configs),
             Some(Format::Unread(format)) => {
-                return Err(Decline::Unread(format!(
-                    "a Project file of the format {format}: only MPP9 (Project 2000 to 2003), \
-                     MPP12 (Project 2007) and MPP14 (Project 2010 and later) are read"
-                )))
+                let reading = CompoundDocumentParser.prepare(input, metadata, configs)?;
+                return Ok(Box::new(move |xhtml| {
+                    xhtml
+                        .metadata_mut()
+                        .add(EXCEPTION_WARNING, unread_plan(&format));
+                    reading(xhtml)
+                }));
             }
             Some(Format::Read(version)) => version,
         };

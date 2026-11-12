@@ -352,10 +352,10 @@ fn reveals_obfuscated_streams_and_reads_mpp9_passwords() {
     assert!(read_protected(Version::Mpp12, &root, obfuscation));
 }
 
-/// A file of a format of Project's other than MPP9, MPP12 and MPP14 is not read, and says
-/// which format it is.
+/// The plan of a file of a format of Project's other than MPP9, MPP12 and MPP14 is not read: it
+/// is read as the compound document Tika reads it as, with a warning naming its format.
 #[test]
-fn does_not_read_older_formats() {
+fn reads_older_formats_as_compound_documents_only() {
     let Node::Storage(root) = storage(vec![
         (
             COMP_OBJ,
@@ -367,11 +367,13 @@ fn does_not_read_older_formats() {
         unreachable!("a storage")
     };
     let document = write(&root).unwrap();
-    let error = crate::Extractor::new()
-        .extract_bytes_to_string(&document)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("MSProject.MPP8"), "{error}");
+    let (_, metadata) = extract(&document);
+    let warnings = &metadata[crate::formats::embedded::EXCEPTION_WARNING];
+    assert!(
+        warnings.iter().any(|warning| warning.contains("MSProject.MPP8")),
+        "{warnings:?}"
+    );
+    assert!(!is_project(&Ole2::open(&document).unwrap()));
     let Node::Storage(root) = storage(vec![(COMP_OBJ, Node::Owned(comp_obj(PROJECT_4, "")))])
     else {
         unreachable!("a storage")
