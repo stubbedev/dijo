@@ -11,9 +11,10 @@
 //! language is taken for noise, such as a texture or blank paper, and dropped. In the reading
 //! kept, the long s of early modern print, which tesseract reads as f, is restored by the
 //! dictionary of the language's model. With the automatic language, a reading of 90 or less
-//! confidence is read again with its page flattened by UVDoc, which is kept when it reads with at
-//! least 10 more confidence; then, in a script PP-OCRv5 reads but not in blackletter, the page is
-//! read again with PP-OCRv5 and the more confident reading kept.
+//! confidence of a page whose lines bend across it, as a curled page's do, is read again with its
+//! page flattened by UVDoc, which is kept when it reads with at least 10 more confidence; then, in
+//! a script PP-OCRv5 reads but not in blackletter, the page is read again with PP-OCRv5 and the
+//! more confident reading kept.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -59,6 +60,10 @@ const MIN_CONFIDENCE: i32 = 80;
 const MIN_TEXT_CONFIDENCE: i32 = 50;
 const MAX_REREAD_CONFIDENCE: i32 = 90;
 const MIN_UNWARPED_GAIN: i32 = 10;
+/// The [`prepare::curl_degrees`] from which a page is curled, and flattened by UVDoc to read
+/// again: a photographed page curling away from the camera bends its lines by 6.6, while scans and
+/// flat photographs bend theirs by none.
+const MIN_CURL_DEGREES: f64 = 1.0;
 /// Scripts tesseract's detection takes for others (Armenian for upside-down Latin, Georgian for
 /// Malayalam, Hebrew for Thai), tried in turn when no reading of an image with plenty of text is
 /// confident.
@@ -949,6 +954,9 @@ impl<'t> Recognizer<'t> {
         let Some(made) = read.prepared.image.as_deref() else {
             return Ok(read);
         };
+        if prepare::curl_degrees(&prepare::analysis(&made.bitmap)) < MIN_CURL_DEGREES {
+            return Ok(read);
+        }
         let unwarped = Prepared {
             image: Some(Arc::new(Readable::of(
                 Bitmap::Gray(ppocr()?.unwarped(&made.bitmap.gray())?),
@@ -1570,15 +1578,44 @@ mod tests {
         assert!(text.contains("picturæ lenocinio"), "{text}");
     }
 
+    fn unwarpings() -> usize {
+        super::super::ppocr::UNWARPINGS.with(std::cell::Cell::get)
+    }
+
     #[test]
     fn reads_a_curled_page_flattened() {
+        let before = unwarpings();
         let read = recognized("prose-photo-curled.jpg");
+        assert_eq!(unwarpings(), before + 1);
         assert!(read.report(None).contains("\"unwarped\":true"));
         let text = read.text().unwrap();
         assert!(
             text.contains("Every evening at dusk the keeper climbed the one hundred"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn leaves_a_flat_page_read_unconfidently_unflattened() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let settings = auto_settings();
+        let recognizer = Recognizer::new(tesseract, &settings);
+        let bitmap = scan("prose-scan-100dpi-degraded.png");
+        let image = Image::of(&bitmap, None, 0, None, Density::per_inch(300.0, 300.0));
+        let oriented = Oriented::of(&image);
+        let first = recognizer
+            .first_preparation(&image, &oriented, None)
+            .unwrap();
+        let read = Attempt::read(first.clone(), recognizer.read(&image, &first).unwrap());
+        assert!(
+            read.confidence() <= MAX_REREAD_CONFIDENCE,
+            "{}",
+            read.confidence()
+        );
+        let before = unwarpings();
+        let kept = recognizer.read_unwarped(read, &image).unwrap();
+        assert_eq!(unwarpings(), before);
+        assert!(!kept.prepared.unwarped);
     }
 
     #[test]

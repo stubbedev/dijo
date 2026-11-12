@@ -18,6 +18,7 @@ const COARSE_STEP_DEGREES: f64 = 0.25;
 const FINE_STEP_DEGREES: f64 = 0.05;
 const MIN_CORRECTION_DEGREES: f64 = 0.3;
 const MIN_SHARPNESS_GAIN: f64 = 1.05;
+const CURL_STRIPS: u32 = 4;
 const MIN_LINE_PIXELS: usize = 20;
 const MAX_LINE_PIXELS: usize = 40;
 const TARGET_LINE_PIXELS: f64 = 32.0;
@@ -96,37 +97,40 @@ impl Orientation {
 /// dark pixels of that reduced copy onto the vertical axis at candidate angles: text lines give
 /// the sharpest profile when level.
 pub(crate) fn skew_degrees(analysis: &GrayImage) -> f64 {
-    let Some(mut projection) = Projection::of(analysis) else {
-        return 0.0;
-    };
-    let level = projection.sharpness(0.0);
-    let mut best = 0.0;
-    let mut best_sharpness = level;
-    let mut angle = -MAX_SKEW_DEGREES;
-    while angle <= MAX_SKEW_DEGREES {
-        let sharpness = projection.sharpness(angle);
-        if sharpness > best_sharpness {
-            best = angle;
-            best_sharpness = sharpness;
-        }
-        angle += COARSE_STEP_DEGREES;
-    }
-    let coarse = best;
-    let mut angle = coarse - COARSE_STEP_DEGREES;
-    while angle <= coarse + COARSE_STEP_DEGREES {
-        let sharpness = projection.sharpness(angle);
-        if sharpness > best_sharpness {
-            best = angle;
-            best_sharpness = sharpness;
-        }
-        angle += FINE_STEP_DEGREES;
-    }
-    if best.abs() < MIN_CORRECTION_DEGREES || best_sharpness < level * MIN_SHARPNESS_GAIN {
-        return 0.0;
-    }
-    best
+    let threshold = otsu_threshold(&histogram(analysis.as_raw()));
+    Projection::of(analysis, threshold, 0..analysis.width())
+        .map_or(0.0, |mut projection| projection.level_degrees())
 }
 
+/// How far, in degrees, the lines of text in an image bend across it, as the lines of a page
+/// curling away from a photographing camera do, from its [`analysis`] copy: the spread of the
+/// [`skew_degrees`] of those of its [`CURL_STRIPS`] side-by-side strips that hold at least half
+/// their share of its ink. 0 when fewer than two do.
+pub(crate) fn curl_degrees(analysis: &GrayImage) -> f64 {
+    let width = analysis.width();
+    let levels = analysis.as_raw();
+    let threshold = otsu_threshold(&histogram(levels));
+    let ink = levels
+        .iter()
+        .filter(|&&level| u32::from(level) < threshold)
+        .count();
+    let skews: Vec<f64> = (0..CURL_STRIPS)
+        .filter_map(|strip| {
+            let columns = width * strip / CURL_STRIPS..width * (strip + 1) / CURL_STRIPS;
+            Projection::of(analysis, threshold, columns)
+        })
+        .filter(|projection| 2 * CURL_STRIPS as usize * projection.points.len() >= ink)
+        .map(|mut projection| projection.level_degrees())
+        .collect();
+    let least = skews.iter().copied().fold(f64::INFINITY, f64::min);
+    let most = skews.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    match skews.len() >= 2 {
+        true => most - least,
+        false => 0.0,
+    }
+}
+
+/// The dark pixels of some columns of an image, to project onto the vertical axis.
 struct Projection {
     points: Vec<(u32, u32)>,
     diagonal: i64,
@@ -136,29 +140,68 @@ struct Projection {
 }
 
 impl Projection {
-    fn of(analysis: &GrayImage) -> Option<Self> {
-        let (width, height) = analysis.dimensions();
-        let levels = analysis.as_raw();
-        let threshold = otsu_threshold(&histogram(levels));
-        let row = width as usize;
-        let points: Vec<(u32, u32)> = levels
-            .iter()
+    /// The pixels darker than `threshold` in `columns` of an image, each at its column within
+    /// them, or none when there are none or they are most of those columns.
+    fn of(analysis: &GrayImage, threshold: u32, columns: Range<u32>) -> Option<Self> {
+        let height = analysis.height();
+        let row = analysis.width() as usize;
+        let (first, width) = (columns.start as usize, columns.len());
+        let points: Vec<(u32, u32)> = analysis
+            .as_raw()
+            .chunks_exact(row)
             .enumerate()
-            .filter(|(_, &level)| u32::from(level) < threshold)
-            .map(|(index, _)| ((index % row) as u32, (index / row) as u32))
+            .flat_map(|(y, levels)| {
+                levels[first..first + width]
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &level)| u32::from(level) < threshold)
+                    .map(move |(x, _)| (x as u32, y as u32))
+            })
             .collect();
-        if points.is_empty() || points.len() > levels.len() / 2 {
+        if points.is_empty() || points.len() > width * height as usize / 2 {
             return None;
         }
-        let diagonal = f64::from(width).hypot(f64::from(height)).ceil() as i64;
+        let diagonal = (width as f64).hypot(f64::from(height)).ceil() as i64;
         let rows_down = points.last().map_or(0, |&(_, y)| y as usize + 1);
         Some(Self {
             points,
             diagonal,
             rows: vec![0; (2 * diagonal + 1) as usize],
-            across: vec![0.0; row],
+            across: vec![0.0; width],
             down: vec![0.0; rows_down],
         })
+    }
+
+    /// The angle, in degrees, by which the lines the points form are rotated, or 0 when no
+    /// rotation within [`MAX_SKEW_DEGREES`] clearly lines them up better: the angle of the
+    /// sharpest profile, searched in coarse steps and then in fine ones about the best.
+    fn level_degrees(&mut self) -> f64 {
+        let level = self.sharpness(0.0);
+        let mut best = 0.0;
+        let mut best_sharpness = level;
+        let mut angle = -MAX_SKEW_DEGREES;
+        while angle <= MAX_SKEW_DEGREES {
+            let sharpness = self.sharpness(angle);
+            if sharpness > best_sharpness {
+                best = angle;
+                best_sharpness = sharpness;
+            }
+            angle += COARSE_STEP_DEGREES;
+        }
+        let coarse = best;
+        let mut angle = coarse - COARSE_STEP_DEGREES;
+        while angle <= coarse + COARSE_STEP_DEGREES {
+            let sharpness = self.sharpness(angle);
+            if sharpness > best_sharpness {
+                best = angle;
+                best_sharpness = sharpness;
+            }
+            angle += FINE_STEP_DEGREES;
+        }
+        if best.abs() < MIN_CORRECTION_DEGREES || best_sharpness < level * MIN_SHARPNESS_GAIN {
+            return 0.0;
+        }
+        best
     }
 
     /// How sharp the profile of the points projected onto the vertical axis at an angle is: the
@@ -1003,6 +1046,33 @@ pub(crate) mod tests {
         assert!(skew_degrees(&analysis(&level)).abs() < MIN_CORRECTION_DEGREES);
     }
 
+    /// A page of lines of text whose slope at each column is `slope_degrees(x)`.
+    fn page_of_lines(slope_degrees: impl Fn(f64) -> f64) -> GrayImage {
+        let mut image = GrayImage::from_pixel(1000, 800, Luma([WHITE]));
+        for line in 0..14 {
+            let mut y = 80.0 + f64::from(line) * 45.0;
+            for x in 50..950u32 {
+                y += slope_degrees(f64::from(x)).to_radians().tan();
+                if x % 12 < 9 {
+                    for thickness in 0..6 {
+                        image.put_pixel(x, y as u32 + thickness, Luma([0]));
+                    }
+                }
+            }
+        }
+        image
+    }
+
+    #[test]
+    fn finds_lines_bending_across_a_curled_page_and_hardly_across_a_skewed_one() {
+        let skewed = page_of_lines(|_| -3.0);
+        let curl = curl_degrees(&analysis(&Bitmap::Gray(skewed)));
+        assert!(curl < 4.0 * FINE_STEP_DEGREES, "{curl}");
+        let curled = page_of_lines(|x| -8.0 * (1.0 - x / 1000.0));
+        let curl = curl_degrees(&analysis(&Bitmap::Gray(curled)));
+        assert!((4.0..8.0).contains(&curl), "{curl}");
+    }
+
     fn sharpness_of_float_points(
         points: &[(f64, f64)],
         degrees: f64,
@@ -1035,7 +1105,7 @@ pub(crate) mod tests {
                 let dark = (x * 7 + y * 13) % 5 == 0 || (y * 3 + x) % 11 == 0;
                 Luma([if dark { 0 } else { WHITE }])
             });
-            let Some(mut projection) = Projection::of(&image) else {
+            let Some(mut projection) = Projection::of(&image, 1, 0..width) else {
                 continue;
             };
             let (width, height) = (i64::from(width), i64::from(height));

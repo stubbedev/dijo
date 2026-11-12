@@ -102,6 +102,12 @@ fn load(path: &Path) -> Result<Model, OcrError> {
     .map_err(|error| failed(&name, error))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The pages UVDoc flattened on this thread.
+    pub(crate) static UNWARPINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl PpOcr {
     fn new(dir: PathBuf) -> Self {
         Self {
@@ -120,6 +126,8 @@ impl PpOcr {
     }
 
     pub(crate) fn unwarped(&self, image: &GrayImage) -> Result<GrayImage, OcrError> {
+        #[cfg(test)]
+        UNWARPINGS.with(|unwarpings| unwarpings.set(unwarpings.get() + 1));
         let (width, height) = image.dimensions();
         let plane = width as usize * height as usize;
         let channel: Vec<f32> = image
