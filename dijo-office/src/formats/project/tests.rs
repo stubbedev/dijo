@@ -370,7 +370,9 @@ fn reads_older_formats_as_compound_documents_only() {
     let (_, metadata) = extract(&document);
     let warnings = &metadata[crate::formats::embedded::EXCEPTION_WARNING];
     assert!(
-        warnings.iter().any(|warning| warning.contains("MSProject.MPP8")),
+        warnings
+            .iter()
+            .any(|warning| warning.contains("MSProject.MPP8")),
         "{warnings:?}"
     );
     assert!(!is_project(&Ole2::open(&document).unwrap()));

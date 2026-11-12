@@ -1817,7 +1817,10 @@ fn svg_images_are_read_for_the_text_they_show() {
     let objects = json_objects(&["--embedded", "separate", &document("lighthouse.svg")]);
     assert_matches_schema(&objects[0]);
     assert_eq!(objects[0]["mime_type"], "image/svg+xml");
-    assert_eq!(objects[0]["metadata"]["title"], "The Lighthouse Keeper's Chart");
+    assert_eq!(
+        objects[0]["metadata"]["title"],
+        "The Lighthouse Keeper's Chart"
+    );
     assert_eq!(objects[0]["metadata"]["authors"][0], "Anna Berg");
     assert_eq!(
         objects[0]["raw_metadata"]["dc:description"][0],
@@ -1955,7 +1958,10 @@ fn cabinets_are_read_for_the_files_they_hold_whole() {
         "The LZX folder is decoded frame by frame, with its calls translated back.\n"
     );
     let errors = objects[0]["errors"].to_string();
-    for unread in ["(quantum.txt): its folder is compressed with Quantum", "(spanned.txt)"] {
+    for unread in [
+        "(quantum.txt): its folder is compressed with Quantum",
+        "(spanned.txt)",
+    ] {
         assert!(errors.contains(unread), "{errors}");
     }
 }
