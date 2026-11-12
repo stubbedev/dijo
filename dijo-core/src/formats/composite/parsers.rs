@@ -194,6 +194,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/vnd.ms-wordml",
         "org.apache.tika.parser.microsoft.xml.WordMLParser",
     ),
+    ("application/vnd.ms-works", "dijo::WorksParser"),
     (
         "application/vnd.ms-xpsdocument",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",

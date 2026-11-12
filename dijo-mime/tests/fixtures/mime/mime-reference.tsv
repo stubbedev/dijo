@@ -238,6 +238,12 @@ documents	vodafone.xlsx	file	application/vnd.openxmlformats-officedocument.sprea
 documents	vodafone.xlsx	bytes	application/vnd.openxmlformats-officedocument.spreadsheetml.sheet	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=12541	zip:detector-zip-file-opened=true
 documents	winter-sports.epub	file	application/epub+zip	tk:content-type-magic-detected=application/epub+zip	zip:detector-zip-file-opened=true
 documents	winter-sports.epub	bytes	application/epub+zip	tk:content-type-magic-detected=application/epub+zip	Content-Length=210376	zip:detector-zip-file-opened=true
+documents	works2000.wps	file	application/vnd.ms-works	tk:content-type-magic-detected=application/vnd.ms-works
+documents	works2000.wps	bytes	application/vnd.ms-works	tk:content-type-magic-detected=application/x-tika-msoffice	Content-Length=5120
+documents	works4.wps	file	application/vnd.ms-works	tk:content-type-magic-detected=application/vnd.ms-works
+documents	works4.wps	bytes	application/vnd.ms-works	tk:content-type-magic-detected=application/vnd.ms-works	Content-Length=3584
+documents	works7.wps	file	application/vnd.ms-works	tk:content-type-magic-detected=application/vnd.ms-works
+documents	works7.wps	bytes	application/vnd.ms-works	tk:content-type-magic-detected=application/x-tika-msoffice	Content-Length=9728
 documents	yellow-wallpaper.mobi	file	application/x-mobipocket-ebook	tk:content-type-magic-detected=application/x-mobipocket-ebook
 documents	yellow-wallpaper.mobi	bytes	application/x-mobipocket-ebook	tk:content-type-magic-detected=application/x-mobipocket-ebook
 quality	albanian-cp1252.txt	file	text/plain	tk:content-type-magic-detected=text/plain

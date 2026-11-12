@@ -42,6 +42,7 @@ pub(crate) use dijo_office::formats::publisher;
 pub(crate) use dijo_office::formats::rtf;
 pub(crate) use dijo_office::formats::tnef;
 pub(crate) use dijo_office::formats::visio;
+pub(crate) use dijo_office::formats::works;
 pub(crate) use dijo_office::formats::xls;
 pub(crate) use dijo_ooxml::formats::docx;
 pub(crate) use dijo_ooxml::formats::pptx;
@@ -211,6 +212,7 @@ static PARSERS: &[&dyn Parser] = &[
     &tnef::TnefParser,
     &tsd::TsdParser,
     &visio::VisioParser,
+    &works::WorksParser,
     &xls::XlsParser,
     &warc::WarcParser,
     &warc::HttpParser,

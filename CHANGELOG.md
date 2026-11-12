@@ -41,6 +41,11 @@
   properties its summary information lacks come from its own. A Project 2010 file is read whatever type its
   detection names; a file protected by a password to open it fails as encrypted, and one of an older format, as
   Project 98's, is not read.
+* Microsoft Works word processor documents are read for their text (#342), where Tika reads only their summary
+  information: Works 3 and 4 for Windows (the `MN0` stream, in the code page of each run's font) and Works 2000 to 9
+  (the `CONTENTS` stream, in UTF-16), the header, body, text boxes and table cells, footnotes, endnotes and footer
+  each a story of its own, fields, footnote marks and object placeholders left out. Works databases are read, as
+  Tika reads them, for their summary information only.
 
 # 0.2.14 (2026-10-28)
 

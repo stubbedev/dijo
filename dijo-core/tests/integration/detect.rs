@@ -20,6 +20,7 @@ use test_case::test_case;
 #[test_case("lighthouse.ps", "application/postscript")]
 #[test_case("cabinet.cab", "application/vnd.ms-cab-compressed")]
 #[test_case("testPROJECT2007.mpp", "application/vnd.ms-project")]
+#[test_case("works7.wps", "application/vnd.ms-works")]
 #[test_case("ara-ocr.png", "image/png")]
 fn test_detect_file_and_bytes(file_name: &str, expected: &str) {
     let path = format!("../test_files/documents/{file_name}");

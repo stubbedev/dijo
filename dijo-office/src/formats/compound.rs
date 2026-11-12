@@ -1,6 +1,6 @@
-//! Compound documents whose content Tika's `OfficeParser` does not read: Works and SolidWorks
-//! documents, StarOffice documents, Corel presentations, Quattro Pro 7 and 8 workbooks, OLE
-//! objects embedded whole and compound documents of no known kind. Tika writes their summary
+//! Compound documents whose content Tika's `OfficeParser` does not read: SolidWorks documents,
+//! StarOffice documents, Corel presentations, Quattro Pro 7 and 8 workbooks, OLE objects
+//! embedded whole and compound documents of no known kind. Tika writes their summary
 //! information as metadata and, where POI names their kind, sets it as the content type. A
 //! Project file, by its `CompObj`, is read by [`ProjectParser`] whatever its detected type, as
 //! Tika's detection takes a Project 2010 file for a compound document of no known kind.
@@ -18,6 +18,7 @@ use crate::formats::ppt::PptParser;
 use crate::formats::project::{self, ProjectParser};
 use crate::formats::publisher::PublisherParser;
 use crate::formats::visio::VisioParser;
+use crate::formats::works::WorksParser;
 use crate::formats::xls::XlsParser;
 use crate::formats::{Decline, Footprint, Parser, Prepared};
 use crate::mime::{ole_directory_type, MediaType};
@@ -32,8 +33,7 @@ const QUATTRO_PRO_7_8: &str = "application/x-quattro-pro; version=7-8";
 
 /// The types `POIFSDocumentType` knows among those this parser reads, which `OfficeParser`
 /// sets as the content type.
-const DOCUMENT_TYPES: [&str; 7] = [
-    "application/vnd.ms-works",
+const DOCUMENT_TYPES: [&str; 6] = [
     "application/vnd.ms-project",
     "application/sldworks",
     MS_GRAPH_CHART,
@@ -75,7 +75,6 @@ impl Parser for CompoundDocumentParser {
 
     fn media_types(&self) -> &'static [&'static str] {
         &[
-            "application/vnd.ms-works",
             "application/sldworks",
             "application/vnd.stardivision.calc",
             "application/vnd.stardivision.draw",
@@ -134,7 +133,7 @@ impl Parser for CompoundDocumentParser {
 
 /// The native parsers of the kinds `POIFSDocumentType` detects whose content `OfficeParser`
 /// reads, by those kinds.
-const READERS: [(&[&str], &dyn Parser); 6] = [
+const READERS: [(&[&str], &dyn Parser); 7] = [
     (&["application/msword"], &DocParser),
     (
         &[
@@ -147,6 +146,7 @@ const READERS: [(&[&str], &dyn Parser); 6] = [
     (&["application/vnd.ms-outlook"], &MsgParser),
     (&["application/vnd.visio"], &VisioParser),
     (&["application/x-mspublisher"], &PublisherParser),
+    (&["application/vnd.ms-works"], &WorksParser),
 ];
 
 /// The native parser `OfficeParser` reads the compound document `input` as, once

@@ -1843,6 +1843,27 @@ fn project_files_are_read_for_their_tasks_and_resources() {
     assert!(xhtml.contains(resources), "{xhtml}");
 }
 
+/// `works4.wps`, `works2000.wps` and `works7.wps` are Apache Tika's test documents
+/// `testWORKSWordProcessor4.0.wps`, `testWORKS2000.wps` and `testWORKS.wps`
+/// (`tika-parsers-standard-integration-tests/src/test/resources/test-documents`, Apache-2.0),
+/// saved by Works 4 for Windows (`MN0`), Works 2000 (`CHNKINK`) and Works 7 (`CHNKWKS`).
+#[test]
+fn works_documents_are_read_for_their_text() {
+    for name in ["works4.wps", "works2000.wps", "works7.wps"] {
+        let objects = json_objects(&[&document(name)]);
+        assert_matches_schema(&objects[0]);
+        assert_eq!(
+            objects[0]["mime_type"], "application/vnd.ms-works",
+            "{name}"
+        );
+        assert_eq!(
+            objects[0]["text"],
+            "This is an example document made with Microsoft Works Word Processor 7.0\n",
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn notebooks_are_read_cell_by_cell() {
     let objects = json_objects(&[&document("notebook.ipynb")]);
