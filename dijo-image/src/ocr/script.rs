@@ -216,6 +216,18 @@ pub(crate) fn installed_language(installed: &BTreeSet<String>, script: &str) -> 
         .filter(|language| installed.contains(language))
 }
 
+/// The script, named as tesseract names it, of text read in the columns Chinese and Japanese are
+/// set in: Japanese when it holds kana, else Han.
+pub(crate) fn vertical_script(text: &str) -> &'static str {
+    match text
+        .chars()
+        .any(|c| matches!(script(c), Script::Hiragana | Script::Katakana))
+    {
+        true => "Japanese",
+        false => "Han",
+    }
+}
+
 /// Whether most letters of a text are in a script, named as tesseract names it. A model for a
 /// script that detection overlooked reads a page in another script with the Latin letters its
 /// model also has, often with more confidence than a reading spoiled by noise, and without that
@@ -271,6 +283,17 @@ mod tests {
         assert!(written_in("Բարեւ աշխարհ, hi", "Armenian"));
         assert!(!written_in("hello world, Բարեւ", "Armenian"));
         assert!(!written_in("日本語", "Japanese"));
+    }
+
+    #[test]
+    fn names_vertical_text_with_kana_japanese_and_without_han() {
+        assert_eq!(
+            vertical_script("之に對して或は、まだ淨佛の出來ない"),
+            "Japanese"
+        );
+        assert_eq!(vertical_script("英國に於ける成人教育"), "Japanese");
+        assert_eq!(vertical_script("社會主義者"), "Han");
+        assert_eq!(vertical_script(""), "Han");
     }
 
     #[test]

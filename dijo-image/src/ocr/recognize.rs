@@ -14,7 +14,9 @@
 //! confidence of a page whose lines bend across it, as a curled page's do, is read again with its
 //! page flattened by UVDoc, which is kept when it reads with at least 10 more confidence; then, in
 //! a script PP-OCRv5 reads but not in blackletter, the page is read again with PP-OCRv5 and the
-//! more confident reading kept.
+//! more confident reading kept. A page tesseract reads neither confidently nor in a language whose
+//! text lines run down it, as Chinese and Japanese set vertically do, is read with PP-OCRv5 column
+//! by column, and the more confident reading kept.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -26,11 +28,12 @@ use image::GrayImage;
 
 use super::bitmap::{Bitmap, Density};
 use super::flatten::flatten;
-use super::ppocr::{ppocr, LineModel};
+use super::ppocr::{ppocr, LineModel, Lines};
 use super::prepare::{self, Orientation};
 use super::report::Report;
 use super::script::{
-    installed_language, language, language_model, tagged_language, written_in, BLACKLETTER_SCRIPT,
+    installed_language, language, language_model, tagged_language, vertical_script, written_in,
+    BLACKLETTER_SCRIPT,
 };
 use super::slots;
 use super::tesseract::{
@@ -410,8 +413,8 @@ impl Prepared {
 }
 
 /// An image prepared to read, at its pixels to the inch, with what is found in those pixels once:
-/// their encoding as a PNG, what orientation and script detection finds in them, and the layouts
-/// tesseract finds in them.
+/// their encoding as a PNG, what orientation and script detection finds in them, the layouts
+/// tesseract finds in them, and the text lines PP-OCRv5 finds in them.
 #[derive(Debug)]
 struct Readable {
     bitmap: Bitmap,
@@ -419,6 +422,7 @@ struct Readable {
     png: OnceLock<Vec<u8>>,
     detection: OnceLock<Detection>,
     layouts: Layouts,
+    lines: OnceLock<Lines>,
 }
 
 impl Readable {
@@ -429,6 +433,7 @@ impl Readable {
             png: OnceLock::new(),
             detection: OnceLock::new(),
             layouts: Layouts::default(),
+            lines: OnceLock::new(),
         }
     }
 }
@@ -570,11 +575,14 @@ impl<'t> Recognizer<'t> {
     /// the quarter turns it finds and, with the automatic language, read with a model for the
     /// script it finds, unless that would read it as before. When no reading of an image with at
     /// least [`MIN_WORDS_TO_RETRY`] words is confident, the scripts detection overlooks are tried
-    /// as well, and the most confident reading is kept. With the automatic language, the image is
-    /// then read with the model of the language detected in the best reading, unless it was, and
-    /// the more confident reading kept. A reading that is noise has its text dropped; in any
-    /// other, long s read as f is restored by the dictionary of the language detected in it, or
-    /// else of its model. Without a reading when the image is outside the configured limits.
+    /// as well, and the most confident reading is kept; then, with the automatic language, when
+    /// none is confident or in a language and the image's text lines run down it, it is read with
+    /// PP-OCRv5 column by column, and the more confident reading kept. With the automatic
+    /// language, the image is then read with the model of the language detected in the best
+    /// reading, unless it was, and the more confident reading kept. A reading that is noise has
+    /// its text dropped; in any other, long s read as f is restored by the dictionary of the
+    /// language detected in it, or else of its model. Without a reading when the image is outside
+    /// the configured limits.
     ///
     /// `assumed` is the script and model to read it in first with the automatic language: the
     /// ones an earlier image of this extraction settled on, or none for Latin, the most common
@@ -622,7 +630,7 @@ impl<'t> Recognizer<'t> {
         let (optimistic, unconfident_seeded) = self.read_first(image, first, seeded)?;
         let best = match optimistic.confident() || optimistic.in_a_language() {
             true => optimistic,
-            false => self.read_detected(optimistic, image, &oriented)?,
+            false => self.read_vertical(self.read_detected(optimistic, image, &oriented)?)?,
         };
         let (best, detected) = match auto {
             true => {
@@ -804,6 +812,46 @@ impl<'t> Recognizer<'t> {
         self.read_overlooked(best, &scripts, image, oriented)
     }
 
+    /// Reads a page whose text lines run down it, as Chinese and Japanese set vertically do, with
+    /// PP-OCRv5's recognizer of those scripts, when tesseract, which reads text lines across a
+    /// page, read it neither confidently nor in a language: the more confident reading, in the
+    /// script of what PP-OCRv5 read and with its model.
+    fn read_vertical(&self, best: Attempt) -> Result<Attempt, OcrError> {
+        if !self.settings.auto() || best.confident() || best.in_a_language() {
+            return Ok(best);
+        }
+        let Some(made) = best.prepared.image.as_deref() else {
+            return Ok(best);
+        };
+        let lines = self.lines(made)?;
+        if !lines.vertical() {
+            return Ok(best);
+        }
+        let reading = ppocr()?.read(&made.bitmap.gray(), LineModel::VERTICAL, lines, &[])?;
+        let script = vertical_script(&reading.text);
+        let vertical = Attempt {
+            prepared: best
+                .prepared
+                .read_in(Some(script.to_owned()), self.model(Some(script))?),
+            reading: Some(Reading {
+                text: corrected(&reading.text),
+                ..reading
+            }),
+            noise: false,
+            recognizer: Some(LineModel::VERTICAL.name()),
+        };
+        Ok(best.or(vertical))
+    }
+
+    /// The text lines PP-OCRv5 finds in a prepared image, found once for each.
+    fn lines<'r>(&self, made: &'r Readable) -> Result<&'r Lines, OcrError> {
+        if let Some(lines) = made.lines.get() {
+            return Ok(lines);
+        }
+        let lines = ppocr()?.lines(&made.bitmap.gray())?;
+        Ok(made.lines.get_or_init(|| lines))
+    }
+
     /// Reads an image again with the installed model of the language detected with confidence
     /// in its best reading so far, in the script it was read in, unless it was read with that
     /// model: the more confident reading, and that script and model, when such a model is
@@ -923,7 +971,11 @@ impl<'t> Recognizer<'t> {
         image: &Image<'_>,
         dictionary: &str,
     ) -> Result<Attempt, OcrError> {
-        if !self.settings.auto() || read.noise || read.confidence() > MAX_REREAD_CONFIDENCE {
+        if !self.settings.auto()
+            || read.noise
+            || read.recognizer.is_some()
+            || read.confidence() > MAX_REREAD_CONFIDENCE
+        {
             return Ok(read);
         }
         let read = self.read_unwarped(read, image)?;
@@ -945,7 +997,8 @@ impl<'t> Recognizer<'t> {
         if reading.text.trim().is_empty() {
             return Ok(read);
         }
-        let reread = ppocr()?.read(&made.bitmap.gray(), model, &reading.blocks)?;
+        let lines = self.lines(made)?;
+        let reread = ppocr()?.read(&made.bitmap.gray(), model, lines, &reading.blocks)?;
         let again = Attempt {
             prepared: read.prepared.clone(),
             reading: Some(Reading {
@@ -1652,6 +1705,32 @@ mod tests {
         ] {
             assert!(text.contains(line), "{text}");
         }
+    }
+
+    #[test]
+    fn reads_a_vertical_japanese_spread_by_columns_from_the_right_page_first() {
+        let read = recognized("japanese-ndl-1920s.jpg");
+        let report = read.report(None);
+        assert!(report.contains("\"ppocr\":\"cjk\""), "{report}");
+        assert!(report.contains("\"script\":\"Japanese\""), "{report}");
+        assert!(!report.contains("noise"), "{report}");
+        let text = read.text().unwrap();
+        let at = |phrase: &str| {
+            text.find(phrase)
+                .unwrap_or_else(|| panic!("{phrase} is not in {text}"))
+        };
+        assert!(
+            at("到底他人を敬して自己を") < at("成人教育を一寸申上げて"),
+            "{text}"
+        );
+        assert!(
+            at("成人教育を一寸申上げて") < at("英國に於ける成人教育\n"),
+            "{text}"
+        );
+        assert!(
+            at("英國に於ける成人教育\n") < at("英國の成人教育は"),
+            "{text}"
+        );
     }
 
     #[test]

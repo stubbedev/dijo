@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -33,6 +34,9 @@ const MIN_UNCLIPPED_SIDE: u32 = MIN_BOX_SIDE + 2;
 const LINE_HEIGHT: u32 = 48;
 const MIN_LINE_WIDTH: u32 = 320;
 const MIN_LINE_CONFIDENCE: f32 = 0.5;
+/// How many times taller than wide a line's area must be to run down the page, as PaddleOCR turns
+/// the areas at least 1.5 times as tall as they are wide: as a ratio of height to width.
+const MIN_VERTICAL_ASPECT: (i32, i32) = (3, 2);
 const CHARACTERS_KEY: &str = "  character_dict:";
 const CHARACTER_ITEM: &str = "  - ";
 
@@ -51,7 +55,49 @@ struct LineReader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LineModel(usize);
 
+/// The text lines DBNet finds in an image, and whether they run down it, as the columns of
+/// Chinese and Japanese set vertically do: whether lines that do cover most of the lines' area.
+/// The lines running down an image are its [`columns`], each read whole, since DBNet breaks a
+/// column where its punctuation leaves a gap.
+#[derive(Debug)]
+pub(crate) struct Lines {
+    areas: Vec<Area>,
+    vertical: bool,
+}
+
+impl Lines {
+    fn of(areas: Vec<Area>) -> Self {
+        let area = |line: &Area| i64::from(line.width()) * i64::from(line.height());
+        let all: i64 = areas.iter().map(area).sum();
+        let upright: i64 = areas.iter().filter(|line| upright(line)).map(area).sum();
+        match 2 * upright > all {
+            true => Self {
+                areas: columns(&areas),
+                vertical: true,
+            },
+            false => Self {
+                areas,
+                vertical: false,
+            },
+        }
+    }
+
+    pub(crate) fn vertical(&self) -> bool {
+        self.vertical
+    }
+}
+
+/// Whether a line's area is tall enough to run down the page.
+fn upright(line: &Area) -> bool {
+    let (height, width) = MIN_VERTICAL_ASPECT;
+    line.height() * width >= line.width() * height
+}
+
 impl LineModel {
+    /// The recognizer of vertical text: PP-OCRv5's of Chinese and Japanese, the scripts set in
+    /// columns, which reads each column turned to run across.
+    pub(crate) const VERTICAL: Self = Self(2);
+
     pub(crate) fn of_script(script: &str) -> Option<Self> {
         let (_, name) = RECOGNIZER_OF_SCRIPT
             .iter()
@@ -192,18 +238,26 @@ impl PpOcr {
             .map_err(Clone::clone)
     }
 
+    /// What a recognizer reads in the lines of an image, ordered by the blocks tesseract found in
+    /// it, or, when its lines run down it, by its columns from the right: a column is read turned
+    /// a quarter counter-clockwise, its top to the left, as PaddleOCR reads it.
     pub(crate) fn read(
         &self,
         image: &GrayImage,
         model: LineModel,
+        lines: &Lines,
         blocks: &[Area],
     ) -> Result<Reading, OcrError> {
         let reader = self.line_reader(model)?;
-        let lines = self.lines(image)?;
-        let mut read = Vec::with_capacity(lines.len());
+        let mut read = Vec::with_capacity(lines.areas.len());
         let (mut characters, mut confident) = (0f32, 0f32);
-        for line in lines {
-            let (text, confidence) = reader.read(&crop(image, line), model)?;
+        for &line in &lines.areas {
+            let cropped = crop(image, line);
+            let cropped = match lines.vertical && upright(&line) {
+                true => image::imageops::rotate270(&cropped),
+                false => cropped,
+            };
+            let (text, confidence) = reader.read(&cropped, model)?;
             let length = text.chars().count() as f32;
             characters += length;
             confident += length * confidence;
@@ -215,23 +269,13 @@ impl PpOcr {
             true => (confident / characters * 100.0).round() as i32,
             false => 0,
         };
-        let areas: Vec<Area> = read.iter().map(|&(line, _)| line).collect();
-        let text = ordered(&areas, blocks)
-            .into_iter()
-            .map(|block| {
-                block
-                    .into_iter()
-                    .map(|row| {
-                        row.into_iter()
-                            .map(|index| read[index].1.trim())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .map(|block| block + "\n\n")
-            .collect();
+        let text = match lines.vertical {
+            true => in_columns(read.iter().map(|(_, text)| text.trim())),
+            false => {
+                let areas: Vec<Area> = read.iter().map(|&(line, _)| line).collect();
+                in_blocks(&areas, blocks, |index| read[index].1.trim())
+            }
+        };
         Ok(Reading {
             text,
             confidence,
@@ -239,7 +283,7 @@ impl PpOcr {
         })
     }
 
-    fn lines(&self, image: &GrayImage) -> Result<Vec<Area>, OcrError> {
+    pub(crate) fn lines(&self, image: &GrayImage) -> Result<Lines, OcrError> {
         let (width, height) = image.dimensions();
         let (input_width, input_height) = detection_size(width, height);
         let input = resized(image, input_width, input_height);
@@ -266,10 +310,12 @@ impl PpOcr {
         let probabilities: NdTensor<f32, 4> =
             output.try_into().map_err(|error| failed(DETECTOR, error))?;
         let [_, _, map_height, map_width] = probabilities.shape();
-        Ok(text_areas(&probabilities.to_vec(), map_width, map_height)
-            .into_iter()
-            .filter_map(|area| scaled(area, map_width, map_height, width, height))
-            .collect())
+        Ok(Lines::of(
+            text_areas(&probabilities.to_vec(), map_width, map_height)
+                .into_iter()
+                .filter_map(|area| scaled(area, map_width, map_height, width, height))
+                .collect(),
+        ))
     }
 }
 
@@ -464,6 +510,57 @@ fn crop(image: &GrayImage, area: Area) -> GrayImage {
     .to_image()
 }
 
+/// The text of lines read across a page, by the blocks they lie in and then by rows: the lines of a
+/// row joined by spaces, its rows by line breaks, and each block ended by an empty line.
+fn in_blocks<'t>(lines: &[Area], blocks: &[Area], text: impl Fn(usize) -> &'t str) -> String {
+    ordered(lines, blocks)
+        .into_iter()
+        .map(|block| {
+            block
+                .into_iter()
+                .map(|row| row.into_iter().map(&text).collect::<Vec<_>>().join(" "))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .map(|block| block + "\n\n")
+        .collect()
+}
+
+/// The text of the columns of a page, in the order they are read: each on a line of its own, and
+/// the page ended by an empty line.
+fn in_columns<'t>(columns: impl Iterator<Item = &'t str>) -> String {
+    let mut text: String = columns.flat_map(|column| [column, "\n"]).collect();
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text
+}
+
+/// The columns lines running down a page form, as Chinese and Japanese set vertically do, in the
+/// order they are read, from the right: the pages of a spread, the right one first. A line belongs
+/// to the column its centre lies within, which spans every line of it.
+fn columns(lines: &[Area]) -> Vec<Area> {
+    let mut order: Vec<Area> = lines.to_vec();
+    order.sort_by_key(|line| (Reverse(line.left + line.right), line.top));
+    let mut columns: Vec<Area> = Vec::new();
+    for line in order {
+        let (centre, _) = line.centre();
+        match columns
+            .last_mut()
+            .filter(|column| column.left <= centre && centre < column.right)
+        {
+            Some(column) => {
+                column.left = column.left.min(line.left);
+                column.top = column.top.min(line.top);
+                column.right = column.right.max(line.right);
+                column.bottom = column.bottom.max(line.bottom);
+            }
+            None => columns.push(line),
+        }
+    }
+    columns
+}
+
 fn ordered(lines: &[Area], blocks: &[Area]) -> Vec<Vec<Vec<usize>>> {
     let mut grouped: Vec<Vec<usize>> = vec![Vec::new(); blocks.len() + 1];
     for (index, line) in lines.iter().enumerate() {
@@ -582,6 +679,62 @@ mod tests {
         let areas = text_areas(&map, width, height);
         assert_eq!(areas.len(), 1);
         assert!(areas[0].left < 10 && areas[0].right > 190, "{areas:?}");
+    }
+
+    #[test]
+    fn reads_the_vertical_text_recognizer_of_chinese_and_japanese() {
+        assert_eq!(LineModel::VERTICAL.name(), "cjk");
+        assert_eq!(LineModel::of_script("Japanese"), Some(LineModel::VERTICAL));
+        assert_eq!(LineModel::of_script("Han"), Some(LineModel::VERTICAL));
+    }
+
+    #[test]
+    fn reads_lines_down_a_page_when_they_cover_most_of_its_text() {
+        let across = [
+            area(0, 0, 400, 30),
+            area(0, 40, 380, 70),
+            area(0, 80, 20, 120),
+        ];
+        assert!(!Lines::of(across.to_vec()).vertical());
+        let down = [
+            area(300, 0, 330, 400),
+            area(250, 0, 280, 380),
+            area(0, 0, 60, 30),
+        ];
+        let lines = Lines::of(down.to_vec());
+        assert!(lines.vertical());
+        assert_eq!(lines.areas, columns(&down));
+        assert!(!Lines::of(Vec::new()).vertical());
+    }
+
+    #[test]
+    fn reads_columns_from_the_right_and_the_right_page_of_a_spread_first() {
+        let lines = [
+            area(100, 0, 130, 300),
+            area(500, 20, 530, 200),
+            area(500, 220, 532, 400),
+            area(640, 0, 670, 400),
+            area(140, 0, 170, 350),
+            area(506, 410, 524, 430),
+        ];
+        assert_eq!(
+            columns(&lines),
+            [
+                area(640, 0, 670, 400),
+                area(500, 20, 532, 430),
+                area(140, 0, 170, 350),
+                area(100, 0, 130, 300),
+            ]
+        );
+    }
+
+    #[test]
+    fn puts_each_column_on_a_line_of_its_own() {
+        assert_eq!(
+            in_columns(["之に對して", "と云ふかも"].into_iter()),
+            "之に對して\nと云ふかも\n\n"
+        );
+        assert_eq!(in_columns(std::iter::empty()), "");
     }
 
     #[test]

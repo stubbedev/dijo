@@ -235,8 +235,8 @@
 | hindi-diksita-1895-02.jpg | ocr | 0.234 | 0.522 | 0.543 | 0.444 | 0.500 |
 | arabic-wikipedia-dolphin-scan.png | ocr | 0.073 | 0.180 | 0.861 | 0.131 | 0.600 |
 | arabic-wikipedia-village-scan.png | ocr | 0.365 | 0.822 | 0.887 | 0.452 | 0.000 |
-| japanese-ndl-1910s.jpg | ocr | 1.000 | 1.000 | 0.000 | 0.000 | 0.000 |
-| japanese-ndl-1920s.jpg | ocr | 1.000 | 1.000 | 0.000 | 0.000 | 0.000 |
+| japanese-ndl-1910s.jpg | ocr | 0.233 | 0.153 | 0.853 | 0.075 | 0.500 |
+| japanese-ndl-1920s.jpg | ocr | 0.136 | 0.091 | 0.912 | 0.087 | 0.500 |
 | russian-vaska-1901.jpg | ocr | 0.030 | 0.143 | 0.882 | 0.139 | 0.400 |
 | armenian-dussap-1959-p28.png | ocr | 0.089 | 0.375 | 0.642 | 0.367 | 0.000 |
 | armenian-dussap-1959-p29.png | ocr | 0.103 | 0.364 | 0.644 | 0.358 | 0.200 |
