@@ -1,0 +1,26 @@
+{
+    "Content-Type": [
+        "application/postscript"
+    ],
+    "tk:resource-name": [
+        "lighthouse.ps"
+    ],
+    "tk:parsed-by": [
+        "dijo::PostScriptParser"
+    ],
+    "dc:title": [
+        "The Lighthouse Keeper"
+    ],
+    "dc:creator": [
+        "The Keeper"
+    ],
+    "xmp:CreatorTool": [
+        "dijo test suite, written by hand"
+    ],
+    "dcterms:created": [
+        "2026-11-12T09:00:00Z"
+    ],
+    "xmpTPg:NPages": [
+        "2"
+    ]
+}

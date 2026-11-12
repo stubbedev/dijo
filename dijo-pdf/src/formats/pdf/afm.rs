@@ -9,7 +9,7 @@ use crate::hash::FastMap;
 
 /// The standard 14 fonts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum Standard14 {
+pub(crate) enum Standard14 {
     TimesRoman,
     TimesBold,
     TimesItalic,
@@ -28,7 +28,7 @@ pub(super) enum Standard14 {
 
 impl Standard14 {
     /// `Standard14Fonts.getMappedFontName`: the font a name or alias stands for.
-    pub(super) fn named(name: &str) -> Option<Standard14> {
+    pub(crate) fn named(name: &str) -> Option<Standard14> {
         use Standard14::*;
         Some(match name {
             "Times-Roman" | "TimesNewRoman" | "Times" => TimesRoman,
@@ -74,7 +74,7 @@ impl Standard14 {
     }
 
     /// The font's metrics.
-    pub(super) fn metrics(self) -> &'static FontMetrics {
+    pub(crate) fn metrics(self) -> &'static FontMetrics {
         &METRICS[&self]
     }
 }
@@ -112,7 +112,7 @@ pub(super) struct CharMetric {
 
 /// FontBox's `FontMetrics`, as far as PDFBox's text extraction reads it.
 #[derive(Debug)]
-pub(super) struct FontMetrics {
+pub(crate) struct FontMetrics {
     pub(super) font_name: String,
     pub(super) encoding_scheme: String,
     pub(super) font_bbox: [f32; 4],
@@ -177,7 +177,7 @@ impl FontMetrics {
     }
 
     /// `FontMetrics.getCharacterWidth`: 0 for a name the font lacks.
-    pub(super) fn character_width(&self, name: &str) -> f32 {
+    pub(crate) fn character_width(&self, name: &str) -> f32 {
         self.widths.get(name).copied().unwrap_or(0.0)
     }
 

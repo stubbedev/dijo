@@ -50,6 +50,7 @@ pub(crate) use dijo_ooxml::formats::xlsx;
 pub(crate) use dijo_ooxml::formats::xps;
 pub(crate) use dijo_pdf::formats::font;
 pub(crate) use dijo_pdf::formats::pdf;
+pub(crate) use dijo_pdf::formats::postscript;
 pub(crate) use dijo_science::formats::fits;
 pub(crate) use dijo_science::formats::grib;
 pub(crate) use dijo_science::formats::hdf;
@@ -189,6 +190,7 @@ static PARSERS: &[&dyn Parser] = &[
     &open_pgp::OpenPgpParser,
     &pdf::PdfParser,
     &plist::PListParser,
+    &postscript::PostScriptParser,
     &ppt::PptParser,
     &pptx::PptxParser,
     &protected::ProtectedParser,

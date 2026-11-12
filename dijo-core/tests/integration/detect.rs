@@ -17,6 +17,7 @@ use test_case::test_case;
 #[test_case("simple.doc", "application/msword")]
 #[test_case("simple.odt", "application/vnd.oasis.opendocument.text")]
 #[test_case("winter-sports.epub", "application/epub+zip")]
+#[test_case("lighthouse.ps", "application/postscript")]
 #[test_case("ara-ocr.png", "image/png")]
 fn test_detect_file_and_bytes(file_name: &str, expected: &str) {
     let path = format!("../test_files/documents/{file_name}");

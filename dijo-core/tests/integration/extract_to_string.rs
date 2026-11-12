@@ -15,6 +15,7 @@ use crate::test_utils;
 #[test_case("simple.pptx", 0.9; "Test another PPTX file")]
 #[test_case("table-multi-row-column-cells.png", -1.0; "Test PNG file")]
 #[test_case("winter-sports.epub", 0.9; "Test EPUB file")]
+#[test_case("lighthouse.ps", 0.9; "Test PostScript file")]
 #[test_case("bug_16.docx", 0.9; "Test bug16 DOCX file")]
 #[test_case("subtitled.mkv", 0.9; "Test MKV file")]
 //#[test_case("eng-ocr.pdf", 0.9; "Test eng-ocr PDF file")]

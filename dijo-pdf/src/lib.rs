@@ -22,4 +22,5 @@ pub mod formats {
 
     pub mod font;
     pub mod pdf;
+    pub mod postscript;
 }

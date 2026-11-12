@@ -14,6 +14,12 @@
   (SubRip, SubStation Alpha and WebVTT, zlib-compressed or header-stripped), track by track in time order, the title,
   date, writing application, duration and global tags, the codecs, picture size and languages of the tracks, and the
   attachments, such as fonts and cover images, as embedded documents.
+* PostScript and EPS files are read (#336), where Tika reads nothing of them: the title, creator, creation date,
+  addressee and page count of their structuring comments, and page by page the text of the strings their program
+  shows in a font whose encoding resolves (the standard and ISO Latin-1 encodings, resident fonts and the encodings
+  a program builds, as an embedded Type 1 font's), with the show aliases of generators' procedure sets followed.
+  A page whose text does not resolve is listed in `dijo:unresolved-text` rather than written as garbage, and an EPS
+  file's TIFF or WMF preview is handed on, for OCR, where its PostScript does not give all of its text.
 
 # 0.2.14 (2026-10-28)
 

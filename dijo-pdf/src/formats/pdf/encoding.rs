@@ -17,7 +17,7 @@ const ZAPF_DINGBATS_GLYPHS: &str = include_str!("../../../models/pdf/zapfdingbat
 
 /// The encodings PDFBox has built in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum Builtin {
+pub(crate) enum Builtin {
     Standard,
     WinAnsi,
     MacRoman,
@@ -62,7 +62,7 @@ impl Builtin {
     }
 
     /// The encoding itself.
-    pub(super) fn encoding(self) -> &'static Encoding {
+    pub(crate) fn encoding(self) -> &'static Encoding {
         &BUILTIN[&self]
     }
 }
@@ -82,7 +82,7 @@ pub(super) enum Kind {
 
 /// A simple font's encoding: its codes to glyph names, and names back to codes.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Encoding {
+pub(crate) struct Encoding {
     pub(super) kind: Kind,
     code_to_name: FastMap<i32, String>,
     name_to_code: FastMap<String, i32>,
@@ -133,7 +133,7 @@ static BUILTIN: LazyLock<FastMap<Builtin, Encoding>> = LazyLock::new(|| {
 
 impl Encoding {
     /// `Encoding.getName`: the glyph name of a code, `.notdef` for one it does not encode.
-    pub(super) fn name(&self, code: i32) -> &str {
+    pub(crate) fn name(&self, code: i32) -> &str {
         self.code_to_name
             .get(&code)
             .map_or(".notdef", String::as_str)
@@ -304,7 +304,7 @@ impl Encoding {
 
 /// PDFBox's `GlyphList`: glyph names to Unicode, and Unicode back to names.
 #[derive(Debug)]
-pub(super) struct GlyphList {
+pub(crate) struct GlyphList {
     name_to_unicode: FastMap<String, String>,
     unicode_to_name: FastMap<String, String>,
 }
@@ -320,7 +320,7 @@ pub(super) static ADOBE: LazyLock<GlyphList> = LazyLock::new(|| {
 });
 
 /// `GlyphList.getZapfDingbats`.
-pub(super) static ZAPF_DINGBATS: LazyLock<GlyphList> = LazyLock::new(|| {
+pub(crate) static ZAPF_DINGBATS: LazyLock<GlyphList> = LazyLock::new(|| {
     let mut list = GlyphList {
         name_to_unicode: FastMap::default(),
         unicode_to_name: FastMap::default(),
@@ -331,7 +331,7 @@ pub(super) static ZAPF_DINGBATS: LazyLock<GlyphList> = LazyLock::new(|| {
 
 /// The glyph list `LegacyPDFStreamEngine` maps text with: the Adobe Glyph List and PDFBox's
 /// additional names.
-pub(super) static TEXT_EXTRACTION: LazyLock<GlyphList> = LazyLock::new(|| {
+pub(crate) static TEXT_EXTRACTION: LazyLock<GlyphList> = LazyLock::new(|| {
     let mut list = GlyphList {
         name_to_unicode: ADOBE.name_to_unicode.clone(),
         unicode_to_name: ADOBE.unicode_to_name.clone(),
@@ -387,7 +387,7 @@ impl GlyphList {
 
     /// `GlyphList.toUnicode`: the name's text, without a `.suffix`, or of a `uniXXXX` or
     /// `uXXXX` name.
-    pub(super) fn to_unicode(&self, name: &str) -> Option<GlyphText> {
+    pub(crate) fn to_unicode(&self, name: &str) -> Option<GlyphText> {
         if let Some(unicode) = self.name_to_unicode.get(name) {
             return Some(GlyphText::new(unicode));
         }

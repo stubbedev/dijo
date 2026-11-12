@@ -19,7 +19,7 @@ const NATURAL_VOWEL_SHARE: f64 = 0.32;
 const GARBAGE_VOWEL_SHARE: f64 = 0.16;
 const ONE_LETTER_ARABIC_SHARE: f64 = 0.3;
 /// A text layer this bad or worse is garbage, which OCR text replaces.
-pub(super) const GARBAGE: f64 = 1.0;
+pub(crate) const GARBAGE: f64 = 1.0;
 const MIN_SAMPLE_CHARACTERS: u32 = 20;
 const MIN_SAMPLE_WORDS: u32 = 10;
 const MIN_SAMPLE_LATIN_LETTERS: u32 = 50;
@@ -29,9 +29,9 @@ const VOWELS: &str = "aeiouyAEIOUY";
 
 /// `TextLayerQuality.Assessment`: the badness, and the signal that decided it.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct Assessment {
-    pub(super) badness: f64,
-    pub(super) fault: &'static str,
+pub(crate) struct Assessment {
+    pub(crate) badness: f64,
+    pub(crate) fault: &'static str,
 }
 
 impl Assessment {
@@ -61,7 +61,7 @@ struct Counts {
 
 /// How many glyphs without characters a page may show.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) enum Unmapped {
+pub(crate) enum Unmapped {
     /// A share of the page's glyphs, from 0 to 1.
     Share(f32),
     /// A number of glyphs.
@@ -72,7 +72,7 @@ pub(super) enum Unmapped {
 /// character, against the unmapped glyphs that make a page garbage. Our Java took a limit
 /// below 1 as a share and one from 1 as a count, so that a share of 100% read as one glyph
 /// (#115).
-pub(super) fn assess(
+pub(crate) fn assess(
     text: &str,
     glyphs: i32,
     unmapped: i32,

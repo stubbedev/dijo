@@ -11,14 +11,14 @@
 //! Tika fails it where that password does not open it. Documents with what the port does not do
 //! (fonts it cannot measure, among others) are not read.
 
-mod afm;
+pub(crate) mod afm;
 mod attachment;
 mod cff;
 mod cmap;
 mod content;
 mod cos;
 mod document;
-mod encoding;
+pub(crate) mod encoding;
 mod engine;
 mod font;
 mod form;
@@ -30,7 +30,7 @@ mod matrix;
 mod metadata;
 mod ocr;
 mod position;
-mod quality;
+pub(crate) mod quality;
 mod reading_order;
 mod recording;
 mod security;

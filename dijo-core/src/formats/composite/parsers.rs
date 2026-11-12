@@ -39,6 +39,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
     ("application/pgp-encrypted", "dijo::OpenPgpParser"),
     ("application/pkcs7-mime", "dijo::CmsParser"),
     ("application/pkcs7-signature", "dijo::CmsParser"),
+    ("application/postscript", "dijo::PostScriptParser"),
     (
         "application/rss+xml",
         "org.apache.tika.parser.feed.FeedParser",

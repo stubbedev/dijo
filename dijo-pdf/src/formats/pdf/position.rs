@@ -37,7 +37,7 @@ pub(super) struct TextPosition {
 /// The text of a glyph, held inline when it is as short as almost every glyph's, so that placing
 /// a glyph allocates nothing for it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(super) struct GlyphText(Inline);
+pub(crate) struct GlyphText(Inline);
 
 /// How many UTF-8 bytes a glyph's text holds inline.
 const INLINE: usize = 16;
