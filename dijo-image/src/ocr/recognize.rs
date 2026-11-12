@@ -32,7 +32,9 @@ use super::script::{
     installed_language, language, language_model, tagged_language, written_in, BLACKLETTER_SCRIPT,
 };
 use super::slots;
-use super::tesseract::{OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding};
+use super::tesseract::{
+    Detection, OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding,
+};
 use super::text::{corrected, lexicality, with_long_s};
 use crate::config::TesseractOcrConfig;
 use crate::formats::embedded::OcrLanguage;
@@ -159,6 +161,7 @@ pub struct Image<'a> {
     /// Its pixels to the inch, as its file records them or as it was rendered.
     pub(crate) density: Option<Density>,
     png: OnceLock<Vec<u8>>,
+    detection: OnceLock<Detection>,
 }
 
 impl<'a> Image<'a> {
@@ -180,6 +183,7 @@ impl<'a> Image<'a> {
             orientation,
             density,
             png: OnceLock::new(),
+            detection: OnceLock::new(),
         }
     }
 }
@@ -337,7 +341,7 @@ fn word_count(text: &str) -> usize {
 #[derive(Debug, Clone)]
 struct Prepared {
     /// The prepared image, or none when the image reads as it is.
-    image: Option<Arc<Bitmap>>,
+    image: Option<Arc<Readable>>,
     /// The model to read it with: the configured one, or with the automatic language the one
     /// for its script.
     model: String,
@@ -345,8 +349,6 @@ struct Prepared {
     /// The script it is read in: the one detection found, the one assumed for a first reading,
     /// or none.
     script: Option<String>,
-    /// Its pixels to the inch, as turned and scaled from the image's.
-    density: Option<Density>,
     exif_orientation: Option<Orientation>,
     /// Whether it was decoded to prepare it.
     decoded: bool,
@@ -359,18 +361,16 @@ struct Prepared {
     quarter_turns: u8,
     skew_degrees: f64,
     scale: f64,
-    png: OnceLock<Vec<u8>>,
 }
 
 impl Prepared {
     /// The image, read as it is.
-    fn unprepared(script: Option<String>, model: String, density: Option<Density>) -> Self {
+    fn unprepared(script: Option<String>, model: String) -> Self {
         Self {
             image: None,
             model,
             uneven_lighting: false,
             script,
-            density,
             exif_orientation: None,
             decoded: false,
             flattened: false,
@@ -381,7 +381,6 @@ impl Prepared {
             quarter_turns: 0,
             skew_degrees: 0.0,
             scale: 1.0,
-            png: OnceLock::new(),
         }
     }
 
@@ -399,6 +398,27 @@ impl Prepared {
             Thresholding::Sauvola
         } else {
             Thresholding::Otsu
+        }
+    }
+}
+
+/// An image prepared to read, at its pixels to the inch, with what is found in those pixels once:
+/// their encoding as a PNG, and what orientation and script detection finds in them.
+#[derive(Debug)]
+struct Readable {
+    bitmap: Bitmap,
+    density: Option<Density>,
+    png: OnceLock<Vec<u8>>,
+    detection: OnceLock<Detection>,
+}
+
+impl Readable {
+    fn of(bitmap: Bitmap, density: Option<Density>) -> Self {
+        Self {
+            bitmap,
+            density,
+            png: OnceLock::new(),
+            detection: OnceLock::new(),
         }
     }
 }
@@ -453,7 +473,7 @@ impl Oriented {
 /// and its faint marks whitened otherwise, its skew corrected, and its regions of light text on
 /// a dark ground inverted: prepared up to scaling it, which depends on the script it is read in.
 struct Unscaled {
-    image: Arc<Bitmap>,
+    image: Arc<Readable>,
     inverted: bool,
     inverted_regions: usize,
     despeckled: bool,
@@ -462,7 +482,7 @@ struct Unscaled {
 }
 
 impl Unscaled {
-    fn of(upright: &Bitmap, quarter_turns: u8) -> Self {
+    fn of(upright: &Bitmap, quarter_turns: u8, density: Option<Density>) -> Self {
         let turned = upright.turned_clockwise(quarter_turns);
         let turned = turned.as_ref().unwrap_or(upright);
         let analysis = prepare::analysis(turned);
@@ -508,7 +528,7 @@ impl Unscaled {
             )),
         };
         Self {
-            image: Arc::new(image),
+            image: Arc::new(Readable::of(image, density)),
             inverted,
             inverted_regions: reversed.len(),
             despeckled,
@@ -562,7 +582,6 @@ impl<'t> Recognizer<'t> {
         let _slot = slots::slot();
         let mut recognized = self.recognize_preparing(image, assumed)?;
         recognized.read.prepared.image = None;
-        recognized.read.prepared.png = OnceLock::new();
         Ok(recognized)
     }
 
@@ -693,7 +712,10 @@ impl<'t> Recognizer<'t> {
     }
 
     fn language_of_strip(&self, first: &Prepared) -> Result<Option<OcrLanguage>, OcrError> {
-        let Some(Bitmap::Gray(prepared)) = first.image.as_deref() else {
+        let Some(made) = first.image.as_deref() else {
+            return Ok(None);
+        };
+        let Bitmap::Gray(prepared) = &made.bitmap else {
             return Ok(None);
         };
         let Some(rows) = language_strip(prepared) else {
@@ -705,7 +727,7 @@ impl<'t> Recognizer<'t> {
             width: prepared.width(),
             height: rows.len() as u32,
         };
-        let read = Attempt::read(first.clone(), self.read_pixels(strip, first)?);
+        let read = Attempt::read(first.clone(), self.read_pixels(strip, made.density, first)?);
         match read.in_a_language() {
             true => self.model_of_detected_language(&read),
             false => Ok(None),
@@ -734,9 +756,7 @@ impl<'t> Recognizer<'t> {
     ) -> Result<Attempt, OcrError> {
         let auto = self.settings.auto();
         let first = optimistic.prepared.clone();
-        let detected = self
-            .tesseract
-            .detect(pixels_of(image, &first), first.density)?;
+        let detected = self.detect(image, &first)?;
         let reported = detected.script;
         let script = reported.as_ref().filter(|_| auto).map(|reported| {
             REPORTED_FOR
@@ -870,9 +890,7 @@ impl<'t> Recognizer<'t> {
         if model == modern.prepared.model {
             return Ok(modern);
         }
-        let detected = self
-            .tesseract
-            .detect(pixels_of(image, &modern.prepared), modern.prepared.density)?;
+        let detected = self.detect(image, &modern.prepared)?;
         if detected.script.as_deref() != Some(BLACKLETTER_SCRIPT) {
             return Ok(modern);
         }
@@ -907,14 +925,14 @@ impl<'t> Recognizer<'t> {
         if self.blackletter_model()?.as_deref() == Some(read.prepared.model.as_str()) {
             return Ok(read);
         }
-        let (Some(image), Some(reading)) = (read.prepared.image.as_deref(), read.reading.as_ref())
+        let (Some(made), Some(reading)) = (read.prepared.image.as_deref(), read.reading.as_ref())
         else {
             return Ok(read);
         };
         if reading.text.trim().is_empty() {
             return Ok(read);
         }
-        let reread = ppocr()?.read(&image.gray(), model, &reading.blocks)?;
+        let reread = ppocr()?.read(&made.bitmap.gray(), model, &reading.blocks)?;
         let again = Attempt {
             prepared: read.prepared.clone(),
             reading: Some(Reading {
@@ -932,9 +950,11 @@ impl<'t> Recognizer<'t> {
             return Ok(read);
         };
         let unwarped = Prepared {
-            image: Some(Arc::new(Bitmap::Gray(ppocr()?.unwarped(&made.gray())?))),
+            image: Some(Arc::new(Readable::of(
+                Bitmap::Gray(ppocr()?.unwarped(&made.bitmap.gray())?),
+                made.density,
+            ))),
             unwarped: true,
-            png: OnceLock::new(),
             ..read.prepared.clone()
         };
         let reading = self.read(image, &unwarped)?;
@@ -963,14 +983,31 @@ impl<'t> Recognizer<'t> {
         })
     }
 
-    fn read(&self, image: &Image<'_>, prepared: &Prepared) -> Result<Reading, OcrError> {
-        self.read_pixels(pixels_of(image, prepared), prepared)
+    /// What orientation and script detection finds in an image as it was prepared, which runs
+    /// once for each prepared image.
+    fn detect(&self, image: &Image<'_>, prepared: &Prepared) -> Result<Detection, OcrError> {
+        let source = source_of(image, prepared);
+        if let Some(detected) = source.detection.get() {
+            return Ok(detected.clone());
+        }
+        let detected = self.tesseract.detect(source.pixels, source.density)?;
+        Ok(source.detection.get_or_init(|| detected).clone())
     }
 
-    fn read_pixels(&self, pixels: Pixels<'_>, prepared: &Prepared) -> Result<Reading, OcrError> {
+    fn read(&self, image: &Image<'_>, prepared: &Prepared) -> Result<Reading, OcrError> {
+        let source = source_of(image, prepared);
+        self.read_pixels(source.pixels, source.density, prepared)
+    }
+
+    fn read_pixels(
+        &self,
+        pixels: Pixels<'_>,
+        density: Option<Density>,
+        prepared: &Prepared,
+    ) -> Result<Reading, OcrError> {
         let reading = self.tesseract.read(
             pixels,
-            prepared.density,
+            density,
             &prepared.model,
             SEGMENTATION,
             prepared.thresholding(),
@@ -983,12 +1020,26 @@ impl<'t> Recognizer<'t> {
     }
 }
 
+/// What tesseract reads of an image as it was prepared: its pixels, their pixels to the inch,
+/// and where what orientation and script detection finds in those pixels is kept.
+struct Source<'a> {
+    pixels: Pixels<'a>,
+    density: Option<Density>,
+    detection: &'a OnceLock<Detection>,
+}
+
 /// The image as tesseract reads it: prepared, or else its file, as Java hands tesseract the
 /// file of an image it does not decode for it, or else its pixels.
-fn pixels_of<'a>(image: &'a Image<'a>, prepared: &'a Prepared) -> Pixels<'a> {
-    match (&prepared.image, image.file) {
-        (Some(made), _) => made.pixels(&prepared.png),
-        (None, Some(file)) => {
+fn source_of<'a>(image: &'a Image<'a>, prepared: &'a Prepared) -> Source<'a> {
+    if let Some(made) = &prepared.image {
+        return Source {
+            pixels: made.bitmap.pixels(&made.png),
+            density: made.density,
+            detection: &made.detection,
+        };
+    }
+    let pixels = match image.file {
+        Some(file) => {
             let (width, height) = image.bitmap.dimensions();
             Pixels::Encoded {
                 data: file.into(),
@@ -996,7 +1047,12 @@ fn pixels_of<'a>(image: &'a Image<'a>, prepared: &'a Prepared) -> Pixels<'a> {
                 height,
             }
         }
-        (None, None) => image.bitmap.pixels(&image.png),
+        None => image.bitmap.pixels(&image.png),
+    };
+    Source {
+        pixels,
+        density: image.density,
+        detection: &image.detection,
     }
 }
 
@@ -1072,30 +1128,36 @@ fn finish(
     quarter_turns: u8,
 ) -> Prepared {
     let upright: &Bitmap = match &oriented.image {
-        Upright::Unprepared => return Prepared::unprepared(script, model, image.density),
+        Upright::Unprepared => return Prepared::unprepared(script, model),
         Upright::AsItIs => image.bitmap,
         Upright::Made(upright) => upright,
-    };
-    let unscaled = oriented.unscaled[usize::from(quarter_turns % 4)]
-        .get_or_init(|| Unscaled::of(upright, quarter_turns));
-    let scale = prepare::scale_factor(&unscaled.image, MAX_PIXELS, reducible(script.as_deref()));
-    let made = if scale != 1.0 {
-        Arc::new(Bitmap::Gray(prepare::scale(&unscaled.image, scale)))
-    } else {
-        Arc::clone(&unscaled.image)
     };
     let sideways = oriented
         .exif_orientation
         .is_some_and(Orientation::swaps_sides)
         != (quarter_turns % 2 == 1);
+    let density = |scale| {
+        image
+            .density
+            .map(|density| density.transformed(sideways, scale))
+    };
+    let unscaled = oriented.unscaled[usize::from(quarter_turns % 4)]
+        .get_or_init(|| Unscaled::of(upright, quarter_turns, density(1.0)));
+    let unscaled_bitmap = &unscaled.image.bitmap;
+    let scale = prepare::scale_factor(unscaled_bitmap, MAX_PIXELS, reducible(script.as_deref()));
+    let made = if scale != 1.0 {
+        Arc::new(Readable::of(
+            Bitmap::Gray(prepare::scale(unscaled_bitmap, scale)),
+            density(scale),
+        ))
+    } else {
+        Arc::clone(&unscaled.image)
+    };
     Prepared {
         image: Some(made),
         model,
         uneven_lighting: unscaled.uneven_lighting,
         script,
-        density: image
-            .density
-            .map(|density| density.transformed(sideways, scale)),
         exif_orientation: oriented.exif_orientation,
         decoded: true,
         flattened: oriented.flattened,
@@ -1106,7 +1168,6 @@ fn finish(
         quarter_turns,
         skew_degrees: unscaled.skew_degrees,
         scale,
-        png: OnceLock::new(),
     }
 }
 
@@ -1145,7 +1206,7 @@ mod tests {
 
     fn attempt(text: &str, confidence: i32) -> Attempt {
         Attempt::read(
-            Prepared::unprepared(Some("Latin".to_owned()), "script/Latin".to_owned(), None),
+            Prepared::unprepared(Some("Latin".to_owned()), "script/Latin".to_owned()),
             Reading {
                 text: text.to_owned(),
                 confidence,
@@ -1225,8 +1286,8 @@ mod tests {
         let prepared = finish(&image, &oriented, None, "eng".to_owned(), 0);
         assert!(prepared.uneven_lighting);
         assert_eq!(prepared.thresholding(), Thresholding::Sauvola);
-        let made = prepared.image.expect("a prepared image");
-        assert!(!prepare::uneven_lighting(&made, &prepare::analysis(&made)));
+        let made = &prepared.image.expect("a prepared image").bitmap;
+        assert!(!prepare::uneven_lighting(made, &prepare::analysis(made)));
     }
 
     /// An image prepared as it was before the steps that do not depend on the script were kept:
@@ -1267,7 +1328,7 @@ mod tests {
             image = Bitmap::Gray(prepare::scale(&image, scale));
         }
         Prepared {
-            image: Some(Arc::new(image)),
+            image: Some(Arc::new(Readable::of(image, None))),
             uneven_lighting,
             inverted,
             inverted_regions: reversed.len(),
@@ -1275,7 +1336,7 @@ mod tests {
             quarter_turns,
             skew_degrees,
             scale,
-            ..Prepared::unprepared(None, String::new(), None)
+            ..Prepared::unprepared(None, String::new())
         }
     }
 
@@ -1336,7 +1397,7 @@ mod tests {
                     prepared
                         .image
                         .as_deref()
-                        .map(|image| image.gray().into_owned())
+                        .map(|image| image.bitmap.gray().into_owned())
                 };
                 let context = format!("{:?}, {script:?}, {quarter_turns}", page.dimensions());
                 assert_eq!(gray(&prepared), gray(&expected), "{context}");
@@ -1585,5 +1646,36 @@ mod tests {
         let text = read.text().unwrap();
         assert!(text.starts_with("UNIVERSAL - DEKLARATIOUN"), "{text}");
         assert!(text.contains("Dignitéit, déi all Mêmber"), "{text}");
+    }
+
+    #[test]
+    fn detects_a_page_read_again_in_blackletter_once_for_the_detection_it_was_read_after() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let settings = auto_settings();
+        let recognizer = Recognizer::new(tesseract, &settings);
+        let bitmap = scan("more-epigrammata-1520.jpg");
+        let image = Image::of(&bitmap, None, 0, None, Density::per_inch(300.0, 300.0));
+        let oriented = Oriented::of(&image);
+        let first = recognizer
+            .first_preparation(&image, &oriented, None)
+            .unwrap();
+        let optimistic = Attempt::read(first.clone(), recognizer.read(&image, &first).unwrap());
+        let detections = || super::super::tesseract::DETECTIONS.with(std::cell::Cell::get);
+        let before = detections();
+        let best = recognizer
+            .read_detected(optimistic, &image, &oriented)
+            .unwrap();
+        assert_eq!(detections(), before + 1);
+        let (Some(read), Some(detected)) = (&first.image, &best.prepared.image) else {
+            panic!("a prepared image");
+        };
+        assert!(Arc::ptr_eq(read, detected));
+        let blackletter = recognizer.blackletter_model().unwrap();
+        assert!(blackletter.is_some_and(|model| model != best.prepared.model));
+        let dictionary = best.prepared.model.clone();
+        recognizer
+            .in_blackletter(best, &image, &dictionary)
+            .unwrap();
+        assert_eq!(detections(), before + 1);
     }
 }

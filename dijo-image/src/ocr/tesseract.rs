@@ -292,6 +292,12 @@ pub(crate) struct Reading {
     pub(crate) blocks: Vec<Area>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The orientation and script detections run on this thread.
+    pub(crate) static DETECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// What orientation and script detection found in an image.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Detection {
@@ -613,6 +619,8 @@ impl Tesseract {
         image: Pixels<'_>,
         density: Option<Density>,
     ) -> Result<Detection, OcrError> {
+        #[cfg(test)]
+        DETECTIONS.with(|detections| detections.set(detections.get() + 1));
         let _reserved = image.reserve()?;
         let engine = self.take(OSD_MODEL)?;
         let api = &self.api;
