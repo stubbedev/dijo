@@ -58,6 +58,7 @@ pub(crate) use dijo_science::formats::grib;
 pub(crate) use dijo_science::formats::hdf;
 pub(crate) use dijo_science::formats::isatab;
 pub(crate) use dijo_science::formats::netcdf;
+pub(crate) use dijo_small::formats::abiword;
 pub(crate) use dijo_small::formats::apple_single;
 pub(crate) use dijo_small::formats::chm;
 pub(crate) use dijo_small::formats::class_file;
@@ -119,6 +120,7 @@ const CHUNK_BYTES: usize = 8192;
 const CHUNKS_AHEAD: usize = 16;
 
 static PARSERS: &[&dyn Parser] = &[
+    &abiword::AbiWordParser,
     &access::JackcessParser,
     &archive::CabParser,
     &archive::CompressorParser,

@@ -1,0 +1,147 @@
+"""Writes test_files/documents/harbour.abw, an AbiWord document as AbiWord 3.0.8 saves one, with
+what AbiWordParser reads and what it leaves out:
+
+- the <metadata> AbiWord's document properties write, its dates in C's ctime form;
+- styles, one based on a heading, and the definitions of a numbered list and a bulleted list
+  nested in it;
+- headings, runs of character formatting, a link, a bookmark, a footnote, a page number field,
+  a tab and a line break;
+- list items with their labels, at two levels;
+- a table of three rows;
+- a text box frame, and an image placed in a paragraph whose PNG, a white 4x2 pixel image, is in
+  <data>;
+- a header and a footer section.
+
+The <lists> are as AbiWord writes them once it has laid the lists out. Its command-line
+conversion reads the document and saves it again with the same text, the properties of its
+styles in an order of its own, without the <lists> (it lays nothing out) and with a <history>:
+
+    nix shell nixpkgs#abiword -c abiword --to=abw -o resaved.abw harbour.abw
+
+Usage: harbour.py OUTPUT.abw
+"""
+
+import base64
+import struct
+import sys
+import zlib
+
+
+def png(width, height):
+    """A white greyscale PNG of `width` by `height` pixels."""
+    rows = b"".join(b"\x00" + b"\xff" * width for _ in range(height))
+
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", zlib.compress(rows, 9))
+        + chunk(b"IEND", b"")
+    )
+
+
+def wrapped(data, width=72):
+    """`data` in base 64, in lines of `width` characters."""
+    encoded = base64.b64encode(data).decode("ascii")
+    return "\n".join(encoded[at : at + width] for at in range(0, len(encoded), width))
+
+
+DOCUMENT = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE abiword PUBLIC "-//ABISOURCE//DTD AWML 1.0 Strict//EN" "http://www.abisource.com/awml.dtd">
+<abiword template="false" xmlns:ct="http://www.abisource.com/changetracking.dtd" xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:math="http://www.w3.org/1998/Math/MathML" xid-max="61" xmlns:dc="http://purl.org/dc/elements/1.1/" fileformat="1.1" xmlns:svg="http://www.w3.org/2000/svg" xmlns:awml="http://www.abisource.com/awml.dtd" xmlns="http://www.abisource.com/awml.dtd" xmlns:xlink="http://www.w3.org/1999/xlink" version="3.0.8" xml:space="preserve" props="dom-dir:ltr; document-footnote-restart-section:0; document-endnote-type:numeric; document-endnote-place-enddoc:1; document-endnote-initial:1; lang:en-GB; document-endnote-restart-section:0; document-footnote-restart-page:0; document-footnote-type:numeric; document-footnote-initial:1; document-endnote-place-endsection:0">
+<!-- ======================================================================== -->
+<!-- This file is an AbiWord document.                                        -->
+<!-- AbiWord is a free, Open Source word processor.                           -->
+<!-- More information about AbiWord is available at http://www.abisource.com/ -->
+<!-- You should not edit this file by hand.                                   -->
+<!-- ======================================================================== -->
+
+<metadata>
+<m key="abiword.date_last_changed">Thu Nov 12 21:04:05 2026
+</m>
+<m key="abiword.generator">AbiWord</m>
+<m key="abiword.keywords">harbour, lamp, tides</m>
+<m key="dc.creator">Anna Berg</m>
+<m key="dc.date">Mon Nov  2 08:30:00 2026
+</m>
+<m key="dc.description">A log kept by the keeper of the harbour light.</m>
+<m key="dc.format">application/x-abiword</m>
+<m key="dc.language">en-GB</m>
+<m key="dc.publisher">Harbour Office</m>
+<m key="dc.subject">Lighthouse duties</m>
+<m key="dc.title">The Harbour Log</m>
+</metadata>
+<rdf>
+</rdf>
+<styles>
+<s type="P" name="Heading 1" basedon="Normal" followedby="Normal" props="font-size:17pt; margin-top:22pt; font-weight:bold; margin-bottom:3pt; font-family:Arial; keep-with-next:1"/>
+<s type="P" name="Normal" followedby="Current Settings" props="font-family:Times New Roman; margin-top:0pt; color:000000; margin-left:0pt; text-position:normal; widows:2; font-style:normal; text-indent:0in; font-variant:normal; font-weight:normal; margin-right:0pt; font-size:12pt; text-decoration:none; margin-bottom:0pt; line-height:1.0; bgcolor:transparent; text-align:left; font-stretch:normal"/>
+<s type="P" name="Footnote Text" basedon="Normal" followedby="Current Settings" props="text-position:normal; font-size:10pt"/>
+<s type="P" name="Logbook Entry" basedon="Heading 2" followedby="Normal" props="font-style:italic"/>
+<s type="P" name="Heading 2" basedon="Normal" followedby="Normal" props="font-size:14pt; margin-top:22pt; font-weight:bold; margin-bottom:3pt; font-family:Arial; keep-with-next:1"/>
+<s type="P" name="Numbered List" basedon="Normal" followedby="Current Settings" props="list-delim:%L.; list-decimal:.; list-style:Numbered List; start-value:1; margin-left:0.5in; field-color:transparent; text-indent:-0.3in; field-font:NULL"/>
+<s type="P" name="Bullet List" basedon="Normal" followedby="Current Settings" props="list-delim:%L; list-decimal:NULL; list-style:Bullet List; start-value:0; margin-left:0.5in; field-color:transparent; text-indent:-0.3in; field-font:Symbol"/>
+</styles>
+<lists>
+<l id="1000" parentid="0" type="0" start-value="1" list-delim="%L." list-decimal="."/>
+<l id="1001" parentid="1000" type="5" start-value="0" list-delim="%L" list-decimal="NULL"/>
+</lists>
+<pagesize pagetype="A4" orientation="portrait" width="210.000000" height="297.000000" units="mm" page-scale="1.000000"/>
+<section footer="2" header="1" xid="1" props="page-margin-footer:0.5in; page-margin-header:0.5in">
+<p style="Heading 1" xid="2">The Harbour Log</p>
+<p style="Normal" xid="3">Every evening the <c props="font-weight:bold">keeper</c><c props="font-weight:bold"></c> lit the lamp before sunset.<field type="footnote_ref" footnote-id="1" xid="4" props="text-position:superscript"></field><foot footnote-id="1" xid="5">
+<p style="Footnote Text" xid="6"><field type="footnote_anchor" footnote-id="1" xid="7" props="text-position:superscript"></field> Oil was delivered on Mondays.</p>
+</foot> The tide tables are on <a xlink:href="https://example.org/harbour/tides" xid="8">the harbour page</a>.</p>
+<p style="Logbook Entry" xid="9"><bookmark type="start" name="duties" xid="10"/>Duties<bookmark xml:id="" type="end" name="duties" xid="11"/></p>
+<p level="1" listid="1000" parentid="0" style="Numbered List" xid="12" props="start-value:1; text-indent:-0.3000in; list-style:Numbered List; field-font:NULL; margin-left:0.5000in"><field type="list_label" xid="13"></field>	Trim the wick<c></c></p>
+<p level="1" listid="1000" parentid="0" style="Numbered List" xid="14" props="start-value:1; text-indent:-0.3000in; list-style:Numbered List; field-font:NULL; margin-left:0.5000in"><field type="list_label" xid="15"></field>	Polish the lens<c></c></p>
+<p level="2" listid="1001" parentid="1000" style="Bullet List" xid="16" props="start-value:0; text-indent:-0.3000in; list-style:Bullet List; field-font:Symbol; margin-left:1.0000in"><field type="list_label" xid="17"></field>	Inside, with a soft cloth<c></c></p>
+<p level="2" listid="1001" parentid="1000" style="Bullet List" xid="18" props="start-value:0; text-indent:-0.3000in; list-style:Bullet List; field-font:Symbol; margin-left:1.0000in"><field type="list_label" xid="19"></field>	Outside, after rain<c></c></p>
+<p level="1" listid="1000" parentid="0" style="Numbered List" xid="20" props="start-value:1; text-indent:-0.3000in; list-style:Numbered List; field-font:NULL; margin-left:0.5000in"><field type="list_label" xid="21"></field>	Wind the clock<c></c></p>
+<p style="Heading 2" xid="22">Stores</p>
+<table xid="23" props="table-column-leftpos:0.0000in; table-column-props:1.5000in/1.5000in/">
+<cell xid="24" props="bot-attach:1; left-attach:0; right-attach:1; top-attach:0">
+<p style="Normal" xid="25"><c props="font-weight:bold">Item</c><c props="font-weight:bold"></c></p>
+</cell>
+<cell xid="26" props="bot-attach:1; left-attach:1; right-attach:2; top-attach:0">
+<p style="Normal" xid="27"><c props="font-weight:bold">Stock</c><c props="font-weight:bold"></c></p>
+</cell>
+<cell xid="28" props="bot-attach:2; left-attach:0; right-attach:1; top-attach:1">
+<p style="Normal" xid="29">Lamp oil</p>
+</cell>
+<cell xid="30" props="bot-attach:2; left-attach:1; right-attach:2; top-attach:1">
+<p style="Normal" xid="31">40 litres</p>
+</cell>
+<cell xid="32" props="bot-attach:3; left-attach:0; right-attach:1; top-attach:2">
+<p style="Normal" xid="33">Wicks</p>
+</cell>
+<cell xid="34" props="bot-attach:3; left-attach:1; right-attach:2; top-attach:2">
+<p style="Normal" xid="35">12</p>
+</cell>
+</table>
+<p style="Normal" xid="36"><image dataid="lamp-room" xid="37" props="height:0.0208in; width:0.0417in"/></p>
+<p style="Normal" xid="38" props="text-align:left"><c props="lang:da-DK">Fyret lyser om natten.</c><c props="lang:da-DK"></c>	Signed, A. B.<br/>Page <field type="page_number" xid="39"></field></p>
+<frame xid="40" props="wrap-mode:wrapped-both; frame-height:0.5in; frame-type:textbox; ypos:0.2in; frame-width:2in; xpos:0.5in; position-to:block-above-text">
+<p style="Normal" xid="41">Keep the lamp lit.</p>
+</frame></section>
+<section id="1" type="header" xid="42">
+<p style="Normal" xid="43">Harbour Office</p>
+</section>
+<section id="2" type="footer" xid="44">
+<p style="Normal" xid="45">Kept at the lighthouse</p>
+</section>
+<data>
+<d name="lamp-room" mime-type="image/png" base64="yes">
+{png}
+</d>
+</data>
+</abiword>
+"""
+
+if __name__ == "__main__":
+    with open(sys.argv[1], "w", encoding="utf-8", newline="\n") as output:
+        output.write(DOCUMENT.replace("{png}", wrapped(png(4, 2))))

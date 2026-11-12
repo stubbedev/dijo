@@ -3112,7 +3112,7 @@ pub(super) static MIME_TYPES: MimeTypes = MimeTypes {
         MimeType { name: "application/wsdl+xml", interpreted: false, root_xml: &[], extensions: &[".wsdl"] },
         MimeType { name: "application/wspolicy+xml", interpreted: false, root_xml: &[], extensions: &[".wspolicy"] },
         MimeType { name: "image/x-tga", interpreted: false, root_xml: &[], extensions: &[".tga", ".icb", ".vda"] },
-        MimeType { name: "application/x-abiword", interpreted: false, root_xml: &[], extensions: &[".abw"] },
+        MimeType { name: "application/x-abiword", interpreted: false, root_xml: &[("", "abiword"), ("http://www.abisource.com/awml.dtd", "abiword")], extensions: &[".abw"] },
         MimeType { name: "application/x-ace-compressed", interpreted: false, root_xml: &[], extensions: &[".ace"] },
         MimeType { name: "application/x-activemime", interpreted: false, root_xml: &[], extensions: &[] },
         MimeType { name: "application/x-amf", interpreted: false, root_xml: &[("", "amf")], extensions: &[".amf"] },
@@ -6488,7 +6488,7 @@ pub(super) static MIME_TYPES: MimeTypes = MimeTypes {
         Magic { type_id: 565, priority: 20, clause: Clause::Match(MagicMatch { pattern: b"\x0E\x0F", mask: b"\xFF\xFF", kind: Kind::Bytes, begin: 0, end: 0, anchor: None }) },
         Magic { type_id: 1213, priority: 10, clause: Clause::Match(MagicMatch { pattern: b"ID3", mask: b"\xFF\xFF\xFF", kind: Kind::Bytes, begin: 0, end: 0, anchor: None }) },
     ],
-    xmls: &[8, 1467, 42, 39, 41, 40, 43, 1468, 1469, 177, 187, 214, 773, 246, 247, 260, 263, 262, 398, 443, 174, 176, 175, 614, 860, 1679, 1667, 891, 1084, 1684, 1140, 1146, 1147, 1148, 1331, 1336, 1486, 7],
+    xmls: &[8, 1467, 42, 39, 41, 40, 43, 1468, 1469, 177, 187, 214, 773, 246, 247, 260, 263, 262, 398, 443, 174, 176, 175, 614, 857, 860, 1679, 1667, 891, 1084, 1684, 1140, 1146, 1147, 1148, 1331, 1336, 1486, 7],
     patterns: Patterns {
         names: &[
             (".htaccess", 1),

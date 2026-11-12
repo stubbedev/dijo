@@ -71,6 +71,11 @@
   broken as they are drawn, and the XHTML of a `<foreignObject>` a paragraph to each block. The root's `<title>` and
   `<desc>` and the Dublin Core of Inkscape's RDF metadata are metadata, a nested title a paragraph; images in `data:`
   URIs are handed on as embedded documents, for OCR. Nothing a link or the DTD names is fetched.
+* AbiWord documents are read (#348), where Tika reads nothing of them: headings by their styles, list items nested
+  in `ol` and `ul` by their level, tables, links, line breaks, footnotes, endnotes, annotations and text boxes, and
+  header and footer sections in their own `div`s. The `<metadata>` is the document's Dublin Core, keywords and
+  generator, its dates ISO local date-times (AbiWord saves them without a time zone); each `<data>` item is handed on
+  as an embedded document. Gzip-compressed `.zabw` files are read through the gzip parser.
 * Lotus Word Pro documents are read for their text (#346), where Tika reads nothing of them: those of Word Pro 97 and
   later, as LibreOffice's import reads them, small files whose stream is imploded included. Division by division, the
   headers, the body, the footers and the frames on its pages, with tables written as tables of their rows and cells,

@@ -18,7 +18,8 @@ const MONTHS: [&str; 12] = [
     "November",
     "December",
 ];
-const SHORT_MONTHS: [&str; 12] = [
+/// The `en_US` short month names, January first.
+pub const SHORT_MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 const WEEKDAYS: [&str; 7] = [

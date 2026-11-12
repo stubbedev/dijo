@@ -326,6 +326,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/x-7z-compressed",
         "org.apache.tika.parser.pkg.SevenZParser",
     ),
+    ("application/x-abiword", "dijo::AbiWordParser"),
     (
         "application/x-activemime",
         "org.apache.tika.parser.microsoft.activemime.ActiveMimeParser",

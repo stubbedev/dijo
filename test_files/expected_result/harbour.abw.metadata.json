@@ -1,0 +1,38 @@
+{
+    "Content-Type": [
+        "application/x-abiword"
+    ],
+    "tk:parsed-by": [
+        "dijo::AbiWordParser"
+    ],
+    "dc:title": [
+        "The Harbour Log"
+    ],
+    "dc:creator": [
+        "Anna Berg"
+    ],
+    "dc:subject": [
+        "Lighthouse duties"
+    ],
+    "dc:description": [
+        "A log kept by the keeper of the harbour light."
+    ],
+    "dc:publisher": [
+        "Harbour Office"
+    ],
+    "dc:language": [
+        "en-GB"
+    ],
+    "meta:keyword": [
+        "harbour, lamp, tides"
+    ],
+    "xmp:CreatorTool": [
+        "AbiWord"
+    ],
+    "dcterms:created": [
+        "2026-11-02T08:30:00"
+    ],
+    "dcterms:modified": [
+        "2026-11-12T21:04:05"
+    ]
+}

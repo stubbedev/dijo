@@ -21,6 +21,7 @@ pub mod formats {
     pub(crate) use dijo_core::testing;
     pub(crate) use dijo_html::formats::{data_uri, html};
 
+    pub mod abiword;
     pub mod apple_single;
     pub mod chm;
     pub mod class_file;

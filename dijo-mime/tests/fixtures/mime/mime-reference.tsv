@@ -66,6 +66,8 @@ documents	eng-ocr.pdf	file	application/pdf	tk:content-type-magic-detected=applic
 documents	eng-ocr.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
 documents	greek-danish-greek-scan.tif	file	image/tiff	tk:content-type-magic-detected=image/tiff
 documents	greek-danish-greek-scan.tif	bytes	image/tiff	tk:content-type-magic-detected=image/tiff
+documents	harbour.abw	file	application/x-abiword	tk:content-type-magic-detected=application/x-abiword
+documents	harbour.abw	bytes	application/x-abiword	tk:content-type-magic-detected=application/x-abiword
 documents	keynote2018.key	file	application/vnd.apple.keynote.18	tk:content-type-magic-detected=application/vnd.apple.keynote	zip:detector-zip-file-opened=true
 documents	keynote2018.key	bytes	application/vnd.apple.keynote.18	tk:content-type-magic-detected=application/zip	Content-Length=54228	zip:detector-zip-file-opened=true
 documents	ledger.djvu	file	image/vnd.djvu	tk:content-type-magic-detected=image/vnd.djvu
