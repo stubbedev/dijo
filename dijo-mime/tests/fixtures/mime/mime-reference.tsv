@@ -242,6 +242,10 @@ documents	vodafone.xlsx	file	application/vnd.openxmlformats-officedocument.sprea
 documents	vodafone.xlsx	bytes	application/vnd.openxmlformats-officedocument.spreadsheetml.sheet	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=12541	zip:detector-zip-file-opened=true
 documents	winter-sports.epub	file	application/epub+zip	tk:content-type-magic-detected=application/epub+zip	zip:detector-zip-file-opened=true
 documents	winter-sports.epub	bytes	application/epub+zip	tk:content-type-magic-detected=application/epub+zip	Content-Length=210376	zip:detector-zip-file-opened=true
+documents	wordpro-bullets.lwp	file	application/vnd.lotus-wordpro	tk:content-type-magic-detected=application/vnd.lotus-wordpro
+documents	wordpro-bullets.lwp	bytes	application/vnd.lotus-wordpro	tk:content-type-magic-detected=application/vnd.lotus-wordpro
+documents	wordpro-features.lwp	file	application/vnd.lotus-wordpro	tk:content-type-magic-detected=application/vnd.lotus-wordpro
+documents	wordpro-features.lwp	bytes	application/vnd.lotus-wordpro	tk:content-type-magic-detected=application/vnd.lotus-wordpro
 documents	works2000.wps	file	application/vnd.ms-works	tk:content-type-magic-detected=application/vnd.ms-works
 documents	works2000.wps	bytes	application/vnd.ms-works	tk:content-type-magic-detected=application/x-tika-msoffice	Content-Length=5120
 documents	works4.wps	file	application/vnd.ms-works	tk:content-type-magic-detected=application/vnd.ms-works

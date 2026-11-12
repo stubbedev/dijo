@@ -65,6 +65,12 @@
   broken as they are drawn, and the XHTML of a `<foreignObject>` a paragraph to each block. The root's `<title>` and
   `<desc>` and the Dublin Core of Inkscape's RDF metadata are metadata, a nested title a paragraph; images in `data:`
   URIs are handed on as embedded documents, for OCR. Nothing a link or the DTD names is fetched.
+* Lotus Word Pro documents are read for their text (#346), where Tika reads nothing of them: those of Word Pro 97 and
+  later, as LibreOffice's import reads them, small files whose stream is imploded included. Division by division, the
+  headers, the body, the footers and the frames on its pages, with tables written as tables of their rows and cells,
+  frames and notes where their paragraphs anchor them, and footnotes and endnotes after the paragraph that marks
+  them; the text of each run in the code page its modifiers give. The description, keywords, author and creation and
+  revision times of the document's data are metadata. A Word Pro 96 document is not read.
 
 # 0.2.14 (2026-10-28)
 

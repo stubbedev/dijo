@@ -1986,6 +1986,43 @@ fn works_documents_are_read_for_their_text() {
     }
 }
 
+/// `wordpro-bullets.lwp` is LibreOffice's `lotuswordpro/qa/cppunit/data/tdf33787-ordered-bullets.lwp`
+/// (CC0, as its footer says), and `wordpro-features.lwp` its `paragraphProperties.lwp` (MPL-2.0),
+/// saved by Word Pro 9.6.
+#[test]
+fn word_pro_documents_are_read_for_their_text() {
+    let objects = json_objects(&[&document("wordpro-bullets.lwp")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "application/vnd.lotus-wordpro");
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(
+            "Lotus Word Pro \u{2019}97 .lwp Bullet Points Example\nNumbered bullet one (1)\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(
+            "Jaxson Lee 2011\nCC0 (http://creativecommons.org/publicdomain/zero/1.0/)\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        objects[0]["metadata"]["authors"],
+        serde_json::json!(["Davy"])
+    );
+    let xhtml = stdout(&dijo(&[
+        "--format",
+        "xhtml",
+        &document("wordpro-features.lwp"),
+    ]));
+    assert!(
+        xhtml.contains("<p>This line is Courier New.</p>\n<div class=\"footnote\"><p>This is a TrueType font</p>"),
+        "{xhtml}"
+    );
+    assert!(xhtml.contains("<td><p>row1</p>\n</td>"), "{xhtml}");
+}
+
 #[test]
 fn notebooks_are_read_cell_by_cell() {
     let objects = json_objects(&[&document("notebook.ipynb")]);

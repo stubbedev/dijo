@@ -57,6 +57,7 @@ pub mod formats {
     pub mod translation;
     pub mod tsd;
     pub mod vcard;
+    pub mod word_pro;
     pub mod wordperfect;
     pub mod xml_2003;
 }

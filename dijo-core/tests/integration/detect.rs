@@ -21,6 +21,7 @@ use test_case::test_case;
 #[test_case("cabinet.cab", "application/vnd.ms-cab-compressed")]
 #[test_case("testPROJECT2007.mpp", "application/vnd.ms-project")]
 #[test_case("works7.wps", "application/vnd.ms-works")]
+#[test_case("wordpro-bullets.lwp", "application/vnd.lotus-wordpro")]
 #[test_case("lighthouse.svg", "image/svg+xml")]
 #[test_case("ara-ocr.png", "image/png")]
 fn test_detect_file_and_bytes(file_name: &str, expected: &str) {

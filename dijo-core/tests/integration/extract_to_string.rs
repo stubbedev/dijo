@@ -27,6 +27,8 @@ use crate::test_utils;
 #[test_case("lighthouse.svg", 0.9; "Test SVG image")]
 #[test_case("works4.wps", 0.9; "Test Works 4 document")]
 #[test_case("works7.wps", 0.9; "Test Works 7 document")]
+#[test_case("wordpro-bullets.lwp", 0.9; "Test Word Pro document")]
+#[test_case("wordpro-features.lwp", 0.9; "Test Word Pro document with a table and a footnote")]
 //#[test_case("eng-ocr.pdf", 0.9; "Test eng-ocr PDF file")]
 fn test_extract_file_to_string(file_name: &str, target_dist: f64) {
     let extractor = Extractor::new().set_extract_string_max_length(1000000);
