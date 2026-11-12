@@ -86,6 +86,10 @@ documents	lighthouse.svg	file	image/svg+xml	tk:content-type-magic-detected=image
 documents	lighthouse.svg	bytes	image/svg+xml	tk:content-type-magic-detected=image/svg+xml
 documents	lighthouse.vcf	file	text/x-vcard	tk:content-type-magic-detected=text/x-vcard
 documents	lighthouse.vcf	bytes	text/x-vcard	tk:content-type-magic-detected=text/x-vcard
+documents	lotus-r1.wks	file	application/vnd.lotus-1-2-3; version=1	tk:content-type-magic-detected=application/vnd.lotus-1-2-3; version=1
+documents	lotus-r1.wks	bytes	application/vnd.lotus-1-2-3; version=1	tk:content-type-magic-detected=application/vnd.lotus-1-2-3; version=1
+documents	lotus-r4.wk4	file	application/vnd.lotus-1-2-3; version=4	tk:content-type-magic-detected=application/vnd.lotus-1-2-3; version=4
+documents	lotus-r4.wk4	bytes	application/vnd.lotus-1-2-3; version=4	tk:content-type-magic-detected=application/vnd.lotus-1-2-3; version=4
 documents	mail.emlx	file	message/x-emlx	tk:content-type-magic-detected=message/x-emlx
 documents	mail.emlx	bytes	message/x-emlx	tk:content-type-magic-detected=message/x-emlx
 documents	malayalam-scan.png	file	image/png	tk:content-type-magic-detected=image/png

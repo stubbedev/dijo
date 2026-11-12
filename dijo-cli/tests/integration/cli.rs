@@ -1969,6 +1969,30 @@ fn project_files_are_read_for_their_tasks_and_resources() {
 /// `testWORKSWordProcessor4.0.wps`, `testWORKS2000.wps` and `testWORKS.wps`
 /// (`tika-parsers-standard-integration-tests/src/test/resources/test-documents`, Apache-2.0),
 /// saved by Works 4 for Windows (`MN0`), Works 2000 (`CHNKINK`) and Works 7 (`CHNKWKS`).
+/// `lotus-r1.wks` and `lotus-r4.wk4` are Apache Tika's test documents `testLotus123.wks` and
+/// `testLotus123-lotusftp.wk4` (`tika-parsers-standard-integration-tests/src/test/resources/
+/// test-documents`, Apache-2.0), saved by 1-2-3 Release 1 and Release 4.
+#[test]
+fn lotus_spreadsheets_are_read_for_their_cells() {
+    let objects = json_objects(&[&document("lotus-r1.wks")]);
+    assert_matches_schema(&objects[0]);
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(text.starts_with("X\tY\tZ\n1\t10\t10\n2\t9\t18\n"), "{text}");
+    assert!(text.ends_with("10\t1\t10\n"), "{text}");
+    let objects = json_objects(&[&document("lotus-r4.wk4")]);
+    assert_eq!(objects[0]["mime_type"], "application/vnd.lotus-1-2-3");
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(text.starts_with("Employees\n"), "{text}");
+    assert!(
+        text.contains("\t\tEMPID\tLAST\tFIRST\tDOH\tSALARIED\tDEPTNUM\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\t\t67543\tMordocs\tArthur\t08/13/88\t1\t2323\n"),
+        "{text}"
+    );
+}
+
 #[test]
 fn works_documents_are_read_for_their_text() {
     for name in ["works4.wps", "works2000.wps", "works7.wps"] {

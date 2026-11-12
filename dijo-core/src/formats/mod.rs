@@ -75,6 +75,7 @@ pub(crate) use dijo_small::formats::icalendar;
 pub(crate) use dijo_small::formats::idml;
 pub(crate) use dijo_small::formats::iwork;
 pub(crate) use dijo_small::formats::iwork_package;
+pub(crate) use dijo_small::formats::lotus_123;
 pub(crate) use dijo_small::formats::markdown;
 pub(crate) use dijo_small::formats::mat;
 pub(crate) use dijo_small::formats::matroska;
@@ -162,6 +163,7 @@ static PARSERS: &[&dyn Parser] = &[
     &isatab::IsaTabParser,
     &iwork::IworkArchiveParser,
     &iwork_package::IworkPackageParser,
+    &lotus_123::Lotus123Parser,
     &mail::EmlxParser,
     &metafile::EmfParser,
     &metafile::WmfParser,
