@@ -1,0 +1,519 @@
+diff --git a/include/tesseract/baseapi.h b/include/tesseract/baseapi.h
+index 9475fb2..8a1ac55 100644
+--- a/include/tesseract/baseapi.h
++++ b/include/tesseract/baseapi.h
+@@ -55,6 +55,7 @@ class ResultIterator;
+ class MutableIterator;
+ class TessResultRenderer;
+ class Tesseract;
++class PageLayout;
+ 
+ // Function to read a std::vector<char> from a whole file.
+ // Returns false on failure.
+@@ -452,6 +453,28 @@ public:
+    */
+   int Recognize(ETEXT_DESC *monitor);
+ 
++  /**
++   * Finds the layout of the image as Recognize does before it recognizes the
++   * image, and returns a copy of it, which the caller owns, for engines of
++   * other languages to recognize the same image in with RecognizeInPageLayout.
++   * Returns nullptr on error.
++   */
++  PageLayout *FindPageLayout();
++
++  /**
++   * Whether this engine, given its image, would find the layout itself: its
++   * variables, the direction of its language and the size of its image are
++   * those the layout was found with.
++   */
++  bool FitsPageLayout(const PageLayout &layout) const;
++
++  /**
++   * Recognizes the image, which must be the one the layout was found in, as
++   * Recognize does, but in the layout instead of finding it again. Returns 0 on
++   * success, -1 on error or when the layout does not fit this engine.
++   */
++  int RecognizeInPageLayout(const PageLayout &layout, ETEXT_DESC *monitor);
++
+   /**
+    * Methods to retrieve information after SetAndThresholdImage(),
+    * Recognize() or TesseractRect(). (Recognize is called implicitly if needed.)
+@@ -738,6 +761,15 @@ protected:
+    */
+   virtual bool Threshold(Pix **pix);
+ 
++  /** Makes the resolution of the image credible, as thresholding takes it. */
++  void SettleSourceResolution();
++
++  /** Records the size and the estimated resolution of the thresholded image. */
++  void RecordThresholdedGeometry();
++
++  /** Recognizes the image in the lines FindLines found. */
++  int RecognizeFoundLines(ETEXT_DESC *monitor);
++
+   /**
+    * Find lines from the image making the BLOCK_LIST.
+    * @return 0 on success.
+diff --git a/include/tesseract/capi.h b/include/tesseract/capi.h
+index b1680bb..9f51c00 100644
+--- a/include/tesseract/capi.h
++++ b/include/tesseract/capi.h
+@@ -55,6 +55,7 @@ typedef tesseract::WritingDirection TessWritingDirection;
+ typedef tesseract::TextlineOrder TessTextlineOrder;
+ typedef tesseract::PolyBlockType TessPolyBlockType;
+ typedef tesseract::ETEXT_DESC ETEXT_DESC;
++typedef tesseract::PageLayout TessPageLayout;
+ #else
+ typedef struct TessResultRenderer TessResultRenderer;
+ typedef struct TessBaseAPI TessBaseAPI;
+@@ -62,6 +63,7 @@ typedef struct TessPageIterator TessPageIterator;
+ typedef struct TessResultIterator TessResultIterator;
+ typedef struct TessMutableIterator TessMutableIterator;
+ typedef struct TessChoiceIterator TessChoiceIterator;
++typedef struct TessPageLayout TessPageLayout;
+ typedef enum TessOcrEngineMode {
+   OEM_TESSERACT_ONLY,
+   OEM_LSTM_ONLY,
+@@ -361,6 +363,14 @@ TESS_API TessPageIterator *TessBaseAPIAnalyseLayout(TessBaseAPI *handle);
+ 
+ TESS_API int TessBaseAPIRecognize(TessBaseAPI *handle, ETEXT_DESC *monitor);
+ 
++TESS_API TessPageLayout *TessBaseAPIFindPageLayout(TessBaseAPI *handle);
++TESS_API BOOL TessBaseAPIFitsPageLayout(const TessBaseAPI *handle,
++                                        const TessPageLayout *layout);
++TESS_API int TessBaseAPIRecognizeInPageLayout(TessBaseAPI *handle,
++                                              const TessPageLayout *layout,
++                                              ETEXT_DESC *monitor);
++TESS_API void TessPageLayoutDelete(TessPageLayout *layout);
++
+ TESS_API BOOL TessBaseAPIProcessPages(TessBaseAPI *handle, const char *filename,
+                                       const char *retry_config,
+                                       int timeout_millisec,
+diff --git a/src/api/baseapi.cpp b/src/api/baseapi.cpp
+index 0c16283..2ed32af 100644
+--- a/src/api/baseapi.cpp
++++ b/src/api/baseapi.cpp
+@@ -42,6 +42,7 @@
+ #endif
+ #include "mutableiterator.h" // for MutableIterator
+ #include "normalis.h"        // for kBlnBaselineOffset, kBlnXHeight
++#include "pagelayout.h"      // for PageLayout
+ #include "pageres.h"         // for PAGE_RES_IT, WERD_RES, PAGE_RES, CR_DE...
+ #include "paragraphs.h"      // for DetectParagraphs
+ #include "params.h"          // for BoolParam, IntParam, DoubleParam, Stri...
+@@ -766,6 +767,38 @@ int TessBaseAPI::Recognize(ETEXT_DESC *monitor) {
+   if (FindLines() != 0) {
+     return -1;
+   }
++  return RecognizeFoundLines(monitor);
++}
++
++PageLayout *TessBaseAPI::FindPageLayout() {
++  if (FindLines() != 0) {
++    return nullptr;
++  }
++  return new PageLayout(*tesseract_, *block_list_);
++}
++
++bool TessBaseAPI::FitsPageLayout(const PageLayout &layout) const {
++  if (tesseract_ == nullptr || thresholder_ == nullptr || thresholder_->IsEmpty()) {
++    return false;
++  }
++  int left, top, width, height, image_width, image_height;
++  thresholder_->GetImageSizes(&left, &top, &width, &height, &image_width, &image_height);
++  return layout.Fits(*tesseract_, width, height);
++}
++
++int TessBaseAPI::RecognizeInPageLayout(const PageLayout &layout, ETEXT_DESC *monitor) {
++  if (!FitsPageLayout(layout)) {
++    return -1;
++  }
++  ClearResults();
++  SettleSourceResolution();
++  tesseract_->set_pix_grey(thresholder_->IsBinary() ? nullptr : thresholder_->GetPixRectGrey());
++  RecordThresholdedGeometry();
++  layout.CopyTo(*tesseract_, block_list_);
++  return RecognizeFoundLines(monitor);
++}
++
++int TessBaseAPI::RecognizeFoundLines(ETEXT_DESC *monitor) {
+   delete page_res_;
+   if (block_list_->empty()) {
+     page_res_ = new PAGE_RES(false, block_list_, &tesseract_->prev_word_best_choice_);
+@@ -1997,27 +2030,7 @@ bool TessBaseAPI::Threshold(Pix **pix) {
+   if (*pix != nullptr) {
+     pixDestroy(pix);
+   }
+-  // Zero resolution messes up the algorithms, so make sure it is credible.
+-  int user_dpi = 0;
+-  GetIntVariable("user_defined_dpi", &user_dpi);
+-  int y_res = thresholder_->GetScaledYResolution();
+-  if (user_dpi && (user_dpi < kMinCredibleResolution || user_dpi > kMaxCredibleResolution)) {
+-    tprintf(
+-        "Warning: User defined image dpi is outside of expected range "
+-        "(%d - %d)!\n",
+-        kMinCredibleResolution, kMaxCredibleResolution);
+-  }
+-  // Always use user defined dpi
+-  if (user_dpi) {
+-    thresholder_->SetSourceYResolution(user_dpi);
+-  } else if (y_res < kMinCredibleResolution || y_res > kMaxCredibleResolution) {
+-    if (y_res != 0) {
+-      // Show warning only if a resolution was given.
+-      tprintf("Warning: Invalid resolution %d dpi. Using %d instead.\n",
+-              y_res, kMinCredibleResolution);
+-    }
+-    thresholder_->SetSourceYResolution(kMinCredibleResolution);
+-  }
++  SettleSourceResolution();
+ 
+   auto thresholding_method = static_cast<ThresholdMethod>(static_cast<int>(tesseract_->thresholding_method));
+ 
+@@ -2047,6 +2060,35 @@ bool TessBaseAPI::Threshold(Pix **pix) {
+     tesseract_->set_pix_grey(pix_grey);
+   }
+ 
++  RecordThresholdedGeometry();
++  return true;
++}
++
++void TessBaseAPI::SettleSourceResolution() {
++  // Zero resolution messes up the algorithms, so make sure it is credible.
++  int user_dpi = 0;
++  GetIntVariable("user_defined_dpi", &user_dpi);
++  int y_res = thresholder_->GetScaledYResolution();
++  if (user_dpi && (user_dpi < kMinCredibleResolution || user_dpi > kMaxCredibleResolution)) {
++    tprintf(
++        "Warning: User defined image dpi is outside of expected range "
++        "(%d - %d)!\n",
++        kMinCredibleResolution, kMaxCredibleResolution);
++  }
++  // Always use user defined dpi
++  if (user_dpi) {
++    thresholder_->SetSourceYResolution(user_dpi);
++  } else if (y_res < kMinCredibleResolution || y_res > kMaxCredibleResolution) {
++    if (y_res != 0) {
++      // Show warning only if a resolution was given.
++      tprintf("Warning: Invalid resolution %d dpi. Using %d instead.\n",
++              y_res, kMinCredibleResolution);
++    }
++    thresholder_->SetSourceYResolution(kMinCredibleResolution);
++  }
++}
++
++void TessBaseAPI::RecordThresholdedGeometry() {
+   thresholder_->GetImageSizes(&rect_left_, &rect_top_, &rect_width_, &rect_height_, &image_width_,
+                               &image_height_);
+ 
+@@ -2063,7 +2105,63 @@ bool TessBaseAPI::Threshold(Pix **pix) {
+         thresholder_->GetScaledEstimatedResolution(), estimated_res);
+   }
+   tesseract_->set_source_resolution(estimated_res);
+-  return true;
++}
++
++PageLayout::Variables::Variables(Tesseract &tesseract) {
++  const ParamsVectors *params = tesseract.params();
++  ints.reserve(params->int_params.size());
++  for (auto *param : params->int_params) {
++    ints.push_back(*param);
++  }
++  bools.reserve(params->bool_params.size());
++  for (auto *param : params->bool_params) {
++    bools.push_back(*param);
++  }
++  strings.reserve(params->string_params.size());
++  for (auto *param : params->string_params) {
++    strings.emplace_back(param->c_str());
++  }
++  doubles.reserve(params->double_params.size());
++  for (auto *param : params->double_params) {
++    doubles.push_back(*param);
++  }
++}
++
++bool PageLayout::Variables::operator==(const Variables &other) const {
++  return ints == other.ints && bools == other.bools && strings == other.strings &&
++         doubles == other.doubles;
++}
++
++PageLayout::PageLayout(Tesseract &tesseract, const BLOCK_LIST &blocks)
++    : variables_(tesseract)
++    , right_to_left_(tesseract.right_to_left())
++    , single_language_(tesseract.sub_langs_.empty())
++    , pix_binary_(tesseract.pix_binary_.copy())
++    , deskew_(tesseract.deskew_)
++    , reskew_(tesseract.reskew_)
++    , gradient_(tesseract.gradient_) {
++  blocks_.deep_copy(&blocks, &BLOCK::deep_copy);
++}
++
++PageLayout::~PageLayout() {
++  pix_binary_.destroy();
++}
++
++bool PageLayout::Fits(Tesseract &tesseract, int width, int height) const {
++  return single_language_ && tesseract.sub_langs_.empty() &&
++         right_to_left_ == tesseract.right_to_left() &&
++         pixGetWidth(pix_binary_) == width && pixGetHeight(pix_binary_) == height &&
++         variables_ == Variables(tesseract);
++}
++
++void PageLayout::CopyTo(Tesseract &tesseract, BLOCK_LIST *blocks) const {
++  ASSERT_HOST(blocks->empty());
++  tesseract.pix_binary_.destroy();
++  tesseract.pix_binary_ = pix_binary_.copy();
++  tesseract.deskew_ = deskew_;
++  tesseract.reskew_ = reskew_;
++  tesseract.gradient_ = gradient_;
++  blocks->deep_copy(&blocks_, &BLOCK::deep_copy);
+ }
+ 
+ /** Find lines from the image making the BLOCK_LIST. */
+diff --git a/src/api/capi.cpp b/src/api/capi.cpp
+index 445f083..36ad771 100644
+--- a/src/api/capi.cpp
++++ b/src/api/capi.cpp
+@@ -17,6 +17,8 @@
+ 
+ #include <tesseract/capi.h>
+ 
++#include "pagelayout.h"
++
+ const char *TessVersion() {
+   return TessBaseAPI::Version();
+ }
+@@ -396,6 +398,23 @@ int TessBaseAPIRecognize(TessBaseAPI *handle, ETEXT_DESC *monitor) {
+   return handle->Recognize(monitor);
+ }
+ 
++TessPageLayout *TessBaseAPIFindPageLayout(TessBaseAPI *handle) {
++  return handle->FindPageLayout();
++}
++
++BOOL TessBaseAPIFitsPageLayout(const TessBaseAPI *handle, const TessPageLayout *layout) {
++  return static_cast<int>(handle->FitsPageLayout(*layout));
++}
++
++int TessBaseAPIRecognizeInPageLayout(TessBaseAPI *handle, const TessPageLayout *layout,
++                                     ETEXT_DESC *monitor) {
++  return handle->RecognizeInPageLayout(*layout, monitor);
++}
++
++void TessPageLayoutDelete(TessPageLayout *layout) {
++  delete layout;
++}
++
+ BOOL TessBaseAPIProcessPages(TessBaseAPI *handle, const char *filename, const char *retry_config,
+                              int timeout_millisec, TessResultRenderer *renderer) {
+   return static_cast<int>(handle->ProcessPages(filename, retry_config, timeout_millisec, renderer));
+diff --git a/src/api/pagelayout.h b/src/api/pagelayout.h
+new file mode 100644
+index 0000000..cc3de15
+--- /dev/null
++++ b/src/api/pagelayout.h
+@@ -0,0 +1,75 @@
++///////////////////////////////////////////////////////////////////////
++// File:        pagelayout.h
++// Description: The layout an engine found in an image, for engines of
++//              other languages to recognize the image in.
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++// http://www.apache.org/licenses/LICENSE-2.0
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++//
++///////////////////////////////////////////////////////////////////////
++
++#ifndef TESSERACT_API_PAGELAYOUT_H_
++#define TESSERACT_API_PAGELAYOUT_H_
++
++#include "image.h"    // for Image
++#include "ocrblock.h" // for BLOCK_LIST
++#include "points.h"   // for FCOORD
++
++#include <cstdint> // for int32_t
++#include <string>  // for std::string
++#include <vector>  // for std::vector
++
++namespace tesseract {
++
++class Tesseract;
++
++// What an engine found when it found the lines of an image: its blocks with their rows,
++// words and blobs, the binary image the lines it removed are gone from, and the skew of
++// the page, with what decided them besides the image: the engine's variables and the
++// direction of its language.
++class PageLayout {
++public:
++  PageLayout(Tesseract &tesseract, const BLOCK_LIST &blocks);
++  ~PageLayout();
++  PageLayout(const PageLayout &) = delete;
++  PageLayout &operator=(const PageLayout &) = delete;
++
++  // Whether the engine, given an image of the size given, finds this layout in the image
++  // it was found in.
++  bool Fits(Tesseract &tesseract, int width, int height) const;
++
++  // Hands the engine a copy of the layout, as it would have found it, into blocks.
++  void CopyTo(Tesseract &tesseract, BLOCK_LIST *blocks) const;
++
++private:
++  // The values of an engine's variables, in the order every engine declares them.
++  struct Variables {
++    std::vector<int32_t> ints;
++    std::vector<bool> bools;
++    std::vector<std::string> strings;
++    std::vector<double> doubles;
++
++    explicit Variables(Tesseract &tesseract);
++    bool operator==(const Variables &other) const;
++  };
++
++  Variables variables_;
++  bool right_to_left_;
++  bool single_language_;
++  Image pix_binary_;
++  BLOCK_LIST blocks_;
++  FCOORD deskew_;
++  FCOORD reskew_;
++  float gradient_;
++};
++
++} // namespace tesseract
++
++#endif // TESSERACT_API_PAGELAYOUT_H_
+diff --git a/src/ccmain/tesseractclass.h b/src/ccmain/tesseractclass.h
+index 9a8875c..af010e3 100644
+--- a/src/ccmain/tesseractclass.h
++++ b/src/ccmain/tesseractclass.h
+@@ -174,7 +174,11 @@ struct WordData {
+ using WordRecognizer = void (Tesseract::*)(const WordData &, WERD_RES **,
+                                            PointerVector<WERD_RES> *);
+ 
++class PageLayout;
++
+ class TESS_API Tesseract : public Wordrec {
++  friend class PageLayout;
++
+ public:
+   Tesseract();
+   ~Tesseract() override;
+diff --git a/src/ccstruct/ocrblock.cpp b/src/ccstruct/ocrblock.cpp
+index 7281e0c..b8697a5 100644
+--- a/src/ccstruct/ocrblock.cpp
++++ b/src/ccstruct/ocrblock.cpp
+@@ -219,6 +219,29 @@ void BLOCK::print( // print list of sides
+  * Assignment - duplicate the block structure, but with an EMPTY row list.
+  */
+ 
++BLOCK *BLOCK::deep_copy(const BLOCK *source) {
++  ASSERT_HOST(source->paras_.empty());
++  auto *block = new BLOCK;
++  *block = *source;
++  const POLY_BLOCK *polygon = source->pdblk.hand_poly;
++  if (polygon != nullptr) {
++    ICOORDELT_LIST vertices;
++    vertices.deep_copy(const_cast<POLY_BLOCK *>(polygon)->points(), &ICOORDELT::deep_copy);
++    block->pdblk.hand_poly = new POLY_BLOCK(&vertices, polygon->isA());
++  }
++  block->pdblk.index_ = source->pdblk.index_;
++  block->right_to_left_ = source->right_to_left_;
++  block->pitch = source->pitch;
++  block->font_class = source->font_class;
++  block->xheight = source->xheight;
++  block->cell_over_xheight_ = source->cell_over_xheight_;
++  block->median_size_ = source->median_size_;
++  block->c_blobs.deep_copy(&source->c_blobs, &C_BLOB::deep_copy);
++  block->rej_blobs.deep_copy(&source->rej_blobs, &C_BLOB::deep_copy);
++  block->rows.deep_copy(&source->rows, &ROW::deep_copy);
++  return block;
++}
++
+ BLOCK &BLOCK::operator=( // assignment
+     const BLOCK &source  // from this
+ ) {
+diff --git a/src/ccstruct/ocrblock.h b/src/ccstruct/ocrblock.h
+index 38a830d..b6906bc 100644
+--- a/src/ccstruct/ocrblock.h
++++ b/src/ccstruct/ocrblock.h
+@@ -182,6 +182,9 @@ public:
+   void print(FILE *fp, bool dump);
+ 
+   BLOCK &operator=(const BLOCK &source);
++  /// A new block holding a copy of everything the source holds: its rows, their words and
++  /// their blobs, and its polygon. The source has no paragraphs yet.
++  static BLOCK *deep_copy(const BLOCK *source);
+   PDBLK pdblk; ///< Page Description Block
+ 
+ private:
+diff --git a/src/ccstruct/ocrrow.cpp b/src/ccstruct/ocrrow.cpp
+index e65f3eb..e1772a4 100644
+--- a/src/ccstruct/ocrrow.cpp
++++ b/src/ccstruct/ocrrow.cpp
+@@ -220,6 +220,14 @@ void ROW::plot(        // draw it
+  * Assign rows by duplicating the row structure but NOT the WERDLIST
+  **********************************************************************/
+ 
++ROW *ROW::deep_copy(const ROW *source) {
++  ASSERT_HOST(source->para_ == nullptr);
++  auto *row = new ROW;
++  *row = *source;
++  row->words.deep_copy(&source->words, &WERD::deep_copy);
++  return row;
++}
++
+ ROW &ROW::operator=(const ROW &source) {
+   this->ELIST<ROW>::LINK::operator=(source);
+   kerning = source.kerning;
+diff --git a/src/ccstruct/ocrrow.h b/src/ccstruct/ocrrow.h
+index 48fedea..c634cae 100644
+--- a/src/ccstruct/ocrrow.h
++++ b/src/ccstruct/ocrrow.h
+@@ -143,6 +143,9 @@ public:
+   }
+ #endif // !GRAPHICS_DISABLED
+   ROW &operator=(const ROW &source);
++  // A new row holding a copy of everything the source holds, its words included. The source
++  // is in no paragraph yet.
++  static ROW *deep_copy(const ROW *source);
+ 
+ private:
+   // Copy constructor (currently unused, therefore private).
+diff --git a/src/ccstruct/werd.cpp b/src/ccstruct/werd.cpp
+index 287c82f..e21bfd5 100644
+--- a/src/ccstruct/werd.cpp
++++ b/src/ccstruct/werd.cpp
+@@ -354,6 +354,13 @@ WERD *WERD::shallow_copy() {
+  * Assign a word, DEEP copying the blob list
+  */
+ 
++WERD *WERD::deep_copy(const WERD *source) {
++  auto *word = new WERD;
++  *word = *source;
++  word->disp_flags = source->disp_flags;
++  return word;
++}
++
+ WERD &WERD::operator=(const WERD &source) {
+   this->ELIST2<WERD>::LINK::operator=(source);
+   blanks = source.blanks;
+diff --git a/src/ccstruct/werd.h b/src/ccstruct/werd.h
+index 6e5b405..ec1da4b 100644
+--- a/src/ccstruct/werd.h
++++ b/src/ccstruct/werd.h
+@@ -77,6 +77,8 @@ public:
+ 
+   // assignment
+   WERD &operator=(const WERD &source);
++  // A new word holding a copy of everything the source holds.
++  static WERD *deep_copy(const WERD *source);
+ 
+   // This method returns a new werd constructed using the blobs in the input
+   // all_blobs list, which correspond to the blobs in this werd object. The

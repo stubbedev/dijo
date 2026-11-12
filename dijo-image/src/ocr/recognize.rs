@@ -34,7 +34,7 @@ use super::script::{
 };
 use super::slots;
 use super::tesseract::{
-    Detection, OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding,
+    Detection, Layouts, OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding,
 };
 use super::text::{corrected, lexicality, with_long_s};
 use crate::config::TesseractOcrConfig;
@@ -167,6 +167,7 @@ pub struct Image<'a> {
     pub(crate) density: Option<Density>,
     png: OnceLock<Vec<u8>>,
     detection: OnceLock<Detection>,
+    layouts: Layouts,
 }
 
 impl<'a> Image<'a> {
@@ -189,6 +190,7 @@ impl<'a> Image<'a> {
             density,
             png: OnceLock::new(),
             detection: OnceLock::new(),
+            layouts: Layouts::default(),
         }
     }
 }
@@ -408,13 +410,15 @@ impl Prepared {
 }
 
 /// An image prepared to read, at its pixels to the inch, with what is found in those pixels once:
-/// their encoding as a PNG, and what orientation and script detection finds in them.
+/// their encoding as a PNG, what orientation and script detection finds in them, and the layouts
+/// tesseract finds in them.
 #[derive(Debug)]
 struct Readable {
     bitmap: Bitmap,
     density: Option<Density>,
     png: OnceLock<Vec<u8>>,
     detection: OnceLock<Detection>,
+    layouts: Layouts,
 }
 
 impl Readable {
@@ -424,6 +428,7 @@ impl Readable {
             density,
             png: OnceLock::new(),
             detection: OnceLock::new(),
+            layouts: Layouts::default(),
         }
     }
 }
@@ -732,7 +737,10 @@ impl<'t> Recognizer<'t> {
             width: prepared.width(),
             height: rows.len() as u32,
         };
-        let read = Attempt::read(first.clone(), self.read_pixels(strip, made.density, first)?);
+        let read = Attempt::read(
+            first.clone(),
+            self.read_pixels(strip, made.density, None, first)?,
+        );
         match read.in_a_language() {
             true => self.model_of_detected_language(&read),
             false => Ok(None),
@@ -1004,18 +1012,25 @@ impl<'t> Recognizer<'t> {
 
     fn read(&self, image: &Image<'_>, prepared: &Prepared) -> Result<Reading, OcrError> {
         let source = source_of(image, prepared);
-        self.read_pixels(source.pixels, source.density, prepared)
+        self.read_pixels(
+            source.pixels,
+            source.density,
+            Some(source.layouts),
+            prepared,
+        )
     }
 
     fn read_pixels(
         &self,
         pixels: Pixels<'_>,
         density: Option<Density>,
+        layouts: Option<&Layouts>,
         prepared: &Prepared,
     ) -> Result<Reading, OcrError> {
         let reading = self.tesseract.read(
             pixels,
             density,
+            layouts,
             &prepared.model,
             SEGMENTATION,
             prepared.thresholding(),
@@ -1029,11 +1044,13 @@ impl<'t> Recognizer<'t> {
 }
 
 /// What tesseract reads of an image as it was prepared: its pixels, their pixels to the inch,
-/// and where what orientation and script detection finds in those pixels is kept.
+/// and where what orientation and script detection and tesseract's layout analysis find in those
+/// pixels is kept.
 struct Source<'a> {
     pixels: Pixels<'a>,
     density: Option<Density>,
     detection: &'a OnceLock<Detection>,
+    layouts: &'a Layouts,
 }
 
 /// The image as tesseract reads it: prepared, or else its file, as Java hands tesseract the
@@ -1044,6 +1061,7 @@ fn source_of<'a>(image: &'a Image<'a>, prepared: &'a Prepared) -> Source<'a> {
             pixels: made.bitmap.pixels(&made.png),
             density: made.density,
             detection: &made.detection,
+            layouts: &made.layouts,
         };
     }
     let pixels = match image.file {
@@ -1061,6 +1079,7 @@ fn source_of<'a>(image: &'a Image<'a>, prepared: &'a Prepared) -> Source<'a> {
         pixels,
         density: image.density,
         detection: &image.detection,
+        layouts: &image.layouts,
     }
 }
 

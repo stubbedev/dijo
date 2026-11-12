@@ -46,6 +46,9 @@ const LEPTONICA_QUIET: c_int = 6;
 const GRAY_BYTES_PER_PIXEL: u64 = 4;
 /// The memory tesseract and Leptonica take to read a colour image, a pixel.
 const COLOUR_BYTES_PER_PIXEL: u64 = 11;
+/// The pixels of an image whose layout, kept for later readings, takes a byte: scanned pages took
+/// from a seventh of a byte a pixel to almost a third, for a noisy fax.
+const PIXELS_PER_LAYOUT_BYTE: u64 = 3;
 
 #[repr(C)]
 struct BaseApi {
@@ -72,6 +75,12 @@ struct ResultIterator {
 /// The layout a [`ResultIterator`] walks through.
 #[repr(C)]
 struct PageIterator {
+    _opaque: [u8; 0],
+}
+
+/// The layout an engine found in an image, which engines of other models recognize the image in.
+#[repr(C)]
+struct PageLayout {
     _opaque: [u8; 0],
 }
 
@@ -139,6 +148,11 @@ c_api! {
     read_pix = pixReadMem(*const u8, usize) -> *mut Pix;
     destroy_pix = pixDestroy(*mut *mut Pix);
     recognize = TessBaseAPIRecognize(*mut BaseApi, *mut Monitor) -> c_int;
+    find_page_layout = TessBaseAPIFindPageLayout(*mut BaseApi) -> *mut PageLayout;
+    fits_page_layout = TessBaseAPIFitsPageLayout(*const BaseApi, *const PageLayout) -> c_int;
+    recognize_in_page_layout = TessBaseAPIRecognizeInPageLayout(
+        *mut BaseApi, *const PageLayout, *mut Monitor) -> c_int;
+    delete_page_layout = TessPageLayoutDelete(*mut PageLayout);
     result_iterator = TessBaseAPIGetIterator(*mut BaseApi) -> *mut ResultIterator;
     delete_result_iterator = TessResultIteratorDelete(*mut ResultIterator);
     page_iterator = TessResultIteratorGetPageIterator(*mut ResultIterator) -> *mut PageIterator;
@@ -231,10 +245,25 @@ impl Pixels<'_> {
         u64::from(*width) * u64::from(*height) * bytes
     }
 
+    /// The memory the layout tesseract finds in the image takes while it is kept: the binary
+    /// image the lines found are removed from, a bit a pixel, and the outlines of what is on it.
+    fn layout_footprint(&self) -> u64 {
+        let (width, height) = match self {
+            Self::Gray { width, height, .. }
+            | Self::Rgb { width, height, .. }
+            | Self::Encoded { width, height, .. } => (width, height),
+        };
+        u64::from(*width) * u64::from(*height) / PIXELS_PER_LAYOUT_BYTE
+    }
+
     /// Reserves the memory reading the image takes against the budget of the extraction, or
     /// fails when it does not fit.
     fn reserve(&self) -> Result<memory::Reserved, OcrError> {
-        memory::reserve(self.footprint()).map_err(|limit| OcrError::MemoryLimit {
+        self.reserve_bytes(self.footprint())
+    }
+
+    fn reserve_bytes(&self, bytes: u64) -> Result<memory::Reserved, OcrError> {
+        memory::reserve(bytes).map_err(|limit| OcrError::MemoryLimit {
             image: self.describe(),
             limit,
         })
@@ -383,6 +412,40 @@ impl fmt::Display for OcrError {
     }
 }
 
+/// The layouts tesseract found in an image, each kept for the readings of the image with the
+/// models it fits, which recognize the image in it rather than threshold the image and analyse its
+/// layout again: those whose engines would find it, their variables and the direction of their
+/// language alike.
+#[derive(Default)]
+pub(crate) struct Layouts(Mutex<Vec<Layout>>);
+
+impl fmt::Debug for Layouts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let layouts = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        f.debug_tuple("Layouts").field(&layouts.len()).finish()
+    }
+}
+
+/// A layout tesseract found in an image, the memory it takes reserved, and the library that frees
+/// it.
+struct Layout {
+    handle: NonNull<PageLayout>,
+    delete: unsafe extern "C" fn(*mut PageLayout),
+    _reserved: memory::Reserved,
+    #[cfg(not(feature = "static"))]
+    _library: Arc<libloading::Library>,
+}
+
+// SAFETY: a layout is read by one engine at a time, under the lock of its image's layouts, and
+// never changes.
+unsafe impl Send for Layout {}
+
+impl Drop for Layout {
+    fn drop(&mut self) {
+        unsafe { (self.delete)(self.handle.as_ptr()) };
+    }
+}
+
 /// An engine with a model loaded, used by one reading at a time.
 struct Engine(NonNull<BaseApi>);
 
@@ -454,7 +517,7 @@ pub struct Tesseract {
     idle: Mutex<IdleEngines<Engine>>,
     languages: Mutex<Option<Arc<BTreeSet<String>>>>,
     #[cfg(not(feature = "static"))]
-    _library: libloading::Library,
+    library: Arc<libloading::Library>,
 }
 
 impl fmt::Debug for Tesseract {
@@ -487,13 +550,13 @@ impl Tesseract {
         })?;
         let api = Api::resolved(&loaded)
             .map_err(|e| format!("tesseract's library {} is unusable: {e}", library.display()))?;
-        Self::new(api, data_dir, loaded)
+        Self::new(api, data_dir, Arc::new(loaded))
     }
 
     fn new(
         api: Api,
         data_dir: &std::path::Path,
-        #[cfg(not(feature = "static"))] library: libloading::Library,
+        #[cfg(not(feature = "static"))] library: Arc<libloading::Library>,
     ) -> Result<Self, String> {
         let datapath = c_path(data_dir)?;
         unsafe { (api.set_message_severity)(LEPTONICA_QUIET) };
@@ -504,7 +567,7 @@ impl Tesseract {
             idle: Mutex::new(IdleEngines::new(crate::process::processors())),
             languages: Mutex::new(None),
             #[cfg(not(feature = "static"))]
-            _library: library,
+            library,
         })
     }
 
@@ -517,11 +580,15 @@ impl Tesseract {
 
     /// Reads the text in an image with a model, a page segmentation mode and a thresholding,
     /// as `tesseract <image> stdout --psm <mode> -l <model> -c thresholding_method=<method>`
-    /// prints it, with its words' mean confidence, within `timeout` when it has one.
+    /// prints it, with its words' mean confidence, within `timeout` when it has one. With the
+    /// layouts found in the image, it reads in one that fits rather than find it again, or else
+    /// keeps the one it finds.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn read(
         &self,
         image: Pixels<'_>,
         density: Option<Density>,
+        layouts: Option<&Layouts>,
         model: &str,
         segmentation: PageSegMode,
         thresholding: Thresholding,
@@ -533,6 +600,7 @@ impl Tesseract {
             &engine,
             image,
             density,
+            layouts,
             model,
             segmentation,
             thresholding,
@@ -548,6 +616,7 @@ impl Tesseract {
         engine: &Engine,
         image: Pixels<'_>,
         density: Option<Density>,
+        layouts: Option<&Layouts>,
         model: &str,
         segmentation: PageSegMode,
         thresholding: Thresholding,
@@ -576,20 +645,59 @@ impl Tesseract {
             }
         }
         let start = Instant::now();
-        let status = unsafe { (api.recognize)(handle, monitor.0) };
-        let reading = if status < 0 {
-            match timeout.filter(|&timeout| start.elapsed() >= timeout) {
-                Some(timeout) => Err(OcrError::TimedOut {
-                    image: image.describe(),
-                    millis: timeout.as_millis(),
-                }),
-                None => Err(failed()),
+        let status = match layouts {
+            Some(layouts) => self.recognize_in_layout(handle, monitor.0, layouts, &image),
+            None => Ok(unsafe { (api.recognize)(handle, monitor.0) }),
+        };
+        let reading = match status {
+            Err(error) => Err(error),
+            Ok(status) if status < 0 => {
+                match timeout.filter(|&timeout| start.elapsed() >= timeout) {
+                    Some(timeout) => Err(OcrError::TimedOut {
+                        image: image.describe(),
+                        millis: timeout.as_millis(),
+                    }),
+                    None => Err(failed()),
+                }
             }
-        } else {
-            unsafe { text_of(api, handle) }.ok_or_else(failed)
+            Ok(_) => unsafe { text_of(api, handle) }.ok_or_else(failed),
         };
         unsafe { (api.clear)(handle) };
         reading
+    }
+
+    /// Recognizes the image an engine was handed in the first of its layouts the engine fits, or
+    /// else finds its layout, keeps it with the others, and recognizes the image in it: the
+    /// status of the recognition.
+    fn recognize_in_layout(
+        &self,
+        handle: *mut BaseApi,
+        monitor: *mut Monitor,
+        layouts: &Layouts,
+        image: &Pixels<'_>,
+    ) -> Result<c_int, OcrError> {
+        let api = &self.api;
+        let mut found = layouts.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(layout) = found
+            .iter()
+            .find(|layout| unsafe { (api.fits_page_layout)(handle, layout.handle.as_ptr()) } != 0)
+        {
+            return Ok(unsafe {
+                (api.recognize_in_page_layout)(handle, layout.handle.as_ptr(), monitor)
+            });
+        }
+        let reserved = image.reserve_bytes(image.layout_footprint())?;
+        let Some(layout) = NonNull::new(unsafe { (api.find_page_layout)(handle) }) else {
+            return Ok(-1);
+        };
+        found.push(Layout {
+            handle: layout,
+            delete: api.delete_page_layout,
+            _reserved: reserved,
+            #[cfg(not(feature = "static"))]
+            _library: Arc::clone(&self.library),
+        });
+        Ok(unsafe { (api.recognize)(handle, monitor) })
     }
 
     /// What `check` answers given whether a word is in a model's dictionary, as
@@ -1154,6 +1262,7 @@ mod tests {
                 .read(
                     pixels,
                     None,
+                    None,
                     "script/Latin",
                     PageSegMode(3),
                     Thresholding::Otsu,
@@ -1169,6 +1278,49 @@ mod tests {
         assert_eq!(read(&second), alone);
         drop(first);
         assert_eq!(read(&second), alone);
+    }
+
+    /// Readings of one image with models whose engines are set alike and whose languages read in
+    /// one direction recognize it in the layout the first of them found, and read what they read
+    /// finding it themselves; a language read right to left, or another thresholding, finds a
+    /// layout of its own (#334).
+    #[test]
+    fn readings_of_an_image_alike_share_the_layout_found_in_it() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let image =
+            std::fs::read("../test_files/documents/table-multi-row-column-cells.png").unwrap();
+        let read = |model: &str, thresholding: Thresholding, layouts: Option<&Layouts>| {
+            let pixels = Pixels::Encoded {
+                data: Cow::Borrowed(&image),
+                width: 1377,
+                height: 648,
+            };
+            tesseract
+                .read(
+                    pixels,
+                    None,
+                    layouts,
+                    model,
+                    PageSegMode(3),
+                    thresholding,
+                    None,
+                )
+                .unwrap()
+        };
+        let layouts = Layouts::default();
+        for (model, thresholding, found) in [
+            ("script/Latin", Thresholding::Otsu, 1),
+            ("eng", Thresholding::Otsu, 1),
+            ("deu", Thresholding::Otsu, 1),
+            ("heb", Thresholding::Otsu, 2),
+            ("ara", Thresholding::Otsu, 2),
+            ("eng", Thresholding::Sauvola, 3),
+            ("script/Latin", Thresholding::Sauvola, 3),
+        ] {
+            let shared = read(model, thresholding, Some(&layouts));
+            assert_eq!(shared, read(model, thresholding, None), "{model}");
+            assert_eq!(layouts.0.lock().unwrap().len(), found, "{model}");
+        }
     }
 
     /// Readings and detections on many threads at once, each with an engine of its own taken
@@ -1189,6 +1341,7 @@ mod tests {
             tesseract
                 .read(
                     encoded(&image),
+                    None,
                     None,
                     "eng",
                     PageSegMode(3),

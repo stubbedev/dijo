@@ -17,7 +17,12 @@
 # engine 19 instead of 32 (#308, #311). Its result iterators return to the start of a row or a
 # paragraph from where they entered it (tesseract-patches/rows-restart-in-place.patch), where they
 # walked the page from its start, once a line: a page tesseract splits into many small words, such
-# as one of noise, never finished its paragraph detection, and now reads in seconds (#316).
+# as one of noise, never finished its paragraph detection, and now reads in seconds (#316). An
+# engine hands out a copy of the layout it found in an image, and an engine of another model whose
+# variables and direction of language are alike recognizes the same image in it rather than
+# threshold the image and analyse its layout again (tesseract-patches/shares-page-layout.patch):
+# that took 28% of a reading of the quality corpus's pages, and a page read again with another
+# model reads in 400 ms less, the same text (#334).
 # Its internal headers and the configuration it was built with are installed in
 # include/tesseract-internal, for code that reads its results while it recognizes a page.
 static:

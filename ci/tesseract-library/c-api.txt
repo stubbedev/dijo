@@ -10,6 +10,10 @@ TessBaseAPISetSourceResolution
 pixReadMem
 pixDestroy
 TessBaseAPIRecognize
+TessBaseAPIFindPageLayout
+TessBaseAPIFitsPageLayout
+TessBaseAPIRecognizeInPageLayout
+TessPageLayoutDelete
 TessBaseAPIGetIterator
 TessResultIteratorDelete
 TessResultIteratorGetPageIterator
