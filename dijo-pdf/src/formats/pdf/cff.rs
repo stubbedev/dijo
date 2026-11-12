@@ -1294,29 +1294,10 @@ impl Cff {
     }
 }
 
+/// Compact font programs as small as FontBox reads them, for tests.
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn concatenates_font_matrices() {
-        let numbers = |values: [f64; 6]| values.map(Number::Real).to_vec();
-        let Ok(product) = concatenate(
-            &numbers([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
-            &numbers([1.0, 0.5, 0.0, 2.0, 1.0, 1.0]),
-        ) else {
-            panic!("the matrices do not concatenate");
-        };
-        assert_eq!(
-            product
-                .into_iter()
-                .map(Number::double_value)
-                .collect::<Vec<_>>(),
-            [1.0, 4.5, 3.0, 9.5, 6.0, 15.5]
-        );
-    }
-
-    fn index(items: &[&[u8]]) -> Vec<u8> {
+pub(crate) mod programs {
+    pub(crate) fn index(items: &[&[u8]]) -> Vec<u8> {
         let mut out = (items.len() as u16).to_be_bytes().to_vec();
         if items.is_empty() {
             return out;
@@ -1334,14 +1315,14 @@ mod tests {
         out
     }
 
-    fn integer(value: i16) -> [u8; 3] {
+    pub(crate) fn integer(value: i16) -> [u8; 3] {
         let [high, low] = value.to_be_bytes();
         [28, high, low]
     }
 
     /// A CFF font of `.notdef` and one more glyph, named `space` by the predefined ISOAdobe
     /// charset, with a default width of 100 and a nominal width of 10.
-    fn font(glyph: &[u8]) -> Vec<u8> {
+    pub(crate) fn font(glyph: &[u8]) -> Vec<u8> {
         let notdef: &[u8] = &[139 + 50, 14];
         let charstrings = index(&[notdef, glyph]);
         let private: &[u8] = &[139 + 100, 20, 139 + 10, 21];
@@ -1363,6 +1344,30 @@ mod tests {
         out.extend_from_slice(&charstrings);
         out.extend_from_slice(private);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::programs::{font, index, integer};
+    use super::*;
+
+    #[test]
+    fn concatenates_font_matrices() {
+        let numbers = |values: [f64; 6]| values.map(Number::Real).to_vec();
+        let Ok(product) = concatenate(
+            &numbers([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            &numbers([1.0, 0.5, 0.0, 2.0, 1.0, 1.0]),
+        ) else {
+            panic!("the matrices do not concatenate");
+        };
+        assert_eq!(
+            product
+                .into_iter()
+                .map(Number::double_value)
+                .collect::<Vec<_>>(),
+            [1.0, 4.5, 3.0, 9.5, 6.0, 15.5]
+        );
     }
 
     #[test]

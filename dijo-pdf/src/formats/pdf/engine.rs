@@ -892,6 +892,9 @@ impl<'p> Run<'p, '_> {
         let mapped = unicode.as_deref().is_some_and(|text| !text.is_empty());
         let unicode = match unicode {
             Some(unicode) => unicode,
+            None if self.actual_text.is_none() && font.is_symbol_without_text(code)? => {
+                return Ok(mapped)
+            }
             None if font.is_simple() => match char::from_u32(code & 0xFFFF) {
                 Some(c) => GlyphText::from(c),
                 None => {

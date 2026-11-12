@@ -1104,6 +1104,29 @@ impl Font {
         }
     }
 
+    /// Whether `code` is a glyph of a symbolic simple font whose `/Differences` name it with a
+    /// name no glyph list maps to Unicode: a glyph without a character, which poppler leaves
+    /// out where PDFBox coerces its code to one (#330).
+    pub(super) fn is_symbol_without_text(&self, code: u32) -> Result<bool, Unported> {
+        let FontKind::Simple(simple) = &self.kind else {
+            return Ok(false);
+        };
+        if !simple.symbolic {
+            return Ok(false);
+        }
+        let Some(Encoding {
+            kind: EncodingKind::Dictionary { differences, .. },
+            ..
+        }) = simple.encoding.as_deref()
+        else {
+            return Ok(false);
+        };
+        if !differences.contains_key(&(code as i32)) {
+            return Ok(false);
+        }
+        Ok(self.to_unicode(code, true)?.is_none())
+    }
+
     pub(super) fn has_extended_text(&self) -> bool {
         matches!(&self.kind, FontKind::Simple(simple) if !simple.zapf_dingbats)
     }

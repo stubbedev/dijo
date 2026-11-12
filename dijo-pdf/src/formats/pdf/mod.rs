@@ -1121,6 +1121,79 @@ mod tests {
         document(&objects, b"", &[])
     }
 
+    /// A page drawn by `content` with Helvetica as `F1` and as `F2` an embedded, not subset Type
+    /// 1C font of descriptor flags `flags`, without a ToUnicode map, whose `/Differences` name
+    /// codes 2 and 3 `g56` and `g63`, which no glyph list maps to Unicode.
+    fn unmapped_differences(flags: u8, content: &str) -> Vec<u8> {
+        let program = cff::programs::font(&[139 + 7, 139 + 20, 139 + 30, 1, 14]);
+        let mut objects: Vec<Vec<u8>> = page_objects(content)
+            .into_iter()
+            .map(String::into_bytes)
+            .collect();
+        objects[2] = replace(&objects[2], b"/F1 5 0 R", b"/F1 5 0 R /F2 6 0 R");
+        objects.extend([
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /T /FirstChar 2 /LastChar 3 \
+              /Widths [500 500] /Encoding << /Differences [2 /g56 /g63] >> \
+              /FontDescriptor 7 0 R >>"
+                .to_vec(),
+            format!(
+                "<< /Type /FontDescriptor /FontName /T /Flags {flags} /FontBBox [0 0 1000 1000] \
+                 /ItalicAngle 0 /Ascent 900 /Descent -100 /CapHeight 700 /StemV 80 \
+                 /FontFile3 8 0 R >>"
+            )
+            .into_bytes(),
+            [
+                format!("<< /Subtype /Type1C /Length {} >>\nstream\n", program.len()).as_bytes(),
+                &program,
+                b"\nendstream",
+            ]
+            .concat(),
+        ]);
+        document(&objects, b"", &[])
+    }
+
+    /// The XHTML the native parser extracts of a document without OCR, and the glyphs of its
+    /// one page it counts unmapped.
+    fn unmapped_without_ocr(input: &[u8]) -> (String, Vec<String>) {
+        let (xml, metadata) = crate::Extractor::new()
+            .set_xml_output(true)
+            .set_ocr_config(TesseractOcrConfig::new().set_skip_ocr(true))
+            .extract_bytes_to_string(input)
+            .unwrap();
+        assert_eq!(metadata.get(EXCEPTION_WARNING), None, "{metadata:?}");
+        let unmapped = metadata
+            .get("pdf:unmapped-unicode-chars-per-page")
+            .cloned()
+            .unwrap_or_else(|| panic!("no unmapped glyphs are counted: {metadata:?}"));
+        (xml, unmapped)
+    }
+
+    /// A glyph of a symbolic font that maps to no character is left out of the text, as poppler
+    /// leaves it out, and counted unmapped; a non-symbolic font's keeps PDFBox's coerced code,
+    /// and a page of nothing but such glyphs counts every one of them for OCR (#330).
+    #[test]
+    fn leaves_out_the_glyphs_of_a_symbolic_font_without_characters() {
+        let between = "BT /F1 12 Tf 72 720 Td (WARNING ) Tj /F2 12 Tf <02> Tj \
+                       /F1 12 Tf (AVERTISSEMENT) Tj ET";
+        let (symbolic, unmapped) = unmapped_without_ocr(&unmapped_differences(4, between));
+        assert!(
+            symbolic.contains("<p>WARNING AVERTISSEMENT</p>"),
+            "{symbolic}"
+        );
+        assert!(!symbolic.contains('\u{FFFD}'), "{symbolic}");
+        assert_eq!(unmapped, ["1"]);
+        let (non_symbolic, unmapped) = unmapped_without_ocr(&unmapped_differences(32, between));
+        assert!(
+            non_symbolic.contains("<p>WARNING \u{FFFD}AVERTISSEMENT</p>"),
+            "{non_symbolic}"
+        );
+        assert_eq!(unmapped, ["1"]);
+        let only = "BT /F2 12 Tf 72 720 Td <0203020302> Tj ET";
+        let (symbols, unmapped) = unmapped_without_ocr(&unmapped_differences(4, only));
+        assert!(!symbols.contains('\u{FFFD}'), "{symbols}");
+        assert_eq!(unmapped, ["5"]);
+    }
+
     /// An OpenType program, which PDFBox reads with `OTFParser`, and a cmap mapping a code to the
     /// glyph past the last, where FontBox throws, are read with the font damaged.
     #[test]
