@@ -874,6 +874,7 @@ dependencies = [
  "dijo-mime",
  "dijo-small",
  "flate2",
+ "lzxd",
  "memchr",
  "regex",
  "rusqlite",

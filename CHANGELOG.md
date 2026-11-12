@@ -25,6 +25,11 @@
   of several extents joined, symbolic links listed in `iso9660:symbolic-link`, and the volume's identifier,
   publisher, preparer, application and dates as metadata. An image of UDF alone, as most DVDs and Blu-ray discs are,
   is noted as such in its metadata.
+* Microsoft Cabinet archives are read (#339), where Tika reads nothing of them: each file an embedded document with
+  its name (UTF-8 where the cabinet flags it, else windows-1252), size and DOS modification time, out of stored, MSZIP
+  and LZX folders, decoded a block at a time in bounded memory. OneNote packages, which are cabinets, are read the
+  same way. A file of a Quantum folder, or one that starts or ends in another cabinet of a set, is recorded as
+  unread, and the cabinets before and after are named in `cab:previous-cabinet` and `cab:next-cabinet`.
 
 # 0.2.14 (2026-10-28)
 

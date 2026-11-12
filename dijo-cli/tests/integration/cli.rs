@@ -1738,6 +1738,42 @@ fn iso9660_images_are_read_as_archives() {
     );
 }
 
+/// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
+/// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
+#[test]
+fn cabinets_are_read_for_the_files_they_hold_whole() {
+    let objects = json_objects(&["--embedded", "separate", &document("cabinet.cab")]);
+    for object in &objects {
+        assert_matches_schema(object);
+    }
+    assert_eq!(objects[0]["mime_type"], "application/vnd.ms-cab-compressed");
+    assert_eq!(
+        objects[0]["raw_metadata"]["cab:next-cabinet"][0],
+        "cabinet2.cab"
+    );
+    assert_eq!(
+        embedded_paths(&objects),
+        [
+            "<root>",
+            "readme.txt",
+            "notes/caf\u{e9} \u{65e5}\u{672c}.txt",
+            "data/table.bin",
+            "mszip.txt",
+            "program.bin",
+            "lzx.txt",
+            "whole.txt",
+        ]
+    );
+    assert_eq!(
+        objects[6]["text"],
+        "The LZX folder is decoded frame by frame, with its calls translated back.\n"
+    );
+    let errors = objects[0]["errors"].to_string();
+    for unread in ["(quantum.txt): its folder is compressed with Quantum", "(spanned.txt)"] {
+        assert!(errors.contains(unread), "{errors}");
+    }
+}
+
 #[test]
 fn notebooks_are_read_cell_by_cell() {
     let objects = json_objects(&[&document("notebook.ipynb")]);

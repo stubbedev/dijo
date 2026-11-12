@@ -18,7 +18,8 @@ dijo-html = { path = "../dijo-html", default-features = false }
 dijo-mime = { path = "../dijo-mime", default-features = false }
 ar = "0.9.0"
 cpio = "0.4.1"
-flate2 = "1.1.5"
+flate2 = { version = "1.1.5", features = ["zlib-rs"] }
+lzxd = "0.2.7"
 memchr = "2.8.3"
 regex = "1.13.1"
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "column_decltype", "serialize"] }

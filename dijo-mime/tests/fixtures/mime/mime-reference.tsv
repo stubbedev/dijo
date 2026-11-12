@@ -28,6 +28,8 @@ documents	book.fb2	file	application/x-fictionbook+xml	tk:content-type-magic-dete
 documents	book.fb2	bytes	application/x-fictionbook+xml	tk:content-type-magic-detected=application/x-fictionbook+xml
 documents	bug_16.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
 documents	bug_16.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=27615	zip:detector-zip-file-opened=true
+documents	cabinet.cab	file	application/vnd.ms-cab-compressed	tk:content-type-magic-detected=application/vnd.ms-cab-compressed
+documents	cabinet.cab	bytes	application/vnd.ms-cab-compressed	tk:content-type-magic-detected=application/vnd.ms-cab-compressed
 documents	category-level.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
 documents	category-level.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=11220	zip:detector-zip-file-opened=true
 documents	deu-ocr.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf

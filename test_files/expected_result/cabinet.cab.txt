@@ -1,0 +1,13 @@
+readme.txt
+This cabinet was written to test how dijo reads Microsoft Cabinet archives.
+Each file in it is handed on as an embedded document.
+notes/café 日本.txt
+Café notes: the name of this file is UTF-8 encoded.
+data/table.bin
+mszip.txt
+The deflated folder carries its window from one block to the next.
+program.bin
+lzx.txt
+The LZX folder is decoded frame by frame, with its calls translated back.
+whole.txt
+This file ends in the first cabinet of the set.

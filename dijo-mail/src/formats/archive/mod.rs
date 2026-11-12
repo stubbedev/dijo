@@ -2,9 +2,10 @@
 //! the embedded document extractor: ZIP archives with `ZipParser` ([`zip`]), compressed files
 //! with `CompressorParser` ([`compressor`]), TAR, ar, cpio and ARJ archives with `PackageParser`
 //! ([`package`]), 7z archives with `SevenZParser` ([`seven_z`]) and RAR archives with
-//! `RarParser` ([`rar`]); and ISO 9660 disc images, which Tika does not read, with
-//! `Iso9660Parser` ([`iso9660`]).
+//! `RarParser` ([`rar`]); and ISO 9660 disc images and Microsoft Cabinet archives, which Tika
+//! does not read, with `Iso9660Parser` ([`iso9660`]) and `CabParser` ([`cab`]).
 
+mod cab;
 mod compressor;
 mod iso9660;
 #[cfg(test)]
@@ -14,6 +15,7 @@ mod rar;
 mod seven_z;
 mod zip;
 
+pub use cab::CabParser;
 pub use compressor::CompressorParser;
 pub use iso9660::Iso9660Parser;
 pub use package::PackageParser;

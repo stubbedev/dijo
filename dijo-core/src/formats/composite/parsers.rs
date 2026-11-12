@@ -80,6 +80,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/vnd.mif",
         "org.apache.tika.parser.mif.MIFParser",
     ),
+    ("application/vnd.ms-cab-compressed", "dijo::CabParser"),
     (
         "application/vnd.ms-excel.addin.macroenabled.12",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
