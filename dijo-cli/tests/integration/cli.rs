@@ -1774,6 +1774,40 @@ fn rpm_packages_are_read_for_their_header_and_files() {
     );
 }
 
+/// `lighthouse.ics` was written by hand for dijo, its lines folded at 75 octets: a calendar with
+/// Outlook's `VTIMEZONE` of `Romance Standard Time`, a recurring event with an organiser, three
+/// attendees, an alarm and escapes, an event in a zone of the time zone database, an all-day
+/// event, a to-do with a floating start, and a journal entry of two descriptions.
+#[test]
+fn icalendar_files_are_read_for_their_entries_with_times_in_utc() {
+    let objects = json_objects(&[&document("lighthouse.ics")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "text/calendar");
+    assert_eq!(objects[0]["metadata"]["title"], "Lighthouse duties");
+    assert_eq!(
+        objects[0]["raw_metadata"]["xmp:CreatorTool"][0],
+        "-//Lighthouse Press//Keeper's Calendar 1.0//EN"
+    );
+    let text = objects[0]["text"].as_str().unwrap();
+    for expected in [
+        "Evening watch: light the lamp\nStarts: 2026-11-13T15:30:00Z\nEnds: 2026-11-13T17:30:00Z\n",
+        "Location: Lantern room, Skagen Fyr\n",
+        "Organiser: Keeper, The <keeper@lighthouse.example.org>\n",
+        "Bo \u{d8}rsted <bo@lighthouse.example.org>\n",
+        "Light the lamp and note the time in the log; check the lens for salt.\n",
+        "Midsummer watch\nStarts: 2027-06-24T20:00:00Z\nDuration: PT2H\n",
+        "Starts: 2026-12-01T15:00:00Z\n",
+        "Storm day\nStarts: 2026-11-24\n",
+        "Starts: 2026-11-16T09:00:00 (floating)\nDue: 2026-11-20\n",
+        "Storm from the north-west; the lamp burned until dawn.\nWind fell at six.",
+    ] {
+        assert!(text.contains(expected), "{expected:?} is not in {text}");
+    }
+    for noise in ["BEGIN:", "TZOFFSET", "Reminder", "\\,", "DTSTAMP"] {
+        assert!(!text.contains(noise), "kept {noise:?}: {text}");
+    }
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

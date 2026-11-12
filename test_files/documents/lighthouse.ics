@@ -1,0 +1,88 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Lighthouse Press//Keeper's Calendar 1.0//EN
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:Lighthouse duties
+X-WR-CALDESC:The keeper's watches\, errands and log
+BEGIN:VTIMEZONE
+TZID:Romance Standard Time
+BEGIN:STANDARD
+DTSTART:16011028T030000
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10
+TZNAME:CET
+END:STANDARD
+BEGIN:DAYLIGHT
+DTSTART:16010325T020000
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0200
+RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3
+TZNAME:CEST
+END:DAYLIGHT
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:watch-1@lighthouse.example.org
+DTSTAMP:20261112T120000Z
+SUMMARY:Evening watch: light the lamp
+DTSTART;TZID=Romance Standard Time:20261113T163000
+DTEND;TZID=Romance Standard Time:20261113T183000
+RRULE:FREQ=DAILY;UNTIL=20261231T230000Z
+LOCATION:Lantern room\, Skagen Fyr
+CATEGORIES:Watch,Lamp
+ORGANIZER;CN="Keeper, The":mailto:keeper@lighthouse.example.org
+ATTENDEE;CN=Ada Lund;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED:mailto:ada@ligh
+ thouse.example.org
+ATTENDEE;CN="Bo Ørsted";ROLE=OPT-PARTICIPANT:MAILTO:bo@lighthouse.example.
+ org
+ATTENDEE;CUTYPE=RESOURCE:mailto:lantern@lighthouse.example.org
+DESCRIPTION:Climb the tower at dusk\, trim the wick and fill the oil.\nLigh
+ t the lamp and note the time in the log\; check the lens for salt.
+BEGIN:VALARM
+ACTION:DISPLAY
+TRIGGER:-PT15M
+DESCRIPTION:Reminder
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+UID:summer-watch@lighthouse.example.org
+DTSTAMP:20261112T120000Z
+SUMMARY:Midsummer watch
+DTSTART;TZID=Romance Standard Time:20270624T220000
+DURATION:PT2H
+END:VEVENT
+BEGIN:VEVENT
+UID:inspection@lighthouse.example.org
+DTSTAMP:20261112T120000Z
+SUMMARY:Inspection by the harbour board
+DTSTART;TZID=America/New_York:20261201T100000
+DTEND:20261201T170000Z
+LOCATION:Harbour office
+END:VEVENT
+BEGIN:VEVENT
+UID:storm-day@lighthouse.example.org
+DTSTAMP:20261112T120000Z
+SUMMARY:Storm day
+DTSTART;VALUE=DATE:20261124
+DTEND;VALUE=DATE:20261125
+DESCRIPTION:No boats leave the harbour.
+END:VEVENT
+BEGIN:VTODO
+UID:oil@lighthouse.example.org
+DTSTAMP:20261112T120000Z
+SUMMARY:Order lamp oil
+DTSTART:20261116T090000
+DUE;VALUE=DATE:20261120
+STATUS:NEEDS-ACTION
+DESCRIPTION:Two barrels from the chandler in Frederikshavn.
+END:VTODO
+BEGIN:VJOURNAL
+UID:log-1890@lighthouse.example.org
+DTSTAMP:20261112T120000Z
+DTSTART;VALUE=DATE:18901113
+SUMMARY:Keeper's log
+DESCRIPTION:Storm from the north-west\; the lamp burned until dawn.
+DESCRIPTION:Wind fell at six. Two ships passed safely.
+END:VJOURNAL
+END:VCALENDAR

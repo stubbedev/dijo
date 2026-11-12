@@ -24,6 +24,7 @@ pub mod formats {
     pub mod apple_single;
     pub mod chm;
     pub mod class_file;
+    pub mod content_line;
     pub mod dbf;
     pub mod dc_xml;
     pub mod dif;
@@ -34,6 +35,7 @@ pub mod formats {
     pub mod fiction_book;
     pub mod geogebra;
     pub mod hwpx;
+    pub mod icalendar;
     pub mod idml;
     pub mod iwork;
     pub mod iwork_package;

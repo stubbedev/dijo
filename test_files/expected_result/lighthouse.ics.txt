@@ -1,0 +1,32 @@
+Evening watch: light the lamp
+Starts: 2026-11-13T15:30:00Z
+Ends: 2026-11-13T17:30:00Z
+Repeats: FREQ=DAILY;UNTIL=20261231T230000Z
+Location: Lantern room, Skagen Fyr
+Categories: Watch, Lamp
+Organiser: Keeper, The <keeper@lighthouse.example.org>
+Attendees:
+Ada Lund <ada@lighthouse.example.org>
+Bo Ørsted <bo@lighthouse.example.org>
+lantern@lighthouse.example.org
+Climb the tower at dusk, trim the wick and fill the oil.
+Light the lamp and note the time in the log; check the lens for salt.
+Midsummer watch
+Starts: 2027-06-24T20:00:00Z
+Duration: PT2H
+Inspection by the harbour board
+Starts: 2026-12-01T15:00:00Z
+Ends: 2026-12-01T17:00:00Z
+Location: Harbour office
+Storm day
+Starts: 2026-11-24
+Ends: 2026-11-25
+No boats leave the harbour.
+Order lamp oil
+Starts: 2026-11-16T09:00:00 (floating)
+Due: 2026-11-20
+Two barrels from the chandler in Frederikshavn.
+Keeper's log
+Starts: 1890-11-13
+Storm from the north-west; the lamp burned until dawn.
+Wind fell at six. Two ships passed safely.

@@ -46,6 +46,12 @@
   (the `CONTENTS` stream, in UTF-16), the header, body, text boxes and table cells, footnotes, endnotes and footer
   each a story of its own, fields, footnote marks and object placeholders left out. Works databases are read, as
   Tika reads them, for their summary information only.
+* iCalendar files are read for their entries (#343), where Tika reads their property lines as plain text: each
+  event, to-do and journal entry a section of its summary, start, end or due time, duration, recurrence rule,
+  location, categories, organiser, attendees and descriptions, lines unfolded and values unescaped. Times in a zone
+  are given in UTC, resolved by the calendar's own `VTIMEZONE` or the bundled time zone database; floating times are
+  marked floating and dates stay dates. The calendar's name, description and product are its `dc:title`,
+  `dc:description` and `xmp:CreatorTool`.
 
 # 0.2.14 (2026-10-28)
 

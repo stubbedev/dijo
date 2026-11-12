@@ -554,6 +554,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
     ("image/jpx", "org.apache.tika.parser.image.ImageParser"),
     ("image/jxl", "org.apache.tika.parser.image.JXLParser"),
     ("image/png", "org.apache.tika.parser.image.ImageParser"),
+    ("image/svg+xml", "dijo::SvgParser"),
     ("image/tiff", "org.apache.tika.parser.image.TiffParser"),
     ("image/vnd.adobe.photoshop", "dijo::RecognizedImageParser"),
     (
@@ -608,6 +609,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "model/vnd.dwfx+xps",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
     ),
+    ("text/calendar", "dijo::ICalendarParser"),
     ("text/html", "org.apache.tika.parser.html.JSoupParser"),
     (
         "text/markdown",

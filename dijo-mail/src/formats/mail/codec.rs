@@ -3,6 +3,7 @@
 
 use super::Unported;
 use crate::text::charset::Charset;
+use crate::text::quoted_printable::{decode_escapes, hex_value};
 
 const BASE64_PAD: u8 = b'=';
 const CR: u8 = b'\r';
@@ -188,15 +189,6 @@ fn decode_base64_word(input: &[u8]) -> Vec<u8> {
     decode_base64(&input[..end])
 }
 
-fn hex_value(byte: Option<u8>) -> Option<u8> {
-    match byte? {
-        c @ b'0'..=b'9' => Some(c - b'0'),
-        c @ b'A'..=b'F' => Some(c - b'A' + 10),
-        c @ b'a'..=b'f' => Some(c - b'a' + 10),
-        _ => None,
-    }
-}
-
 /// A line of quoted-printable text, with the line break that ends it if any, decoded into
 /// `out`.
 fn decode_quoted_printable_line(line: &[u8], out: &mut Vec<u8>) {
@@ -216,27 +208,6 @@ fn decode_quoted_printable_line(line: &[u8], out: &mut Vec<u8>) {
             decode_escapes(content, out);
             out.extend_from_slice(line_break);
         }
-    }
-}
-
-/// The escapes of a line of quoted-printable text decoded, an `=` not followed by two
-/// hexadecimal digits kept as it is.
-fn decode_escapes(line: &[u8], out: &mut Vec<u8>) {
-    let mut at = 0;
-    while at < line.len() {
-        let byte = line[at];
-        if byte == EQ {
-            if let (Some(upper), Some(lower)) = (
-                hex_value(line.get(at + 1).copied()),
-                hex_value(line.get(at + 2).copied()),
-            ) {
-                out.push((upper << 4) | lower);
-                at += 3;
-                continue;
-            }
-        }
-        out.push(byte);
-        at += 1;
     }
 }
 

@@ -1,0 +1,20 @@
+{
+    "Content-Type": [
+        "text/calendar"
+    ],
+    "tk:parsed-by": [
+        "dijo::ICalendarParser"
+    ],
+    "dc:title": [
+        "Lighthouse duties"
+    ],
+    "dc:description": [
+        "The keeper's watches, errands and log"
+    ],
+    "xmp:CreatorTool": [
+        "-//Lighthouse Press//Keeper's Calendar 1.0//EN"
+    ],
+    "Content-Encoding": [
+        "UTF-8"
+    ]
+}

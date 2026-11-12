@@ -71,6 +71,7 @@ pub(crate) use dijo_small::formats::feed;
 pub(crate) use dijo_small::formats::fiction_book;
 pub(crate) use dijo_small::formats::geogebra;
 pub(crate) use dijo_small::formats::hwpx;
+pub(crate) use dijo_small::formats::icalendar;
 pub(crate) use dijo_small::formats::idml;
 pub(crate) use dijo_small::formats::iwork;
 pub(crate) use dijo_small::formats::iwork_package;
@@ -153,6 +154,7 @@ static PARSERS: &[&dyn Parser] = &[
     &hwp::HwpV5Parser,
     &hwpx::HwpxParser,
     &hdf::HdfParser,
+    &icalendar::ICalendarParser,
     &idml::IdmlParser,
     &isatab::IsaTabParser,
     &iwork::IworkArchiveParser,

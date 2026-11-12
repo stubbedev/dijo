@@ -15,11 +15,13 @@ const JOBS: &str = "8";
 const TIMEOUT_SECONDS: &str = "60";
 
 /// The parsers of ours that read a format differently from Tika on purpose (iWork text Tika
-/// leaves out, dropping subtitle timings, notebook JSON, FB2 styles, email headers, the Kindle
-/// books, HWPX documents, Project plans and Works documents Tika does not read), so their text
-/// is not compared with Tika's: tests of their own check it. The native port of one counts as it
-/// does.
-const OWN_PARSERS: [&str; 24] = [
+/// leaves out, dropping subtitle timings and iCalendar property lines, notebook JSON, FB2 styles,
+/// email headers, the Kindle books, HWPX documents, Project plans and Works documents Tika does
+/// not read), so their text is not compared with Tika's: tests of their own check it. The native
+/// port of one counts as it does.
+const OWN_PARSERS: [&str; 26] = [
+    "dijo::ICalendarParser",
+    "dijo::ICalendarParser",
     "dijo::WorksParser",
     "dijo::WorksParser",
     "dijo::ProjectParser",
