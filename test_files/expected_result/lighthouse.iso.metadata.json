@@ -1,0 +1,29 @@
+{
+    "Content-Type": [
+        "application/x-iso9660-image"
+    ],
+    "tk:parsed-by": [
+        "dijo::Iso9660Parser"
+    ],
+    "dc:title": [
+        "LIGHTHOUSE"
+    ],
+    "dc:publisher": [
+        "Lighthouse Press"
+    ],
+    "dc:creator": [
+        "The Keeper"
+    ],
+    "xmp:CreatorTool": [
+        "xorriso 1.5.8"
+    ],
+    "dcterms:created": [
+        "2026-11-12T12:00:00Z"
+    ],
+    "dcterms:modified": [
+        "2026-11-12T12:00:00Z"
+    ],
+    "iso9660:symbolic-link": [
+        "latest.txt -> ReadMe.txt"
+    ]
+}

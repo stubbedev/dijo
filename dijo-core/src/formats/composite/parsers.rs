@@ -384,6 +384,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "org.apache.tika.parser.warc.WARCParser",
     ),
     ("application/x-ipynb+json", "dijo::NotebookParser"),
+    ("application/x-iso9660-image", "dijo::Iso9660Parser"),
     (
         "application/x-java-pack200",
         "org.apache.tika.parser.pkg.CompressorParser",

@@ -114,6 +114,7 @@ const CHUNKS_AHEAD: usize = 16;
 static PARSERS: &[&dyn Parser] = &[
     &access::JackcessParser,
     &archive::CompressorParser,
+    &archive::Iso9660Parser,
     &archive::PackageParser,
     &archive::RarParser,
     &archive::SevenZParser,

@@ -1706,6 +1706,38 @@ fn matroska_and_webm_are_read_for_their_subtitles_and_attachments() {
     assert!(!webm.contains("<v "), "{webm}");
 }
 
+/// `lighthouse.iso` was made with xorriso 1.5.8 (`SOURCE_DATE_EPOCH=1794484800 xorriso -as mkisofs
+/// -R -J -joliet-long -no-pad -V LIGHTHOUSE -publisher "Lighthouse Press" -p "The Keeper" -A
+/// "xorriso 1.5.8"`) from a tree touched to 2026-11-12T12:00:00Z of three text files, one under
+/// `logbook/1890s/` named `Første storm.txt`, and the symbolic link `latest.txt` to `ReadMe.txt`:
+/// Rock Ridge names and a Joliet tree.
+#[test]
+fn iso9660_images_are_read_as_archives() {
+    let objects = json_objects(&["--embedded", "separate", &document("lighthouse.iso")]);
+    for object in &objects {
+        assert_matches_schema(object);
+    }
+    assert_eq!(objects[0]["mime_type"], "application/x-iso9660-image");
+    assert_eq!(objects[0]["metadata"]["title"], "LIGHTHOUSE");
+    assert_eq!(
+        objects[0]["raw_metadata"]["iso9660:symbolic-link"][0],
+        "latest.txt -> ReadMe.txt"
+    );
+    assert_eq!(
+        embedded_paths(&objects),
+        [
+            "<root>",
+            "ReadMe.txt",
+            "logbook/maintenance notes.txt",
+            "logbook/1890s/Første storm.txt",
+        ]
+    );
+    assert_eq!(
+        objects[3]["text"],
+        "Storm from the north-west; the lamp burned until dawn.\n"
+    );
+}
+
 #[test]
 fn notebooks_are_read_cell_by_cell() {
     let objects = json_objects(&[&document("notebook.ipynb")]);

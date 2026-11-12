@@ -20,6 +20,11 @@
   a program builds, as an embedded Type 1 font's), with the show aliases of generators' procedure sets followed.
   A page whose text does not resolve is listed in `dijo:unresolved-text` rather than written as garbage, and an EPS
   file's TIFF or WMF preview is handed on, for OCR, where its PostScript does not give all of its text.
+* ISO 9660 disc images are read as archives (#338), where Tika reads nothing of them: each file an embedded document
+  with its path, size and dates, named by Rock Ridge where the image has it, else by Joliet, else by ISO 9660, files
+  of several extents joined, symbolic links listed in `iso9660:symbolic-link`, and the volume's identifier,
+  publisher, preparer, application and dates as metadata. An image of UDF alone, as most DVDs and Blu-ray discs are,
+  is noted as such in its metadata.
 
 # 0.2.14 (2026-10-28)
 
