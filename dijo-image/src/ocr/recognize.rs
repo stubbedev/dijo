@@ -300,6 +300,7 @@ impl Attempt {
                 prepared.scale,
                 prepared.uneven_lighting,
             )
+            .inverted_regions(prepared.inverted_regions)
             .noise(self.noise)
             .unwarped(prepared.unwarped)
             .ppocr(self.recognizer)
@@ -352,6 +353,8 @@ struct Prepared {
     flattened: bool,
     unwarped: bool,
     inverted: bool,
+    /// How many regions of light text on a dark ground within it were inverted.
+    inverted_regions: usize,
     despeckled: bool,
     quarter_turns: u8,
     skew_degrees: f64,
@@ -373,6 +376,7 @@ impl Prepared {
             flattened: false,
             unwarped: false,
             inverted: false,
+            inverted_regions: 0,
             despeckled: false,
             quarter_turns: 0,
             skew_degrees: 0.0,
@@ -446,11 +450,12 @@ impl Oriented {
 
 /// An upright image turned by the quarter turns detection found, its light text on a dark
 /// ground inverted, its specks cleared, its background normalised when the lighting is uneven
-/// and its faint marks whitened otherwise, and its skew corrected: prepared up to scaling it,
-/// which depends on the script it is read in.
+/// and its faint marks whitened otherwise, its skew corrected, and its regions of light text on
+/// a dark ground inverted: prepared up to scaling it, which depends on the script it is read in.
 struct Unscaled {
     image: Arc<Bitmap>,
     inverted: bool,
+    inverted_regions: usize,
     despeckled: bool,
     uneven_lighting: bool,
     skew_degrees: f64,
@@ -484,15 +489,28 @@ impl Unscaled {
         } else {
             prepare::whiten_faint_marks(&analysis, gray.into_owned())
         });
-        let skew_degrees = prepare::skew_degrees(&prepare::analysis(&evened));
-        let image = if skew_degrees != 0.0 {
-            evened.rotated(skew_degrees)
+        let analysis = prepare::analysis(&evened);
+        let skew_degrees = prepare::skew_degrees(&analysis);
+        let (image, analysis) = if skew_degrees != 0.0 {
+            let rotated = evened.rotated(skew_degrees);
+            let analysis = prepare::analysis(&rotated);
+            (rotated, analysis)
         } else {
-            evened
+            (evened, analysis)
+        };
+        let reversed = prepare::reversed_regions(&analysis);
+        let image = match reversed.is_empty() {
+            true => image,
+            false => Bitmap::Gray(prepare::invert_regions(
+                image.into_gray(),
+                &analysis,
+                &reversed,
+            )),
         };
         Self {
             image: Arc::new(image),
             inverted,
+            inverted_regions: reversed.len(),
             despeckled,
             uneven_lighting,
             skew_degrees,
@@ -1083,6 +1101,7 @@ fn finish(
         flattened: oriented.flattened,
         unwarped: false,
         inverted: unscaled.inverted,
+        inverted_regions: unscaled.inverted_regions,
         despeckled: unscaled.despeckled,
         quarter_turns,
         skew_degrees: unscaled.skew_degrees,
@@ -1234,6 +1253,15 @@ mod tests {
         if skew_degrees != 0.0 {
             image = image.rotated(skew_degrees);
         }
+        let analysis = prepare::analysis(&image);
+        let reversed = prepare::reversed_regions(&analysis);
+        if !reversed.is_empty() {
+            image = Bitmap::Gray(prepare::invert_regions(
+                image.into_gray(),
+                &analysis,
+                &reversed,
+            ));
+        }
         let scale = prepare::scale_factor(&image, MAX_PIXELS, reduce);
         if scale != 1.0 {
             image = Bitmap::Gray(prepare::scale(&image, scale));
@@ -1242,6 +1270,7 @@ mod tests {
             image: Some(Arc::new(image)),
             uneven_lighting,
             inverted,
+            inverted_regions: reversed.len(),
             despeckled,
             quarter_turns,
             skew_degrees,
@@ -1270,6 +1299,7 @@ mod tests {
         }));
         let pages = [
             prepare::tests::shadowed_page(400, 300),
+            prepare::tests::page_with_banner(),
             small_text,
             negative,
             large_text,
@@ -1313,6 +1343,7 @@ mod tests {
                 assert_eq!(
                     (
                         prepared.inverted,
+                        prepared.inverted_regions,
                         prepared.despeckled,
                         prepared.uneven_lighting,
                         prepared.skew_degrees,
@@ -1320,6 +1351,7 @@ mod tests {
                     ),
                     (
                         expected.inverted,
+                        expected.inverted_regions,
                         expected.despeckled,
                         expected.uneven_lighting,
                         expected.skew_degrees,
@@ -1486,6 +1518,23 @@ mod tests {
             text.contains("Every evening at dusk the keeper climbed the one hundred"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn reads_a_banner_and_a_box_of_light_text_on_a_dark_ground_in_a_page_of_dark_text() {
+        let read = recognized("prose-scan-reversed-regions.png");
+        let report = read.report(None);
+        assert!(report.contains("\"inverted\":false"), "{report}");
+        assert!(report.contains("\"inverted_regions\":2"), "{report}");
+        assert!(!report.contains("ppocr"), "{report}");
+        let text = read.text().unwrap();
+        for line in [
+            "The Lighthouse Keeper's Ledger",
+            "Historians who later studied the ledgers found that the plain entries",
+            "Even the handwriting changed, growing smaller and more careful",
+        ] {
+            assert!(text.contains(line), "{text}");
+        }
     }
 
     #[test]

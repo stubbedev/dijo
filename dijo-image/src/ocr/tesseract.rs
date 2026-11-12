@@ -779,11 +779,20 @@ fn init_variables(model: &str) -> &'static [(&'static CStr, &'static CStr)] {
     }
 }
 
+/// The variables an engine for a model is set to once it is initialised. A reading engine
+/// separates no pages, takes all text as proportional, which skips the fixed-pitch test, and
+/// reads no line a second time inverted, which tesseract would do for every line it reads with
+/// little confidence: the preparation inverts light text on a dark ground, of the whole page and
+/// of each region, before tesseract sees it.
 fn engine_variables(model: &str) -> &'static [(&'static CStr, &'static CStr)] {
     if model == OSD_MODEL {
         &[]
     } else {
-        &[(c"page_separator", c""), (c"textord_all_prop", c"1")]
+        &[
+            (c"page_separator", c""),
+            (c"textord_all_prop", c"1"),
+            (c"invert_threshold", c"0"),
+        ]
     }
 }
 
@@ -1245,6 +1254,16 @@ mod tests {
         for model in ["eng", "script/Latin", "eng+deu"] {
             assert!(
                 engine_variables(model).contains(&(c"textord_all_prop", c"1")),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn reading_engines_read_no_line_again_inverted() {
+        for model in ["eng", "script/Latin", "eng+deu"] {
+            assert!(
+                engine_variables(model).contains(&(c"invert_threshold", c"0")),
                 "{model}"
             );
         }

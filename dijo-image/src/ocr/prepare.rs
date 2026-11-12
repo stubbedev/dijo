@@ -32,6 +32,11 @@ const UNEVEN_BACKGROUND_LEVELS: u32 = 48;
 const BACKGROUND_BLOCK_PIXELS: u32 = 16;
 const BACKGROUND_CLOSING_BLOCKS: usize = 2;
 const MIN_INVERTED_DARK_PERCENT: u64 = 85;
+const REVERSED_WIDTH_SHARE: usize = 20;
+const MIN_REVERSED_HEIGHT_PIXELS: usize = 12;
+const MAX_REVERSED_AREA_PERCENT: usize = 50;
+const MIN_REVERSED_FILL_PERCENT: usize = 60;
+const MIN_REVERSED_EDGE_PERCENT: usize = 90;
 const MIN_SPECKLE_PERCENT: u64 = 2;
 const INK_PERCENTILE: f64 = 0.005;
 const FAINT_PERCENT: u32 = 72;
@@ -518,6 +523,134 @@ pub(crate) fn invert(mut image: GrayImage) -> GrayImage {
     image
 }
 
+/// A box of an image's [`analysis`] copy, its columns and rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Region {
+    across: Range<usize>,
+    down: Range<usize>,
+}
+
+impl Region {
+    /// Whether the region of `pixels` dark pixels, connected, that this box bounds is the dark
+    /// ground of light text set in a page of dark text, as a banner or a table header is: at
+    /// least a [`REVERSED_WIDTH_SHARE`]th as wide as the image and [`MIN_REVERSED_HEIGHT_PIXELS`]
+    /// high, which no letter of the page's text is, at most [`MAX_REVERSED_AREA_PERCENT`]% of
+    /// the image, unlike the dark ground around a page photographed on a table, at least
+    /// [`MIN_REVERSED_FILL_PERCENT`]% dark, unlike the frame of a table, and dark along
+    /// [`MIN_REVERSED_EDGE_PERCENT`]% of each of its four edges, unlike a word of bold text.
+    fn reversed(&self, analysis: &GrayImage, threshold: u32, pixels: usize) -> bool {
+        let (width, height) = (analysis.width() as usize, analysis.height() as usize);
+        let area = self.across.len() * self.down.len();
+        if self.across.len() * REVERSED_WIDTH_SHARE < width
+            || self.down.len() < MIN_REVERSED_HEIGHT_PIXELS
+            || area * 100 > width * height * MAX_REVERSED_AREA_PERCENT
+            || pixels * 100 < area * MIN_REVERSED_FILL_PERCENT
+        {
+            return false;
+        }
+        let levels = analysis.as_raw();
+        let dark = |x: usize, y: usize| u32::from(levels[y * width + x]) < threshold;
+        let dark_along =
+            |count: usize, length: usize| count * 100 >= length * MIN_REVERSED_EDGE_PERCENT;
+        let (left, right) = (self.across.start, self.across.end - 1);
+        let (top, bottom) = (self.down.start, self.down.end - 1);
+        [top, bottom].into_iter().all(|y| {
+            dark_along(
+                self.across.clone().filter(|&x| dark(x, y)).count(),
+                self.across.len(),
+            )
+        }) && [left, right].into_iter().all(|x| {
+            dark_along(
+                self.down.clone().filter(|&y| dark(x, y)).count(),
+                self.down.len(),
+            )
+        })
+    }
+}
+
+/// The regions of an image that are light text on a dark ground within a page of dark text on
+/// a light one, from its [`analysis`] copy: the boxes of its connected dark pixels that are
+/// [`Region::reversed`].
+pub(crate) fn reversed_regions(analysis: &GrayImage) -> Vec<Region> {
+    let (width, height) = (analysis.width() as usize, analysis.height() as usize);
+    let levels = analysis.as_raw();
+    let threshold = ink_threshold(analysis);
+    let dark = |index: usize| u32::from(levels[index]) < threshold;
+    let mut seen = vec![false; levels.len()];
+    let mut pending = Vec::new();
+    let mut regions = Vec::new();
+    for start in 0..levels.len() {
+        if seen[start] || !dark(start) {
+            continue;
+        }
+        seen[start] = true;
+        pending.push(start);
+        let (mut left, mut top) = (start % width, start / width);
+        let (mut right, mut bottom) = (left, top);
+        let mut pixels = 0;
+        while let Some(index) = pending.pop() {
+            pixels += 1;
+            let (x, y) = (index % width, index / width);
+            left = left.min(x);
+            right = right.max(x);
+            top = top.min(y);
+            bottom = bottom.max(y);
+            let neighbours = [
+                (x > 0).then(|| index - 1),
+                (x + 1 < width).then(|| index + 1),
+                (y > 0).then(|| index - width),
+                (y + 1 < height).then(|| index + width),
+            ];
+            for neighbour in neighbours.into_iter().flatten() {
+                if !seen[neighbour] && dark(neighbour) {
+                    seen[neighbour] = true;
+                    pending.push(neighbour);
+                }
+            }
+        }
+        let region = Region {
+            across: left..right + 1,
+            down: top..bottom + 1,
+        };
+        if region.reversed(analysis, threshold, pixels) {
+            regions.push(region);
+        }
+    }
+    regions
+}
+
+/// The grey levels of an image with those inside each region of its [`analysis`] copy
+/// inverted, dark for light: only the pixels wholly within a region, so none of the light
+/// ground around it is made dark.
+pub(crate) fn invert_regions(
+    mut image: GrayImage,
+    analysis: &GrayImage,
+    regions: &[Region],
+) -> GrayImage {
+    let width = image.width() as usize;
+    let height = image.height() as usize;
+    let across = width as f64 / f64::from(analysis.width());
+    let down = height as f64 / f64::from(analysis.height());
+    let inner = |range: &Range<usize>, factor: f64, limit: usize| {
+        (range.start as f64 * factor).ceil() as usize
+            ..((range.end as f64 * factor).floor() as usize).min(limit)
+    };
+    for region in regions {
+        let columns = inner(&region.across, across, width);
+        let rows = inner(&region.down, down, height);
+        for row in image
+            .chunks_exact_mut(width)
+            .skip(rows.start)
+            .take(rows.len())
+        {
+            for level in &mut row[columns.clone()] {
+                *level = !*level;
+            }
+        }
+    }
+    image
+}
+
 /// Whether the grey levels of an image are speckled, as a fax or a noisy scan is: whether more
 /// than [`MIN_SPECKLE_PERCENT`]% of its pixels darker than its Otsu threshold have no dark
 /// neighbour. Clean scans down to 72 dpi have under 0.3% such pixels, and a fax-like scan 30% or
@@ -662,6 +795,61 @@ pub(crate) mod tests {
             };
             Luma([if inked { 0 } else { paper }])
         }))
+    }
+
+    const BANNER_ACROSS: Range<u32> = 40..360;
+    const BANNER_DOWN: Range<u32> = 112..178;
+
+    /// A page of dark text with a banner of light text on a dark ground.
+    pub(crate) fn page_with_banner() -> Bitmap {
+        Bitmap::Gray(GrayImage::from_fn(400, 300, |x, y| {
+            let stroke = y % 20 < 6 && (60..340).contains(&x) && x % 12 < 9;
+            let banner = BANNER_ACROSS.contains(&x) && BANNER_DOWN.contains(&y);
+            Luma([if stroke == banner { WHITE } else { 0 }])
+        }))
+    }
+
+    #[test]
+    fn inverts_a_banner_of_light_text_on_a_dark_ground_and_nothing_around_it() {
+        let page = page_with_banner();
+        let analysis = analysis(&page);
+        let regions = reversed_regions(&analysis);
+        assert_eq!(
+            regions,
+            [Region {
+                across: 40..360,
+                down: 112..178
+            }]
+        );
+        let original = page.gray();
+        let inverted = invert_regions(original.clone().into_owned(), &analysis, &regions);
+        for (x, y, level) in inverted.enumerate_pixels() {
+            let banner = BANNER_ACROSS.contains(&x) && BANNER_DOWN.contains(&y);
+            let was = original.get_pixel(x, y).0[0];
+            assert_eq!(level.0[0], if banner { !was } else { was }, "{x}, {y}");
+        }
+    }
+
+    #[test]
+    fn inverts_no_bold_word_table_frame_or_ground_around_a_photographed_page() {
+        let bold_words = GrayImage::from_fn(400, 300, |x, y| {
+            let word = (40..120).contains(&x) && (100..124).contains(&y);
+            let between_ascenders = y < 106 && x % 10 >= 3;
+            Luma([if word && !between_ascenders { 0 } else { WHITE }])
+        });
+        let table = GrayImage::from_fn(400, 300, |x, y| {
+            let inside = (40..360).contains(&x) && (60..240).contains(&y);
+            let within_frame = (44..356).contains(&x) && (64..236).contains(&y);
+            Luma([if inside && !within_frame { 0 } else { WHITE }])
+        });
+        let photographed = GrayImage::from_fn(400, 300, |x, y| {
+            let page = (40..360).contains(&x) && (30..270).contains(&y);
+            let stroke = page && y % 20 < 6 && (60..340).contains(&x) && x % 12 < 9;
+            Luma([if page && !stroke { WHITE } else { 40 }])
+        });
+        for image in [bold_words, table, photographed] {
+            assert_eq!(reversed_regions(&image), []);
+        }
     }
 
     #[test]

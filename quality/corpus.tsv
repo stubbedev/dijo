@@ -73,6 +73,7 @@ prose-broken-offset.pdf	prose	broken-text-layer
 hyphenated.pdf	hyphenated	hyphenation	
 hyphenated.pdf	hyphenated	hyphenation	--no-normalize hyphenation
 prose-scan-inverted.png	prose	ocr	
+prose-scan-reversed-regions.png	prose	ocr	
 prose-scan-72dpi.png	prose	ocr	
 prose-scan-100dpi-degraded.png	prose	ocr	
 prose-scan-600dpi.png	prose	ocr	

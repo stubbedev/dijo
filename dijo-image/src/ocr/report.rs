@@ -3,8 +3,9 @@
 //! orientation and script detection found, the EXIF orientation applied, whether a page
 //! photographed at an angle was made flat, whether light text on a dark ground was inverted,
 //! whether specks were removed, the quarter turns and deskewing that made it upright, the
-//! enlargement, whether it was thresholded for uneven lighting, and whether the image could be
-//! decoded to prepare it at all.
+//! enlargement, whether it was thresholded for uneven lighting, whether the image could be
+//! decoded to prepare it at all, and how many regions of light text on a dark ground within a
+//! page of dark text were inverted.
 
 use std::fmt::Write as _;
 
@@ -72,6 +73,14 @@ impl Report {
     pub(crate) fn json(mut self) -> String {
         self.json.push('}');
         self.json
+    }
+
+    /// Notes how many regions of light text on a dark ground within the image were inverted.
+    pub(crate) fn inverted_regions(self, regions: usize) -> Self {
+        match regions {
+            0 => self,
+            regions => self.number("inverted_regions", regions as i64),
+        }
     }
 
     /// Notes that what was read was taken for noise and dropped.
@@ -171,5 +180,17 @@ mod tests {
         };
         assert!(report(true).ends_with(",\"thresholded\":false,\"noise\":true}"));
         assert!(!report(false).contains("noise"));
+    }
+
+    #[test]
+    fn notes_the_regions_inverted_only_when_there_were_any() {
+        let report = |regions| {
+            Report::of("eng")
+                .prepared(true, false, false, false, 0, 0.0, 1.0, false)
+                .inverted_regions(regions)
+                .json()
+        };
+        assert!(report(2).ends_with(",\"thresholded\":false,\"inverted_regions\":2}"));
+        assert!(!report(0).contains("inverted_regions"));
     }
 }

@@ -180,6 +180,8 @@ magick "$work/scan-300.png" -colorspace Gray -rotate 90 -depth 8 "$corpus/prose-
 magick "$work/scan-300.png" -colorspace Gray -rotate 180 -depth 8 "$corpus/prose-scan-upside-down.png"
 magick "$work/scan-300.png" -colorspace Gray -depth 8 -density 300 -compress jpeg -quality 85 "$corpus/prose-scan.pdf"
 magick "$work/scan-300.png" -colorspace Gray -negate -depth 8 "$corpus/prose-scan-inverted.png"
+magick "$work/scan-300.png" -colorspace Gray -region 2081x127+200+226 -negate -region 2081x356+200+682 -negate +region \
+    -depth 8 "$corpus/prose-scan-reversed-regions.png"
 magick "$work/scan-300.png" -colorspace Gray -quality 90 "$corpus/prose-scan.webp"
 magick "$work/scan-300.png" -colorspace Gray -quality 90 "$corpus/prose-scan.heic"
 magick "$work/scan-300.png" -colorspace Gray -quality 90 "$corpus/prose-scan.avif"
