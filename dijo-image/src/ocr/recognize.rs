@@ -25,6 +25,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use image::GrayImage;
+use unicode_script::Script;
 
 use super::bitmap::{Bitmap, Density};
 use super::flatten::flatten;
@@ -32,8 +33,8 @@ use super::ppocr::{ppocr, LineModel, Lines};
 use super::prepare::{self, Orientation};
 use super::report::Report;
 use super::script::{
-    installed_language, language, language_model, tagged_language, vertical_script, written_in,
-    BLACKLETTER_SCRIPT,
+    holds, installed_language, language, language_model, tagged_language, vertical_script,
+    written_in, BLACKLETTER_SCRIPT,
 };
 use super::slots;
 use super::tesseract::{
@@ -258,12 +259,16 @@ impl Attempt {
         detection::detect(&reading.text).filter(|detected| detected.reliable)
     }
 
-    /// The language of what was read, when it is detected with confidence in the script it was
-    /// read in, or in any script when it was read in the configured language.
+    /// The language of what was read, when it is detected with confidence in letters of the
+    /// script it was read in, or in any script when it was read in the configured language.
     fn language_in_its_script(&self) -> Option<DetectedLanguage> {
         let script = self.prepared.script.as_deref();
-        self.detected_language()
-            .filter(|detected| script.is_none_or(|script| detected.script == script))
+        self.detected_language().filter(|detected| {
+            script.is_none_or(|script| {
+                Script::from_full_name(detected.script)
+                    .is_some_and(|letters| holds(script, letters))
+            })
+        })
     }
 
     /// Whether what was read is text: in a language detected with confidence in its script, and
@@ -1604,6 +1609,28 @@ mod tests {
             "script/Latin"
         );
         assert_eq!(first_model("russian-scan.png", None), "script/Latin");
+    }
+
+    /// Japanese is written in Han and kana, which tesseract's script `Japanese` covers and the
+    /// language detector names apart: a page read in it is read in a language (#360).
+    #[test]
+    fn a_horizontal_japanese_page_read_in_its_script_is_in_a_language() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let settings = auto_settings();
+        let recognizer = Recognizer::new(tesseract, &settings);
+        let bitmap = scan("japanese-scan.png");
+        let image = Image::of(&bitmap, None, 0, None, Density::per_inch(300.0, 300.0));
+        let oriented = Oriented::of(&image);
+        let japanese = OcrLanguage {
+            script: "Japanese".to_owned(),
+            model: "jpn".to_owned(),
+        };
+        let first = recognizer
+            .first_preparation(&image, &oriented, Some(&japanese))
+            .unwrap();
+        let read = Attempt::read(first.clone(), recognizer.read(&image, &first).unwrap());
+        let detected = read.detected_language().map(|detected| detected.script);
+        assert!(read.in_a_language(), "{detected:?}, {}", read.confidence());
     }
 
     #[test]

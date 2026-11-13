@@ -228,21 +228,44 @@ pub(crate) fn vertical_script(text: &str) -> &'static str {
     }
 }
 
+/// The scripts tesseract names after a writing system or a typeface rather than a Unicode
+/// script, with the Unicode scripts their letters are in: Japanese is written in Han and kana,
+/// Korean in Hangul and Han, and blackletter in Latin letters.
+const LETTERS_BY_SCRIPT: [(&str, &[Script]); 3] = [
+    (
+        "Japanese",
+        &[Script::Han, Script::Hiragana, Script::Katakana],
+    ),
+    ("Korean", &[Script::Hangul, Script::Han]),
+    (BLACKLETTER_SCRIPT, &[Script::Latin]),
+];
+
+/// Whether letters of a Unicode script are in a script named as tesseract names it: in the
+/// script of the same name, or in one of the scripts of [`LETTERS_BY_SCRIPT`].
+pub(crate) fn holds(script_name: &str, letters: Script) -> bool {
+    match LETTERS_BY_SCRIPT
+        .iter()
+        .find(|(name, _)| *name == script_name)
+    {
+        Some((_, scripts)) => scripts.contains(&letters),
+        None => Script::from_full_name(script_name) == Some(letters),
+    }
+}
+
 /// Whether most letters of a text are in a script, named as tesseract names it. A model for a
 /// script that detection overlooked reads a page in another script with the Latin letters its
 /// model also has, often with more confidence than a reading spoiled by noise, and without that
-/// page's diacritics. A script Unicode does not name, such as tesseract's `Japanese`, holds no
-/// letters.
+/// page's diacritics.
 pub(crate) fn written_in(text: &str, script_name: &str) -> bool {
-    let Some(expected) = Script::from_full_name(script_name) else {
-        return false;
-    };
-    let (letters, in_script) = text
-        .chars()
-        .filter(|&c| is_letter(c))
-        .fold((0u64, 0u64), |(letters, in_script), c| {
-            (letters + 1, in_script + u64::from(script(c) == expected))
-        });
+    let (letters, in_script) =
+        text.chars()
+            .filter(|&c| is_letter(c))
+            .fold((0u64, 0u64), |(letters, in_script), c| {
+                (
+                    letters + 1,
+                    in_script + u64::from(holds(script_name, script(c))),
+                )
+            });
     in_script * 2 > letters
 }
 
@@ -282,7 +305,24 @@ mod tests {
     fn tells_the_script_most_letters_are_in() {
         assert!(written_in("Բարեւ աշխարհ, hi", "Armenian"));
         assert!(!written_in("hello world, Բարեւ", "Armenian"));
-        assert!(!written_in("日本語", "Japanese"));
+        assert!(written_in("日本語のテキスト", "Japanese"));
+        assert!(!written_in("日本語", "Klingon"));
+    }
+
+    #[test]
+    fn takes_the_letters_of_japanese_korean_and_blackletter_for_theirs() {
+        for letters in [Script::Han, Script::Hiragana, Script::Katakana] {
+            assert!(holds("Japanese", letters), "{letters:?}");
+        }
+        assert!(holds("Korean", Script::Hangul));
+        assert!(holds("Korean", Script::Han));
+        assert!(!holds("Korean", Script::Hiragana));
+        assert!(holds(BLACKLETTER_SCRIPT, Script::Latin));
+        assert!(holds("Han", Script::Han));
+        assert!(!holds("Han", Script::Hiragana));
+        assert!(holds("Cyrillic", Script::Cyrillic));
+        assert!(!holds("Latin", Script::Cyrillic));
+        assert!(!holds("Klingon", Script::Latin));
     }
 
     #[test]
