@@ -142,6 +142,19 @@ pub fn conformance_corpus() -> PathBuf {
     ))
 }
 
+/// The XHTML inside the `<body>` of the document `xml`, empty where the body is.
+pub fn body(xml: &str) -> &str {
+    let Some(open) = xml.find("<body>") else {
+        assert!(xml.contains("<body />"), "no body in {xml}");
+        return "";
+    };
+    let start = open + "<body>".len();
+    let end = xml[start..]
+        .find("</body>")
+        .unwrap_or_else(|| panic!("no end of the body in {xml}"));
+    &xml[start..start + end]
+}
+
 /// A directory for the documents a test writes, removed with it. Each is a directory of its
 /// own, so tests running at once never share one.
 pub struct Scratch(PathBuf);

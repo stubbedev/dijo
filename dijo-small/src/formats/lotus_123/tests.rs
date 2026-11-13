@@ -53,9 +53,7 @@ fn body(file: &[u8]) -> String {
         metadata["tk:parsed-by"].last().unwrap(),
         "dijo::Lotus123Parser"
     );
-    let start = xml.find("<body>").unwrap() + "<body>".len();
-    let end = xml.find("</body>").unwrap();
-    xml[start..end].replace(['\n', '\t'], "")
+    crate::formats::testing::body(&xml).replace(['\n', '\t'], "")
 }
 
 #[test]

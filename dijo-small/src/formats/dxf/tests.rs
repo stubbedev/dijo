@@ -63,8 +63,7 @@ fn extract(bytes: &[u8]) -> (String, dijo_core::Metadata) {
         .extract_bytes_to_string(bytes)
         .unwrap();
     assert_eq!(metadata["tk:parsed-by"].last().unwrap(), NAME);
-    let body =
-        xml[xml.find("<body>").unwrap() + "<body>".len()..xml.find("</body>").unwrap()].to_owned();
+    let body = crate::formats::testing::body(&xml).to_owned();
     (body, metadata)
 }
 

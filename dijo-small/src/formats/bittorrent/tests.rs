@@ -54,8 +54,7 @@ fn extract(file: &[u8]) -> (String, dijo_core::Metadata) {
         metadata["tk:parsed-by"].last().unwrap(),
         "dijo::BitTorrentParser"
     );
-    let body =
-        xml[xml.find("<body>").unwrap() + "<body>".len()..xml.find("</body>").unwrap()].to_owned();
+    let body = crate::formats::testing::body(&xml).to_owned();
     (body.replace(['\n', '\t'], ""), metadata)
 }
 

@@ -12,8 +12,7 @@ fn extract_with(attributes: &str, content: &str) -> (String, dijo_core::Metadata
         .extract_bytes_to_string(document.as_bytes())
         .unwrap();
     assert_eq!(metadata["Content-Type"], [MEDIA_TYPE]);
-    let body =
-        xml[xml.find("<body>").unwrap() + "<body>".len()..xml.find("</body>").unwrap()].to_owned();
+    let body = crate::formats::testing::body(&xml).to_owned();
     (body, metadata)
 }
 
