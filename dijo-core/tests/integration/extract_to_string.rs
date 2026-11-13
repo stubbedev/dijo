@@ -26,6 +26,7 @@ use crate::test_utils;
 #[test_case("lighthouse.vcf", 0.9; "Test vCard file")]
 #[test_case("lighthouse.svg", 0.9; "Test SVG image")]
 #[test_case("harbour.abw", 0.9; "Test AbiWord document")]
+#[test_case("gazette.sla", 0.9; "Test Scribus document")]
 #[test_case("works4.wps", 0.9; "Test Works 4 document")]
 #[test_case("works7.wps", 0.9; "Test Works 7 document")]
 #[test_case("wordpro-bullets.lwp", 0.9; "Test Word Pro document")]

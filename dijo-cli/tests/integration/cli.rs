@@ -1927,6 +1927,34 @@ fn abiword_documents_are_read_for_their_text() {
     assert_eq!(embedded_paths(&objects), ["<root>", "lamp-room.png"]);
 }
 
+/// `gazette.sla` was written by `dijo-small/tests/fixtures/scribus/gazette.py`: a document as
+/// Scribus 1.5.8 saves one, with document information, a master page, a story threaded across
+/// two pages, a group, a table, a frame on the pasteboard and an image kept in the document.
+#[test]
+fn scribus_documents_are_read_for_their_text() {
+    let objects = json_objects(&[
+        "--ocr",
+        "never",
+        "--embedded",
+        "separate",
+        &document("gazette.sla"),
+    ]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "application/vnd.scribus");
+    assert_eq!(objects[0]["metadata"]["title"], "The Harbour Gazette");
+    assert_eq!(objects[0]["metadata"]["authors"][0], "Anna Berg");
+    assert_eq!(
+        objects[0]["text"],
+        "The Harbour Gazette, issue 12\nThe Harbour Gazette\nStorm warning\nGales are expected \
+         from the north-west on Thursday. The lighthouse keeper asks all boats to stay in \
+         harbour.\nMoorings\tPier\u{a0}3\nHarbour Office\nQuay Street 1\nThe lamp room after \
+         repairs.\nRepairs continue next week.\nPhoto: Anna Berg\nTide\tTime\nHigh tide\t06:12\n\
+         Low tide\t12:31\nNotices\nThe fish market opens at five.\nDraft: check the tide times \
+         with the harbour master.\n"
+    );
+    assert_eq!(embedded_paths(&objects), ["<root>", "lamp-room.png"]);
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

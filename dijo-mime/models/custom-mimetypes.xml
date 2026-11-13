@@ -29,4 +29,11 @@
       <match value="!BDN....SO" type="string" offset="0" mask="0xFFFFFFFF00000000FFFF"/>
     </magic>
   </mime-type>
+  <mime-type type="application/vnd.scribus">
+    <sub-class-of type="application/xml"/>
+    <glob pattern="*.sla"/>
+    <root-XML localName="SCRIBUSUTF8NEW"/>
+    <root-XML localName="SCRIBUSUTF8"/>
+    <root-XML localName="SCRIBUS"/>
+  </mime-type>
 </mime-info>

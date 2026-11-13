@@ -1,0 +1,41 @@
+{
+    "Content-Type": [
+        "application/vnd.scribus"
+    ],
+    "tk:parsed-by": [
+        "dijo::ScribusParser"
+    ],
+    "dc:title": [
+        "The Harbour Gazette"
+    ],
+    "dc:creator": [
+        "Anna Berg"
+    ],
+    "dc:subject": [
+        "Storm warning and tide tables"
+    ],
+    "dc:description": [
+        "Kept by the harbour office.\nPrinted weekly."
+    ],
+    "dc:publisher": [
+        "Harbour Office"
+    ],
+    "dc:type": [
+        "Text"
+    ],
+    "dc:language": [
+        "en-GB"
+    ],
+    "meta:keyword": [
+        "harbour, storm, tides"
+    ],
+    "dcterms:created": [
+        "2026-11-02"
+    ],
+    "xmp:CreatorTool": [
+        "Scribus 1.5.8"
+    ],
+    "xmpTPg:NPages": [
+        "2"
+    ]
+}

@@ -1981,6 +1981,7 @@ pub(super) static MIME_TYPES: MimeTypes = MimeTypes {
             ("application/vnd.openxmlformats-officedocument.spreadsheetml.template", "application/x-tika-ooxml"),
             ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/x-tika-ooxml"),
             ("application/vnd.openxmlformats-officedocument.wordprocessingml.template", "application/x-tika-ooxml"),
+            ("application/vnd.scribus", "application/xml"),
             ("application/vnd.stardivision.calc", "application/x-tika-staroffice"),
             ("application/vnd.stardivision.draw", "application/x-tika-staroffice"),
             ("application/vnd.stardivision.impress", "application/x-tika-staroffice"),
@@ -2958,7 +2959,7 @@ pub(super) static MIME_TYPES: MimeTypes = MimeTypes {
         MimeType { name: "application/vnd.s3sms", interpreted: false, root_xml: &[], extensions: &[] },
         MimeType { name: "application/vnd.sbm.cid", interpreted: false, root_xml: &[], extensions: &[] },
         MimeType { name: "application/vnd.sbm.mid2", interpreted: false, root_xml: &[], extensions: &[] },
-        MimeType { name: "application/vnd.scribus", interpreted: false, root_xml: &[], extensions: &[] },
+        MimeType { name: "application/vnd.scribus", interpreted: false, root_xml: &[("", "SCRIBUSUTF8NEW"), ("", "SCRIBUSUTF8"), ("", "SCRIBUS")], extensions: &[".sla"] },
         MimeType { name: "application/vnd.sealed.3df", interpreted: false, root_xml: &[], extensions: &[] },
         MimeType { name: "application/vnd.sealed.csf", interpreted: false, root_xml: &[], extensions: &[] },
         MimeType { name: "application/vnd.sealed.doc", interpreted: false, root_xml: &[], extensions: &[] },
@@ -6488,7 +6489,7 @@ pub(super) static MIME_TYPES: MimeTypes = MimeTypes {
         Magic { type_id: 565, priority: 20, clause: Clause::Match(MagicMatch { pattern: b"\x0E\x0F", mask: b"\xFF\xFF", kind: Kind::Bytes, begin: 0, end: 0, anchor: None }) },
         Magic { type_id: 1213, priority: 10, clause: Clause::Match(MagicMatch { pattern: b"ID3", mask: b"\xFF\xFF\xFF", kind: Kind::Bytes, begin: 0, end: 0, anchor: None }) },
     ],
-    xmls: &[8, 1467, 42, 39, 41, 40, 43, 1468, 1469, 177, 187, 214, 773, 246, 247, 260, 263, 262, 398, 443, 174, 176, 175, 614, 857, 860, 1679, 1667, 891, 1084, 1684, 1140, 1146, 1147, 1148, 1331, 1336, 1486, 7],
+    xmls: &[8, 1467, 42, 39, 41, 40, 43, 1468, 1469, 177, 187, 214, 773, 246, 247, 260, 263, 262, 398, 443, 174, 176, 175, 614, 703, 857, 860, 1679, 1667, 891, 1084, 1684, 1140, 1146, 1147, 1148, 1331, 1336, 1486, 7],
     patterns: Patterns {
         names: &[
             (".htaccess", 1),
@@ -7516,6 +7517,7 @@ pub(super) static MIME_TYPES: MimeTypes = MimeTypes {
             (".skm", 473),
             (".skp", 473),
             (".skt", 473),
+            (".sla", 703),
             (".sldasm", 217),
             (".slddrw", 217),
             (".sldm", 549),

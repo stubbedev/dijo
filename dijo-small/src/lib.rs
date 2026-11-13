@@ -56,6 +56,7 @@ pub mod formats {
     pub mod source_code;
     pub mod subtitle;
     pub mod svg;
+    pub mod scribus;
     pub mod translation;
     pub mod tsd;
     pub mod vcard;

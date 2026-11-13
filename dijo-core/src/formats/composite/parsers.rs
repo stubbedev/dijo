@@ -301,6 +301,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
         "org.apache.tika.parser.microsoft.ooxml.OOXMLParser",
     ),
+    ("application/vnd.scribus", "dijo::ScribusParser"),
     (
         "application/vnd.sun.xml.writer",
         "org.apache.tika.parser.odf.OpenDocumentParser",

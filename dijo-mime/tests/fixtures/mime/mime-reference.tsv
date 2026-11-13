@@ -64,6 +64,8 @@ documents	encrypted/user-password.pdf	file	application/pdf	tk:content-type-magic
 documents	encrypted/user-password.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
 documents	eng-ocr.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 documents	eng-ocr.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+documents	gazette.sla	file	application/vnd.scribus	tk:content-type-magic-detected=application/vnd.scribus
+documents	gazette.sla	bytes	application/vnd.scribus	tk:content-type-magic-detected=application/vnd.scribus
 documents	greek-danish-greek-scan.tif	file	image/tiff	tk:content-type-magic-detected=image/tiff
 documents	greek-danish-greek-scan.tif	bytes	image/tiff	tk:content-type-magic-detected=image/tiff
 documents	harbour.abw	file	application/x-abiword	tk:content-type-magic-detected=application/x-abiword

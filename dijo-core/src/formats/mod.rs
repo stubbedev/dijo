@@ -89,6 +89,7 @@ pub(crate) use dijo_small::formats::open_pgp;
 pub(crate) use dijo_small::formats::plist;
 pub(crate) use dijo_small::formats::prt;
 pub(crate) use dijo_small::formats::sas;
+pub(crate) use dijo_small::formats::scribus;
 pub(crate) use dijo_small::formats::source_code;
 pub(crate) use dijo_small::formats::subtitle;
 pub(crate) use dijo_small::formats::svg;
@@ -214,6 +215,7 @@ static PARSERS: &[&dyn Parser] = &[
     &mail::Rfc822Parser,
     &rtf::RtfParser,
     &sas::Sas7bdatParser,
+    &scribus::ScribusParser,
     &source_code::SourceCodeParser,
     &sqlite::Sqlite3Parser,
     &subtitle::SubtitleParser,

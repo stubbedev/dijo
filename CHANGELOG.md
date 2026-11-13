@@ -76,6 +76,13 @@
   header and footer sections in their own `div`s. The `<metadata>` is the document's Dublin Core, keywords and
   generator, its dates ISO local date-times (AbiWord saves them without a time zone); each `<data>` item is handed on
   as an embedded document. Gzip-compressed `.zabw` files are read through the gzip parser.
+* Scribus documents are read (#349), where Tika reads nothing of them: the story of each text frame once, from
+  the first frame it is threaded through, in the order of the master pages, the pages (top to bottom, left to
+  right) and the pasteboard, with headings by their styles, tables by rows, line breaks, tabs and hard spaces, and
+  frames anchored in the text after their paragraph; images kept in the document are handed on as embedded
+  documents. The `DOCUMENT` information is the document's Dublin Core, keywords, page count and creator tool.
+  Documents of Scribus before 1.3.4 that are not well-formed XML, as their raw control characters make them, are
+  left unread; gzip-compressed `.sla.gz` files are read through the gzip parser.
 * Lotus Word Pro documents are read for their text (#346), where Tika reads nothing of them: those of Word Pro 97 and
   later, as LibreOffice's import reads them, small files whose stream is imploded included. Division by division, the
   headers, the body, the footers and the frames on its pages, with tables written as tables of their rows and cells,
