@@ -66,6 +66,7 @@ pub(crate) use dijo_small::formats::class_file;
 pub(crate) use dijo_small::formats::dbf;
 pub(crate) use dijo_small::formats::dc_xml;
 pub(crate) use dijo_small::formats::dif;
+pub(crate) use dijo_small::formats::dvi;
 pub(crate) use dijo_small::formats::dwg;
 pub(crate) use dijo_small::formats::dxf;
 pub(crate) use dijo_small::formats::empty;
@@ -143,6 +144,7 @@ static PARSERS: &[&dyn Parser] = &[
     &doc::DocParser,
     &docx::DocxParser,
     &docx::flat::Word2006MlParser,
+    &dvi::DviParser,
     &dwg::DwgParser,
     &dxf::DxfParser,
     &feed::FeedParser,

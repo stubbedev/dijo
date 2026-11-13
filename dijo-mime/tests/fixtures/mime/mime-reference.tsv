@@ -74,6 +74,8 @@ documents	keynote2018.key	file	application/vnd.apple.keynote.18	tk:content-type-
 documents	keynote2018.key	bytes	application/vnd.apple.keynote.18	tk:content-type-magic-detected=application/zip	Content-Length=54228	zip:detector-zip-file-opened=true
 documents	ledger.djvu	file	image/vnd.djvu	tk:content-type-magic-detected=image/vnd.djvu
 documents	ledger.djvu	bytes	image/vnd.djvu	tk:content-type-magic-detected=image/vnd.djvu
+documents	lighthouse.dvi	file	application/x-dvi	tk:content-type-magic-detected=application/x-dvi
+documents	lighthouse.dvi	bytes	application/x-dvi	tk:content-type-magic-detected=application/x-dvi
 documents	lighthouse.fodg	file	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
 documents	lighthouse.fodg	bytes	application/vnd.oasis.opendocument.tika.flat.document	tk:content-type-magic-detected=application/vnd.oasis.opendocument.tika.flat.document
 documents	lighthouse.fodp	file	application/vnd.oasis.opendocument.flat.presentation	tk:content-type-magic-detected=application/vnd.oasis.opendocument.flat.presentation

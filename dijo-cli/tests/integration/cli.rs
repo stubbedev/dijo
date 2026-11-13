@@ -1998,6 +1998,27 @@ fn bittorrent_files_are_read_for_their_files_and_trackers() {
     );
 }
 
+/// `lighthouse.dvi` was written by `dijo-small/tests/fixtures/dvi/lighthouse.py`: two pages as
+/// TeX writes them, in OT1, T1, typewriter and math fonts, with an accent, ligatures, a
+/// superscript, a special and the summation sign of cmex10, whose encoding is not known.
+#[test]
+fn dvi_files_are_read_for_their_text() {
+    let objects = json_objects(&[&document("lighthouse.dvi")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "application/x-dvi");
+    assert_eq!(
+        objects[0]["text"],
+        "The Skagen Light\nThe lamp was first lit in 1858. Wardens kept a log.\n\
+         He wrote of the caf\u{e9} and of \u{201c}calm\u{201d} seas, 1858\u{2013}1958.\n\
+         The oil cost \u{a3}4 a barrel.\n\u{2022} Trim the wick.\nE = mc2\n1\n\
+         Fyret p\u{e5} Skagens\nlog_book.txt {1858}\nTotal: n\n2\n"
+    );
+    assert!(objects[0]["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("the font cmex10"));
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

@@ -362,6 +362,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "org.apache.tika.parser.pkg.PackageParser",
     ),
     ("application/x-dbf", "org.apache.tika.parser.dbf.DBFParser"),
+    ("application/x-dvi", "dijo::DviParser"),
     (
         "application/x-elf",
         "org.apache.tika.parser.executable.ExecutableParser",

@@ -1,0 +1,20 @@
+{
+    "Content-Type": [
+        "application/x-dvi"
+    ],
+    "tk:parsed-by": [
+        "dijo::DviParser"
+    ],
+    "dvi:comment": [
+        "TeX output 2026.11.13:1200"
+    ],
+    "dcterms:created": [
+        "2026-11-13T12:00:00"
+    ],
+    "xmpTPg:NPages": [
+        "2"
+    ],
+    "tk:exception:warn": [
+        "dijo::DviParser does not know the encoding of the font cmex10: the characters set in it are not written"
+    ]
+}

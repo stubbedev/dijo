@@ -30,10 +30,11 @@ pub mod formats {
     pub mod dbf;
     pub mod dc_xml;
     pub mod dif;
+    pub mod dvi;
     pub mod dwg;
+    pub mod dxf;
     pub mod empty;
     pub mod executable;
-    pub mod dxf;
     pub mod feed;
     pub mod fiction_book;
     pub mod geogebra;
@@ -55,10 +56,10 @@ pub mod formats {
     pub mod plist;
     pub mod prt;
     pub mod sas;
+    pub mod scribus;
     pub mod source_code;
     pub mod subtitle;
     pub mod svg;
-    pub mod scribus;
     pub mod translation;
     pub mod tsd;
     pub mod vcard;

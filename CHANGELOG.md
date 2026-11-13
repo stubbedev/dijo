@@ -81,6 +81,12 @@
   files with their sizes (version 1 `files`, version 2 `file tree` or the single file, padding files left out) and its
   announce URLs, as text, and the name, comment, creating client, creation date and announce URLs as metadata. The
   bencoding is checked whole, its nesting and lengths bounded, before anything is written; piece hashes are not read.
+* TeX DVI files are read for their text (#353), where Tika reads nothing of them: page by page, the characters of
+  their `set` and `put` commands, words and lines told apart by how far the commands move between them, decoded in
+  the encoding of each font's name (OT1, OT1 italic and typewriter, T1, OML and OMS of the Computer Modern, European
+  Computer Modern and Latin Modern fonts), accents composed with their letters. A font of another encoding is not
+  guessed at but named in a warning. The preamble's comment and the date TeX writes in it, and the page count, are
+  metadata.
 * AutoCAD DXF drawings are read for their text (#351), where Tika reads nothing of them: ASCII and binary drawings,
   each `TEXT`, `MTEXT` (its chunks joined, its formatting codes dropped, a paragraph to each `\P`), `ATTRIB` and
   `ATTDEF` value and dimension text (its measurement in place of `<>`), in the order they are drawn, the blocks'
