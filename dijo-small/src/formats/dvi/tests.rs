@@ -68,8 +68,7 @@ fn extract(file: &[u8]) -> (String, dijo_core::Metadata) {
         .unwrap();
     assert_eq!(metadata["Content-Type"], ["application/x-dvi"]);
     assert_eq!(metadata["tk:parsed-by"].last().unwrap(), "dijo::DviParser");
-    let body =
-        xml[xml.find("<body>").unwrap() + "<body>".len()..xml.find("</body>").unwrap()].to_owned();
+    let body = crate::formats::testing::body(&xml).to_owned();
     (body.replace(['\n', '\t'], ""), metadata)
 }
 
@@ -154,12 +153,12 @@ fn decodes_each_font_in_its_encoding_and_composes_accents() {
                 vec![FNT_NUM_0 + 1],
                 right(EM / 3),
                 b"K".to_vec(),
-                vec![0xf8],
+                vec![SET1, 0xf8],
                 b"benhavn".to_vec(),
                 right(EM / 3),
-                vec![0x8a, 0xf3],
+                vec![SET1, 0x8a, SET1, 0xf3],
                 b"d".to_vec(),
-                vec![0xba],
+                vec![SET1, 0xb9],
             ]),
             line(&[
                 vec![FNT_NUM_0 + 5],
@@ -187,7 +186,7 @@ fn decodes_each_font_in_its_encoding_and_composes_accents() {
     assert_eq!(
         body,
         "<div class=\"page\"><p>caf\u{e9} find \u{201c}quote\u{201d} \u{142}za</p>\
-         <p>C\u{327}a K\u{f8}benhavn \u{141}\u{f3}d\u{17a}</p><p>x2 end</p>\
+         <p>\u{c7}a K\u{f8}benhavn \u{141}\u{f3}d\u{17a}</p><p>x2 end</p>\
          <p>a_b {x}\u{fffd}</p></div>"
     );
     assert_eq!(

@@ -371,6 +371,15 @@ impl Line {
         self.text.push_str(chars.as_str());
     }
 
+    /// Puts `accent`, set back over the letter before it, on that letter, or keeps it for the next
+    /// letter when the line has none yet.
+    fn over_last(&mut self, accent: Accent) {
+        match self.text.pop() {
+            Some(letter) => self.accented(letter, accent.mark),
+            None => self.accent = Some(accent),
+        }
+    }
+
     /// Writes `letter` with the combining `mark` on it, composed where Unicode has the character:
     /// `ł` and `Ł` for the stroke, and the dotless `ı` and `ȷ` TeX accents as `i` and `j`.
     fn accented(&mut self, letter: char, mark: char) {
@@ -652,9 +661,7 @@ impl<'a, 'x, 'h> Reading<'a, 'x, 'h> {
             Some(Some(Glyph::Accent(accent))) => {
                 self.line.settle();
                 match apart {
-                    Apart::Close(gap) if gap < -part(OVERLAP, em) && !self.line.text.is_empty() => {
-                        self.line.text.push(accent.mark)
-                    }
+                    Apart::Close(gap) if gap < -part(OVERLAP, em) => self.line.over_last(accent),
                     Apart::First | Apart::Line | Apart::Word | Apart::Close(_) => {
                         self.line.accent = Some(accent)
                     }
