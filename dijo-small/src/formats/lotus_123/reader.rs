@@ -4,18 +4,21 @@
 //! record, whose version tells Release 1 and 2 worksheets (`.wks`, `.wk1`), whose cell records
 //! give a format byte, a 16-bit column and row, from the workbooks of Release 3 and later
 //! (`.wk3`, `.wk4`, `.123`), whose cell records give a 16-bit row, a sheet and a column, and
-//! whose formats are kept apart from the cells, row by row. The cells end at the first EOF
-//! record: what follows it, as the format block of a `.wk4` file or the document information of a
-//! `.123` file, holds no cells.
+//! whose formats are kept apart from the cells: row by row up to Release 5, and in the formats
+//! database ([`database`]) from 1-2-3 97 on. The workbooks also keep the comments of cells. The
+//! cells end at the first EOF record: what follows it, as the format block of a `.wk4` file or the
+//! document information of a `.123` file, holds no cells.
 
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
+use super::database;
 use super::format::Style;
 use super::lmbcs;
 use super::number::{self, Number};
 use crate::formats::xhtml::within_budget;
 use crate::formats::Failure;
+use crate::java::trim;
 
 const BOF: u16 = 0x00;
 const EOF: u16 = 0x01;
@@ -46,6 +49,7 @@ mod release3 {
     pub(super) const NAMED_SHEET: u16 = 0x23;
     pub(super) const PACKED_NUMBER: u16 = 0x25;
     pub(super) const DOUBLE_NUMBER: u16 = 0x27;
+    pub(super) const CELL_COMMENT: u16 = 0x26;
     pub(super) const DOUBLE_FORMULA: u16 = 0x28;
 }
 
@@ -65,8 +69,8 @@ pub(super) struct Record<'a> {
 }
 
 impl Record<'_> {
-    /// `length` bytes of the body from `at`, failing on a body too short for them.
-    fn bytes<const N: usize>(&self, at: usize) -> Result<[u8; N], String> {
+    /// `N` bytes of the body from `at`, failing on a body too short for them.
+    pub(super) fn bytes<const N: usize>(&self, at: usize) -> Result<[u8; N], String> {
         self.body
             .get(at..at + N)
             .map(|bytes| bytes.try_into().expect("N bytes"))
@@ -80,12 +84,16 @@ impl Record<'_> {
             })
     }
 
-    fn u8(&self, at: usize) -> Result<u8, String> {
+    pub(super) fn u8(&self, at: usize) -> Result<u8, String> {
         Ok(self.bytes::<1>(at)?[0])
     }
 
-    fn u16(&self, at: usize) -> Result<u16, String> {
+    pub(super) fn u16(&self, at: usize) -> Result<u16, String> {
         Ok(u16::from_le_bytes(self.bytes(at)?))
+    }
+
+    pub(super) fn u32(&self, at: usize) -> Result<u32, String> {
+        Ok(u32::from_le_bytes(self.bytes(at)?))
     }
 
     /// The text of the body from `at`, to its first NUL.
@@ -213,11 +221,13 @@ pub(super) enum Value {
     Error,
 }
 
-/// A cell: what it holds, and the format its record gives, which only Release 2's do.
-#[derive(Debug, Clone, PartialEq)]
+/// A cell: what it holds, if anything, the format its record gives, which only Release 2's do,
+/// and its comment.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct Cell {
-    pub(super) value: Value,
+    pub(super) value: Option<Value>,
     pub(super) style: Option<Style>,
+    pub(super) comment: Option<String>,
 }
 
 /// A sheet: its name, if a record names it, and its cells by row and column.
@@ -240,10 +250,12 @@ struct Run {
 enum Formats {
     /// The worksheet's default, of the `WINDOW1` record.
     Release2 { default: Option<Style> },
-    /// The formats of the rows, by sheet and row, and the default of each sheet.
+    /// The formats of the rows, by sheet and row, the default of each sheet, and the formats
+    /// database.
     Release3 {
         rows: HashMap<(u8, u16), Rc<[Run]>>,
         defaults: HashMap<u8, Style>,
+        database: database::Reader,
     },
 }
 
@@ -262,38 +274,42 @@ impl Workbook {
         let given = |style: &Style| !style.is_default();
         match &self.formats {
             Formats::Release2 { default } => cell.style.filter(given).or(default.filter(given)),
-            Formats::Release3 { rows, defaults } => rows
+            Formats::Release3 {
+                rows,
+                defaults,
+                database,
+            } => rows
                 .get(&(sheet, row))
                 .and_then(|runs| {
                     runs.iter()
                         .find(|run| run.first <= column && column <= run.last)
                 })
                 .map(|run| run.style)
+                .or_else(|| {
+                    database
+                        .database()
+                        .and_then(|database| database.style(sheet, column, row))
+                })
                 .filter(given)
                 .or(defaults.get(&sheet).copied().filter(given)),
         }
     }
 
-    fn put(&mut self, sheet: u8, place: (u16, u8), cell: Cell) -> Result<(), Failure> {
+    /// The cell at `place`, an empty one where there is none yet.
+    fn cell(&mut self, sheet: u8, place: (u16, u8)) -> Result<&mut Cell, Failure> {
         within_budget()?;
-        self.sheets
+        Ok(self
+            .sheets
             .entry(sheet)
             .or_default()
             .cells
-            .insert(place, cell);
-        Ok(())
+            .entry(place)
+            .or_default())
     }
 
-    /// Puts `value` in the cell at `place`, keeping the format the cell has.
+    /// Puts `value` in the cell at `place`, keeping the format and comment the cell has.
     fn put_value(&mut self, sheet: u8, place: (u16, u8), value: Value) -> Result<(), Failure> {
-        within_budget()?;
-        let cells = &mut self.sheets.entry(sheet).or_default().cells;
-        match cells.get_mut(&place) {
-            Some(cell) => cell.value = value,
-            None => {
-                cells.insert(place, Cell { value, style: None });
-            }
-        }
+        self.cell(sheet, place)?.value = Some(value);
         Ok(())
     }
 }
@@ -319,6 +335,7 @@ pub(super) fn read(input: &[u8], generation: Generation) -> Result<Workbook, Fai
             Generation::Release3 { .. } => Formats::Release3 {
                 rows: HashMap::new(),
                 defaults: HashMap::new(),
+                database: database::Reader::default(),
             },
         },
     };
@@ -383,8 +400,7 @@ fn read_release2(workbook: &mut Workbook, record: &Record<'_>) -> Result<(), Unr
         release2::LABEL => {
             let (style, place) = release2_cell(record)?;
             let value = Value::Text(record.label(5, group)?);
-            let style = Some(style);
-            return Ok(workbook.put(0, place, Cell { value, style })?);
+            return Ok(put_release2(workbook, place, value, style)?);
         }
         release2::STRING => {
             let (_, place) = release2_cell(record)?;
@@ -397,9 +413,21 @@ fn read_release2(workbook: &mut Workbook, record: &Record<'_>) -> Result<(), Unr
     };
     let (style, place) = release2_cell(record)?;
     if let Some(value) = value_of(number) {
-        let style = Some(style);
-        workbook.put(0, place, Cell { value, style })?;
+        put_release2(workbook, place, value, style)?;
     }
+    Ok(())
+}
+
+/// Puts `value` in the cell of Release 2 at `place` with the format its record gives.
+fn put_release2(
+    workbook: &mut Workbook,
+    place: (u16, u8),
+    value: Value,
+    style: Style,
+) -> Result<(), Failure> {
+    let cell = workbook.cell(0, place)?;
+    cell.value = Some(value);
+    cell.style = Some(style);
     Ok(())
 }
 
@@ -413,8 +441,23 @@ fn read_release3(
     record: &Record<'_>,
     group: u8,
 ) -> Result<(), Unreadable> {
+    if database::is_database(record.kind) {
+        let Formats::Release3 { database, .. } = &mut workbook.formats else {
+            unreachable!("a workbook of Release 3 has the formats of Release 3");
+        };
+        return Ok(database.read(record)?);
+    }
     let value = match record.kind {
         release3::FORMAT => return Ok(read_format(workbook, record)?),
+        release3::CELL_COMMENT => {
+            let (sheet, place) = release3_cell(record)?;
+            let comment = record.text(5, group)?;
+            let comment = trim(&comment);
+            if !comment.is_empty() {
+                workbook.cell(sheet, place)?.comment = Some(comment.to_owned());
+            }
+            return Ok(());
+        }
         release3::EXTENDED if record.u16(0)? == SHEET_NAME => {
             let sheet = sheet_number(record, record.u16(2)?)?;
             name_sheet(workbook, sheet, record.text(4, group)?);
@@ -467,10 +510,7 @@ fn name_sheet(workbook: &mut Workbook, sheet: u8, name: String) {
 /// number of columns that take it, and where the next begins.
 fn cell_format(record: &Record<'_>, at: usize) -> Result<(Style, u16, usize), String> {
     let [code, attributes, _, repeat] = record.bytes::<4>(at)?;
-    let style = Style {
-        code,
-        parentheses: attributes & 0x02 != 0,
-    };
+    let style = Style::with_attributes(code, attributes);
     if repeat & 0x80 == 0 {
         return Ok((style, 1, at + 4));
     }
@@ -480,7 +520,7 @@ fn cell_format(record: &Record<'_>, at: usize) -> Result<(Style, u16, usize), St
 /// A `FORMAT` record: the formats of a row's cells, column after column, the default of a sheet,
 /// or the formats of a row that repeats an earlier row's.
 fn read_format(workbook: &mut Workbook, record: &Record<'_>) -> Result<(), String> {
-    let Formats::Release3 { rows, defaults } = &mut workbook.formats else {
+    let Formats::Release3 { rows, defaults, .. } = &mut workbook.formats else {
         unreachable!("a workbook of Release 3 has the formats of Release 3");
     };
     let sheet = record.u8(0)?;

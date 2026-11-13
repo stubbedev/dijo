@@ -5,11 +5,22 @@
 //! 3: fixed, scientific, currency, percent and comma, or, of the special type, the kind in bits 0
 //! to 3: `+/-`, General, the dates D1 to D5 and times D6 to D9, Text, Hidden, Label and the
 //! default, which takes the worksheet's default format. Release 3 and later add the parentheses
-//! attribute, which shows a value in parentheses. `+/-` shows a bar of signs as wide as the
+//! attribute, which shows a value in parentheses, and 1-2-3 97 and later an extended format of
+//! the fixed type, read as libwps reads it. `+/-` shows a bar of signs as wide as the
 //! value, cut at the column, and Text and Label show a formula's source: a number of them is
 //! shown as General, as LibreOffice shows it. The two unused types show a number as General.
 
 use std::borrow::Cow;
+
+/// The type of a format byte that shows currency.
+const CURRENCY: u8 = 0x20;
+/// The type of a format byte of the special formats, whose kind is in its low bits.
+const SPECIAL: u8 = 0x70;
+/// The special kinds of a date and of a time of day.
+const DATE: u8 = 9;
+const TIME: u8 = 7;
+/// The attribute bit of Release 3 that shows a value in parentheses.
+const PARENTHESES: u8 = 0x02;
 
 /// Excel's serial number of 1 January 10000, the first day past the last date its formats
 /// write; 1-2-3 counts days from 1900 as Excel does, its leap day of 1900 included.
@@ -29,6 +40,31 @@ impl Style {
             code,
             parentheses: false,
         }
+    }
+
+    /// A format byte with the attributes of Release 3 and later.
+    pub(super) fn with_attributes(code: u8, attributes: u8) -> Self {
+        Style {
+            code,
+            parentheses: attributes & PARENTHESES != 0,
+        }
+    }
+
+    /// A format of the formats database of 1-2-3 97 and later: the format byte and attributes,
+    /// a byte that libwps reads an extended format by, and one whose high bit marks the format
+    /// extended. An extended format of the fixed type is a time of day from `0x7A` on, a date
+    /// from `0x63` on, and below that currency of the format byte's decimals.
+    pub(super) fn of_database([code, attributes, extension, flags]: [u8; 4]) -> Self {
+        let code = if flags & 0x80 != 0 && (code >> 4) & 0x07 == 0 {
+            match extension {
+                0x7A.. => SPECIAL | TIME,
+                0x63.. => SPECIAL | DATE,
+                _ => CURRENCY | (code & 0x0F),
+            }
+        } else {
+            code
+        };
+        Style::with_attributes(code, attributes)
     }
 
     /// Whether the format is the default, which takes the worksheet's.
@@ -158,5 +194,33 @@ mod tests {
         assert!(Style::code(0xFF).is_default());
         assert!(Style::code(0x7F).is_default());
         assert!(!Style::code(0x71).is_default());
+    }
+
+    #[test]
+    fn reads_the_extended_formats_of_the_database_as_libwps() {
+        let database = |bytes| {
+            Style::of_database(bytes)
+                .shown()
+                .excel_format(45000.0)
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            database([0x82, 0, 0x7A, 0x80]).as_deref(),
+            Some("hh:mm:ss AM/PM")
+        );
+        assert_eq!(database([0x02, 0, 0x63, 0x80]).as_deref(), Some("mm/dd/yy"));
+        assert_eq!(
+            database([0x02, 0, 0x10, 0x80]).as_deref(),
+            Some("\"$\"#,##0.00;(\"$\"#,##0.00)")
+        );
+        assert_eq!(database([0x31, 0, 0x7A, 0x80]).as_deref(), Some("0.0%"));
+        assert_eq!(database([0x02, 0, 0x7A, 0]).as_deref(), Some("0.00"));
+        assert_eq!(
+            Style::of_database([0x02, 0x02, 0, 0]),
+            Style {
+                code: 0x02,
+                parentheses: true
+            }
+        );
     }
 }

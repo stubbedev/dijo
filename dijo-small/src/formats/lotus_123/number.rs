@@ -15,8 +15,11 @@ pub(super) enum Number {
     Blank,
 }
 
-/// The double 1-2-3 Release 2 writes for `@NA`; any other infinity or NaN is `ERR`.
-const NOT_AVAILABLE_BITS: u64 = 0x7FF0_0000_0000_0000;
+/// The double Lotus' Worksheet File Format gives for `NA`: the sign set, the exponent all ones
+/// and the fraction zero. `ERR` is the same with the sign clear, and any other infinity or NaN
+/// is taken for `ERR` too, as Gnumeric takes every one; Symphony's string result, a NaN of a
+/// clear sign, is replaced by the `STRING` record after it.
+const NOT_AVAILABLE_BITS: u64 = 0xFFF0_0000_0000_0000;
 
 /// An IEEE double of a cell, little-endian.
 pub(super) fn double(bytes: [u8; 8]) -> Number {
@@ -194,6 +197,11 @@ mod tests {
             Number::NotAvailable
         );
         assert_eq!(double(f64::NAN.to_le_bytes()), Number::Error);
+        assert_eq!(double(f64::INFINITY.to_le_bytes()), Number::Error);
+        assert_eq!(
+            double(f64::NEG_INFINITY.to_le_bytes()),
+            Number::NotAvailable
+        );
         assert_eq!(double(2.5f64.to_le_bytes()), Number::Value(2.5));
     }
 

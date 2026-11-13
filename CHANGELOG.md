@@ -56,8 +56,9 @@
   and 2 (`.wks`, `.wk1`) and workbooks of Release 3 to 5 (`.wk3`, `.wk4`) and of 1-2-3 97 and Millennium (`.123`),
   sheet by sheet, labels without their prefix, numbers and the cached results of formulas in the cell's format
   (fixed, scientific, currency, percent, comma, the dates and times, hidden), `NA` and `ERR` as 1-2-3 shows them, and
-  text decoded from LMBCS. The cells of 1-2-3 97 and later are written in General, and a file protected by a password
-  fails as encrypted.
+  text decoded from LMBCS. The formats of 1-2-3 97 and later come from their formats database, cell comments are
+  written in their cells, sheets are written as the xls parser writes them, and a file protected by a password fails
+  as encrypted.
 * vCard files are read for their cards (#344), where Tika reads their property lines as plain text: vCard 2.1, 3.0
   and 4.0, lines unfolded, values unescaped and quoted-printable values decoded in their `CHARSET`. Each card is a
   section of its name, nicknames, organisation, titles, roles, birthday, anniversary, email addresses (written as

@@ -28,10 +28,12 @@ fn worksheet(records: &[Vec<u8>]) -> Vec<u8> {
     file
 }
 
-/// A 1-2-3 Release 3 workbook of `records`, whose text is in LMBCS `group`.
-fn workbook(group: u8, records: &[Vec<u8>]) -> Vec<u8> {
+/// A 1-2-3 workbook of the BOF `version`, Release 3's or later, of `records`, whose text is in
+/// LMBCS `group`.
+fn workbook(version: u16, group: u8, records: &[Vec<u8>]) -> Vec<u8> {
     let mut bof = vec![0u8; 26];
-    bof[..4].copy_from_slice(&[0x00, 0x10, 0x04, 0x00]);
+    bof[..2].copy_from_slice(&version.to_le_bytes());
+    bof[2] = 0x04;
     bof[16] = group;
     bof[17] = 10;
     let mut file = record(0x00, &bof);
@@ -58,7 +60,8 @@ fn body(file: &[u8]) -> String {
 
 #[test]
 fn writes_a_release2_worksheet_row_by_row_in_its_formats() {
-    let na = 0x7FF0_0000_0000_0000u64.to_le_bytes();
+    let na = 0xFFF0_0000_0000_0000u64.to_le_bytes();
+    let err = 0x7FF0_0000_0000_0000u64.to_le_bytes();
     let nan = f64::NAN.to_le_bytes();
     let file = worksheet(&[
         record(0x07, &[0, 0, 0, 0, 0x82, 0, 9, 0]),
@@ -72,13 +75,14 @@ fn writes_a_release2_worksheet_row_by_row_in_its_formats() {
         release2_cell(0x0E, 0xFF, 2, 1, &na),
         release2_cell(0x0E, 0x76, 4, 1, &7.0f64.to_le_bytes()),
         release2_cell(0x0D, 0x33, 0, 2, &5i16.to_le_bytes()),
+        release2_cell(0x0E, 0xFF, 1, 2, &err),
     ]);
     assert_eq!(
         body(&file),
         "<div class=\"page\"><table><tbody>\
          <tr><td>Name</td><td>2.50</td><td>text result</td></tr>\
          <tr><td>Net\u{f8}</td><td>($1,234.00)</td><td>NA</td><td>15-Mar-23</td></tr>\
-         <tr><td>500.000%</td></tr>\
+         <tr><td>500.000%</td><td>ERR</td></tr>\
          </tbody></table></div>"
     );
 }
@@ -93,6 +97,7 @@ fn writes_the_sheets_of_a_release3_workbook_in_the_formats_of_their_rows() {
     };
     let one = [0, 0, 0, 0, 0, 0, 0, 0x80, 0xFF, 0x3F];
     let file = workbook(
+        0x1000,
         0x01,
         &[
             record(
@@ -127,6 +132,62 @@ fn writes_the_sheets_of_a_release3_workbook_in_the_formats_of_their_rows() {
          </tbody></table></div>\
          <div class=\"page\"><h1>B</h1><table><tbody>\
          <tr><td /><td /><td /><td>ERR</td></tr>\
+         </tbody></table></div>"
+    );
+}
+
+#[test]
+fn writes_a_workbook_of_1_2_3_97_in_the_formats_of_its_database_with_comments() {
+    let node = |length: u16| record(0x0800, &length.to_le_bytes());
+    let data = |format: [u8; 4]| record(0x0801, &format);
+    let file = workbook(
+        0x1003,
+        0x01,
+        &[
+            record(0x0293, &[]),
+            record(0x0804, &[3, 0, 3, 0, 0x00, 0x20, 0x00, 0x01, 0x00, 0x01]),
+            node(1),
+            node(1),
+            node(1),
+            data([0x22, 0, 0, 0]),
+            node(1),
+            data([0x02, 0, 0x63, 0x80]),
+            node(0x1FFE),
+            node(1),
+            node(1),
+            data([0x31, 0x02, 0, 0]),
+            node(0x1FFF),
+            node(254),
+            node(0x2000),
+            node(255),
+            node(256),
+            node(0x2000),
+            record(0x0293, &[]),
+            release3_cell(0x27, 0, 0, 0, &1234.5f64.to_le_bytes()),
+            release3_cell(0x27, 1, 0, 0, &45000.0f64.to_le_bytes()),
+            release3_cell(0x27, 0, 0, 1, &0.25f64.to_le_bytes()),
+            release3_cell(0x26, 0, 0, 1, b"\x01Checked\0"),
+            release3_cell(0x26, 2, 0, 3, b"\x01 Alone \0"),
+            release3_cell(0x26, 2, 0, 4, b"\x01\0"),
+        ],
+    );
+    assert_eq!(
+        body(&file),
+        "<div class=\"page\"><h1>A</h1><table><tbody>\
+         <tr><td>$1,234.50</td><td>(25.0%)<br />Checked</td></tr>\
+         <tr><td>03/15/23</td></tr>\
+         <tr><td /><td /><td /><td>Alone</td></tr>\
+         </tbody></table></div>"
+    );
+}
+
+#[test]
+fn starts_a_sheet_of_cells_past_the_first_row_with_an_empty_row() {
+    let file = workbook(0x1002, 0x01, &[release3_cell(0x16, 2, 0, 1, b"'late\0")]);
+    assert_eq!(
+        body(&file),
+        "<div class=\"page\"><h1>A</h1><table><tbody>\
+         <tr><td /></tr><tr><td /><td>late</td></tr>\
          </tbody></table></div>"
     );
 }

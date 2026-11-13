@@ -1,34 +1,41 @@
-//! Lotus 1-2-3 spreadsheets, which Tika does not read, read for their cells as the spreadsheet
-//! parsers write them: each sheet a `<div class="page">`, headed by its name, of a table of its
-//! rows, a cell a `<td>` at its column. Labels are written without their alignment prefix,
-//! numbers in the format 1-2-3 shows them in (see [`format`]), and formulas by the result the file
-//! keeps of them, which is not computed again; `NA` and `ERR` are written as 1-2-3 shows them.
+//! Lotus 1-2-3 spreadsheets, which Tika does not read, read for their cells as the xls parser
+//! writes a workbook's ([`SheetTable`]): each sheet a `<div class="page">`, headed by its name,
+//! of a table of its rows, a cell a `<td>` at its column. Labels are written without their
+//! alignment prefix, numbers in the format 1-2-3 shows them in (see [`format`]), and formulas by
+//! the result the file keeps of them, which is not computed again; `NA` and `ERR` are written as
+//! 1-2-3 shows them. A cell's comment follows what the cell shows, after a line break.
 //!
-//! The records ([`reader`]) are those LibreOffice's and libwps' Lotus imports read: the
-//! worksheets of 1-2-3 Release 1 and 2 (`.wks`, `.wk1`), one sheet of no name in their formats;
-//! and the workbooks of Release 3, 4 and 5 (`.wk3`, `.wk4`) and of 1-2-3 97 and Millennium
-//! (`.123`), their sheets named by their records or else by their letters, as 1-2-3 names them.
-//! The cells of Release 3 to 5 are written in the formats of their rows; those of 1-2-3 97 and
-//! later, whose formats are kept in style databases this parser does not read, in General. Text
+//! The records ([`reader`]) are those LibreOffice's, libwps' and Gnumeric's Lotus imports read:
+//! the worksheets of 1-2-3 Release 1 and 2 (`.wks`, `.wk1`), one sheet of no name in their
+//! formats; and the workbooks of Release 3, 4 and 5 (`.wk3`, `.wk4`) and of 1-2-3 97 and
+//! Millennium (`.123`), their sheets named by their records or else by their letters, as 1-2-3
+//! names them. The cells of Release 3 to 5 are written in the formats of their rows, those of
+//! 1-2-3 97 and later in those of their formats database ([`database`]). Range names are not
+//! written, as no spreadsheet parser writes a workbook's names, and neither is the document
+//! information after the EOF record of a `.123` file, whose records no reference describes. Text
 //! is decoded from the Lotus Multi-Byte Character Set ([`lmbcs`]): Release 1 and 2 keep it in
 //! its group 1, code page 850, as Gnumeric reads them, and later releases in the group their
 //! BOF record names. A file protected by a password fails as encrypted.
 
+mod database;
 mod format;
 mod lmbcs;
 mod number;
 mod reader;
+
+use std::borrow::Cow;
 
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::crypt::encrypted_document;
 use crate::formats::data_format::{DataFormatter, FormatError};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::sheet_table::SheetTable;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Decline, Failure, Parser, Prepared};
 use crate::java::trim;
 use format::{Shown, Style};
-use reader::{Cell, Checked, Generation, Value, Workbook};
+use reader::{Checked, Generation, Value, Workbook};
 
 const MEDIA_TYPE: &str = "application/vnd.lotus-1-2-3";
 /// The index the formatter is given a format by: Excel's first of a workbook's own formats.
@@ -84,66 +91,52 @@ impl Parser for Lotus123Parser {
 /// Writes the sheets of `workbook` in their order, each its rows of cells.
 fn write(workbook: &Workbook, xhtml: &mut Xhtml) -> Result<(), Failure> {
     let mut formatter = DataFormatter::new(false);
-    let mut row = Vec::new();
     for (&number, sheet) in &workbook.sheets {
-        xhtml.start_element_with("div", &[("class", "page")])?;
-        if let Generation::Release3 { .. } = workbook.generation {
-            match &sheet.name {
-                Some(name) => xhtml.element("h1", name)?,
-                None => xhtml.element("h1", &letters(number))?,
-            }
-        }
-        xhtml.start_element("table")?;
-        xhtml.start_element("tbody")?;
-        let mut current = None;
+        let name = match workbook.generation {
+            Generation::Release2 => None,
+            Generation::Release3 { .. } => Some(
+                sheet
+                    .name
+                    .as_deref()
+                    .map_or_else(|| Cow::Owned(letters(number)), Cow::Borrowed),
+            ),
+        };
+        let mut table = SheetTable::start(name.as_deref(), false, xhtml)?;
         for (&place, cell) in &sheet.cells {
-            if current != Some(place.0) {
-                write_row(&row, xhtml)?;
-                row.clear();
-                current = Some(place.0);
-            }
             let style = workbook.style(number, place, cell);
-            if let Some(text) = text(cell, style, &mut formatter)? {
-                row.push((place.1, text));
+            let shown = match &cell.value {
+                Some(value) => text(value, style, &mut formatter)?,
+                None => None,
+            };
+            if shown.is_none() && cell.comment.is_none() {
+                continue;
+            }
+            table.enter((i32::from(place.0), i32::from(place.1)), xhtml)?;
+            if let Some(shown) = &shown {
+                xhtml.characters(shown)?;
+            }
+            if let Some(comment) = &cell.comment {
+                if shown.is_some() {
+                    xhtml.start_element("br")?;
+                    xhtml.end_element("br")?;
+                }
+                xhtml.characters(comment)?;
             }
         }
-        write_row(&row, xhtml)?;
-        row.clear();
-        xhtml.end_element("tbody")?;
-        xhtml.end_element("table")?;
+        table.end(xhtml)?;
         xhtml.end_element("div")?;
     }
     Ok(())
 }
 
-/// Writes a row of the texts of its cells by column, an empty cell in each column between them;
-/// nothing of a row of no text.
-fn write_row(texts: &[(u8, String)], xhtml: &mut Xhtml) -> Result<(), Failure> {
-    if texts.is_empty() {
-        return Ok(());
-    }
-    xhtml.start_element("tr")?;
-    let mut next = 0;
-    for (column, text) in texts {
-        for _ in next..*column {
-            xhtml.start_element("td")?;
-            xhtml.end_element("td")?;
-        }
-        xhtml.element("td", text)?;
-        next = column + 1;
-    }
-    xhtml.end_element("tr")?;
-    Ok(())
-}
-
-/// The text of `cell`, a number shown in `style`, or General without one; `None` for a cell that
-/// shows nothing.
+/// The text of `value`, a number shown in `style`, or General without one; `None` for a value
+/// that shows nothing.
 fn text(
-    cell: &Cell,
+    value: &Value,
     style: Option<Style>,
     formatter: &mut DataFormatter,
 ) -> Result<Option<String>, Failure> {
-    let value = match &cell.value {
+    let value = match value {
         Value::Text(text) => {
             let text = trim(text);
             return Ok((!text.is_empty()).then(|| text.to_owned()));
