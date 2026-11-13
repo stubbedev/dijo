@@ -1947,7 +1947,7 @@ fn scribus_documents_are_read_for_their_text() {
         objects[0]["text"],
         "The Harbour Gazette, issue 12\nThe Harbour Gazette\nStorm warning\nGales are expected \
          from the north-west on Thursday. The lighthouse keeper asks all boats to stay in \
-         harbour.\nMoorings\tPier\u{a0}3\nHarbour Office\nQuay Street 1\nThe lamp room after \
+         harbour.\nMoorings\tPier 3\nHarbour Office\nQuay Street 1\nThe lamp room after \
          repairs.\nRepairs continue next week.\nPhoto: Anna Berg\nTide\tTime\nHigh tide\t06:12\n\
          Low tide\t12:31\nNotices\nThe fish market opens at five.\nDraft: check the tide times \
          with the harbour master.\n"
@@ -1964,7 +1964,10 @@ fn dxf_drawings_are_read_for_their_text() {
         let objects = json_objects(&[&document(name)]);
         assert_matches_schema(&objects[0]);
         assert_eq!(objects[0]["mime_type"], "image/vnd.dxf", "{name}");
-        assert_eq!(objects[0]["metadata"]["title"], "Pier 4 Mooring Plan", "{name}");
+        assert_eq!(
+            objects[0]["metadata"]["title"], "Pier 4 Mooring Plan",
+            "{name}"
+        );
         assert_eq!(objects[0]["metadata"]["authors"][0], "Anna Berg", "{name}");
         assert_eq!(
             objects[0]["text"],
@@ -1988,7 +1991,10 @@ fn bittorrent_files_are_read_for_their_files_and_trackers() {
     let objects = json_objects(&[&document("lighthouse.torrent")]);
     assert_matches_schema(&objects[0]);
     assert_eq!(objects[0]["mime_type"], "application/x-bittorrent");
-    assert_eq!(objects[0]["metadata"]["title"], "Skagen Fyr \u{e5}rb\u{f8}ger");
+    assert_eq!(
+        objects[0]["metadata"]["title"],
+        "Skagen Fyr \u{e5}rb\u{f8}ger"
+    );
     assert_eq!(
         objects[0]["text"],
         "Skagen Fyr \u{e5}rb\u{f8}ger\nLogbooks and charts of the lighthouse at Skagen, \
@@ -2000,7 +2006,8 @@ fn bittorrent_files_are_read_for_their_files_and_trackers() {
 
 /// `lighthouse.dvi` was written by `dijo-small/tests/fixtures/dvi/lighthouse.py`: two pages as
 /// TeX writes them, in OT1, T1, typewriter and math fonts, with an accent, ligatures, a
-/// superscript, a special and the summation sign of cmex10, whose encoding is not known.
+/// superscript, a special and the summation sign of cmex10, whose encoding is not known. Their
+/// page numbers recur at the foot of both pages and are taken out as running footers.
 #[test]
 fn dvi_files_are_read_for_their_text() {
     let objects = json_objects(&[&document("lighthouse.dvi")]);
@@ -2010,8 +2017,8 @@ fn dvi_files_are_read_for_their_text() {
         objects[0]["text"],
         "The Skagen Light\nThe lamp was first lit in 1858. Wardens kept a log.\n\
          He wrote of the caf\u{e9} and of \u{201c}calm\u{201d} seas, 1858\u{2013}1958.\n\
-         The oil cost \u{a3}4 a barrel.\n\u{2022} Trim the wick.\nE = mc2\n1\n\
-         Fyret p\u{e5} Skagens\nlog_book.txt {1858}\nTotal: n\n2\n"
+         The oil cost \u{a3}4 a barrel.\n\u{2022} Trim the wick.\nE = mc2\n\n\
+         Fyret p\u{e5} Skagens\nlog_book.txt {1858}\nTotal: n\n"
     );
     assert!(objects[0]["errors"][0]["message"]
         .as_str()
