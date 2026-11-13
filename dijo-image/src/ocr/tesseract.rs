@@ -1323,6 +1323,45 @@ mod tests {
         }
     }
 
+    /// A page with no text reads as nothing with no confidence, alone and in the layout found in
+    /// it, which holds no block: the patched tesseract takes such a page as recognized, so that
+    /// asking the confidence of its words analyses its layout no second time
+    /// (tesseract-patches/takes-empty-pages-as-read.patch, #359).
+    #[test]
+    fn reads_a_blank_page_as_nothing_with_no_confidence() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let (width, height) = (600, 400);
+        let white = vec![u8::MAX; width as usize * height as usize];
+        let read = |layouts: Option<&Layouts>| {
+            let pixels = Pixels::Gray {
+                data: &white,
+                width,
+                height,
+            };
+            tesseract
+                .read(
+                    pixels,
+                    Density::per_inch(300.0, 300.0),
+                    layouts,
+                    "eng",
+                    PageSegMode(3),
+                    Thresholding::Otsu,
+                    None,
+                )
+                .unwrap()
+        };
+        let nothing = Reading {
+            text: String::new(),
+            confidence: 0,
+            blocks: Vec::new(),
+        };
+        let layouts = Layouts::default();
+        assert_eq!(read(None), nothing);
+        assert_eq!(read(Some(&layouts)), nothing);
+        assert_eq!(read(Some(&layouts)), nothing);
+        assert_eq!(layouts.0.lock().unwrap().len(), 1);
+    }
+
     /// Readings and detections on many threads at once, each with an engine of its own taken
     /// from and given back to the shared pool, read what one reading alone reads (#62).
     #[test]

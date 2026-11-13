@@ -1,0 +1,68 @@
+diff --git a/include/tesseract/baseapi.h b/include/tesseract/baseapi.h
+--- a/include/tesseract/baseapi.h
++++ b/include/tesseract/baseapi.h
+@@ -815,6 +815,7 @@
+   std::string datapath_;             ///< Current location of tessdata.
+   std::string language_;             ///< Last initialized language.
+   OcrEngineMode last_oem_requested_; ///< Last ocr language mode requested.
++  bool lines_found_;                 ///< block_list_ holds the page layout.
+   bool recognition_done_;            ///< page_res_ contains recognition data.
+ 
+   /**
+diff --git a/src/api/baseapi.cpp b/src/api/baseapi.cpp
+--- a/src/api/baseapi.cpp
++++ b/src/api/baseapi.cpp
+@@ -176,6 +176,7 @@
+     , block_list_(nullptr)
+     , page_res_(nullptr)
+     , last_oem_requested_(OEM_DEFAULT)
++    , lines_found_(false)
+     , recognition_done_(false)
+     , rect_left_(0)
+     , rect_top_(0)
+@@ -795,18 +796,19 @@
+   tesseract_->set_pix_grey(thresholder_->IsBinary() ? nullptr : thresholder_->GetPixRectGrey());
+   RecordThresholdedGeometry();
+   layout.CopyTo(*tesseract_, block_list_);
++  lines_found_ = true;
+   return RecognizeFoundLines(monitor);
+ }
+ 
+ int TessBaseAPI::RecognizeFoundLines(ETEXT_DESC *monitor) {
+   delete page_res_;
++  recognition_done_ = true;
+   if (block_list_->empty()) {
+     page_res_ = new PAGE_RES(false, block_list_, &tesseract_->prev_word_best_choice_);
+     return 0; // Empty page.
+   }
+ 
+   tesseract_->SetBlackAndWhitelist();
+-  recognition_done_ = true;
+ #ifndef DISABLED_LEGACY_ENGINE
+   if (tesseract_->tessedit_resegment_from_line_boxes) {
+     page_res_ = tesseract_->ApplyBoxes(input_file_.c_str(), true, block_list_);
+@@ -2173,7 +2175,7 @@
+   if (recognition_done_) {
+     ClearResults();
+   }
+-  if (!block_list_->empty()) {
++  if (lines_found_) {
+     return 0;
+   }
+   if (tesseract_ == nullptr) {
+@@ -2238,6 +2240,7 @@
+   // If Devanagari is being recognized, we use different images for page seg
+   // and for OCR.
+   tesseract_->PrepareForTessOCR(block_list_);
++  lines_found_ = true;
+   return 0;
+ }
+ 
+@@ -2255,6 +2258,7 @@
+   }
+   delete page_res_;
+   page_res_ = nullptr;
++  lines_found_ = false;
+   recognition_done_ = false;
+   if (block_list_ == nullptr) {
+     block_list_ = new BLOCK_LIST;

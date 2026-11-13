@@ -22,7 +22,10 @@
 # variables and direction of language are alike recognizes the same image in it rather than
 # threshold the image and analyse its layout again (tesseract-patches/shares-page-layout.patch):
 # that took 28% of a reading of the quality corpus's pages, and a page read again with another
-# model reads in 400 ms less, the same text (#334).
+# model reads in 400 ms less, the same text (#334). A page whose layout holds no block is taken as
+# recognized, and as having its lines found (tesseract-patches/takes-empty-pages-as-read.patch):
+# asking the confidence of its words, or recognizing it after finding its layout to share, analysed
+# its layout again each time (#359).
 # Its internal headers and the configuration it was built with are installed in
 # include/tesseract-internal, for code that reads its results while it recognizes a page.
 static:
