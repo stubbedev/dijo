@@ -32,6 +32,7 @@ pub mod formats {
     pub mod dwg;
     pub mod empty;
     pub mod executable;
+    pub mod dxf;
     pub mod feed;
     pub mod fiction_book;
     pub mod geogebra;

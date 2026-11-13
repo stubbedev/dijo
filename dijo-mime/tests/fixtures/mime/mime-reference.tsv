@@ -148,6 +148,10 @@ documents	partially-damaged.zip	file	application/zip	tk:content-type-magic-detec
 documents	partially-damaged.zip	bytes	application/zip	tk:content-type-magic-detected=application/zip	Content-Length=5585	zip:detector-zip-file-opened=true
 documents	photo.heic	file	image/heic	tk:content-type-magic-detected=image/heic
 documents	photo.heic	bytes	image/heic	tk:content-type-magic-detected=image/heic
+documents	pier-binary.dxf	file	image/vnd.dxf; format=binary	tk:content-type-magic-detected=image/vnd.dxf; format=binary
+documents	pier-binary.dxf	bytes	image/vnd.dxf; format=binary	tk:content-type-magic-detected=image/vnd.dxf; format=binary
+documents	pier.dxf	file	image/vnd.dxf; format=ascii	tk:content-type-magic-detected=image/vnd.dxf; format=ascii
+documents	pier.dxf	bytes	image/vnd.dxf; format=ascii	tk:content-type-magic-detected=image/vnd.dxf; format=ascii
 documents	rar/ansi-name.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
 documents	rar/ansi-name.rar	bytes	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4
 documents	rar/best-compression.rar	file	application/x-rar-compressed; version=4	tk:content-type-magic-detected=application/x-rar-compressed; version=4

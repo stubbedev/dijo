@@ -27,6 +27,8 @@ use crate::test_utils;
 #[test_case("lighthouse.svg", 0.9; "Test SVG image")]
 #[test_case("harbour.abw", 0.9; "Test AbiWord document")]
 #[test_case("gazette.sla", 0.9; "Test Scribus document")]
+#[test_case("pier.dxf", 0.9; "Test ASCII DXF drawing")]
+#[test_case("pier-binary.dxf", 0.9; "Test binary DXF drawing")]
 #[test_case("lotus-r1.wks", 0.9; "Test Lotus 1-2-3 Release 1 worksheet")]
 #[test_case("lotus-r4.wk4", 0.9; "Test Lotus 1-2-3 Release 4 workbook")]
 #[test_case("lotus-r9.123", 0.9; "Test Lotus 1-2-3 97 workbook")]

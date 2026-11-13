@@ -77,6 +77,13 @@
   header and footer sections in their own `div`s. The `<metadata>` is the document's Dublin Core, keywords and
   generator, its dates ISO local date-times (AbiWord saves them without a time zone); each `<data>` item is handed on
   as an embedded document. Gzip-compressed `.zabw` files are read through the gzip parser.
+* AutoCAD DXF drawings are read for their text (#351), where Tika reads nothing of them: ASCII and binary drawings,
+  each `TEXT`, `MTEXT` (its chunks joined, its formatting codes dropped, a paragraph to each `\P`), `ATTRIB` and
+  `ATTDEF` value and dimension text (its measurement in place of `<>`), in the order they are drawn, the blocks'
+  first; the `%%` control codes and the `\U+` and `\M+` escapes resolved, strings decoded from `$DWGCODEPAGE` or
+  UTF-8 from AutoCAD 2007 on. `$ACADVER` is `dxf:version`, `$TDUCREATE` and `$TDUUPDATE` the created and modified
+  dates, and the `DWGPROPS` drawing properties are metadata as those of a DWG drawing are. Binary DXF files are
+  now detected from their bytes, which Tika's broken magic misses.
 * Scribus documents are read (#349), where Tika reads nothing of them: the story of each text frame once, from
   the first frame it is threaded through, in the order of the master pages, the pages (top to bottom, left to
   right) and the pasteboard, with headings by their styles, tables by rows, line breaks, tabs and hard spaces, and

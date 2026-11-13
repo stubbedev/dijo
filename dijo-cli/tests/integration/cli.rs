@@ -1955,6 +1955,31 @@ fn scribus_documents_are_read_for_their_text() {
     assert_eq!(embedded_paths(&objects), ["<root>", "lamp-room.png"]);
 }
 
+/// `pier.dxf` and `pier-binary.dxf` were written by `dijo-small/tests/fixtures/dxf/pier.py`: one
+/// AutoCAD 2000 drawing as an ASCII and as a binary DXF, with texts, an MTEXT in chunks, a block
+/// with an attribute, a dimension and the drawing properties.
+#[test]
+fn dxf_drawings_are_read_for_their_text() {
+    for name in ["pier.dxf", "pier-binary.dxf"] {
+        let objects = json_objects(&[&document(name)]);
+        assert_matches_schema(&objects[0]);
+        assert_eq!(objects[0]["mime_type"], "image/vnd.dxf", "{name}");
+        assert_eq!(objects[0]["metadata"]["title"], "Pier 4 Mooring Plan", "{name}");
+        assert_eq!(objects[0]["metadata"]["authors"][0], "Anna Berg", "{name}");
+        assert_eq!(
+            objects[0]["text"],
+            "Bollard\nB-1\nPIER 4\n\u{2205}600 mm piles at 50% spacing\n\
+             N\u{f8}rre Kaj, bearing 45\u{b0}\nTide gauge \u{2192} harbour office\nLIFEBUOY\n\
+             Mooring notes\nMooring lines are checked at every change of the tide, and doubled \
+             when the wind is forecast above force 6. Fenders hang between every pair of \
+             bollards; replace any that are split. Keep 1/2 a fathom of slack on the bow lines at \
+             high water.\nNo vessel may lie at the berth overnight without the leave of the \
+             harbour master. Depth\t4 m at the berth head, drawing P4\\B.\nB-7\n12.5 m\n",
+            "{name}"
+        );
+    }
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

@@ -567,6 +567,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
     ),
     ("image/vnd.djvu", "dijo::DjvuParser"),
     ("image/vnd.dwg", "org.apache.tika.parser.dwg.DWGParser"),
+    ("image/vnd.dxf", "dijo::DxfParser"),
     (
         "image/vnd.microsoft.icon",
         "org.apache.tika.parser.image.ImageParser",

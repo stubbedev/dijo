@@ -1,0 +1,41 @@
+{
+    "Content-Type": [
+        "image/vnd.dxf; format=ascii"
+    ],
+    "tk:parsed-by": [
+        "dijo::DxfParser"
+    ],
+    "dxf:version": [
+        "AC1015"
+    ],
+    "dcterms:created": [
+        "2026-11-02T08:30:00Z"
+    ],
+    "dcterms:modified": [
+        "2026-11-12T21:04:05Z"
+    ],
+    "dc:title": [
+        "Pier 4 Mooring Plan"
+    ],
+    "dc:description": [
+        "Moorings at the north pier"
+    ],
+    "dc:creator": [
+        "Anna Berg"
+    ],
+    "w:Comments": [
+        "Surveyed at low water"
+    ],
+    "dc:subject": [
+        "pier, moorings, bollards"
+    ],
+    "meta:last-author": [
+        "Ove Grøn"
+    ],
+    "dc:relation": [
+        "https://example.org/harbour/pier-4"
+    ],
+    "dwg-custom:Harbour": [
+        "Skagen"
+    ]
+}

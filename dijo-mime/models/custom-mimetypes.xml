@@ -36,4 +36,9 @@
     <root-XML localName="SCRIBUSUTF8"/>
     <root-XML localName="SCRIBUS"/>
   </mime-type>
+  <mime-type type="image/vnd.dxf;format=binary">
+    <magic priority="50">
+      <match value="AutoCAD Binary DXF\r\n\x1a\x00" type="string" offset="0"/>
+    </magic>
+  </mime-type>
 </mime-info>
