@@ -16,13 +16,13 @@ use crate::text::charset::Charset;
 /// The media type `DWGParser` sets as the content type.
 const DWG_TYPE: &str = "image/vnd.dwg";
 /// `DWG_CUSTOM_META_PREFIX`.
-const CUSTOM_PREFIX: &str = "dwg-custom:";
+pub(crate) const CUSTOM_PREFIX: &str = "dwg-custom:";
 /// The header `DWGParser` reads first.
 const HEADER_LENGTH: usize = 128;
 /// The farthest offset of the property section `skipToPropertyInfoSection` follows.
 const MAX_SECTION_OFFSET: i64 = 0xa0_0000;
 /// `HEADER_2000_PROPERTIES_MARKER`.
-const MARKER_2000: &[u8] = b"DWGPROPS COOKIE";
+pub(crate) const MARKER_2000: &[u8] = b"DWGPROPS COOKIE";
 /// `CUSTOM_PROPERTIES_SKIP`.
 const CUSTOM_PROPERTIES_SKIP: usize = 20;
 /// The most properties `get2000Props` reads.
@@ -31,7 +31,7 @@ const MAX_2000_PROPERTIES: usize = 30;
 /// A summary property and the metadata name `DWGParser` gives it, with whether that name takes
 /// more than one value, as its Tika `Property` does.
 #[derive(Debug, Clone, Copy)]
-struct Field {
+pub(crate) struct Field {
     name: &'static str,
     bag: bool,
 }
@@ -77,8 +77,9 @@ const HEADER_PROPERTIES: [Option<Field>; 8] = [
     Some(RELATION),
 ];
 
-/// `HEADER_2000_PROPERTIES_ENTRIES`: the summary properties of a 2000 drawing, by index.
-const HEADER_2000_PROPERTIES: [Option<Field>; 9] = [
+/// `HEADER_2000_PROPERTIES_ENTRIES`: the summary properties of a 2000 drawing, by index, which
+/// is the group code of the property in the `DWGPROPS` record of a DXF drawing.
+pub(crate) const HEADER_2000_PROPERTIES: [Option<Field>; 9] = [
     None,
     Some(RELATION),
     Some(TITLE),
@@ -259,13 +260,15 @@ fn skip_to_2000_properties(stream: &mut Stream) -> bool {
     }
 }
 
-/// A value of the property `field`: added to those of a property that takes several, in place
-/// of the value of one that takes one, where Tika fails on a second.
-fn add(metadata: &mut TikaMetadata, field: Field, value: &str) {
-    if field.bag {
-        metadata.add(field.name, value);
-    } else {
-        metadata.set(field.name, value);
+impl Field {
+    /// Gives this property the value `value`: added to those of a property that takes several,
+    /// in place of the value of one that takes one, where Tika fails on a second.
+    pub(crate) fn add(self, metadata: &mut TikaMetadata, value: &str) {
+        if self.bag {
+            metadata.add(self.name, value);
+        } else {
+            metadata.set(self.name, value);
+        }
     }
 }
 
@@ -287,7 +290,7 @@ fn properties_2000(stream: &mut Stream, xhtml: &mut Xhtml) -> Result<(), Failure
         let value = java::latin1(value);
         if let Some(entry) = HEADER_2000_PROPERTIES.get(usize::from(index)) {
             if let Some(field) = entry {
-                add(xhtml.metadata_mut(), *field, &value);
+                field.add(xhtml.metadata_mut(), &value);
             }
             xhtml.element("p", &value)?;
         } else if index == 0x012c {
