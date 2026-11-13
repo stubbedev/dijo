@@ -1,12 +1,28 @@
 Employees
-		EMPID	LAST	FIRST	DOH	SALARIED	DEPTNUM
-		67543	Mordocs	Arthur	08/13/88	1	2323
-		65437	Smith	Wendy	12/21/89	0	3434
-		43546	Stolper	Paul	06/02/88	1	7456
-		32355	Martin	Bonnie	12/07/86	1	3299
-		87548	Crow	Janet	07/03/88	1	2323
-		43357	Clarke	Henry	12/09/84	0	2323
-		11241	Aubry	Cynthia	06/23/81	1	1122
-		78950	Kaplan	Barbara	02/02/85	1	2223
-		66357	Hunt	Steven	10/20/87	0	1122
-		19941	Donovan	Joan	02/14/90	0	7456
+
+	
+
+			EMPID	LAST	FIRST	DOH	SALARIED	DEPTNUM
+
+			67543	Mordocs	Arthur	08/13/88	1	2323
+
+			65437	Smith	Wendy	12/21/89	0	3434
+
+			43546	Stolper	Paul	06/02/88	1	7456
+
+			32355	Martin	Bonnie	12/07/86	1	3299
+
+			87548	Crow	Janet	07/03/88	1	2323
+
+			43357	Clarke	Henry	12/09/84	0	2323
+
+			11241	Aubry	Cynthia	06/23/81	1	1122
+
+			78950	Kaplan	Barbara	02/02/85	1	2223
+
+			66357	Hunt	Steven	10/20/87	0	1122
+
+			19941	Donovan	Joan	02/14/90	0	7456
+
+
+
