@@ -510,8 +510,9 @@ fn crop(image: &GrayImage, area: Area) -> GrayImage {
     .to_image()
 }
 
-/// The text of lines read across a page, by the blocks they lie in and then by rows: the lines of a
-/// row joined by spaces, its rows by line breaks, and each block ended by an empty line.
+/// The text of lines read across a page, in the [`ordered`] groups of the blocks they lie in and
+/// then by rows: the lines of a row joined by spaces, its rows by line breaks, and each group
+/// ended by an empty line.
 fn in_blocks<'t>(lines: &[Area], blocks: &[Area], text: impl Fn(usize) -> &'t str) -> String {
     ordered(lines, blocks)
         .into_iter()
@@ -561,21 +562,48 @@ fn columns(lines: &[Area]) -> Vec<Area> {
     columns
 }
 
+/// The lines of a page grouped by the blocks, in their order, whose areas hold their centres, and
+/// each group's lines by rows. The lines that lie in no block, whose areas depend on what
+/// tesseract recognized in them, form groups of their own, each read where its [`slot`] puts it
+/// among the blocks.
 fn ordered(lines: &[Area], blocks: &[Area]) -> Vec<Vec<Vec<usize>>> {
-    let mut grouped: Vec<Vec<usize>> = vec![Vec::new(); blocks.len() + 1];
+    let mut within: Vec<Vec<usize>> = vec![Vec::new(); blocks.len()];
+    let mut between: Vec<Vec<usize>> = vec![Vec::new(); blocks.len() + 1];
     for (index, line) in lines.iter().enumerate() {
         let (x, y) = line.centre();
-        let block = blocks
-            .iter()
-            .position(|block| block.contains(x, y))
-            .unwrap_or(blocks.len());
-        grouped[block].push(index);
+        match blocks.iter().position(|block| block.contains(x, y)) {
+            Some(block) => within[block].push(index),
+            None => between[slot(line, blocks)].push(index),
+        }
     }
-    grouped
+    let mut within = within.into_iter();
+    let mut groups = Vec::with_capacity(2 * blocks.len() + 1);
+    for loose in between {
+        groups.push(loose);
+        groups.extend(within.next());
+    }
+    groups
         .into_iter()
         .filter(|group| !group.is_empty())
         .map(|group| rows(lines, group))
         .collect()
+}
+
+/// The place among blocks, by the index of the block it is read before, of a line that lies in
+/// none: before the first block under it in its column, the blocks that share some of its width;
+/// else after the last block of its column, which all lie above or beside it; else, for a line in
+/// a margin, which shares no block's width, before the first block that starts under it, or
+/// after every block.
+fn slot(line: &Area, blocks: &[Area]) -> usize {
+    let (_, centre) = line.centre();
+    let under = |block: &Area| centre < block.top;
+    let in_column = |block: &Area| line.shares_width(block);
+    blocks
+        .iter()
+        .position(|block| in_column(block) && under(block))
+        .or_else(|| blocks.iter().rposition(in_column).map(|block| block + 1))
+        .or_else(|| blocks.iter().position(under))
+        .unwrap_or(blocks.len())
 }
 
 fn rows(lines: &[Area], mut group: Vec<usize>) -> Vec<Vec<usize>> {
@@ -755,6 +783,66 @@ mod tests {
                 vec![vec![2, 3], vec![1]],
                 vec![vec![5]]
             ]
+        );
+    }
+
+    #[test]
+    fn reads_a_line_above_every_block_first() {
+        let lines = [
+            area(10, 110, 400, 130),
+            area(500, 110, 900, 130),
+            area(300, 20, 600, 60),
+        ];
+        let blocks = [area(0, 100, 450, 200), area(480, 100, 950, 200)];
+        assert_eq!(
+            ordered(&lines, &blocks),
+            [vec![vec![2]], vec![vec![0]], vec![vec![1]]]
+        );
+    }
+
+    #[test]
+    fn reads_a_line_between_two_stacked_blocks_between_them() {
+        let lines = [
+            area(10, 310, 800, 330),
+            area(300, 220, 500, 260),
+            area(10, 110, 800, 130),
+        ];
+        let blocks = [area(0, 100, 900, 200), area(0, 300, 900, 400)];
+        assert_eq!(
+            ordered(&lines, &blocks),
+            [vec![vec![2]], vec![vec![1]], vec![vec![0]]]
+        );
+    }
+
+    #[test]
+    fn reads_a_line_in_a_column_below_its_blocks_after_them_and_before_the_next_column() {
+        let lines = [
+            area(10, 110, 400, 130),
+            area(500, 610, 900, 630),
+            area(10, 520, 400, 540),
+        ];
+        let blocks = [area(0, 100, 450, 500), area(480, 100, 950, 700)];
+        assert_eq!(
+            ordered(&lines, &blocks),
+            [vec![vec![0]], vec![vec![2]], vec![vec![1]]]
+        );
+    }
+
+    #[test]
+    fn reads_a_fragment_in_the_margin_beside_a_block_on_its_own_after_it() {
+        let lines = [
+            area(10, 110, 700, 130),
+            area(760, 112, 800, 128),
+            area(10, 310, 700, 330),
+        ];
+        let blocks = [area(0, 100, 720, 200), area(0, 300, 720, 400)];
+        assert_eq!(
+            ordered(&lines, &blocks),
+            [vec![vec![0]], vec![vec![1]], vec![vec![2]]]
+        );
+        assert_eq!(
+            ordered(&lines[..2], &blocks[..1]),
+            [vec![vec![0]], vec![vec![1]]]
         );
     }
 }

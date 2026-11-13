@@ -993,11 +993,17 @@ impl Area {
         self.left <= x && x < self.right && self.top <= y && y < self.bottom
     }
 
+    /// Whether this area shares some of the width of `other`: whether they lie in one column. No
+    /// column shares width with one beside it.
+    pub(crate) fn shares_width(&self, other: &Area) -> bool {
+        self.left < other.right && other.left < self.right
+    }
+
     /// Whether this area starts higher than `other` and shares some of its width: whether it is
     /// read before it on a page, as a heading or a verse is before the prose under it, even when
-    /// tightly set lines make their areas overlap. No column shares width with one beside it.
+    /// tightly set lines make their areas overlap.
     fn above(&self, other: &Area) -> bool {
-        self.top < other.top && self.left < other.right && other.left < self.right
+        self.top < other.top && self.shares_width(other)
     }
 }
 
