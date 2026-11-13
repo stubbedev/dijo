@@ -15,6 +15,7 @@ pub mod list_numbering;
 pub mod metadata;
 pub mod ole10_native;
 pub mod secure;
+pub mod sheet_table;
 pub mod thrown;
 pub mod wmf_placeable;
 pub mod xhtml;

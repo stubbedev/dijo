@@ -25,6 +25,7 @@ use crate::formats::data_format::{
     builtin_format, default_number_format, error_text, DataFormatter, FormatError,
 };
 use crate::formats::poi::{Thrown, INDEX_OUT_OF_BOUNDS};
+use crate::formats::sheet_table::{Markup, SheetTable};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Unported;
 use crate::java::is_blank;
@@ -49,40 +50,20 @@ pub(super) enum Cell {
     Linked(Box<Cell>, String),
 }
 
-/// Where the listener writes the XHTML of the sheets.
-pub(super) trait Out {
-    fn start(&mut self, name: &'static str) -> Result<(), Stop>;
-    fn start_class(&mut self, name: &'static str, class: &'static str) -> Result<(), Stop>;
+/// Where the listener writes the XHTML of the sheets: their tables, and the links and text in
+/// them.
+pub(super) trait Out: Markup {
     fn start_link(&mut self, address: &str) -> Result<(), Stop>;
-    fn end(&mut self, name: &'static str) -> Result<(), Stop>;
     fn text(&mut self, text: &str) -> Result<(), Stop>;
-    /// `XHTMLContentHandler.element`: the element with its text, unless that is empty.
-    fn element(&mut self, name: &'static str, text: &str) -> Result<(), Stop>;
 }
 
 impl Out for Xhtml<'_> {
-    fn start(&mut self, name: &'static str) -> Result<(), Stop> {
-        self.start_element(name)
-    }
-
-    fn start_class(&mut self, name: &'static str, class: &'static str) -> Result<(), Stop> {
-        self.start_element_with(name, &[("class", class)])
-    }
-
     fn start_link(&mut self, address: &str) -> Result<(), Stop> {
         self.start_element_with("a", &[("href", address)])
     }
 
-    fn end(&mut self, name: &'static str) -> Result<(), Stop> {
-        self.end_element(name)
-    }
-
     fn text(&mut self, text: &str) -> Result<(), Stop> {
         self.characters(text)
-    }
-
-    fn element(&mut self, name: &'static str, text: &str) -> Result<(), Stop> {
-        Xhtml::element(self, name, text)
     }
 }
 
@@ -144,69 +125,12 @@ enum Sheet {
     },
     /// Written as its cells come.
     Streamed {
-        table: Table,
+        table: SheetTable,
         placed: u64,
         plan: usize,
     },
     /// Held until it ends, as Tika's listener holds every sheet.
     Held(BTreeMap<(i32, i32), Cell>),
-}
-
-/// A sheet's table being written: the row and column of the cell last written.
-struct Table {
-    row: i32,
-    column: i32,
-}
-
-impl Table {
-    /// Starts the page of a sheet, headed with its name, and its table.
-    fn start(name: Option<&str>, out: &mut dyn Out) -> Result<Table, Stop> {
-        out.start_class("div", "page")?;
-        if let Some(name) = name {
-            out.element("h1", name)?;
-        }
-        for name in ["table", "tbody", "tr", "td"] {
-            out.start(name)?;
-        }
-        Ok(Table { row: 0, column: 0 })
-    }
-
-    /// Writes the cell at `place`, which comes after the cells written before it.
-    fn cell(
-        &mut self,
-        (row, column): (i32, i32),
-        cell: &Cell,
-        missing_rows: bool,
-        out: &mut dyn Out,
-    ) -> Result<(), Stop> {
-        if self.row != row {
-            loop {
-                out.end("td")?;
-                out.end("tr")?;
-                out.start("tr")?;
-                out.start("td")?;
-                self.row += 1;
-                if !(missing_rows && self.row < row) {
-                    break;
-                }
-            }
-            self.row = row;
-            self.column = 0;
-        }
-        while self.column < column {
-            out.end("td")?;
-            out.start("td")?;
-            self.column += 1;
-        }
-        render(cell, out)
-    }
-
-    fn end(out: &mut dyn Out) -> Result<(), Stop> {
-        for name in ["td", "tr", "tbody", "table"] {
-            out.end(name)?;
-        }
-        Ok(())
-    }
 }
 
 /// The listener, as it goes through the records.
@@ -578,7 +502,11 @@ impl<'a, 'p> Listener<'a, 'p> {
                 }
             }
             Pass::Write(plans) if plans[started].is_streamed() => Sheet::Streamed {
-                table: Table::start(plans[started].name.as_deref(), out)?,
+                table: SheetTable::start(
+                    plans[started].name.as_deref(),
+                    self.settings.missing_rows,
+                    out,
+                )?,
                 placed: 0,
                 plan: started,
             },
@@ -627,7 +555,8 @@ impl<'a, 'p> Listener<'a, 'p> {
                     }
                 }
                 *placed += 1;
-                table.cell(place, &cell, self.settings.missing_rows, out)?;
+                table.enter(place, out)?;
+                render(&cell, out)?;
             }
             Sheet::Held(cells) => match cells.entry(place) {
                 Entry::Occupied(_) => self.extra.push(cell()),
@@ -681,13 +610,15 @@ impl<'a, 'p> Listener<'a, 'p> {
                 plan.name = name;
                 return Ok(());
             }
-            Sheet::Streamed { .. } => Table::end(out)?,
+            Sheet::Streamed { table, .. } => table.end(out)?,
             Sheet::Held(cells) => {
-                let mut table = Table::start(name.as_deref(), out)?;
+                let mut table =
+                    SheetTable::start(name.as_deref(), self.settings.missing_rows, out)?;
                 for (&place, cell) in &cells {
-                    table.cell(place, cell, self.settings.missing_rows, out)?;
+                    table.enter(place, out)?;
+                    render(cell, out)?;
                 }
-                Table::end(out)?;
+                table.end(out)?;
             }
         }
         write_outside(&std::mem::take(&mut self.extra), out)?;
@@ -783,7 +714,7 @@ fn render(cell: &Cell, out: &mut dyn Out) -> Result<(), Stop> {
 /// An output that takes nothing, which planning writes to.
 pub(super) struct Nowhere;
 
-impl Out for Nowhere {
+impl Markup for Nowhere {
     fn start(&mut self, _: &'static str) -> Result<(), Stop> {
         Ok(())
     }
@@ -792,19 +723,21 @@ impl Out for Nowhere {
         Ok(())
     }
 
-    fn start_link(&mut self, _: &str) -> Result<(), Stop> {
-        Ok(())
-    }
-
     fn end(&mut self, _: &'static str) -> Result<(), Stop> {
         Ok(())
     }
 
-    fn text(&mut self, _: &str) -> Result<(), Stop> {
+    fn element(&mut self, _: &'static str, _: &str) -> Result<(), Stop> {
+        Ok(())
+    }
+}
+
+impl Out for Nowhere {
+    fn start_link(&mut self, _: &str) -> Result<(), Stop> {
         Ok(())
     }
 
-    fn element(&mut self, _: &'static str, _: &str) -> Result<(), Stop> {
+    fn text(&mut self, _: &str) -> Result<(), Stop> {
         Ok(())
     }
 }
