@@ -232,7 +232,7 @@
 | betrayed-armenia-1910-p46.tif | ocr | 0.031 | 0.033 | 0.985 | 0.021 | 1.000 |
 | colonial-florida-1892-p14.tif | ocr | 0.030 | 0.066 | 0.955 | 0.050 | 0.750 |
 | hindi-diksita-1895-01.jpg | ocr | 0.146 | 0.327 | 0.673 | 0.271 | 0.500 |
-| hindi-diksita-1895-02.jpg | ocr | 0.234 | 0.522 | 0.543 | 0.444 | 0.500 |
+| hindi-diksita-1895-02.jpg | ocr | 0.234 | 0.511 | 0.543 | 0.444 | 0.500 |
 | arabic-wikipedia-dolphin-scan.png | ocr | 0.073 | 0.180 | 0.861 | 0.131 | 0.600 |
 | arabic-wikipedia-village-scan.png | ocr | 0.365 | 0.822 | 0.887 | 0.452 | 0.000 |
 | japanese-ndl-1910s.jpg | ocr | 0.233 | 0.153 | 0.853 | 0.075 | 0.500 |

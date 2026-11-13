@@ -42,10 +42,10 @@
     "reading_order": 1.0
   },
   "arabic-wikipedia-dolphin-scan.png": {
-    "character_error_rate": 0.07314410480349345,
+    "character_error_rate": 0.07259825327510917,
     "token_error_rate": 0.18037974683544303,
     "recall": 0.8607594936708861,
-    "spurious": 0.1337579617834395,
+    "spurious": 0.13099041533546327,
     "reading_order": 0.6
   },
   "arabic-wikipedia-village-scan.png": {
@@ -70,10 +70,10 @@
     "reading_order": 1.0
   },
   "arbeiter-zeitung-1895.jpg": {
-    "character_error_rate": 0.04456302953705004,
-    "token_error_rate": 0.11782276800531032,
+    "character_error_rate": 0.044141740392267,
+    "token_error_rate": 0.11815466312645204,
     "recall": 0.9064055758380352,
-    "spurious": 0.10605564648117839,
+    "spurious": 0.10634816753926701,
     "reading_order": 0.64
   },
   "armenian-dussap-1959-p28.png": {
@@ -658,8 +658,8 @@
     "reading_order": 0.5
   },
   "hindi-diksita-1895-02.jpg": {
-    "character_error_rate": 0.21416526138279932,
-    "token_error_rate": 0.5,
+    "character_error_rate": 0.23440134907251264,
+    "token_error_rate": 0.5108695652173914,
     "recall": 0.5434782608695652,
     "spurious": 0.4444444444444444,
     "reading_order": 0.5
@@ -1022,10 +1022,10 @@
     "reading_order": 0.0
   },
   "neue-freie-presse-1895.tif": {
-    "character_error_rate": 0.16150025689330363,
-    "token_error_rate": 0.27539118065433854,
-    "recall": 0.8418207681365576,
-    "spurious": 0.1697530864197531,
+    "character_error_rate": 0.16132899469087172,
+    "token_error_rate": 0.2756756756756757,
+    "recall": 0.8415362731152205,
+    "spurious": 0.16980072972214427,
     "reading_order": 0.26153846153846155
   },
   "norwegian-cp1252.txt": {
@@ -1481,7 +1481,7 @@
     "token_error_rate": 0.20930232558139536,
     "recall": 0.8172757475083057,
     "spurious": 0.18272425249169436,
-    "reading_order": 0.4
+    "reading_order": 0.6
   },
   "report-scan-skewed.tif": {
     "character_error_rate": 0.0,
@@ -1841,10 +1841,10 @@
     "reading_order": 1.0
   },
   "thai-scan.png": {
-    "character_error_rate": 0.03496503496503497,
-    "token_error_rate": 0.02491103202846975,
-    "recall": 0.9893238434163701,
-    "spurious": 0.02112676056338028,
+    "character_error_rate": 0.027972027972027972,
+    "token_error_rate": 0.017793594306049824,
+    "recall": 0.9857651245551602,
+    "spurious": 0.014234875444839857,
     "reading_order": 0.6666666666666666
   },
   "thai.docx": {
