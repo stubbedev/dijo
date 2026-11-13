@@ -25,6 +25,7 @@ use test_case::test_case;
 #[test_case("lighthouse.svg", "image/svg+xml")]
 #[test_case("harbour.abw", "application/x-abiword")]
 #[test_case("gazette.sla", "application/vnd.scribus")]
+#[test_case("lighthouse.torrent", "application/x-bittorrent")]
 #[test_case("pier.dxf", "image/vnd.dxf; format=ascii")]
 #[test_case("pier-binary.dxf", "image/vnd.dxf; format=binary")]
 #[test_case("ara-ocr.png", "image/png")]

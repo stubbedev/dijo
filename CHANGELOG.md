@@ -77,6 +77,10 @@
   header and footer sections in their own `div`s. The `<metadata>` is the document's Dublin Core, keywords and
   generator, its dates ISO local date-times (AbiWord saves them without a time zone); each `<data>` item is handed on
   as an embedded document. Gzip-compressed `.zabw` files are read through the gzip parser.
+* BitTorrent metainfo files are read (#354), where Tika reads nothing of them: the torrent's name, its comment, its
+  files with their sizes (version 1 `files`, version 2 `file tree` or the single file, padding files left out) and its
+  announce URLs, as text, and the name, comment, creating client, creation date and announce URLs as metadata. The
+  bencoding is checked whole, its nesting and lengths bounded, before anything is written; piece hashes are not read.
 * AutoCAD DXF drawings are read for their text (#351), where Tika reads nothing of them: ASCII and binary drawings,
   each `TEXT`, `MTEXT` (its chunks joined, its formatting codes dropped, a paragraph to each `\P`), `ATTRIB` and
   `ATTDEF` value and dimension text (its measurement in place of `<>`), in the order they are drawn, the blocks'

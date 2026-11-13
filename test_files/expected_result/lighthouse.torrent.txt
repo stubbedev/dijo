@@ -1,0 +1,8 @@
+Skagen Fyr årbøger
+Logbooks and charts of the lighthouse at Skagen, 1858–1958
+README.txt	412
+charts/skagen-1858.txt	20000
+logbooks/1858.txt	9000
+logbooks/1958.txt	3100
+http://tracker.example.org:6969/announce
+udp://tracker.example.net:1337/announce

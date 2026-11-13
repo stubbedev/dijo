@@ -1980,6 +1980,24 @@ fn dxf_drawings_are_read_for_their_text() {
     }
 }
 
+/// `lighthouse.torrent` was written by `dijo-small/tests/fixtures/bittorrent/lighthouse.py`: a
+/// multi-file torrent as mktorrent 1.1 writes one, with two tiers of trackers, a comment, its
+/// creator and creation date.
+#[test]
+fn bittorrent_files_are_read_for_their_files_and_trackers() {
+    let objects = json_objects(&[&document("lighthouse.torrent")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "application/x-bittorrent");
+    assert_eq!(objects[0]["metadata"]["title"], "Skagen Fyr \u{e5}rb\u{f8}ger");
+    assert_eq!(
+        objects[0]["text"],
+        "Skagen Fyr \u{e5}rb\u{f8}ger\nLogbooks and charts of the lighthouse at Skagen, \
+         1858\u{2013}1958\nREADME.txt\t412\ncharts/skagen-1858.txt\t20000\n\
+         logbooks/1858.txt\t9000\nlogbooks/1958.txt\t3100\n\
+         http://tracker.example.org:6969/announce\nudp://tracker.example.net:1337/announce\n"
+    );
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

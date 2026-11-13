@@ -340,6 +340,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/x-arj",
         "org.apache.tika.parser.pkg.PackageParser",
     ),
+    ("application/x-bittorrent", "dijo::BitTorrentParser"),
     (
         "application/x-bplist",
         "org.apache.tika.parser.apple.PListParser",

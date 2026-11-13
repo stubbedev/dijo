@@ -1,0 +1,24 @@
+{
+    "Content-Type": [
+        "application/x-bittorrent"
+    ],
+    "tk:parsed-by": [
+        "dijo::BitTorrentParser"
+    ],
+    "dc:title": [
+        "Skagen Fyr årbøger"
+    ],
+    "dc:description": [
+        "Logbooks and charts of the lighthouse at Skagen, 1858–1958"
+    ],
+    "xmp:CreatorTool": [
+        "mktorrent 1.1"
+    ],
+    "dcterms:created": [
+        "2025-11-13T12:00:00Z"
+    ],
+    "bittorrent:announce": [
+        "http://tracker.example.org:6969/announce",
+        "udp://tracker.example.net:1337/announce"
+    ]
+}

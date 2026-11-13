@@ -23,6 +23,7 @@ pub mod formats {
 
     pub mod abiword;
     pub mod apple_single;
+    pub mod bittorrent;
     pub mod chm;
     pub mod class_file;
     pub mod content_line;

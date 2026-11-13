@@ -60,6 +60,7 @@ pub(crate) use dijo_science::formats::isatab;
 pub(crate) use dijo_science::formats::netcdf;
 pub(crate) use dijo_small::formats::abiword;
 pub(crate) use dijo_small::formats::apple_single;
+pub(crate) use dijo_small::formats::bittorrent;
 pub(crate) use dijo_small::formats::chm;
 pub(crate) use dijo_small::formats::class_file;
 pub(crate) use dijo_small::formats::dbf;
@@ -132,6 +133,7 @@ static PARSERS: &[&dyn Parser] = &[
     &archive::RpmParser,
     &archive::SevenZParser,
     &archive::ZipParser,
+    &bittorrent::BitTorrentParser,
     &chm::ChmParser,
     &class_file::ClassParser,
     &cms::CmsParser,
