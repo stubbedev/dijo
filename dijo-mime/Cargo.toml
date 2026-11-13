@@ -14,7 +14,7 @@ testing = ["dijo-base/testing"]
 
 [dependencies]
 dijo-base = { path = "../dijo-base", default-features = false }
-fancy-regex = "0.19.2"
+fancy-regex = "0.20.1"
 flate2 = "1.1.5"
 memchr = "2.8.3"
 thiserror = { version = "2.0.17" }
