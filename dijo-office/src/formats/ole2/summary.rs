@@ -19,6 +19,7 @@ use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::java::is_blank;
 use crate::java::time::format_instant;
 use crate::ole2::{EntryId, EntryKind, Ole2};
+use crate::text::codepage::encoding as codepage_encoding;
 
 const SUMMARY_INFORMATION: &str = "\u{5}SUMMARYINFORMATION";
 const DOCUMENT_SUMMARY_INFORMATION: &str = "\u{5}DOCUMENTSUMMARYINFORMATION";
@@ -333,7 +334,7 @@ fn checked_code_page(page: i32) -> Result<i32, Fault> {
     }
     match codepage::charset(page) {
         Ok(_) => Ok(page),
-        Err(Fault::Encoding) if codepage::encoding(page).is_none() => Ok(codepage::UNICODE),
+        Err(Fault::Encoding) if codepage_encoding(page).is_none() => Ok(codepage::UNICODE),
         Err(_) => Err(Fault::Runtime),
     }
 }

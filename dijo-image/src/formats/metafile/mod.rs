@@ -17,6 +17,7 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared, Unported};
 use crate::text::charset::Charset;
+use crate::text::codepage::font_charset;
 
 use emf::{Comment, TextOut};
 
@@ -370,30 +371,6 @@ impl Parser for WmfParser {
             wmf_steps(input, |step| write(xhtml, step))
         }))
     }
-}
-
-/// `FontCharset.getCharset()`'s name of the charset with a WMF font's charset id, if POI maps
-/// it to one.
-fn font_charset(id: u8) -> Option<&'static str> {
-    Some(match id {
-        0x00 | 0x01 | 0xFF => "Cp1252",
-        0x4D => "MacRoman",
-        0x80 => "Shift_JIS",
-        0x81 => "cp949",
-        0x82 => "x-Johab",
-        0x86 => "GB2312",
-        0x88 => "Big5",
-        0xA1 => "Cp1253",
-        0xA2 => "Cp1254",
-        0xA3 => "Cp1258",
-        0xB1 => "Cp1255",
-        0xB2 => "Cp1256",
-        0xBA => "Cp1257",
-        0xCC => "Cp1251",
-        0xDE => "x-windows-874",
-        0xEE => "Cp1250",
-        _ => return None,
-    })
 }
 
 /// An object of a WMF picture's object table.

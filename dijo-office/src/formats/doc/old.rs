@@ -22,6 +22,7 @@ use super::text::{read_clx, ComplexFileTable, Encoding, Plex, Text, TextPiece, M
 use crate::formats::poi::{i16_at, i32_at, u16_at, Read, Thrown, Unread};
 use crate::formats::Unported;
 use crate::text::charset::Charset;
+use crate::text::codepage::font_charset;
 
 /// `HWPFOldDocument.getMaxRecordLength`.
 const MAX_RECORD_LENGTH: i64 = 10_000_000;
@@ -289,31 +290,6 @@ fn decoded(units: &[u16], charset: TextCharset) -> Vec<u16> {
     }
     flush(&mut bytes, &mut text);
     text
-}
-
-/// `FontCharset`'s Java charset of a Windows character set, `None` for one it does not know,
-/// and an empty name for the symbol set.
-fn font_charset(chs: u8) -> Option<&'static str> {
-    Some(match chs {
-        0x00 | 0x01 | 0xFF => "Cp1252",
-        0x02 => "",
-        0x4D => "MacRoman",
-        0x80 => "Shift_JIS",
-        0x81 => "cp949",
-        0x82 => "x-Johab",
-        0x86 => "GB2312",
-        0x88 => "Big5",
-        0xA1 => "Cp1253",
-        0xA2 => "Cp1254",
-        0xA3 => "Cp1258",
-        0xB1 => "Cp1255",
-        0xB2 => "Cp1256",
-        0xBA => "Cp1257",
-        0xCC => "Cp1251",
-        0xDE => "x-windows-874",
-        0xEE => "Cp1250",
-        _ => return None,
-    })
 }
 
 /// `guessCodePage(new OldFontTable(...))`: the charset of the first font whose character set

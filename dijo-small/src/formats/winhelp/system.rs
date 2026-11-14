@@ -5,6 +5,7 @@
 use super::reader::Reader;
 use super::Malformed;
 use crate::text::charset::Charset;
+use crate::text::codepage;
 
 const MAGIC: u16 = 0x036C;
 /// The first minor version of WinHelp 3.1's layout: older files are WinHelp 3.0's.
@@ -17,6 +18,8 @@ const LCID_AT: usize = 8;
 /// The `|SYSTEM` flags of LZ77-compressed topic blocks of 4 KiB and of 2 KiB.
 const LZ77_4K: u16 = 4;
 const LZ77_2K: u16 = 8;
+/// The ANSI code page of Western European languages.
+const WESTERN: u16 = 1252;
 
 /// How the topic file of a help file is laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,34 +91,33 @@ impl<'a> System<'a> {
     /// The charset of the help file's text: the ANSI code page of its LCID, or Windows-1252,
     /// that of the English WinHelp 3 wrote its files in, where it names none.
     pub(super) fn charset(&self) -> Charset {
-        let name = self.lcid.map_or("windows-1252", ansi_code_page);
-        Charset::for_name(name)
+        let code_page = self.lcid.map_or(WESTERN, ansi_code_page);
+        codepage::windows(code_page)
             .filter(|charset| charset.decodes())
-            .unwrap_or_else(|| panic!("the JDK decodes the charset {name} of an LCID"))
+            .unwrap_or_else(|| panic!("the JDK decodes the code page {code_page} of an LCID"))
     }
 }
 
-/// The JDK name of the ANSI code page Windows gives the language identifier `lcid`: by its
-/// primary language, Chinese and the languages written in Latin or Cyrillic letters by their
-/// sublanguage too.
-pub(super) fn ansi_code_page(lcid: u16) -> &'static str {
+/// The ANSI code page Windows gives the language identifier `lcid`: by its primary language,
+/// Chinese and the languages written in Latin or Cyrillic letters by their sublanguage too.
+pub(super) fn ansi_code_page(lcid: u16) -> u16 {
     let (primary, sublanguage) = (lcid & 0x3FF, lcid >> 10);
     match primary {
-        0x04 if matches!(sublanguage, 1 | 3 | 5) => "x-windows-950",
-        0x04 => "GBK",
-        0x11 => "windows-31j",
-        0x12 => "x-windows-949",
-        0x1E => "x-windows-874",
-        0x1A if matches!(sublanguage, 3 | 7 | 8 | 10 | 12) => "windows-1251",
-        0x05 | 0x0E | 0x15 | 0x18 | 0x1A | 0x1B | 0x1C | 0x24 => "windows-1250",
-        0x2C | 0x43 if sublanguage == 2 => "windows-1251",
-        0x02 | 0x19 | 0x22 | 0x23 | 0x2F | 0x3F | 0x40 | 0x44 | 0x50 | 0x6D => "windows-1251",
-        0x08 => "windows-1253",
-        0x1F | 0x2C | 0x43 => "windows-1254",
-        0x0D | 0x3D => "windows-1255",
-        0x01 | 0x20 | 0x29 | 0x8C => "windows-1256",
-        0x25..=0x27 => "windows-1257",
-        0x2A => "windows-1258",
-        _ => "windows-1252",
+        0x04 if matches!(sublanguage, 1 | 3 | 5) => 950,
+        0x04 => 936,
+        0x11 => 932,
+        0x12 => 949,
+        0x1E => 874,
+        0x1A if matches!(sublanguage, 3 | 7 | 8 | 10 | 12) => 1251,
+        0x05 | 0x0E | 0x15 | 0x18 | 0x1A | 0x1B | 0x1C | 0x24 => 1250,
+        0x2C | 0x43 if sublanguage == 2 => 1251,
+        0x02 | 0x19 | 0x22 | 0x23 | 0x2F | 0x3F | 0x40 | 0x44 | 0x50 | 0x6D => 1251,
+        0x08 => 1253,
+        0x1F | 0x2C | 0x43 => 1254,
+        0x0D | 0x3D => 1255,
+        0x01 | 0x20 | 0x29 | 0x8C => 1256,
+        0x25..=0x27 => 1257,
+        0x2A => 1258,
+        _ => WESTERN,
     }
 }

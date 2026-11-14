@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use super::phrases::{Expanded, Table};
 use super::reader::Reader;
 use super::*;
+use crate::text::codepage;
 
 /// The WinHelp 4 file `tests/fixtures/winhelp/harbour.py winhelp4` writes: LZ77-compressed
 /// topic blocks and old phrases.
@@ -133,13 +134,14 @@ fn decodes_text_in_the_ansi_code_page_of_the_lcid() {
         (0x0404, "x-windows-950"),
         (0x0C04, "x-windows-950"),
     ] {
-        assert_eq!(system::ansi_code_page(lcid), name, "{lcid:#06x}");
+        let charset = codepage::windows(system::ansi_code_page(lcid));
+        assert_eq!(charset.map(Charset::name), Some(name), "{lcid:#06x}");
     }
     for lcid in 0..=u16::MAX {
-        let name = system::ansi_code_page(lcid);
+        let code_page = system::ansi_code_page(lcid);
         assert!(
-            Charset::for_name(name).is_some_and(|charset| charset.decodes()),
-            "{name}"
+            codepage::windows(code_page).is_some_and(Charset::decodes),
+            "{code_page}"
         );
     }
     let at = offset_of(HARBOUR, "|SYSTEM");

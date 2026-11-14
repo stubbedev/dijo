@@ -17,6 +17,7 @@
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
 use crate::text::charset::Charset;
+use crate::text::codepage;
 
 /// The most bytes of a string decoded at a time, so that a long one is held a piece at a time.
 const PIECE: usize = 8192;
@@ -25,13 +26,7 @@ const LONGEST_ESCAPE: usize = 8;
 /// The hexadecimal digits of `\U+XXXX` and `\M+NXXXX`.
 const HEX_DIGITS: usize = 4;
 /// The code pages of `\M+N`, by `N`.
-const DOUBLE_BYTE_CODE_PAGES: [&str; 5] = [
-    "windows-932",
-    "windows-950",
-    "windows-949",
-    "x-Johab",
-    "windows-936",
-];
+const DOUBLE_BYTE_CODE_PAGES: [u16; 5] = [932, 950, 949, 1361, 936];
 
 /// The charset of the code page `$DWGCODEPAGE` names, as AutoCAD names them.
 pub(super) fn code_page(name: &str) -> Result<Charset, Failure> {
@@ -41,20 +36,17 @@ pub(super) fn code_page(name: &str) -> Result<Charset, Failure> {
         ))
     };
     let upper = name.trim().to_ascii_uppercase();
-    let java = if let Some(number) = upper.strip_prefix("ANSI_") {
-        match number {
-            "1361" => "x-Johab".to_owned(),
-            _ => format!("windows-{number}"),
-        }
+    let windows = |number: &str| number.parse().ok().and_then(codepage::windows);
+    let charset = if let Some(number) = upper.strip_prefix("ANSI_") {
+        windows(number)
+    } else if upper == "DOS932" {
+        windows("932")
     } else if let Some(number) = upper.strip_prefix("DOS") {
-        match number {
-            "932" => "windows-932".to_owned(),
-            _ => format!("IBM{number}"),
-        }
+        Charset::for_name(&format!("IBM{number}"))
     } else if let Some(part) = upper.strip_prefix("ISO8859-") {
-        format!("ISO-8859-{part}")
+        Charset::for_name(&format!("ISO-8859-{part}"))
     } else {
-        match upper.as_str() {
+        Charset::for_name(match upper.as_str() {
             "ASCII" => "US-ASCII",
             "MACINTOSH" => "x-MacRoman",
             "BIG5" => "Big5",
@@ -63,10 +55,9 @@ pub(super) fn code_page(name: &str) -> Result<Charset, Failure> {
             "JOHAB" => "x-Johab",
             "UTF8" | "UTF-8" => "UTF-8",
             _ => return Err(unknown()),
-        }
-        .to_owned()
+        })
     };
-    Charset::for_name(&java)
+    charset
         .filter(|charset| charset.decodes())
         .ok_or_else(unknown)
 }
@@ -235,8 +226,8 @@ impl Decoder {
             Escape::Char(character) => self.emit(character, out),
             Escape::Unit(unit) => self.unit(unit, out),
             Escape::DoubleByte(page, bytes) => {
-                let text = Charset::named(DOUBLE_BYTE_CODE_PAGES[page])
-                    .decode(&bytes)
+                let text = codepage::windows(DOUBLE_BYTE_CODE_PAGES[page])
+                    .and_then(|charset| charset.decode(&bytes))
                     .expect("the double-byte code pages decode");
                 for character in text.chars() {
                     self.emit(character, out);

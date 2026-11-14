@@ -44,18 +44,6 @@ fn reads_records_tika_fails_on_and_text_in_the_font_selected() {
 }
 
 #[test]
-fn decodes_every_charset_a_font_names() {
-    for id in 0..=u8::MAX {
-        if let Some(name) = font_charset(id) {
-            assert!(
-                Charset::named(name).decode(b"abc").is_some(),
-                "{name} is not decoded"
-            );
-        }
-    }
-}
-
-#[test]
 fn reads_the_name_an_icon_only_comment_gives_up_to_its_end() {
     let name = utf16("Report.docx\0");
     assert_eq!(unicode_string(&name).as_deref(), Some("Report.docx"));

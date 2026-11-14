@@ -2,5 +2,6 @@
 
 mod blocks;
 pub mod charset;
+pub mod codepage;
 pub mod junk;
 pub mod quoted_printable;

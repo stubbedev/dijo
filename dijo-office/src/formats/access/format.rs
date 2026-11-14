@@ -4,8 +4,8 @@
 
 use super::buffer::Thrown;
 use super::column::SortOrder;
-use crate::formats::ole2::codepage_encoding;
 use crate::text::charset::Charset as JdkCharset;
+use crate::text::codepage;
 
 const OFFSET_VERSION: usize = 20;
 const HEADER_LENGTH: usize = 21;
@@ -66,7 +66,7 @@ impl Charset {
             0 => ANSI_CODE_PAGE,
             named => named,
         };
-        codepage_encoding(i32::from(named))
+        codepage::encoding(i32::from(named))
             .and_then(|name| JdkCharset::for_name(&name))
             .filter(|charset| charset.decode(&[]).is_some())
             .map(Charset::CodePage)

@@ -10,7 +10,7 @@ mod reader;
 mod summary;
 pub mod vba;
 
-pub(crate) use codepage::{decode_text as decode_codepage, encoding as codepage_encoding};
+pub(crate) use codepage::decode_text as decode_codepage;
 pub(crate) use embedded::{document_type, handed_on, office_document, Embedded, Handed};
 #[cfg(test)]
 pub(crate) use property_set::tests::{lpwstr, property_set, typed};

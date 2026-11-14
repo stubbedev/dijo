@@ -17,7 +17,7 @@ use crate::formats::embedded::{ResourceType, Wrapping, EXCEPTION_WARNING, RESOUR
 use crate::formats::handlers::parse_inline;
 use crate::formats::mail::{decode_encoded_words, parse_date, MailDate};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::ole2::{codepage_encoding, office_document, Embedded, Handed};
+use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::formats::poi::{Reading, Thrown};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{html, noted, rtf, Difference, Failure, Prepared, Unported};
@@ -26,6 +26,7 @@ use crate::java::time::{format_instant, CalendarFields, TimeZone};
 use crate::java::{equals_ignore_case, trim};
 use crate::ole2::Ole2;
 use crate::text::charset::{self, Charset};
+use crate::text::codepage;
 
 const MESSAGE_CLASSES: &str = include_str!("mapi_message_classes.properties");
 
@@ -616,7 +617,7 @@ fn declared_charset(message: &Message) -> Reading<Option<String>> {
             match properties.get(id) {
                 None => {}
                 Some(Value::Long(codepage)) => {
-                    if let Some(name) = codepage_encoding(*codepage) {
+                    if let Some(name) = codepage::encoding(*codepage) {
                         if Charset::for_name(&name).is_some() {
                             return Ok(Some(name.into_owned()));
                         }
