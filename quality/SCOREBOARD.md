@@ -22,7 +22,7 @@
 | swedish.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | norwegian.pdf | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | norwegian.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| arabic.pdf | script | 0.178 | 0.161 | 0.839 | 0.000 | 1.000 |
+| arabic.pdf | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | arabic.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hebrew.pdf | script | 0.039 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hebrew.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -293,7 +293,7 @@
 | innsbrucker-nachrichten-1864.tif | ocr | 0.025 | 0.094 | 0.921 | 0.091 | 0.833 |
 | neue-freie-presse-1873.tif | ocr | 0.092 | 0.243 | 0.810 | 0.210 | 0.217 |
 | kronen-zeitung-1933.jpg | ocr | 0.834 | 0.951 | 0.125 | 0.572 | 0.023 |
-| mixed.pdf | mixed-language | 0.602 | 0.723 | 0.277 | 0.172 | 0.250 |
+| mixed.pdf | mixed-language | 0.004 | 0.000 | 1.000 | 0.000 | 1.000 |
 | mixed.odt | mixed-language | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | mixed.docx | mixed-language | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | mixed-scan.png | ocr | 0.601 | 0.712 | 0.288 | 0.140 | 0.250 |

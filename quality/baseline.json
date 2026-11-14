@@ -63,9 +63,9 @@
     "reading_order": 1.0
   },
   "arabic.pdf": {
-    "character_error_rate": 0.17757009345794392,
-    "token_error_rate": 0.16071428571428573,
-    "recall": 0.8392857142857143,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
     "spurious": 0.0,
     "reading_order": 1.0
   },
@@ -1211,11 +1211,11 @@
     "reading_order": 1.0
   },
   "mixed.pdf": {
-    "character_error_rate": 0.6021100226073851,
-    "token_error_rate": 0.7230215827338129,
-    "recall": 0.27697841726618705,
-    "spurious": 0.17204301075268819,
-    "reading_order": 0.25
+    "character_error_rate": 0.0037678975131876413,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
   },
   "more-epigrammata-1520.jpg": {
     "character_error_rate": 0.045454545454545456,

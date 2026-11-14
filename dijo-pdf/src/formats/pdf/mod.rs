@@ -1219,6 +1219,29 @@ mod tests {
         assert_eq!(unmapped, ["5"]);
     }
 
+    /// The actual text of a span goes to its first glyph that advances, and its glyphs without
+    /// advance are left out, so that a mark drawn before the letter it sits on, as LibreOffice
+    /// draws Arabic, splits no word; a span of nothing but such marks keeps its text (#384).
+    #[test]
+    fn gives_actual_text_to_the_first_glyph_of_its_span_that_advances() {
+        let content = "BT /F1 12 Tf 72 720 Td (Le caf) Tj ET \
+                       /Span << /ActualText <FEFF00E9> >> BDC \
+                       BT /F2 12 Tf 1 0 0 1 107.5 726 Tm (') Tj \
+                       /F1 12 Tf 1 0 0 1 104.688 720 Tm (e) Tj ET EMC \
+                       BT /F1 12 Tf 1 0 0 1 111.36 720 Tm (s du port) Tj ET \
+                       /Span << /ActualText (!) >> BDC \
+                       BT /F2 12 Tf 1 0 0 1 158.1 720 Tm (') Tj ET EMC";
+        let mut objects = page_objects(content);
+        objects[2] = objects[2].replace("/F1 5 0 R", "/F1 5 0 R /F2 6 0 R");
+        objects.push(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+             /FirstChar 39 /LastChar 39 /Widths [0] >>"
+                .to_owned(),
+        );
+        let (xml, _) = unmapped_without_ocr(&document(&objects, b"", &[]));
+        assert!(xml.contains("<p>Le cafés du port!</p>"), "{xml}");
+    }
+
     /// An OpenType program, which PDFBox reads with `OTFParser`, and a cmap mapping a code to the
     /// glyph past the last, where FontBox throws, are read with the font damaged.
     #[test]

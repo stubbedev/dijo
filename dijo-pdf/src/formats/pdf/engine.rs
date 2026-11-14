@@ -141,6 +141,16 @@ struct MarkedContent {
     has_actual_text: bool,
 }
 
+/// The actual text of the marked content the glyphs are drawn under, which stands for them all.
+struct ActualText {
+    text: String,
+    /// Whether a glyph carries the text yet.
+    placed: bool,
+    /// The span's first glyph without advance while no glyph carries the text: a mark drawn
+    /// before the glyph it sits on, which carries the text only when no glyph advances.
+    mark: Option<TextPosition>,
+}
+
 /// Tika's `MarkedContentFrame`.
 struct Frame {
     artifact: bool,
@@ -159,8 +169,7 @@ struct Run<'p, 'e> {
     resources: Option<&'p Dictionary>,
     level: i32,
     marked: Vec<MarkedContent>,
-    actual_text: Option<String>,
-    first_actual_text: bool,
+    actual_text: Option<ActualText>,
     frames: Vec<Frame>,
     scopes: Vec<Identity>,
     current_label: Option<Label>,
@@ -199,7 +208,6 @@ impl Engine {
             level: 0,
             marked: Vec::new(),
             actual_text: None,
-            first_actual_text: false,
             frames: Vec::new(),
             scopes: Vec::new(),
             current_label: None,
@@ -219,6 +227,7 @@ impl Engine {
                 differ_past(pdf, "a page's content", unported);
             }
         }
+        run.end_actual_text();
         let content = run.content;
         self.fonts.end_page();
         content
@@ -682,9 +691,23 @@ impl<'p> Run<'p, '_> {
         self.marked.push(MarkedContent {
             has_actual_text: actual_text.is_some(),
         });
-        self.actual_text = actual_text.map(|text| text.replace('\u{AD}', ""));
-        if self.actual_text.is_some() {
-            self.first_actual_text = true;
+        self.end_actual_text();
+        self.actual_text = actual_text.map(|text| ActualText {
+            text: text.replace('\u{AD}', ""),
+            placed: false,
+            mark: None,
+        });
+    }
+
+    /// Ends the actual text the glyphs are drawn under, placing its text on the mark it held
+    /// when no glyph of its span advances.
+    fn end_actual_text(&mut self) {
+        let Some(actual) = self.actual_text.take() else {
+            return;
+        };
+        if let (false, Some(mut mark)) = (actual.placed, actual.mark) {
+            mark.set_unicode(GlyphText::new(&actual.text));
+            self.place_text_position(mark);
         }
     }
 
@@ -696,7 +719,7 @@ impl<'p> Run<'p, '_> {
         }
         if let Some(marked) = self.marked.pop() {
             if marked.has_actual_text {
-                self.actual_text = None;
+                self.end_actual_text();
             }
         }
     }
@@ -940,16 +963,30 @@ impl<'p> Run<'p, '_> {
 
     /// `PDFTextStripper.processTextPosition`, with duplicate overlapping text kept, as Tika
     /// keeps it: the glyph's actual text, its article, and diacritics merged into the glyph
-    /// they sit on.
+    /// they sit on. The actual text goes to the first glyph of its span that advances, and a
+    /// glyph of the span without advance is left out, where PDFBox gives the text to the span's
+    /// first glyph and keeps the rest without text, so that a mark drawn before the letter it sits
+    /// on, as LibreOffice draws Arabic, carries the letter away from it and splits its word (#384).
     fn process_text_position(&mut self, mut text: TextPosition) {
-        if let Some(actual) = &self.actual_text {
-            if self.first_actual_text {
-                text.set_unicode(GlyphText::new(actual));
-                self.first_actual_text = false;
-            } else {
+        if let Some(actual) = self.actual_text.as_mut() {
+            if jfloat::same(text.width(), 0.0) {
+                if !actual.placed && actual.mark.is_none() {
+                    actual.mark = Some(text);
+                }
+                return;
+            }
+            if actual.placed {
                 text.set_unicode(GlyphText::default());
+            } else {
+                text.set_unicode(GlyphText::new(&actual.text));
+                actual.placed = true;
             }
         }
+        self.place_text_position(text);
+    }
+
+    /// Places a glyph in its article, merging diacritics into the glyph they sit on.
+    fn place_text_position(&mut self, mut text: TextPosition) {
         let x = text.x();
         let y = text.y();
         let mut found = None;
