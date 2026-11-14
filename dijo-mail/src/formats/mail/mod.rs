@@ -355,6 +355,7 @@ impl Sink for Written<'_, '_, '_> {
 
     fn item(&mut self, item: Item) -> Result<(), Failure> {
         match item {
+            Item::Subject(subject) => Ok(self.xhtml.element("h1", &subject)?),
             Item::StartEntry => Ok(start_entry(self.xhtml)?),
             Item::EndEntry => Ok(end_entry(self.xhtml)?),
             Item::Inline(Inline::Text(content)) => {
@@ -442,6 +443,21 @@ pub(crate) mod tests {
             Some(&vec!["A/subject: of sorts".to_owned()])
         );
         assert_eq!(metadata.get("tk:resource-name"), None);
+    }
+
+    #[test]
+    fn heads_each_message_and_attached_message_with_its_subject() {
+        let message = b"Subject: Outer\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nOuter body.\r\n--b\r\nContent-Type: message/rfc822\r\nContent-Disposition: attachment\r\n\r\nFrom: b@example.org\r\nSubject: Inner\r\n\r\nInner body.\r\n--b--\r\n";
+        let (text, metadata) = crate::Extractor::new()
+            .extract_bytes_to_string(message)
+            .unwrap();
+        let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(
+            lines,
+            ["Outer", "Outer body.", "Inner", "Inner body."],
+            "{text}"
+        );
+        assert_eq!(metadata.get("dc:title"), Some(&vec!["Outer".to_owned()]));
     }
 
     #[test]

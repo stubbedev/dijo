@@ -146,6 +146,8 @@ Where the answers differ from tika-server's:
   lists a container after them, but the upload first.
 - `/unpack` names a document of type `text/plain; charset=…` `.txt`, where tika-server names it `.bin`.
 - An empty upload is a document without text, answered 200, where tika-server answers 422.
+- Each e-mail message's body, attached messages and mbox entries included, starts with its subject as a heading;
+  Tika keeps the subject only in the metadata and the `<title>`, so its batch text shows only the outermost one's.
 - `/mime-types/{type}/{subtype}` has no description, acronym or links, which dijo's media types do not carry.
 - The presets, the `/config` and `/form` uploads, the XMP endpoints, `/translate`, `/pipes` and `/async` are not served.
 

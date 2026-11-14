@@ -305,8 +305,8 @@
 | inventory.ods | spreadsheets | 0.058 | 0.058 | 1.000 | 0.055 | 1.000 |
 | inventory.xls | spreadsheets | 0.019 | 0.014 | 1.000 | 0.014 | 1.000 |
 | inventory.parquet | spreadsheets | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| letters.eml | email | 0.053 | 0.046 | 0.954 | 0.000 | 0.857 |
-| letters.mbox | email | 0.053 | 0.046 | 0.954 | 0.000 | 0.857 |
+| letters.eml | email | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| letters.mbox | email | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.fb2 | e-book | 0.005 | 0.003 | 1.000 | 0.003 | 1.000 |
 | prose.mobi | e-book | 0.023 | 0.020 | 1.000 | 0.019 | 1.000 |
 | prose.dvi | niche-formats | 0.002 | 0.003 | 1.000 | 0.003 | 1.000 |

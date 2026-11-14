@@ -3,6 +3,10 @@
 //! level and the best alternative of a `multipart/alternative` parsed inline, each part of a
 //! multipart in a `div` of class `email-entry`, and every other part handed to the embedded
 //! document extractor.
+//!
+//! The message's subject also heads its body, which Tika leaves to the title in the head: the
+//! subject is the message's own text, and Tika's text output carries only the outermost
+//! message's title, nothing of an attached message's or an mbox entry's (#383).
 
 use super::address::{flatten, parse_address_list, Address, Mailbox};
 use super::codec::decode_encoded_words;
@@ -23,6 +27,8 @@ const MAX_PREFIXED_NAME_LENGTH: usize = 1024;
 /// What the body of a message holds, in order.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Item {
+    /// The message's subject, which heads its body.
+    Subject(String),
     /// `<div class="email-entry"><p>`, which starts a part of a multipart.
     StartEntry,
     /// `</p></div>`.
@@ -100,6 +106,7 @@ pub(super) fn read<S: Sink>(
         arena: Vec::new(),
         alternatives: Vec::new(),
         unported: None,
+        header: Header::Reading { subject: None },
     };
     events(input, paging, |event| -> Result<(), S::Error> {
         match event {
@@ -109,24 +116,24 @@ pub(super) fn read<S: Sink>(
                         handler.unported.get_or_insert(unported);
                     }
                 }
+                Ok(())
             }
-            Event::StartMultipart(body) => handler.start_multipart(body),
-            Event::EndMultipart => handler.end_multipart()?,
-            Event::StartBodyPart => {
-                if handler.alternatives.is_empty() {
-                    handler.sink.item(Item::StartEntry)?;
-                }
+            event => {
+                handler.end_header()?;
+                handler.structure(event)
             }
-            Event::EndBodyPart => {
-                if handler.alternatives.is_empty() {
-                    handler.sink.item(Item::EndEntry)?;
-                }
-            }
-            Event::Body(body, content) => handler.body(&body, content)?,
         }
-        Ok(())
     })?;
+    handler.end_header()?;
     Ok(handler.unported)
+}
+
+/// Where the reading is in the message's own header.
+enum Header {
+    /// Still in it, with the subject read so far.
+    Reading { subject: Option<String> },
+    /// Past it.
+    Ended,
 }
 
 struct Handler<'s, S> {
@@ -137,9 +144,42 @@ struct Handler<'s, S> {
     /// The parts of the `multipart/alternative` being read, innermost last.
     alternatives: Vec<usize>,
     unported: Option<Unported>,
+    header: Header,
 }
 
 impl<S: Sink> Handler<'_, S> {
+    /// Ends the message's own header, once: its subject, unless blank, heads the body.
+    fn end_header(&mut self) -> Result<(), S::Error> {
+        let Header::Reading { subject } = std::mem::replace(&mut self.header, Header::Ended) else {
+            return Ok(());
+        };
+        match subject.filter(|subject| !is_blank(subject)) {
+            Some(subject) => self.sink.item(Item::Subject(subject)),
+            None => Ok(()),
+        }
+    }
+
+    /// An event of the message's structure: a multipart, a part, or a leaf part's body.
+    fn structure(&mut self, event: Event) -> Result<(), S::Error> {
+        match event {
+            Event::Field(_) => {}
+            Event::StartMultipart(body) => self.start_multipart(body),
+            Event::EndMultipart => self.end_multipart()?,
+            Event::StartBodyPart => {
+                if self.alternatives.is_empty() {
+                    self.sink.item(Item::StartEntry)?;
+                }
+            }
+            Event::EndBodyPart => {
+                if self.alternatives.is_empty() {
+                    self.sink.item(Item::EndEntry)?;
+                }
+            }
+            Event::Body(body, content) => self.body(&body, content)?,
+        }
+        Ok(())
+    }
+
     /// `field`: a header of the message itself.
     fn field(&mut self, name: &str, body: &str) -> Result<(), Unported> {
         let lower = name.to_ascii_lowercase();
@@ -157,6 +197,9 @@ impl<S: Sink> Handler<'_, S> {
             "subject" => {
                 // Tika also names the message after its subject, as `<subject>.eml` (#79).
                 let subject = decode_encoded_words(body)?;
+                if let Header::Reading { subject: heading } = &mut self.header {
+                    *heading = Some(subject.clone());
+                }
                 self.sink.metadata().set("dc:title", subject.clone());
                 self.sink.metadata().set("dc:subject", subject);
             }
@@ -481,12 +524,13 @@ mod tests {
         );
         assert_eq!(metadata.get("message:raw-header:X-Mailer"), Some("test"));
         assert_eq!(metadata.get("multipart:subtype"), Some("mixed"));
-        assert_eq!(items.len(), 6);
+        assert_eq!(items.len(), 7);
+        assert_eq!(items[0], Item::Subject("Café".into()));
         assert_eq!(
-            items[1],
+            items[2],
             Item::Inline(Inline::Text(Input::Borrowed(b"hello")))
         );
-        let Item::Embedded(content, embedded) = &items[4] else {
+        let Item::Embedded(content, embedded) = &items[5] else {
             panic!("the attachment is embedded: {items:?}");
         };
         assert_eq!(content, b"%PDF");
@@ -496,6 +540,35 @@ mod tests {
             Some("attachment; filename=\"b.pdf\"")
         );
         assert!(ResourceType::Attachment.is_of(embedded));
+    }
+
+    #[test]
+    fn heads_the_body_with_the_last_subject_of_the_message_itself() {
+        let message = b"Subject: First\r\nSubject: Last\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nSubject: Of a part\r\nContent-Type: text/plain\r\n\r\nhello\r\n--b--\r\n";
+        let (items, _) = collect(message, &mut TikaMetadata::new());
+        assert_eq!(items[0], Item::Subject("Last".into()));
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(item, Item::Subject(_)))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn writes_the_subject_of_a_message_without_a_body() {
+        let (items, _) = collect(b"Subject: Only\r\n", &mut TikaMetadata::new());
+        assert_eq!(items[0], Item::Subject("Only".into()));
+    }
+
+    #[test]
+    fn leaves_out_a_blank_subject() {
+        let (items, _) = collect(b"Subject:  \r\n\r\nhello\r\n", &mut TikaMetadata::new());
+        assert!(
+            !items.iter().any(|item| matches!(item, Item::Subject(_))),
+            "{items:?}"
+        );
     }
 
     #[test]

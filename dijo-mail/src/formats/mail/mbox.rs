@@ -404,6 +404,29 @@ mod tests {
     }
 
     #[test]
+    fn heads_each_message_with_its_subject() {
+        let mailbox = b"From ada@example.org Mon Jan  1 00:00:00 2024\n\
+From: ada@example.org\n\
+Subject: First\n\
+\n\
+First body.\n\
+From bob@example.org Tue Jan  2 00:00:00 2024\n\
+From: bob@example.org\n\
+Subject: Second\n\
+\n\
+Second body.\n";
+        let (text, _) = crate::Extractor::new()
+            .extract_bytes_to_string(mailbox)
+            .unwrap();
+        let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(
+            lines,
+            ["First", "First body.", "Second", "Second body."],
+            "{text}"
+        );
+    }
+
+    #[test]
     fn reads_every_message_as_it_is() {
         let mailbox = b"From ada@example.org Mon Jan  1 00:00:00 2024\n\
 From: Ada Lovelace <ada@example.org>\n\
