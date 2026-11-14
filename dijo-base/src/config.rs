@@ -95,6 +95,10 @@ parser_config! {
 
         /// If the PDF contains annotations, try to extract the text of the annotations.
         set_extract_annotation_text(extract_annotation_text: bool),
+
+        /// Whether the targets (URIs) of link and widget annotations are written with the text
+        /// of the annotations. Not a Tika setting: unless set, they are, as Tika writes them.
+        set_extract_link_targets(extract_link_targets: bool),
     }
 }
 
@@ -132,6 +136,11 @@ impl PdfParserConfig {
     /// Whether the text of annotations is written, as it is unless told not to.
     pub fn extracts_annotation_text(&self) -> bool {
         self.extract_annotation_text.unwrap_or(true)
+    }
+
+    /// Whether the targets of link annotations are written, as they are unless told not to.
+    pub fn extracts_link_targets(&self) -> bool {
+        self.extract_link_targets.unwrap_or(true)
     }
 
     /// Whether the images of the pages are extracted, as they are not unless asked.

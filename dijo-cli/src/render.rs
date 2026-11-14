@@ -52,6 +52,12 @@ impl RenderOptions {
         !self.normalizes(Step::Bookmarks)
     }
 
+    /// Whether the targets of a PDF's link annotations are text: for XHTML, which is never
+    /// normalised, and unless they are left out.
+    pub fn keeps_link_targets(self) -> bool {
+        !self.normalizes(Step::Links)
+    }
+
     fn normalizes(self, step: Step) -> bool {
         self.format != Format::Xhtml && self.normalization.contains(step)
     }

@@ -38,6 +38,9 @@ pub enum Step {
     /// Leave out the bookmarks (outline) Tika appends to a PDF's text, which repeat its
     /// headings.
     Bookmarks,
+    /// Leave out the targets (URIs) of a PDF's link annotations, which Tika writes after each
+    /// page's text but which are not text on the page.
+    Links,
 }
 
 impl Step {
@@ -60,7 +63,8 @@ impl Steps {
             | Step::Headers.bit()
             | Step::Hyphenation.bit()
             | Step::ReadingOrder.bit()
-            | Step::Bookmarks.bit(),
+            | Step::Bookmarks.bit()
+            | Step::Links.bit(),
     );
     pub const NONE: Steps = Steps(0);
 

@@ -507,7 +507,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         if !self.settings.annotation_text {
             return Ok(());
         }
-        if matches!(subtype.as_deref(), Some("Link" | "Widget")) {
+        if self.settings.link_targets && matches!(subtype.as_deref(), Some("Link" | "Widget")) {
             if let Some(uri) = action_uri(pdf, annotation) {
                 if !is_blank(&uri) {
                     let page = &mut self.page;

@@ -1270,6 +1270,23 @@ fn an_arabic_text_layer_drawn_dot_first_is_kept() {
     assert!(kept.contains("كان الحارس يصعد درج البرج كل مساء"), "{kept}");
 }
 
+/// A link annotation's target is not text on the page: normalised output leaves it out, and
+/// XHTML, which follows Tika, and output without the links step keep it.
+#[test]
+fn the_targets_of_pdf_links_are_left_out_of_normalised_text() {
+    let pdf = "../quality/corpus/article-biollett-2016.pdf";
+    let target = "crossmark.crossref.org";
+    let read = extracted(&["--ocr", "never", pdf]);
+    assert!(!read.contains(target), "{read}");
+    assert!(read.contains("Biol. Lett."), "{read}");
+    for args in [
+        &["--ocr", "never", "--no-normalize", "links", pdf][..],
+        &["--ocr", "never", "--format", "xhtml", pdf],
+    ] {
+        assert!(extracted(args).contains(target), "{args:?}");
+    }
+}
+
 #[test]
 fn a_pdf_page_drawn_out_of_order_is_read_in_reading_order() {
     let pdf = "../quality/corpus/prose-columns-reversed.pdf";

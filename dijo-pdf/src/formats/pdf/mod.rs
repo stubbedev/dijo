@@ -205,6 +205,8 @@ struct Settings {
     marked_content: MarkedContentStrategy,
     bookmarks: bool,
     annotation_text: bool,
+    /// Whether the targets of link and widget annotations are written.
+    link_targets: bool,
     images: ImageExtraction,
 }
 
@@ -237,6 +239,7 @@ impl Settings {
             marked_content: config.marked_content(),
             bookmarks: config.extracts_bookmarks_text(),
             annotation_text: config.extracts_annotation_text(),
+            link_targets: config.extracts_link_targets(),
             images,
         })
     }
