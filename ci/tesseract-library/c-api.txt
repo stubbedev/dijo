@@ -22,6 +22,7 @@ TessPageIteratorIsAtBeginningOf
 TessPageIteratorBoundingBox
 TessPageIteratorBlockType
 TessResultIteratorGetUTF8Text
+TessResultIteratorConfidence
 TessDeleteText
 TessBaseAPIMeanTextConf
 TessBaseAPIIsValidWord

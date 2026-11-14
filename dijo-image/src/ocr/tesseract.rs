@@ -162,6 +162,7 @@ c_api! {
         *const PageIterator, c_int, *mut c_int, *mut c_int, *mut c_int, *mut c_int) -> c_int;
     block_type = TessPageIteratorBlockType(*const PageIterator) -> c_int;
     iterated_text = TessResultIteratorGetUTF8Text(*const ResultIterator, c_int) -> *mut c_char;
+    iterated_confidence = TessResultIteratorConfidence(*const ResultIterator, c_int) -> c_float;
     delete_text = TessDeleteText(*const c_char);
     mean_text_conf = TessBaseAPIMeanTextConf(*mut BaseApi) -> c_int;
     is_valid_word = TessBaseAPIIsValidWord(*mut BaseApi, *const c_char) -> c_int;
@@ -960,11 +961,13 @@ unsafe fn text_of(api: &Api, handle: *mut BaseApi) -> Option<Reading> {
     })
 }
 
-/// A block of text an engine read: where it lies on the image, and its paragraphs' text.
+/// A block of text an engine read: where it lies on the image, its paragraphs' text, and the
+/// mean confidence of its words from 0 to 100, as `Confidence` takes it at the block level.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Block {
     pub(crate) area: Area,
     pub(crate) text: String,
+    pub(crate) confidence: i32,
 }
 
 /// A rectangle on an image, in pixels from its top left corner, `right` and `bottom` exclusive.
@@ -1043,6 +1046,7 @@ unsafe fn blocks_of(api: &Api, handle: *mut BaseApi) -> Option<Vec<Block>> {
                 None => blocks.push(Block {
                     area: block_area(api, page),
                     text: paragraph.into_owned(),
+                    confidence: (api.iterated_confidence)(results.as_ptr(), BLOCK) as i32,
                 }),
             }
             new_block = false;
@@ -1143,6 +1147,7 @@ mod tests {
                 bottom,
             },
             text: String::new(),
+            confidence: 0,
         }
     }
 
@@ -1287,6 +1292,39 @@ mod tests {
         assert_eq!(read(&second), alone);
         drop(first);
         assert_eq!(read(&second), alone);
+    }
+
+    /// Each block read carries the mean confidence of its words, which a clean table read in its
+    /// language holds about as high as the whole page's.
+    #[test]
+    fn reads_each_block_with_the_confidence_of_its_words() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let image =
+            std::fs::read("../test_files/documents/table-multi-row-column-cells.png").unwrap();
+        let pixels = Pixels::Encoded {
+            data: Cow::Borrowed(&image),
+            width: 1377,
+            height: 648,
+        };
+        let read = tesseract
+            .read(
+                pixels,
+                None,
+                None,
+                "eng",
+                PageSegMode(3),
+                Thresholding::Otsu,
+                None,
+            )
+            .unwrap();
+        assert!(read.confidence > 80, "{read:?}");
+        assert!(!read.blocks.is_empty(), "{read:?}");
+        for block in &read.blocks {
+            assert!(
+                (read.confidence - block.confidence).abs() <= 15,
+                "{block:?} in {read:?}"
+            );
+        }
     }
 
     /// Readings of one image with models whose engines are set alike and whose languages read in

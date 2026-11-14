@@ -41,7 +41,7 @@ const MIN_REVERSED_EDGE_PERCENT: usize = 90;
 const MIN_SPECKLE_PERCENT: u64 = 2;
 const INK_PERCENTILE: f64 = 0.005;
 const FAINT_PERCENT: u32 = 72;
-const MIN_STAINED_PERCENT: u64 = 2;
+const MIN_STAINED_PERCENT: u64 = 5;
 const WHITE: u8 = 255;
 
 /// An EXIF orientation, 2 to 8, which turns or mirrors the image it is recorded in; 1 needs
@@ -807,7 +807,8 @@ fn faint_level(histogram: &[u64; 256], count: u64) -> u32 {
 /// [`MIN_STAINED_PERCENT`]% of its [`analysis`] copy lies between its Otsu threshold and that
 /// faint level. Tesseract's threshold takes such marks for paper, until whitening the fainter
 /// ones raises it and turns them into ink. Clean scans hold under 2% such pixels, the edges of
-/// their letters; a stained newspaper page 5%.
+/// their letters, and old prints on tinted or yellowed paper that reads as well either way up to
+/// 3.4%; a stained newspaper page 6.4%.
 pub(crate) fn stained(analysis: &GrayImage) -> bool {
     let levels = analysis.as_raw();
     let histogram = histogram(levels);

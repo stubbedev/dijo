@@ -19,9 +19,10 @@
 //! by column, and the more confident reading kept. A page whose paper may be stained, first read
 //! neither confidently nor in a language, is read again with its background normalised and
 //! thresholded locally when a strip of it reads clearly more confidently so. With the automatic
-//! language, the blocks of a page read unconfidently that are not text in its language are read
-//! again line by line in the scripts detection finds in them, each run of lines in another script
-//! with its model, and such a page is not read again with PP-OCRv5.
+//! language, the blocks of a page read unconfidently that are not text in its language, and read
+//! far less confidently than those that are, are read again line by line in the scripts detection
+//! finds in them, each run of lines in another script with its model, and such a page is not read
+//! again with PP-OCRv5.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -75,6 +76,12 @@ const MIN_UNWARPED_GAIN: i32 = 10;
 /// such as a heading, a caption or a fragment of a table, is left as it was read, since detection
 /// rarely judges a single line.
 const HEAD_LINES: usize = 2;
+/// The confidence by which a block that is not text in a language must fall short of the blocks
+/// of its page that are, by their words' mean confidence, for its scripts to be detected: a
+/// block in a script the page's model lacks reads 40 to 73 below them, while the unconfident
+/// blocks in the page's own script that detection was run on in vain, worn type and tables of
+/// figures, read at most 31 below them.
+const MIN_FOREIGN_SHORTFALL: i32 = 35;
 /// The confidence by which the [`sample_strip`] of a page on [`prepare::stained`] paper, read with
 /// its background normalised and thresholded locally, must exceed the page's first reading for
 /// the page to be read so. A strip reads within 2 of its page prepared alike; a newspaper page
@@ -1070,8 +1077,9 @@ impl<'t> Recognizer<'t> {
     /// the blocks of a page read with the automatic language but not confidently: each block whose
     /// text is not text in a language in the page's script is read again in its scripts, as
     /// [`Recognizer::read_block_in_its_scripts`] reads it, and what it reads replaces the
-    /// block's text. A page read confidently, or whose blocks all read as text in its language,
-    /// has no block detected again.
+    /// block's text, unless it falls short of the confidence of the blocks that are by less than
+    /// [`MIN_FOREIGN_SHORTFALL`]. A page read confidently, or whose blocks all read as text in its
+    /// language, has no block detected again.
     fn in_scripts_of_blocks(&self, read: Attempt) -> Result<Attempt, OcrError> {
         if !self.settings.auto() || read.noise || read.recognizer.is_some() {
             return Ok(read);
@@ -1089,11 +1097,18 @@ impl<'t> Recognizer<'t> {
         if read.confident() {
             return Ok(read);
         }
+        let in_language: Vec<bool> = reading
+            .blocks
+            .iter()
+            .map(|block| language_in_script(&block.text, Some(page_script)).is_some())
+            .collect();
+        let ceiling = foreign_confidence_ceiling(&reading.blocks, &in_language);
         let mut reread: Vec<Option<RereadBlock>> = Vec::with_capacity(reading.blocks.len());
-        for block in &reading.blocks {
-            reread.push(match language_in_script(&block.text, Some(page_script)) {
-                Some(_) => None,
-                None => self.read_block_in_its_scripts(&read.prepared, page, made, block)?,
+        for (block, &in_language) in reading.blocks.iter().zip(&in_language) {
+            let foreign = !in_language && ceiling.is_none_or(|most| block.confidence <= most);
+            reread.push(match foreign {
+                true => self.read_block_in_its_scripts(&read.prepared, page, made, block)?,
+                false => None,
             });
         }
         if reread.iter().all(Option::is_none) {
@@ -1448,6 +1463,25 @@ impl<'t> Recognizer<'t> {
             ..reading
         })
     }
+}
+
+/// The highest confidence of a block that is not text in a language at which it may be in another
+/// script than its page, of the blocks of a page and whether each is text in a language in its
+/// script: [`MIN_FOREIGN_SHORTFALL`] below the mean confidence of the words of those that are.
+/// None when none of them has words, as on a page with nothing in its language to compare to.
+fn foreign_confidence_ceiling(blocks: &[Block], in_language: &[bool]) -> Option<i32> {
+    let (confidence_sum, words) = blocks
+        .iter()
+        .zip(in_language)
+        .filter(|(_, &in_language)| in_language)
+        .fold((0i64, 0i64), |(sum, words), (block, _)| {
+            let block_words = word_count(&block.text) as i64;
+            (
+                sum + i64::from(block.confidence) * block_words,
+                words + block_words,
+            )
+        });
+    (words > 0).then(|| (confidence_sum / words) as i32 - MIN_FOREIGN_SHORTFALL)
 }
 
 /// What the runs of lines of a block read with the models of their scripts: their text, the sum
@@ -2236,6 +2270,31 @@ mod tests {
             [(0..55, "Arabic".to_owned()), (55..100, "Han".to_owned())]
         );
         assert!(runs_of_script(&lines, vec![None; 5], 100).is_empty());
+    }
+
+    #[test]
+    fn detects_scripts_only_in_blocks_far_less_confident_than_those_in_the_page_language() {
+        let block = |text: &str, confidence: i32| Block {
+            area: Area {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 1,
+            },
+            text: text.to_owned(),
+            confidence,
+        };
+        let blocks = [
+            block("one two three", 90),
+            block("four", 50),
+            block("garbled", 20),
+        ];
+        assert_eq!(
+            foreign_confidence_ceiling(&blocks, &[true, true, false]),
+            Some(80 - MIN_FOREIGN_SHORTFALL)
+        );
+        assert_eq!(foreign_confidence_ceiling(&blocks, &[false; 3]), None);
+        assert_eq!(foreign_confidence_ceiling(&[block("", 90)], &[true]), None);
     }
 
     #[test]
