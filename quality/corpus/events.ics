@@ -1,0 +1,44 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//dijo quality corpus//EN
+CALSCALE:GREGORIAN
+BEGIN:VEVENT
+UID:event-1@example.org
+DTSTAMP:20240301T090000Z
+DTSTART:20240407T100000Z
+DTEND:20240407T120000Z
+SUMMARY:Harbour trust spring meeting
+LOCATION:Old Customs House\, upper room
+DESCRIPTION:Vote on the budget for the lantern glass and the gallery railin
+ g.
+END:VEVENT
+BEGIN:VEVENT
+UID:event-2@example.org
+DTSTAMP:20240301T090000Z
+DTSTART:20240414T100000Z
+DTEND:20240414T120000Z
+SUMMARY:Glazier's survey of the lantern
+LOCATION:North Point Light
+DESCRIPTION:Measure the four cracked panes and check the frames for rust.
+END:VEVENT
+BEGIN:VEVENT
+UID:event-3@example.org
+DTSTAMP:20240301T090000Z
+DTSTART:20240421T100000Z
+DTEND:20240421T120000Z
+SUMMARY:Railing installation begins
+LOCATION:North Point Light\, gallery
+DESCRIPTION:Scaffolding goes up on the seaward side first\; the tower is cl
+ osed to visitors for two weeks.
+END:VEVENT
+BEGIN:VEVENT
+UID:event-4@example.org
+DTSTAMP:20240301T090000Z
+DTSTART:20240428T100000Z
+DTEND:20240428T120000Z
+SUMMARY:Opening of the keeper's room museum
+LOCATION:North Point Light\, keeper's room
+DESCRIPTION:The school lends the eleven volumes of the ledger for the first
+  month of the exhibition.
+END:VEVENT
+END:VCALENDAR

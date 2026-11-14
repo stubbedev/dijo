@@ -1,0 +1,81 @@
+From: Thomas Reid <thomas.reid@example.org>
+To: Margaret Hale <margaret.hale@example.org>,
+ Eleanor Price <eleanor.price@example.org>
+Subject: Lamp room repairs
+Date: Mon, 04 Mar 2024 09:30:00 +0000
+Message-ID: <letter-1@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="letters"
+
+--letters
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+Dear Margaret,
+
+The glazier came on Tuesday and measured the four cracked panes in the lanter=
+n. He thinks the old frames will hold new glass if we treat the rust first, w=
+hich would save us the cost of a new lantern.
+
+He can start in the second week of April if the weather allows. I said we wou=
+ld confirm by the end of the month.
+
+Best wishes,
+Thomas
+
+--letters
+Content-Type: message/rfc822
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+Content-Disposition: attachment
+
+From: Margaret Hale <margaret.hale@example.org>
+To: Thomas Reid <thomas.reid@example.org>,
+ Eleanor Price <eleanor.price@example.org>
+Subject: Re: Lamp room repairs
+Date: Tue, 05 Mar 2024 09:30:00 +0000
+Message-ID: <letter-2@example.org>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+Dear Thomas,
+
+Thank you for arranging the visit. The trust agreed last night to pay for the=
+ glass and the rust treatment, so please tell the glazier to go ahead.
+
+Could you also ask him whether he can look at the skylight above the stairs? =
+It has leaked since the January gales.
+
+Kind regards,
+Margaret
+
+--letters
+Content-Type: message/rfc822
+Content-Transfer-Encoding: 8bit
+MIME-Version: 1.0
+Content-Disposition: attachment
+
+From: Eleanor Price <eleanor.price@example.org>
+To: Thomas Reid <thomas.reid@example.org>,
+ Margaret Hale <margaret.hale@example.org>
+Subject: Museum opening
+Date: Wed, 06 Mar 2024 09:30:00 +0000
+Message-ID: <letter-3@example.org>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+Dear both,
+
+The parish council would like to hold the opening of the keeper's room museum=
+ on the first Saturday in September. The school has offered to lend the old l=
+edgers it has kept since the light was automated.
+
+Please let me know if that date suits you, and whether the stairs will be saf=
+e for visitors by then.
+
+Yours,
+Eleanor
+
+--letters--

@@ -85,7 +85,6 @@ convert() {
     mv "$work/out/$(basename "${input%.*}").$extension" "$corpus/$name.$extension"
 }
 
-rm -rf "$corpus"
 mkdir -p "$corpus" "$work/out"
 
 fodt "$truth/prose.txt" "$work/prose.fodt" plain lr-tb
@@ -246,3 +245,110 @@ magick -size 2480x3508 xc:white -density 300 -font Courier-Prime-Regular -points
 pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/arabic.pdf" "$work/arabic-300"
 magick "$work/arabic-300.png" -colorspace Gray -depth 8 "$corpus/arabic-scan-300dpi.png"
 cp "$here/quixote-1605.pdf" "$corpus/quixote-1605.pdf"
+
+slide() {
+    local number="$1" title="$2" class=outline line
+    shift 2
+    [ "$number" -eq 1 ] && class=subtitle
+    echo "<draw:page draw:name=\"Slide$number\" draw:master-page-name=\"Default\">"
+    echo "<draw:frame presentation:class=\"title\" presentation:style-name=\"Title\" svg:x=\"2cm\" svg:y=\"1cm\" svg:width=\"24cm\" svg:height=\"3cm\"><draw:text-box><text:p>$(printf '%s' "$title" | xml_escape)</text:p></draw:text-box></draw:frame>"
+    echo "<draw:frame presentation:class=\"$class\" presentation:style-name=\"Body\" svg:x=\"2cm\" svg:y=\"4.5cm\" svg:width=\"24cm\" svg:height=\"10cm\"><draw:text-box>"
+    [ "$class" = outline ] && echo '<text:list>'
+    for line in "$@"; do
+        line=$(printf '%s' "$line" | xml_escape)
+        if [ "$class" = outline ]; then
+            echo "<text:list-item><text:p>$line</text:p></text:list-item>"
+        else
+            echo "<text:p>$line</text:p>"
+        fi
+    done
+    [ "$class" = outline ] && echo '</text:list>'
+    echo '</draw:text-box></draw:frame></draw:page>'
+}
+
+fodp() {
+    local source="$1" output="$2" block number=0
+    local -a lines
+    {
+        cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.presentation">
+<office:automatic-styles>
+<style:page-layout style:name="Layout"><style:page-layout-properties fo:page-width="28cm" fo:page-height="15.75cm" fo:margin="0cm"/></style:page-layout>
+<style:style style:name="Title" style:family="presentation"><style:text-properties fo:font-size="34pt" fo:font-weight="bold" style:font-name="Noto Sans" fo:font-family="Noto Sans"/></style:style>
+<style:style style:name="Body" style:family="presentation"><style:text-properties fo:font-size="22pt" style:font-name="Noto Sans" fo:font-family="Noto Sans"/></style:style>
+</office:automatic-styles>
+<office:master-styles><style:master-page style:name="Default" style:page-layout-name="Layout"/></office:master-styles>
+<office:body><office:presentation>
+EOF
+        while IFS= read -r -d '' block; do
+            number=$((number + 1))
+            mapfile -t lines <<< "$block"
+            slide "$number" "${lines[@]}"
+        done < <(awk -v RS= -v ORS='\0' '1' "$source")
+        echo '</office:presentation></office:body></office:document>'
+    } > "$output"
+}
+
+fodt "$truth/mixed.txt" "$work/mixed.fodt" plain lr-tb "Noto Naskh Arabic"
+for extension in pdf odt docx; do
+    case "$extension" in
+        docx) filter="docx:MS Word 2007 XML" ;;
+        *) filter=$extension ;;
+    esac
+    convert "$work/mixed.fodt" mixed "$extension" "$filter"
+done
+pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/mixed.pdf" "$work/mixed-scan"
+magick "$work/mixed-scan.png" -colorspace Gray -depth 8 "$corpus/mixed-scan.png"
+
+fodp "$truth/slides.txt" "$work/slides.fodp"
+convert "$work/slides.fodp" slides odp odp
+convert "$work/slides.fodp" slides pptx "pptx:Impress MS PowerPoint 2007 XML"
+convert "$work/slides.fodp" slides ppt "ppt:MS PowerPoint 97"
+convert "$work/slides.fodp" slides pdf pdf
+
+tr '\t' ',' < "$truth/inventory.txt" > "$corpus/inventory.csv"
+convert "$corpus/inventory.csv" inventory ods ods
+convert "$corpus/inventory.csv" inventory xls "xls:MS Excel 97"
+duckdb -c "COPY (FROM read_csv('$corpus/inventory.csv')) TO '$work/inventory.parquet' (FORMAT parquet)"
+mv "$work/inventory.parquet" "$corpus/inventory.parquet"
+
+python3 "$here/mail.py" "$truth/letters.txt" "$corpus/letters.eml" "$corpus/letters.mbox"
+python3 "$here/ical.py" "$truth/events.txt" "$corpus/events.ics"
+python3 "$here/vcard.py" "$truth/contacts.txt" "$corpus/contacts.vcf"
+
+pandoc "$work/prose.md" --metadata title=Ledger -o "$corpus/prose.fb2"
+ebook-convert "$corpus/prose.epub" "$corpus/prose.mobi" > /dev/null
+
+pandoc "$work/prose.md" --standalone -o "$work/prose.tex"
+(cd "$work" && latex -interaction=batchmode prose.tex > /dev/null && dvips -q prose.dvi -o "$corpus/prose.ps")
+cp "$work/prose.dvi" "$corpus/prose.dvi"
+soffice --headless --infilter=draw_pdf_import --convert-to svg:draw_svg_Export --outdir "$work/out" "$corpus/prose.pdf" > /dev/null
+mv "$work/out/prose.svg" "$corpus/prose.svg"
+abiword --to=abw --to-name="$corpus/prose.abw" "$corpus/prose.odt"
+python3 "$here/dxf.py" "$truth/prose.txt" "$corpus/prose.dxf"
+python3 "$here/srt.py" "$truth/prose.txt" "$corpus/prose.srt"
+mkvmerge --quiet -o "$corpus/prose.mkv" "$corpus/prose.srt"
+mkdir -p "$work/iso"
+cp "$truth/prose.txt" "$work/iso/prose.txt"
+xorriso -as mkisofs -quiet -V LEDGER -J -R -o "$work/prose.iso" "$work/iso"
+mv "$work/prose.iso" "$corpus/prose.iso"
+(cd "$truth" && gcab -c -z "$corpus/prose.cab" prose.txt)
+cat > "$work/ledger.spec" <<'EOF'
+Name: ledger
+Version: 1.0
+Release: 1
+Summary: Ledger
+License: CC0-1.0
+BuildArch: noarch
+%description
+Ledger.
+%install
+install -D -m 644 %{_sourcedir}/prose.txt %{buildroot}/usr/share/doc/ledger/prose.txt
+%files
+/usr/share/doc/ledger/prose.txt
+EOF
+rpmbuild --quiet -bb --define "_topdir $work/rpm" --define "_dbpath $work/rpmdb" \
+    --define "_sourcedir $truth" "$work/ledger.spec"
+cp "$work"/rpm/RPMS/noarch/ledger-1.0-1.noarch.rpm "$corpus/prose.rpm"
+QT_QPA_PLATFORM=offscreen scribus -g -ns -py "$here/sla.py" "$truth/prose.txt" "$corpus/prose.sla" > /dev/null

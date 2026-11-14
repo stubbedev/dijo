@@ -142,7 +142,8 @@ conformance:
     cargo nextest run --package dijo --cargo-profile release --run-ignored only --test integration -E 'test(/^conformance::/)'
 
 # Score Tika on the JVM, Kreuzberg and Docling (in Docker) against the quality corpus too, each
-# with its defaults, and write quality/COMPARISON.md with all their scores side by side.
+# with its defaults (Tika with tesseract on its path, one OCR thread per page and a 30 minute
+# timeout per file), and write quality/COMPARISON.md with all their scores side by side.
 [unix]
 quality-compare:
     #!/usr/bin/env bash
@@ -151,7 +152,8 @@ quality-compare:
     version=$(conformance/tika-version.sh)
     rm -rf "$dir/tools"
     mkdir -p "$dir/tools"
-    conformance/tika-app.sh "$dir" quality/corpus "$dir/tools/Tika $version" > "$dir/tika.log" 2>&1
+    OMP_THREAD_LIMIT=1 nix shell nixpkgs#tesseract --command \
+        conformance/tika-app.sh "$dir" quality/corpus "$dir/tools/Tika $version" -T 1800000 > "$dir/tika.log" 2>&1
     quality/compare-python.sh "$dir/cache" "$dir/tools" > "$dir/python.log" 2>&1
     QUALITY_COMPARE="$dir/tools" QUALITY_COMPARISON={{justfile_directory()}}/quality/COMPARISON.md \
         cargo nextest run --package dijo --test integration -E 'test(/^quality::/)'
@@ -215,6 +217,7 @@ quality-corpus:
     fonts=$(nix build --no-link --print-out-paths nixpkgs#noto-fonts nixpkgs#noto-fonts-cjk-sans nixpkgs#courier-prime)
     # shellcheck disable=SC2086
     nix shell nixpkgs#libreoffice nixpkgs#pandoc nixpkgs#poppler-utils nixpkgs#imagemagick nixpkgs#exiftool nixpkgs#python3 nixpkgs#texliveSmall nixpkgs#djvulibre nixpkgs#jbig2enc nixpkgs#openjpeg \
+        nixpkgs#duckdb nixpkgs#calibre nixpkgs#abiword nixpkgs#mkvtoolnix-cli nixpkgs#xorriso nixpkgs#gcab nixpkgs#rpm nixpkgs#scribus \
         --command quality/generate.sh $fonts
 
 # Lint every target; warnings fail.

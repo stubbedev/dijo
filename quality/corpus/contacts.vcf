@@ -1,0 +1,33 @@
+BEGIN:VCARD
+VERSION:3.0
+N:Hale;Margaret;;;
+FN:Margaret Hale
+ORG:North Point Harbour Trust
+TITLE:Secretary
+EMAIL;TYPE=INTERNET:margaret.hale@example.org
+TEL;TYPE=WORK,VOICE:+44 1632 960111
+ADR;TYPE=WORK:;;Old Customs House\, Quay Street;Port Ellis;;;
+NOTE:Handles the budget and the trust's correspondence with the parish council.
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+N:Reid;Thomas;;;
+FN:Thomas Reid
+ORG:North Point Light
+TITLE:Keeper
+EMAIL;TYPE=INTERNET:thomas.reid@example.org
+TEL;TYPE=WORK,VOICE:+44 1632 960222
+ADR;TYPE=WORK:;;Keeper's Cottage\, Point Road;Port Ellis;;;
+NOTE:Knows the clockwork and the lens better than anyone living.
+END:VCARD
+BEGIN:VCARD
+VERSION:3.0
+N:Price;Eleanor;;;
+FN:Eleanor Price
+ORG:Port Ellis Parish Council
+TITLE:Clerk
+EMAIL;TYPE=INTERNET:eleanor.price@example.org
+TEL;TYPE=WORK,VOICE:+44 1632 960333
+ADR;TYPE=WORK:;;Parish Hall\, Church Lane;Port Ellis;;;
+NOTE:Organising the museum opening with the school.
+END:VCARD

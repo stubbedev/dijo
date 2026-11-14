@@ -1,0 +1,21 @@
+Item,Shelf,Count,Unit,Supplier
+Lamp wicks,A1,240,piece,Harbour Chandlery
+Paraffin,A2,36,barrel,Northern Oil Company
+Lens cloths,A3,80,piece,Harbour Chandlery
+Brass polish,A4,24,tin,Marlow and Sons
+Clock springs,B1,6,piece,Fenwick Instruments
+Gear oil,B2,12,bottle,Fenwick Instruments
+Glass panes,B3,8,sheet,Kessler Glassworks
+Putty,B4,15,kilogram,Kessler Glassworks
+Ledger books,C1,11,volume,Abbey Stationers
+Pencils,C2,120,piece,Abbey Stationers
+Ink,C3,30,bottle,Abbey Stationers
+Signal flags,C4,14,set,Admiralty Stores
+Rope,D1,600,metre,Rigby Cordage
+Canvas,D2,45,metre,Rigby Cordage
+Paint,D3,40,litre,Marlow and Sons
+Brushes,D4,18,piece,Marlow and Sons
+Coal,E1,3,tonne,Northern Oil Company
+Matches,E2,500,box,Harbour Chandlery
+Candles,E3,200,piece,Harbour Chandlery
+Biscuits,E4,60,tin,Admiralty Stores

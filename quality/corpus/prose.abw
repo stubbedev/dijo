@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE abiword PUBLIC "-//ABISOURCE//DTD AWML 1.0 Strict//EN" "http://www.abisource.com/awml.dtd">
+<abiword template="false" xmlns:ct="http://www.abisource.com/changetracking.dtd" xmlns:fo="http://www.w3.org/1999/XSL/Format" xmlns:math="http://www.w3.org/1998/Math/MathML" xid-max="7" xmlns:dc="http://purl.org/dc/elements/1.1/" fileformat="1.1" xmlns:svg="http://www.w3.org/2000/svg" xmlns:awml="http://www.abisource.com/awml.dtd" xmlns="http://www.abisource.com/awml.dtd" xmlns:xlink="http://www.w3.org/1999/xlink" version="3.0.8" xml:space="preserve" props="dom-dir:ltr; document-footnote-restart-section:0; document-endnote-type:numeric; document-endnote-place-enddoc:1; document-endnote-initial:1; lang:en-US; document-endnote-restart-section:0; document-footnote-restart-page:0; document-footnote-type:numeric; document-footnote-initial:1; document-endnote-place-endsection:0">
+<!-- ======================================================================== -->
+<!-- This file is an AbiWord document.                                        -->
+<!-- AbiWord is a free, Open Source word processor.                           -->
+<!-- More information about AbiWord is available at http://www.abisource.com/ -->
+<!-- You should not edit this file by hand.                                   -->
+<!-- ======================================================================== -->
+
+<metadata>
+<m key="abiword.generator">AbiWord</m>
+<m key="dc.format">application/x-abiword</m>
+</metadata>
+<rdf>
+</rdf>
+<history version="1" edit-time="0" last-saved="1794656212" uid="b0148b9e-e01f-11f1-8a5d-89f286817c21">
+<version id="1" started="1794656212" uid="b019d8e2-e01f-11f1-8a5d-89f286817c21" auto="0" top-xid="7"/>
+</history>
+<styles>
+<s type="P" name="Heading" basedon="Standard" followedby="Heading" props="font-weight:bold; font-size:16pt"/>
+<s type="P" name="Standard" followedby="Standard" props="margin-top:0in; font-size:11pt; margin-bottom:0.0984in; font-family:Noto Sans; dom-dir:ltr"/>
+<s type="P" name="Caption" basedon="Standard" followedby="Caption" props="margin-top:0.0835in; font-size:12pt; margin-bottom:0.0835in; font-style:italic"/>
+<s type="P" name="Normal" props="lang:en-US; default-tab-interval:0.4925in; font-size:12pt; font-family:Noto Sans; dom-dir:ltr"/>
+<s type="P" name="Text body" basedon="Standard" followedby="Text body" props="margin-top:0in; line-height:1.150000; margin-bottom:0.0972in"/>
+</styles>
+<pagesize pagetype="A4" orientation="portrait" width="210.000000" height="297.000000" units="mm" page-scale="1.000000"/>
+<section xid="1" props="page-margin-right:0.7874in; page-width:8.2681in; page-margin-left:0.7874in; page-orientation:portrait; page-margin-bottom:0.7874in; page-margin-top:0.7874in; page-height:11.6929in">
+<p style="Heading" xid="2">The Lighthouse Keeper's Ledger</p>
+<p style="Standard" xid="3">Every evening at dusk the keeper climbed the one hundred and twelve steps of the tower, wound the clockwork that turned the great lens, and wrote a single line in the ledger. Over forty years the ledger filled eleven volumes, and nearly every line recorded the same three facts: the time the lamp was lit, the direction of the wind, and the number of ships that passed before midnight.</p>
+<p style="Standard" xid="4">Historians who later studied the ledgers found that the plain entries told a richer story than anyone expected. Long gaps between ships marked the winters when the northern harbour froze. A sudden rise in traffic matched the year a canal opened two hundred miles inland. Even the handwriting changed, growing smaller and more careful after the storm that destroyed the old pier.</p>
+<p style="Standard" xid="5">The keeper never described the storm itself. The entry for that night reads only that the lamp was lit at seven minutes past five, that the wind blew from the south-west, and that no ships passed. The next morning, according to the harbour records, fishermen found the lantern room glass cracked in four places, yet the light had not gone out once during the night.</p>
+<p style="Standard" xid="6">Today the tower is automated, and the ledgers rest in a climate-controlled archive beside navigation charts from the same decades. Researchers compare the two sources to estimate how shipping routes shifted as engines replaced sails. Their work depends on a simple practice repeated without fail: a person who wrote down what they saw, every single day, whether or not anything seemed to happen.</p>
+<p style="Standard" xid="7">Visitors who reach the top of the tower can still read a copy of the first entry, framed beside the lens. It notes a calm sea, a light westerly breeze, and three fishing boats returning late with full nets.</p>
+</section>
+</abiword>
