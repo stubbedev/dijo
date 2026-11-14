@@ -259,6 +259,16 @@ mod tests {
             assess("\u{E000}\u{E001} ok", 4, 0, Unmapped::Count(10.0)).fault,
             "invalid-characters"
         );
+        let split = "ت الدف ر ف ي ب ي ت الحار س ".repeat(4);
+        assert_eq!(
+            assess(&split, 40, 0, Unmapped::Count(10.0)).fault,
+            "fragmented-words"
+        );
+        let whole = "كان الحارس يصعد درج البرج كل مساء ".repeat(4);
+        assert!(
+            assess(&whole, 100, 0, Unmapped::Count(10.0)).badness < DOUBTFUL,
+            "{whole}"
+        );
         assert!(!is_vowel('ø') && is_vowel('é') && is_vowel('Å'));
     }
 }

@@ -1254,14 +1254,20 @@ fn a_garbage_pdf_text_layer_is_replaced_by_ocr() {
     );
 }
 
+/// LibreOffice draws an Arabic letter with dots as a span whose actual text is the letter, the
+/// dot first: given to the letter, the text layer reads whole and is kept (#384).
 #[test]
-fn a_text_layer_splitting_arabic_words_is_replaced_by_ocr() {
-    assert_text_layer_replaced(
-        "../quality/corpus/arabic.pdf",
-        "fragmented-words",
-        "كان الحارس يصعد درج البرج كل مساء",
-        "يصعد درج الب",
+fn an_arabic_text_layer_drawn_dot_first_is_kept() {
+    let pdf = "../quality/corpus/arabic.pdf";
+    let objects = json_objects(&[pdf]);
+    let document = &objects[0];
+    assert_matches_schema(document);
+    assert!(
+        document["metadata"]["rejected_text_layers"].is_null(),
+        "{document}"
     );
+    let kept = extracted(&["--ocr", "never", pdf]);
+    assert!(kept.contains("كان الحارس يصعد درج البرج كل مساء"), "{kept}");
 }
 
 #[test]
