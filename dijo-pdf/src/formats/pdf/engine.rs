@@ -132,6 +132,11 @@ pub(super) struct Engine {
     /// Whether glyphs are labelled with their marked content, as Tika's tagged writer does
     /// when the document has a usable structure tree.
     labels: bool,
+    /// Whether a page's glyphs are divided into articles by its thread beads, as PDFBox divides
+    /// them, rather than kept together for the reading order to arrange: PDFBox places a glyph
+    /// in a bead by its origin alone, so the first letter of each line of a column whose bead
+    /// starts a hair right of the text lands in an article of its own.
+    by_beads: bool,
     pub(super) damaged_font: bool,
     pub(super) non_embedded_font: bool,
 }
@@ -178,12 +183,13 @@ struct Run<'p, 'e> {
 }
 
 impl Engine {
-    pub(super) fn new(labels: bool) -> Self {
+    pub(super) fn new(labels: bool, by_beads: bool) -> Self {
         Self {
             fonts: Fonts::default(),
             default_font: None,
             unshared: 0,
             labels,
+            by_beads,
             damaged_font: false,
             non_embedded_font: false,
         }
@@ -195,7 +201,11 @@ impl Engine {
         let crop = page.crop_box(pdf);
         let translate = (!jfloat::same(crop[0], 0.0) || !jfloat::same(crop[1], 0.0))
             .then(|| Matrix::translation(-crop[0], -crop[1]));
-        let beads = beads(pdf, page);
+        let beads = if self.by_beads {
+            beads(pdf, page)
+        } else {
+            Vec::new()
+        };
         let mut run = Run {
             engine: self,
             pdf,

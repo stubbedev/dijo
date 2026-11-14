@@ -10,7 +10,8 @@ use super::cos::{text_string, Pdf};
 use super::engine::PageContent;
 use super::jfloat;
 use super::position::TextPosition;
-use super::stripper::{self, WORD_SEPARATOR};
+use super::reading_order;
+use super::stripper::{self, Order, WORD_SEPARATOR};
 use super::structure::{
     self, attribute_int, attributes, is_standard_type, Label, Leaf, StructureIndex,
 };
@@ -267,6 +268,12 @@ impl<'p> Tagged<'p> {
         self.index.is_some()
     }
 
+    /// Whether the lines of the page being recorded have their font runs merged: a page written
+    /// flat in reading order is arranged whole instead.
+    pub(super) fn orders_lines(&self) -> bool {
+        self.reading_order && self.state == State::Routing
+    }
+
     fn of<'a>(writer: &'a mut PageWriter<'p, '_>) -> &'a mut Tagged<'p> {
         writer
             .tagged
@@ -359,17 +366,20 @@ impl<'p> Tagged<'p> {
         content: &mut PageContent,
     ) -> Result<(), WriteFailure> {
         if !Self::of(writer).has_index() {
-            Self::of(writer).state = State::Flat;
+            let tagged = Self::of(writer);
+            tagged.state = State::Flat;
+            let order = reading_order::arrange_page(&mut content.articles, tagged.reading_order);
             let result = Self::flush_pending_page_start(writer)
                 .map_err(WriteFailure::from)
                 .and_then(|()| {
-                    stripper::write_page(&mut content.articles, writer).map_err(WriteFailure::from)
+                    stripper::write_page(&mut content.articles, order, writer)
+                        .map_err(WriteFailure::from)
                 });
             Self::of(writer).state = State::Idle;
             return result;
         }
         Self::of(writer).state = State::Routing;
-        let routed = stripper::write_page(&mut content.articles, writer);
+        let routed = stripper::write_page(&mut content.articles, Order::Drawn, writer);
         Self::of(writer).state = State::Idle;
         routed?;
         let tagged = Self::of(writer);
@@ -389,12 +399,19 @@ impl<'p> Tagged<'p> {
             Some(rejection) => {
                 tagged.pages_fallback += 1;
                 tagged.state = State::Flat;
+                let reads_in_reading_order = tagged.reading_order;
                 writer.out.add(
                     MARKED_CONTENT_REJECTIONS,
                     format!("{page_number}:{rejection}"),
                 );
-                let result =
-                    Self::flush_pending_page_start(writer).and_then(|()| Self::replay_flat(writer));
+                let result = Self::flush_pending_page_start(writer).and_then(|()| {
+                    if !reads_in_reading_order {
+                        return Self::replay_flat(writer);
+                    }
+                    Self::of(writer).events.clear();
+                    let order = reading_order::arrange_page(&mut content.articles, true);
+                    stripper::write_page(&mut content.articles, order, writer)
+                });
                 let tagged = Self::of(writer);
                 tagged.state = State::Idle;
                 tagged.events.clear();

@@ -179,11 +179,9 @@ impl Callbacks for PageWriter<'_, '_> {
     }
 
     fn write_page_start(&mut self, articles: &mut [Vec<TextPosition>]) {
-        if let Some(tagged) = &self.tagged {
-            if tagged.reading_order {
-                for article in articles.iter_mut() {
-                    reading_order::order_lines(article);
-                }
+        if self.tagged.as_ref().is_some_and(Tagged::orders_lines) {
+            for article in articles.iter_mut() {
+                reading_order::order_lines(article);
             }
         }
     }
@@ -256,7 +254,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         }
         Self {
             pdf,
-            engine: Engine::new(labels),
+            engine: Engine::new(labels, !settings.reading_order),
             page: PageWriter {
                 pdf,
                 out,
@@ -321,14 +319,13 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         }
         self.start_page()?;
         let mut content = self.engine.process_page(pdf, page);
-        if self.page.tagged.is_none() && self.settings.reading_order {
-            for article in content.articles.iter_mut() {
-                reading_order::arrange(article);
-            }
-        }
         match self.page.tagged.is_some() {
             true => Tagged::write_page(&mut self.page, self.page_number, &mut content)?,
-            false => stripper::write_page(&mut content.articles, &mut self.page)?,
+            false => {
+                let order =
+                    reading_order::arrange_page(&mut content.articles, self.settings.reading_order);
+                stripper::write_page(&mut content.articles, order, &mut self.page)?
+            }
         }
         self.end_page(pdf, page, &content)
     }

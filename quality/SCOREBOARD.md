@@ -331,7 +331,7 @@
 | chinese-luxun-fengzheng-1948.png | ocr | 0.168 | 0.038 | 0.966 | 0.038 | 1.000 |
 | czech-certuv-svagr-1899.png | ocr | 0.018 | 0.014 | 0.997 | 0.013 | 1.000 |
 | english-macaulay-minutes-1862.pdf | broken-text-layer | 0.027 | 0.109 | 0.952 | 0.103 | 1.000 |
-| article-biollett-2016.pdf | multi-column | 0.226 | 0.297 | 0.993 | 0.170 | 0.851 |
+| article-biollett-2016.pdf | multi-column | 0.161 | 0.212 | 0.994 | 0.168 | 0.910 |
 | article-bmcresnotes-2020.pdf | multi-column | 0.089 | 0.091 | 0.999 | 0.018 | 0.980 |
-| article-atenprimaria-2026.pdf | multi-column | 0.468 | 0.665 | 0.924 | 0.350 | 0.395 |
+| article-atenprimaria-2026.pdf | multi-column | 0.406 | 0.459 | 0.999 | 0.254 | 0.947 |
 | cdc-mmwr-prep-2024.pdf | multi-column | 0.314 | 0.363 | 1.000 | 0.065 | 0.722 |

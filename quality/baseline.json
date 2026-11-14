@@ -112,18 +112,18 @@
     "reading_order": 1.0
   },
   "article-atenprimaria-2026.pdf": {
-    "character_error_rate": 0.4680672268907563,
-    "token_error_rate": 0.6653761061946902,
-    "recall": 0.9242256637168141,
-    "spurious": 0.3500583430571762,
-    "reading_order": 0.39473684210526316
+    "character_error_rate": 0.40647058823529414,
+    "token_error_rate": 0.459070796460177,
+    "recall": 0.9994469026548672,
+    "spurious": 0.2539223781998348,
+    "reading_order": 0.9473684210526315
   },
   "article-biollett-2016.pdf": {
-    "character_error_rate": 0.22637351373513734,
-    "token_error_rate": 0.2967479674796748,
-    "recall": 0.9931207004377736,
-    "spurious": 0.17010713352495427,
-    "reading_order": 0.8507462686567164
+    "character_error_rate": 0.1608241082410824,
+    "token_error_rate": 0.21232020012507818,
+    "recall": 0.9937460913070669,
+    "spurious": 0.16784498559832417,
+    "reading_order": 0.9104477611940298
   },
   "article-bmcresnotes-2020.pdf": {
     "character_error_rate": 0.08891776498979023,

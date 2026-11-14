@@ -723,6 +723,7 @@ mod tests {
     use crate::formats::testing::documents;
     use std::collections::BTreeMap;
     use std::path::Path;
+    use tagged::MARKED_CONTENT_REJECTIONS;
 
     pub(super) const CORPORA: [&str; 2] = ["../quality/corpus", "../test_files/documents"];
 
@@ -960,6 +961,84 @@ mod tests {
         let (xml, _) = native_xml(&document(&objects, b"", &[]));
         assert!(xml.contains("Find Your Email Confirmation"), "{xml}");
         assert!(xml.contains("In this guide, we assume that"), "{xml}");
+    }
+
+    /// The text of a document's XHTML, its tags left out, its lines joined by spaces.
+    fn native_text(input: &[u8]) -> String {
+        let (xml, _) = native_xml(input);
+        let mut text = String::with_capacity(xml.len());
+        let mut in_tag = false;
+        for c in xml.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => {
+                    in_tag = false;
+                    text.push(' ');
+                }
+                _ if !in_tag => text.push(c),
+                _ => {}
+            }
+        }
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    const COLUMNS_RIGHT_FIRST: &str =
+        "BT /F1 10 Tf 1 0 0 1 320 700 Tm (Right column one.) Tj 0 -12 Td (Right column two.) Tj ET \
+         BT /F1 10 Tf 1 0 0 1 72 700 Tm (Left column one.) Tj 0 -12 Td (Left column two.) Tj ET";
+    const COLUMNS_IN_ORDER: &str =
+        "Left column one. Left column two. Right column one. Right column two.";
+
+    #[test]
+    fn reads_columns_in_order_beside_a_running_head_turned_along_the_margin() {
+        let content =
+            format!("{COLUMNS_RIGHT_FIRST} BT /F1 8 Tf 0 1 -1 0 590 300 Tm (Running head) Tj ET");
+        let text = native_text(&document(&page_objects(&content), b"", &[]));
+        assert!(text.contains(COLUMNS_IN_ORDER), "{text}");
+        assert!(text.contains("Running head"), "{text}");
+    }
+
+    #[test]
+    fn reads_a_column_whole_when_a_figure_label_sits_level_with_its_first_line() {
+        let content = "BT /F1 10 Tf 1 0 0 1 90 700 Tm (First line of the column) Tj \
+                       -18 -12 Td (second line of the column) Tj 0 -12 Td (third line of it.) Tj ET \
+                       BT /F1 10 Tf 1 0 0 1 320 640 Tm (Right column text.) Tj ET \
+                       BT /F1 10 Tf 1 0 0 1 320 699 Tm (1.0) Tj ET";
+        let text = native_text(&document(&page_objects(content), b"", &[]));
+        assert!(
+            text.contains("First line of the column second line of the column third line of it."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn keeps_the_first_letters_of_a_column_whose_bead_starts_right_of_them() {
+        let mut objects = page_objects(
+            "BT /F1 10 Tf 1 0 0 1 72 700 Tm (Alpha beta gamma) Tj 0 -12 Td (Delta epsilon) Tj ET",
+        );
+        objects[2] = objects[2].replace("/Contents 4 0 R", "/Contents 4 0 R /B [6 0 R]");
+        objects.push("<< /Type /Bead /R [72.5 600 300 720] >>".to_owned());
+        let text = native_text(&document(&objects, b"", &[]));
+        assert!(text.contains("Alpha beta gamma Delta epsilon"), "{text}");
+    }
+
+    #[test]
+    fn arranges_a_tagged_page_the_tree_does_not_describe() {
+        let mut objects = page_objects(COLUMNS_RIGHT_FIRST);
+        objects[0] = "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R \
+                      /MarkInfo << /Marked true >> >>"
+            .to_owned();
+        objects.push(
+            "<< /Type /StructTreeRoot /K << /Type /StructElem /S /P /Pg 3 0 R /K 0 >> >>"
+                .to_owned(),
+        );
+        let input = document(&objects, b"", &[]);
+        let (_, metadata) = native_xml(&input);
+        assert_eq!(
+            metadata.get(MARKED_CONTENT_REJECTIONS).unwrap(),
+            &["1:no-tagged-text"]
+        );
+        let text = native_text(&input);
+        assert!(text.contains(COLUMNS_IN_ORDER), "{text}");
     }
 
     pub(super) const TEXT: &str =

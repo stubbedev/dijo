@@ -11,6 +11,7 @@ use std::ops::Range;
 use super::jfloat;
 use super::matrix::Matrix;
 use super::position::{is_left_to_right, is_right_to_left, TextPosition};
+use super::stripper::Order;
 use super::structure::Label;
 
 const SAME_LINE: f32 = 0.5;
@@ -22,9 +23,45 @@ const MAX_GLYPH_STEP: f32 = 1.6;
 const MIN_VERTICAL_STEPS: i32 = 8;
 const VERTICAL_MAJORITY: i32 = 2;
 
-/// `ReadingOrder.arrange`: the glyphs of an article reordered into reading order.
-pub(super) fn arrange(glyphs: &mut Vec<TextPosition>) {
-    if glyphs.len() < 2 || has_mixed_directions(glyphs) {
+/// The glyphs of each of a page's articles reordered into reading order when the page is read
+/// in reading order, and the order they are then in.
+pub(super) fn arrange_page(articles: &mut [Vec<TextPosition>], reading_order: bool) -> Order {
+    if !reading_order {
+        return Order::Drawn;
+    }
+    for article in articles {
+        arrange(article);
+    }
+    Order::Arranged
+}
+
+/// `ReadingOrder.arrange`: the glyphs of an article reordered into reading order. Glyphs
+/// written in different directions, such as a running head turned along the margin, are
+/// arranged apart, each direction in the order it is first drawn.
+fn arrange(glyphs: &mut Vec<TextPosition>) {
+    if glyphs.len() < 2 {
+        return;
+    }
+    if !has_mixed_directions(glyphs) {
+        arrange_in_one_direction(glyphs);
+        return;
+    }
+    let mut directions: Vec<(f32, Vec<TextPosition>)> = Vec::new();
+    for glyph in glyphs.drain(..) {
+        let direction = glyph.dir();
+        match directions.iter_mut().find(|(of, _)| *of == direction) {
+            Some((_, group)) => group.push(glyph),
+            None => directions.push((direction, vec![glyph])),
+        }
+    }
+    for (_, mut group) in directions {
+        arrange_in_one_direction(&mut group);
+        glyphs.append(&mut group);
+    }
+}
+
+fn arrange_in_one_direction(glyphs: &mut Vec<TextPosition>) {
+    if glyphs.len() < 2 {
         return;
     }
     if is_written_vertically(glyphs) {
@@ -365,7 +402,9 @@ fn compare_double(a: f32, b: f32) -> Ordering {
     }
 }
 
-/// `bands`: the blocks in bands from the top, each in content stream order.
+/// `bands`: the blocks in bands from the top, each in content stream order. A band ends at a
+/// gap across the page at least as tall as the next block's em, not at the leading between two
+/// lines, which a figure beside the first line of a column would otherwise cut it off at.
 fn bands(blocks: &[Block]) -> Vec<Vec<usize>> {
     let mut from_top: Vec<usize> = (0..blocks.len()).collect();
     from_top.sort_by(|&a, &b| compare_double(blocks[a].top, blocks[b].top));
@@ -373,7 +412,7 @@ fn bands(blocks: &[Block]) -> Vec<Vec<usize>> {
     let mut band_bottom = 0.0f32;
     for index in from_top {
         let block = &blocks[index];
-        if bands.is_empty() || block.top >= band_bottom {
+        if bands.is_empty() || block.top - band_bottom >= block.em {
             bands.push(Vec::new());
             band_bottom = block.bottom;
         }

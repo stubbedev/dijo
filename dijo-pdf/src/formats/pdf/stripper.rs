@@ -36,6 +36,17 @@ pub(super) trait Callbacks {
     fn write_line_separator(&mut self) -> Result<(), Stop>;
 }
 
+/// The order a page's glyphs come to `write_page` in, which decides, as PDFBox's
+/// `sortByPosition` does, whether lines are assembled from where glyphs are on the page or from
+/// where they are along their own direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Order {
+    /// In content stream order, as Tika has them.
+    Drawn,
+    /// Arranged into reading order, each direction apart, as sorting arranges them.
+    Arranged,
+}
+
 /// `PositionWrapper`: a glyph, by article and index, with what line assembly finds of it.
 #[derive(Debug, Clone, Copy)]
 struct Wrapper {
@@ -78,6 +89,7 @@ enum LineItem {
 /// `PDFTextStripper.writePage`.
 pub(super) fn write_page(
     articles: &mut [Vec<TextPosition>],
+    order: Order,
     callbacks: &mut impl Callbacks,
 ) -> Result<(), Stop> {
     if !articles.is_empty() {
@@ -102,10 +114,20 @@ pub(super) fn write_page(
                     previous_average_char_width = -1.0;
                 }
             }
-            let position_x = position.x();
-            let position_y = position.y();
-            let position_width = position.width();
-            let position_height = position.height();
+            let (position_x, position_y, position_width, position_height) = match order {
+                Order::Drawn => (
+                    position.x(),
+                    position.y(),
+                    position.width(),
+                    position.height(),
+                ),
+                Order::Arranged => (
+                    position.x_dir_adj(),
+                    position.y_dir_adj(),
+                    position.width_dir_adj(),
+                    position.height_dir(),
+                ),
+            };
             let word_char_count = position.individual_widths().len() as f32;
             let word_spacing = position.width_of_space();
             let delta_space = if jfloat::same(word_spacing, 0.0) || word_spacing.is_nan() {
