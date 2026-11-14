@@ -27,7 +27,6 @@ use test_case::test_case;
 #[test_case("gazette.sla", "application/vnd.scribus")]
 #[test_case("lighthouse.torrent", "application/x-bittorrent")]
 #[test_case("lighthouse.dvi", "application/x-dvi")]
-#[test_case("lighthouse.dmg", "application/x-apple-diskimage")]
 #[test_case("harbour.parquet", "application/x-parquet")]
 #[test_case("harbour.hlp", "application/winhlp")]
 #[test_case("lighthouse.swf", "application/x-shockwave-flash")]

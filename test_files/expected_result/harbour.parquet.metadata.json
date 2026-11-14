@@ -1,0 +1,38 @@
+{
+    "Content-Type": [
+        "application/x-parquet"
+    ],
+    "database:column-count": [
+        "13"
+    ],
+    "database:column-name": [
+        "berth",
+        "vessel",
+        "flag",
+        "skipper",
+        "remarks",
+        "cargo",
+        "length_m",
+        "tonnage",
+        "arrived",
+        "moored_at",
+        "paid",
+        "fee",
+        "crew.list.element"
+    ],
+    "database:row-count": [
+        "6"
+    ],
+    "parquet:compiled-by": [
+        "the harbour master"
+    ],
+    "parquet:harbour": [
+        "Skagen"
+    ],
+    "tk:parsed-by": [
+        "dijo::ParquetParser"
+    ],
+    "xmp:CreatorTool": [
+        "parquet-cpp-arrow version 24.0.0"
+    ]
+}

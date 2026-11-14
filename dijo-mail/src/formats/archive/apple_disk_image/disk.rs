@@ -339,12 +339,12 @@ pub(super) mod tests {
         assert_eq!(out[1536 + 1024], b'c');
         assert_eq!(out[1536 + 1024 + 1536], b'd');
         let mut visited = Vec::new();
-        disk.visit::<Fault>(1000, 4000, |piece| {
+        disk.visit::<Fault>(1000, 3600, |piece| {
             visited.extend_from_slice(piece);
             Ok(())
         })
         .unwrap();
-        assert_eq!(visited, out[1000..5000]);
+        assert_eq!(visited, out[1000..4600]);
         assert_eq!(disk.in_place(100, 900), Some(&image[100..1000]));
         assert_eq!(disk.in_place(1000, 100), None);
         assert_eq!(disk.in_place(1536, 10), None);

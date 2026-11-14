@@ -319,12 +319,12 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/vnd.wordperfect; version=6.x",
         "org.apache.tika.parser.wordperfect.WordPerfectParser",
     ),
-    ("application/winhlp", "dijo::WinHelpParser"),
     ("application/warc", "org.apache.tika.parser.warc.WARCParser"),
     (
         "application/warc+gz",
         "org.apache.tika.parser.warc.WARCParser",
     ),
+    ("application/winhlp", "dijo::WinHelpParser"),
     (
         "application/x-7z-compressed",
         "org.apache.tika.parser.pkg.SevenZParser",
@@ -338,8 +338,6 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/x-apple-diskimage",
         "dijo::AppleDiskImageParser",
     ),
-    ("application/x-parquet", "dijo::ParquetParser"),
-    ("application/x-shockwave-flash", "dijo::SwfParser"),
     (
         "application/x-archive",
         "org.apache.tika.parser.pkg.PackageParser",
@@ -484,6 +482,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/x-msdownload",
         "org.apache.tika.parser.executable.ExecutableParser",
     ),
+    ("application/x-parquet", "dijo::ParquetParser"),
     (
         "application/x-plist",
         "org.apache.tika.parser.apple.PListParser",
@@ -498,6 +497,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/x-sas-data",
         "org.apache.tika.parser.sas.SAS7BDATParser",
     ),
+    ("application/x-shockwave-flash", "dijo::SwfParser"),
     (
         "application/x-sqlite3",
         "org.apache.tika.parser.sqlite3.SQLite3Parser",

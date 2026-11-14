@@ -1,0 +1,20 @@
+{
+    "Content-Type": [
+        "application/winhlp"
+    ],
+    "dc:rights": [
+        "© 2026 Harbour Office"
+    ],
+    "dc:title": [
+        "Harbour Help"
+    ],
+    "meta:keyword": [
+        "harbour",
+        "lamp",
+        "lighthouse",
+        "tides"
+    ],
+    "tk:parsed-by": [
+        "dijo::WinHelpParser"
+    ]
+}

@@ -2038,7 +2038,7 @@ fn lotus_notes_databases_are_read_for_their_documents() {
     assert_eq!(objects[0]["metadata"]["title"], "Share");
     let text = objects[0]["text"].as_str().unwrap();
     assert!(
-        text.starts_with("Form\nShare\nName\nBASF\nNumber\n23\nSharePrice\n41.23\n"),
+        text.starts_with("Form\n\tShare\n\tName\n\tBASF\n\tNumber\n\t23\n\tSharePrice\n\t41.23\n"),
         "{text}"
     );
     let objects = json_objects(&[
@@ -2050,7 +2050,7 @@ fn lotus_notes_databases_are_read_for_their_documents() {
     ]);
     let text = objects[0]["text"].as_str().unwrap();
     assert!(
-        text.contains("Keepers\nAnna Berg\nOve Gr\u{f8}n\n"),
+        text.contains("Keepers\n\tAnna Berg\n\tOve Gr\u{f8}n\n"),
         "{text}"
     );
     assert!(
@@ -2149,7 +2149,7 @@ fn parquet_files_are_read_for_their_rows() {
     assert!(
         text.contains(
             "2\tHav\u{f8}rn\tNO\t\t\therring, smoked\t14.25\t45\t2024-03-02\t\
-             2024-03-02T18:05:12.250Z\tfalse\t75.50\t"
+             2024-03-02T18:05:12.250Z\tfalse\t75.50\n"
         ),
         "{text}"
     );
