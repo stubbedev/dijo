@@ -2026,6 +2026,37 @@ fn dvi_files_are_read_for_their_text() {
         .contains("the font cmex10"));
 }
 
+/// `lotus-notes-stocks.nsf` is `Stocks.nsf` of Apache OpenOffice's NotesAccess example
+/// (`main/odk/examples/java/NotesAccess`, Apache-2.0), a database Notes 5 wrote;
+/// `lotus-notes-log.nsf` was written by `dijo-small/tests/fixtures/lotus_notes/log.py` from the
+/// documentation of the format, not by Notes.
+#[test]
+fn lotus_notes_databases_are_read_for_their_documents() {
+    let objects = json_objects(&[&document("lotus-notes-stocks.nsf")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "application/vnd.lotus-notes");
+    assert_eq!(objects[0]["metadata"]["title"], "Share");
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("Form\nShare\nName\nBASF\nNumber\n23\nSharePrice\n41.23\n"),
+        "{text}"
+    );
+    let objects = json_objects(&[
+        "--ocr",
+        "never",
+        "--embedded",
+        "separate",
+        &document("lotus-notes-log.nsf"),
+    ]);
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(text.contains("Keepers\nAnna Berg\nOve Gr\u{f8}n\n"), "{text}");
+    assert!(
+        text.contains("Waves broke over the north pier;\nno ships passed.\nHour\tWind\n21:00\tSW 9\n"),
+        "{text}"
+    );
+    assert_eq!(embedded_paths(&objects), ["<root>", "tide.txt"]);
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

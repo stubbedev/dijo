@@ -43,7 +43,9 @@ pub mod formats {
     pub mod idml;
     pub mod iwork;
     pub mod iwork_package;
+    pub mod lmbcs;
     pub mod lotus_123;
+    pub mod lotus_notes;
     pub mod markdown;
     pub mod mat;
     pub mod matroska;

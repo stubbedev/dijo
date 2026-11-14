@@ -1,0 +1,54 @@
+	Form
+
+	Share
+
+	Name
+
+	BASF
+
+	Number
+
+	23
+
+	SharePrice
+
+	41.23
+
+
+
+	Form
+
+	Share
+
+	Name
+
+	Daimler
+
+	Number
+
+	12
+
+	SharePrice
+
+	43.76
+
+
+
+	Form
+
+	Share
+
+	Name
+
+	Bayer
+
+	Number
+
+	64
+
+	SharePrice
+
+	32.34
+
+
+

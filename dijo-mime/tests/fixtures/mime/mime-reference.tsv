@@ -100,6 +100,10 @@ documents	lotus-r4.wk4	file	application/vnd.lotus-1-2-3; version=4	tk:content-ty
 documents	lotus-r4.wk4	bytes	application/vnd.lotus-1-2-3; version=4	tk:content-type-magic-detected=application/vnd.lotus-1-2-3; version=4
 documents	lotus-r9.123	file	application/vnd.lotus-1-2-3; version=97+9.x	tk:content-type-magic-detected=application/vnd.lotus-1-2-3; version=97+9.x
 documents	lotus-r9.123	bytes	application/vnd.lotus-1-2-3; version=97+9.x	tk:content-type-magic-detected=application/vnd.lotus-1-2-3; version=97+9.x
+documents	lotus-notes-log.nsf	file	application/vnd.lotus-notes	tk:content-type-magic-detected=application/vnd.lotus-notes
+documents	lotus-notes-log.nsf	bytes	application/vnd.lotus-notes	tk:content-type-magic-detected=application/vnd.lotus-notes
+documents	lotus-notes-stocks.nsf	file	application/vnd.lotus-notes	tk:content-type-magic-detected=application/vnd.lotus-notes
+documents	lotus-notes-stocks.nsf	bytes	application/vnd.lotus-notes	tk:content-type-magic-detected=application/vnd.lotus-notes
 documents	mail.emlx	file	message/x-emlx	tk:content-type-magic-detected=message/x-emlx
 documents	mail.emlx	bytes	message/x-emlx	tk:content-type-magic-detected=message/x-emlx
 documents	malayalam-scan.png	file	image/png	tk:content-type-magic-detected=image/png

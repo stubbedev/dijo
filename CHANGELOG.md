@@ -77,6 +77,11 @@
   header and footer sections in their own `div`s. The `<metadata>` is the document's Dublin Core, keywords and
   generator, its dates ISO local date-times (AbiWord saves them without a time zone); each `<data>` item is handed on
   as an embedded document. Gzip-compressed `.zabw` files are read through the gzip parser.
+* Lotus Notes databases (`.nsf`) are read (#356), where Tika reads nothing of them: the title and ODS version, and
+  the data notes' text, text lists, numbers, times, number and time ranges and rich text (paragraphs, line breaks,
+  tables), with file attachments as embedded documents. What no documentation describes (LZ1- or Huffman-compressed
+  attachments, Notes 4 and older, more than one page of bucket descriptors) is declined as unread, and encrypted
+  documents fail as encrypted.
 * tika-server 3 clients can switch to dijo by its base URL (#363). `PUT /tika/text`, `/tika/html`, `/tika/xml` and
   `/tika` with `Accept: application/json` answer tika-server 3's JSON object: the metadata in tika-server 3's keys and
   the content in `X-TIKA:content`. `/rmeta`, `/meta`, `/meta/{field}` and `/unpack/all`, which tika-server 3 and 4 both

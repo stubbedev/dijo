@@ -34,6 +34,8 @@ use crate::test_utils;
 #[test_case("lotus-r1.wks", 0.9; "Test Lotus 1-2-3 Release 1 worksheet")]
 #[test_case("lotus-r4.wk4", 0.9; "Test Lotus 1-2-3 Release 4 workbook")]
 #[test_case("lotus-r9.123", 0.9; "Test Lotus 1-2-3 97 workbook")]
+#[test_case("lotus-notes-stocks.nsf", 0.9; "Test Lotus Notes database")]
+#[test_case("lotus-notes-log.nsf", 0.9; "Test generated Lotus Notes database")]
 #[test_case("works4.wps", 0.9; "Test Works 4 document")]
 #[test_case("works7.wps", 0.9; "Test Works 7 document")]
 #[test_case("wordpro-bullets.lwp", 0.9; "Test Word Pro document")]

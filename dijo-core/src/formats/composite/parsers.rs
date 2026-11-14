@@ -77,6 +77,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "org.apache.tika.parser.geogebra.GeoGebraParser",
     ),
     ("application/vnd.lotus-1-2-3", "dijo::Lotus123Parser"),
+    ("application/vnd.lotus-notes", "dijo::LotusNotesParser"),
     ("application/vnd.lotus-wordpro", "dijo::WordProParser"),
     (
         "application/vnd.mif",

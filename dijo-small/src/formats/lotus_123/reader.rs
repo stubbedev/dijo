@@ -14,8 +14,8 @@ use std::rc::Rc;
 
 use super::database;
 use super::format::Style;
-use super::lmbcs;
 use super::number::{self, Number};
+use crate::formats::lmbcs;
 use crate::formats::xhtml::within_budget;
 use crate::formats::Failure;
 use crate::java::trim;

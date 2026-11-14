@@ -1,0 +1,76 @@
+	Form
+
+	Entry
+
+	Subject
+
+	Storm on the north pier
+
+	Keepers
+
+	Anna Berg
+
+	Ove Grøn
+
+	Lit
+
+	2026-03-14T18:05:00Z
+
+	Ships
+
+	3
+
+	Wind
+
+	12.5
+
+	Body
+
+	The lamp was lit at dusk.
+
+Waves broke over the north pier;
+no ships passed.
+
+	Hour	Wind
+
+	21:00	SW 9
+
+
+Ove signed the log.
+
+
+
+tide.txt
+
+High water at 05:12, low water at 11:30.
+
+
+
+
+	Form
+
+	Entry
+
+	Subject
+
+	Calm night
+
+	Pressure
+
+	1013
+
+	1015.5
+
+	Watch
+
+	2026-03-15
+
+	18:00:00 - 06:30:00
+
+	Body
+
+	No ships, a clear sky.
+
+
+
+

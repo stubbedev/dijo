@@ -1,4 +1,5 @@
-//! The Lotus Multi-Byte Character Set, in which 1-2-3 keeps its text, as libwps and ICU read it.
+//! The Lotus Multi-Byte Character Set, in which 1-2-3 and Notes keep their text, as libwps and ICU
+//! read it.
 //!
 //! A byte from 0x20 to 0x7F is ASCII, and a tab, line feed or carriage return is itself. A byte
 //! from 0x01 to 0x0F names the single-byte group of the one byte after it, and one from 0x10 to
@@ -18,7 +19,7 @@ use std::sync::LazyLock;
 use crate::text::charset::Charset;
 
 /// The group 1-2-3 Release 2 keeps its text in, and the default of a workbook's.
-pub(super) const LATIN: u8 = 0x01;
+pub(crate) const LATIN: u8 = 0x01;
 const GREEK: u8 = 0x02;
 const HEBREW: u8 = 0x03;
 const ARABIC: u8 = 0x04;
@@ -195,7 +196,7 @@ fn is_double(group: u8) -> bool {
 }
 
 /// The text of `bytes`, up to the first NUL, in a file whose default group is `default`.
-pub(super) fn decode(bytes: &[u8], default: u8) -> String {
+pub(crate) fn decode(bytes: &[u8], default: u8) -> String {
     let mut text = String::with_capacity(bytes.len());
     let mut rest = bytes;
     while let Some((&byte, after)) = rest.split_first() {
@@ -240,6 +241,29 @@ pub(super) fn decode(bytes: &[u8], default: u8) -> String {
 }
 
 /// Whether `c` is text: no control character but a tab or line break.
+/// The lines of `bytes`, which NUL characters that start a character end, as Notes keeps the
+/// lines of its text, each decoded as [`decode`] decodes it, in a file whose default group is
+/// `default`.
+pub(crate) fn decode_lines(bytes: &[u8], default: u8) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        if byte == 0 {
+            lines.push(decode(&bytes[start..at], default));
+            start = at + 1;
+        }
+        at += match byte {
+            0x01..=0x0F => 2,
+            0x10..=0x1F => 3,
+            0x80.. if is_double(default) => 2,
+            _ => 1,
+        };
+    }
+    lines.push(decode(&bytes[start..], default));
+    lines
+}
+
 fn is_kept(c: char) -> bool {
     !c.is_control() || matches!(c, '\t' | '\n' | '\r')
 }
@@ -282,5 +306,18 @@ mod tests {
         assert_eq!(decode(&[0x03, 0x41], LATIN), "\u{fffd}");
         assert_eq!(decode(&[0x07, 0x41, b'x'], LATIN), "\u{fffd}x");
         assert_eq!(decode(&[0x12, 0x41], LATIN), "\u{fffd}");
+    }
+
+    #[test]
+    fn breaks_lines_at_the_nuls_that_start_a_character() {
+        assert_eq!(
+            decode_lines(b"north pier;\0no ships", LATIN),
+            ["north pier;", "no ships"]
+        );
+        assert_eq!(
+            decode_lines(&[b'a', 0x14, 0x01, 0x00, 0, b'b'], LATIN),
+            ["a\u{100}", "b"]
+        );
+        assert_eq!(decode_lines(b"", LATIN), [""]);
     }
 }

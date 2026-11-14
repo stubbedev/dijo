@@ -13,13 +13,12 @@
 //! 1-2-3 97 and later in those of their formats database ([`database`]). Range names are not
 //! written, as no spreadsheet parser writes a workbook's names, and neither is the document
 //! information after the EOF record of a `.123` file, whose records no reference describes. Text
-//! is decoded from the Lotus Multi-Byte Character Set ([`lmbcs`]): Release 1 and 2 keep it in
+//! is decoded from the Lotus Multi-Byte Character Set ([`lmbcs`](crate::formats::lmbcs)): Release 1 and 2 keep it in
 //! its group 1, code page 850, as Gnumeric reads them, and later releases in the group their
 //! BOF record names. A file protected by a password fails as encrypted.
 
 mod database;
 mod format;
-mod lmbcs;
 mod number;
 mod reader;
 
