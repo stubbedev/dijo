@@ -23,6 +23,11 @@
 //! rest) is its Dublin Core, its `KEYWORDS` its keywords and its `ANZPAGES` its page count; its
 //! language is `DOCLANGINFO`, or else the language its text is set in.
 //!
+//! Scribus 1.7.1 and later spell out the names of the elements and attributes earlier versions
+//! capitalise and abbreviate (`Document`, `PageObject`, `ItemType`, `Content` and `Chars` for
+//! `DOCUMENT`, `PAGEOBJECT`, `PTYPE`, `ITEXT` and `CH`, `DocumentInfoTitle` for `TITLE`); a
+//! document is read in the names of the version that wrote it.
+//!
 //! Scribus before 1.3.4 writes a story's paragraph breaks and tabs as raw control characters,
 //! which XML does not allow: such a document that the XML reader rejects is not read, rather
 //! than read by a reader of its own that forgives what XML forbids, which would hold a second
@@ -57,25 +62,48 @@ const HEADING_STYLES: &[&str] = &["Heading "];
 const MAX_NESTING: usize = 64;
 /// The first version of Scribus that writes paragraph breaks and tabs as elements.
 const ELEMENT_TEXT_VERSION: [u32; 3] = [1, 3, 4];
+/// The first version of Scribus that spells out the names of its elements and attributes.
+const SPELLED_OUT_VERSION: [u32; 3] = [1, 7, 1];
+
+/// The name of an element or attribute in each vocabulary: before Scribus 1.7.1, and since.
+type Name = (&'static str, &'static str);
+
+const DOCUMENT: Name = ("DOCUMENT", "Document");
+const PARAGRAPH_STYLE: Name = ("STYLE", "ParagraphStyle");
+const STYLE_NAME: Name = ("NAME", "Name");
+const PARENT: Name = ("PARENT", "Parent");
+const TEXT_LANGUAGE: Name = ("LANGUAGE", "Language");
+const PAGES: Name = ("ANZPAGES", "PageCount");
+const ITEM_TYPE: Name = ("PTYPE", "ItemType");
+const ITEM_NAME: Name = ("ANNAME", "AutoName");
+const ITEM_STYLE: Name = ("PSTYLE", "ParagraphStyle");
+const INLINE_IMAGE: Name = ("isInlineImage", "IsInlineImage");
+const INLINE_IMAGE_EXTENSION: Name = ("inlineImageExt", "InlineImageExt");
+const NEXT_ITEM: Name = ("NEXTITEM", "NextItem");
+const X_POSITION: Name = ("XPOS", "XPosition");
+const Y_POSITION: Name = ("YPOS", "YPosition");
+const TEXT: Name = ("ITEXT", "Content");
+const CHARACTERS: Name = ("CH", "Chars");
+const ANCHORED_ITEM: Name = ("COBJ", "Object");
 
 /// The metadata keys of the `DOCUMENT` element's attributes.
-const PROPERTIES: [(&str, &str); 16] = [
-    ("TITLE", "dc:title"),
-    ("AUTHOR", "dc:creator"),
-    ("SUBJECT", "dc:subject"),
-    ("COMMENTS", "dc:description"),
-    ("KEYWORDS", "meta:keyword"),
-    ("PUBLISHER", "dc:publisher"),
-    ("DOCCONTRIB", "dc:contributor"),
-    ("DOCDATE", "dcterms:created"),
-    ("DOCTYPE", "dc:type"),
-    ("DOCFORMAT", "dc:format"),
-    ("DOCIDENT", "dc:identifier"),
-    ("DOCSOURCE", "dc:source"),
-    ("DOCLANGINFO", "dc:language"),
-    ("DOCRELATION", "dc:relation"),
-    ("DOCCOVER", "dc:coverage"),
-    ("DOCRIGHTS", "dc:rights"),
+const PROPERTIES: [(Name, &str); 16] = [
+    (("TITLE", "DocumentInfoTitle"), "dc:title"),
+    (("AUTHOR", "DocumentInfoAuthor"), "dc:creator"),
+    (("SUBJECT", "DocumentInfoSubject"), "dc:subject"),
+    (("COMMENTS", "DocumentInfoComments"), "dc:description"),
+    (("KEYWORDS", "DocumentInfoKeywords"), "meta:keyword"),
+    (("PUBLISHER", "DocumentInfoPublisher"), "dc:publisher"),
+    (("DOCCONTRIB", "DocumentInfoContributors"), "dc:contributor"),
+    (("DOCDATE", "DocumentInfoDate"), "dcterms:created"),
+    (("DOCTYPE", "DocumentInfoType"), "dc:type"),
+    (("DOCFORMAT", "DocumentInfoFormat"), "dc:format"),
+    (("DOCIDENT", "DocumentInfoIdentifier"), "dc:identifier"),
+    (("DOCSOURCE", "DocumentInfoSource"), "dc:source"),
+    (("DOCLANGINFO", "DocumentInfoLanguage"), "dc:language"),
+    (("DOCRELATION", "DocumentInfoRelation"), "dc:relation"),
+    (("DOCCOVER", "DocumentInfoCoverage"), "dc:coverage"),
+    (("DOCRIGHTS", "DocumentInfoRights"), "dc:rights"),
 ];
 const LANGUAGE: &str = "dc:language";
 const PAGE_COUNT: &str = "xmpTPg:NPages";
@@ -255,20 +283,46 @@ enum List {
 }
 
 impl List {
-    fn of(element: &str) -> Option<List> {
-        match element {
-            "MASTEROBJECT" => Some(List::Master),
-            "PAGEOBJECT" => Some(List::Page),
-            "FRAMEOBJECT" => Some(List::Anchored),
-            _ => None,
+    const ALL: [List; 3] = [List::Master, List::Page, List::Anchored];
+
+    fn of(element: &str, vocabulary: Vocabulary) -> Option<List> {
+        List::ALL
+            .into_iter()
+            .find(|list| list.element(vocabulary) == element)
+    }
+
+    fn element(self, vocabulary: Vocabulary) -> &'static str {
+        vocabulary.name(match self {
+            List::Master => ("MASTEROBJECT", "MasterObject"),
+            List::Page => ("PAGEOBJECT", "PageObject"),
+            List::Anchored => ("FRAMEOBJECT", "FrameObject"),
+        })
+    }
+}
+
+/// The names a document's elements and attributes are written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Vocabulary {
+    /// The capitalised and abbreviated names of Scribus before 1.7.1.
+    #[default]
+    Abbreviated,
+    /// The names Scribus 1.7.1 and later spell out.
+    SpelledOut,
+}
+
+impl Vocabulary {
+    /// The names of a `SCRIBUSUTF8NEW` document of the Scribus `version`.
+    fn of(version: &str) -> Vocabulary {
+        match release(version) >= SPELLED_OUT_VERSION {
+            true => Vocabulary::SpelledOut,
+            false => Vocabulary::Abbreviated,
         }
     }
 
-    fn element(self) -> &'static str {
+    fn name(self, (abbreviated, spelled_out): Name) -> &'static str {
         match self {
-            List::Master => "MASTEROBJECT",
-            List::Page => "PAGEOBJECT",
-            List::Anchored => "FRAMEOBJECT",
+            Vocabulary::Abbreviated => abbreviated,
+            Vocabulary::SpelledOut => spelled_out,
         }
     }
 }
@@ -398,15 +452,19 @@ fn declined<'a>(failure: Failure, raw_text_version: Option<String>) -> Decline<'
     }
 }
 
-/// Whether the Scribus `version` is before 1.3.4, which writes paragraph breaks and tabs as
-/// raw control characters: each of its first three numbers, a missing one 0, compared.
-fn writes_raw_text(version: &str) -> bool {
+/// The first three numbers of the Scribus `version`, a missing one 0.
+fn release(version: &str) -> [u32; 3] {
     let mut numbers = version.split('.').map(|part| {
         let digits = part.bytes().take_while(u8::is_ascii_digit).count();
         part[..digits].parse::<u32>().unwrap_or(0)
     });
-    let release = [(); 3].map(|()| numbers.next().unwrap_or(0));
-    release < ELEMENT_TEXT_VERSION
+    [(); 3].map(|()| numbers.next().unwrap_or(0))
+}
+
+/// Whether the Scribus `version` is before 1.3.4, which writes paragraph breaks and tabs as
+/// raw control characters.
+fn writes_raw_text(version: &str) -> bool {
+    release(version) < ELEMENT_TEXT_VERSION
 }
 
 /// The value of the attribute `name` of `element` as a number, if it has one.
@@ -450,6 +508,7 @@ struct Reading {
     /// The version of Scribus that wrote the document, if it writes raw control characters in
     /// its text.
     raw_text_version: Option<String>,
+    vocabulary: Vocabulary,
 }
 
 impl Reading {
@@ -470,7 +529,10 @@ impl Reading {
     fn root(&mut self, local_name: &str, attributes: &[Attribute]) -> Result<(), Failure> {
         let version = attribute(attributes, "", "Version");
         let raw_text = match local_name {
-            "SCRIBUSUTF8NEW" => version.is_some_and(writes_raw_text),
+            "SCRIBUSUTF8NEW" => {
+                self.vocabulary = version.map_or(Vocabulary::Abbreviated, Vocabulary::of);
+                version.is_some_and(writes_raw_text)
+            }
             "SCRIBUSUTF8" | "SCRIBUS" => true,
             other => {
                 return Err(Failure::Malformed(format!(
@@ -491,39 +553,45 @@ impl Reading {
     }
 
     fn document_properties(&mut self, attributes: &[Attribute]) -> Result<(), Failure> {
+        let vocabulary = self.vocabulary;
         let metadata = &mut self.document.metadata;
         for (name, key) in PROPERTIES {
-            if let Some(value) = attribute(attributes, "", name).map(str::trim) {
+            if let Some(value) = attribute(attributes, "", vocabulary.name(name)).map(str::trim) {
                 if !value.is_empty() {
                     metadata.push((key, value.to_owned()));
                 }
             }
         }
-        let language = attribute(attributes, "", "LANGUAGE").map(str::trim);
+        let language = attribute(attributes, "", vocabulary.name(TEXT_LANGUAGE)).map(str::trim);
         if let Some(language) = language.filter(|language| !language.is_empty()) {
             if !metadata.iter().any(|&(key, _)| key == LANGUAGE) {
                 metadata.push((LANGUAGE, language.replace('_', "-")));
             }
         }
-        if let Some(pages) = number::<u32>(attributes, "DOCUMENT", "ANZPAGES")? {
+        let element = vocabulary.name(DOCUMENT);
+        if let Some(pages) = number::<u32>(attributes, element, vocabulary.name(PAGES))? {
             metadata.push((PAGE_COUNT, pages.to_string()));
         }
         Ok(())
     }
 
     fn start_item(&mut self, list: List, attributes: &[Attribute]) -> Result<(), Failure> {
-        let element = list.element();
+        let vocabulary = self.vocabulary;
+        let element = list.element(vocabulary);
         let ordinal = self.ordinals.entry(list).or_insert(0);
         let own_ordinal = *ordinal;
         *ordinal += 1;
-        let kind = number::<i32>(attributes, element, "PTYPE")?
-            .ok_or_else(|| Failure::Malformed(format!("{WHAT} has a {element} without a PTYPE")))?;
+        let item_type = vocabulary.name(ITEM_TYPE);
+        let kind = number::<i32>(attributes, element, item_type)?.ok_or_else(|| {
+            Failure::Malformed(format!("{WHAT} has a {element} without a {item_type}"))
+        })?;
+        let text = |name: Name| attribute(attributes, "", vocabulary.name(name)).unwrap_or("");
         let flag = |name: &str| attribute(attributes, "", name) == Some("1");
         let content = match kind {
-            2 if flag("isInlineImage") => {
+            2 if flag(vocabulary.name(INLINE_IMAGE)) => {
                 let data = attribute(attributes, "", "ImageData").unwrap_or("");
-                let name = attribute(attributes, "", "ANNAME").unwrap_or("");
-                let extension = attribute(attributes, "", "inlineImageExt").unwrap_or("");
+                let name = text(ITEM_NAME);
+                let extension = text(INLINE_IMAGE_EXTENSION);
                 Content::InlineImage(InlineImage {
                     name: match extension.is_empty() {
                         true => name.to_owned(),
@@ -533,15 +601,15 @@ impl Reading {
                 })
             }
             4 | 8 if !flag("isNoteFrame") => {
-                let style = attribute(attributes, "", "PSTYLE").unwrap_or("");
-                Content::Story(Story::new(self.document.style_id(style)))
+                Content::Story(Story::new(self.document.style_id(text(ITEM_STYLE))))
             }
             12 => Content::Group(Vec::new()),
             16 => Content::Table(Vec::new()),
             _ => Content::Nothing,
         };
         let id = number::<i64>(attributes, element, "ItemID")?;
-        let next = number::<i64>(attributes, element, "NEXTITEM")?
+        let next_item = vocabulary.name(NEXT_ITEM);
+        let next = number::<i64>(attributes, element, next_item)?
             .filter(|&next| next >= 0)
             .map(|next| match id {
                 Some(_) => Ok(Link::Id(next)),
@@ -549,7 +617,7 @@ impl Reading {
                     .map(|next| Link::Ordinal(list, next))
                     .map_err(|_| {
                         Failure::Malformed(format!(
-                            "{WHAT} has a {element} whose NEXTITEM is out of range: {next}"
+                            "{WHAT} has a {element} whose {next_item} is out of range: {next}"
                         ))
                     }),
             })
@@ -558,8 +626,8 @@ impl Reading {
         self.document.items.push(Item {
             list,
             page: number(attributes, element, "OwnPage")?.unwrap_or(0),
-            x: number(attributes, element, "XPOS")?.unwrap_or(0.0),
-            y: number(attributes, element, "YPOS")?.unwrap_or(0.0),
+            x: number(attributes, element, vocabulary.name(X_POSITION))?.unwrap_or(0.0),
+            y: number(attributes, element, vocabulary.name(Y_POSITION))?.unwrap_or(0.0),
             link: id.map_or(Link::Ordinal(list, own_ordinal), Link::Id),
             next,
             content,
@@ -632,10 +700,12 @@ impl Reading {
 
     /// Reads the `ITEXT` element with `attributes` into the story being read.
     fn text(&mut self, attributes: &[Attribute]) -> Result<(), Failure> {
-        let legacy_style =
-            attribute(attributes, "", "PSTYLE").and_then(|style| self.document.style_id(style));
-        let anchor = number::<i64>(attributes, "ITEXT", "COBJ")?;
-        let unicode = number::<u32>(attributes, "ITEXT", "Unicode")?;
+        let vocabulary = self.vocabulary;
+        let element = vocabulary.name(TEXT);
+        let legacy_style = attribute(attributes, "", vocabulary.name(ITEM_STYLE))
+            .and_then(|style| self.document.style_id(style));
+        let anchor = number::<i64>(attributes, element, vocabulary.name(ANCHORED_ITEM))?;
+        let unicode = number::<u32>(attributes, element, "Unicode")?;
         let Some(story) = self.story() else {
             return Ok(());
         };
@@ -650,7 +720,8 @@ impl Reading {
                 }
             }
             (None, _) => {
-                for character in attribute(attributes, "", "CH").unwrap_or("").chars() {
+                let characters = attribute(attributes, "", vocabulary.name(CHARACTERS));
+                for character in characters.unwrap_or("").chars() {
                     story.push_char(character);
                 }
             }
@@ -659,14 +730,16 @@ impl Reading {
     }
 
     fn paragraph_style(&mut self, attributes: &[Attribute]) -> Option<StyleId> {
-        let parent = attribute(attributes, "", "PARENT").unwrap_or("");
+        let parent = attribute(attributes, "", self.vocabulary.name(PARENT)).unwrap_or("");
         self.document.style_id(parent)
     }
 
     /// Reads the element `local_name` of a story into the story being read, if it is one.
     fn story_element(&mut self, local_name: &str, attributes: &[Attribute]) -> Result<(), Failure> {
+        if local_name == self.vocabulary.name(TEXT) {
+            return self.text(attributes);
+        }
         let character = match local_name {
-            "ITEXT" => return self.text(attributes),
             "para" | "trail" | "DefaultStyle" => {
                 let style = self.paragraph_style(attributes);
                 if let Some(story) = self.story() {
@@ -705,24 +778,25 @@ impl Reading {
             self.root(local_name, attributes)?;
             return Ok(Open::Nothing);
         }
-        if let Some(list) = List::of(local_name) {
+        let vocabulary = self.vocabulary;
+        if let Some(list) = List::of(local_name, vocabulary) {
             self.start_item(list, attributes)?;
             return Ok(Open::Item);
         }
+        if local_name == vocabulary.name(DOCUMENT) {
+            self.document_properties(attributes)?;
+            return Ok(Open::Nothing);
+        }
+        if local_name == vocabulary.name(PARAGRAPH_STYLE) {
+            if let Some(name) = attribute(attributes, "", vocabulary.name(STYLE_NAME)) {
+                let parent = attribute(attributes, "", vocabulary.name(PARENT)).unwrap_or("");
+                self.document
+                    .styles
+                    .push((name.to_owned(), parent.to_owned()));
+            }
+            return Ok(Open::Nothing);
+        }
         Ok(match local_name {
-            "DOCUMENT" => {
-                self.document_properties(attributes)?;
-                Open::Nothing
-            }
-            "STYLE" => {
-                if let Some(name) = attribute(attributes, "", "NAME") {
-                    let parent = attribute(attributes, "", "PARENT").unwrap_or("");
-                    self.document
-                        .styles
-                        .push((name.to_owned(), parent.to_owned()));
-                }
-                Open::Nothing
-            }
             "Pattern" => Open::Skipped,
             "Cell" => {
                 self.start_cell(attributes)?;

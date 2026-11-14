@@ -313,7 +313,7 @@
 | prose.ps | niche-formats | 1.000 | 1.000 | 0.000 | 0.000 | 0.000 |
 | prose.svg | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.abw | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| prose.sla | niche-formats | 1.000 | 1.000 | 0.000 | 0.000 | 0.000 |
+| prose.sla | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.dxf | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.srt | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.mkv | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

@@ -1764,11 +1764,11 @@
     "reading_order": 1.0
   },
   "prose.sla": {
-    "character_error_rate": 1.0,
-    "token_error_rate": 1.0,
-    "recall": 0.0,
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
     "spurious": 0.0,
-    "reading_order": 0.0
+    "reading_order": 1.0
   },
   "prose.srt": {
     "character_error_rate": 0.0,

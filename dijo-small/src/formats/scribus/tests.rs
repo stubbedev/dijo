@@ -3,9 +3,18 @@ use super::*;
 /// The XHTML body and the metadata of the Scribus 1.5 document whose `DOCUMENT` has the
 /// attributes `attributes` and holds `content`.
 fn extract_with(attributes: &str, content: &str) -> (String, dijo_core::Metadata) {
+    extract_document(
+        "1.5.8",
+        &format!("<DOCUMENT ANZPAGES=\"1\" {attributes}>\n{content}\n</DOCUMENT>"),
+    )
+}
+
+/// The XHTML body and the metadata of the document of the Scribus `version` whose root holds
+/// `document`.
+fn extract_document(version: &str, document: &str) -> (String, dijo_core::Metadata) {
     let document = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<SCRIBUSUTF8NEW Version=\"1.5.8\">\n\
-         <DOCUMENT ANZPAGES=\"1\" {attributes}>\n{content}\n</DOCUMENT>\n</SCRIBUSUTF8NEW>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<SCRIBUSUTF8NEW Version=\"{version}\">\n\
+         {document}\n</SCRIBUSUTF8NEW>\n"
     );
     let (xml, metadata) = crate::Extractor::new()
         .set_xml_output(true)
@@ -244,6 +253,55 @@ fn reads_the_document_information_as_metadata() {
     assert_eq!(metadata["dc:language"], ["da"]);
 }
 
+/// The shape Scribus 1.7.3 saves `quality/corpus/prose.sla` in, with the rest of what the
+/// version writes under the names it spells out.
+#[test]
+fn reads_the_names_scribus_1_7_1_and_later_spell_out() {
+    let image = "AAAADXh4eHh4";
+    let (body, metadata) = extract_document(
+        "1.7.3",
+        &format!(
+            "<Document PageCount=\"2\" DocumentInfoTitle=\"The Keeper's Ledger\" \
+             DocumentInfoAuthor=\"Anna Berg\" DocumentInfoLanguage=\"\" Language=\"en_US\">\
+             <ParagraphStyle Name=\"Default Paragraph Style\" DefaultStyle=\"1\"/>\
+             <ParagraphStyle Name=\"Title\" Parent=\"Heading 1\"/>\
+             <MasterPage PageXPosition=\"100\"/><Page PageXPosition=\"100\"/>\
+             <PageObject XPosition=\"0\" YPosition=\"500\" OwnPage=\"1\" ItemID=\"2\" \
+             ItemType=\"4\" NextItem=\"-1\" BackItem=\"1\"><StoryText><DefaultStyle/>\
+             </StoryText></PageObject>\
+             <FrameObject InID=\"3\" XPosition=\"0\" YPosition=\"0\" OwnPage=\"0\" \
+             ItemID=\"30\" ItemType=\"4\" NextItem=\"-1\" BackItem=\"-1\"><StoryText>\
+             <DefaultStyle/><Content Chars=\"Anchored\"/><trail/></StoryText></FrameObject>\
+             <PageObject XPosition=\"157\" YPosition=\"77\" OwnPage=\"0\" ItemID=\"1\" \
+             ItemType=\"4\" NextItem=\"2\" BackItem=\"-1\"><StoryText><DefaultStyle/>\
+             <Content Chars=\"The Ledger\"/><para Parent=\"Title\"/>\
+             <Content Chars=\"Lit at dusk\"/><tab/><Content Unicode=\"25\" Object=\"3\"/>\
+             <para/><Content Chars=\"Calm sea.\"/><trail/></StoryText></PageObject>\
+             <PageObject XPosition=\"0\" YPosition=\"10\" OwnPage=\"0\" ItemID=\"4\" \
+             ItemType=\"16\"><TableData><Cell Row=\"0\" Column=\"0\"><StoryText>\
+             <Content Chars=\"Wind\"/></StoryText></Cell></TableData></PageObject>\
+             <PageObject XPosition=\"0\" YPosition=\"20\" OwnPage=\"0\" ItemID=\"5\" \
+             ItemType=\"2\" AutoName=\"Lens\" IsInlineImage=\"1\" InlineImageExt=\"png\" \
+             ImageData=\"{image}\"/>\
+             <PageObject XPosition=\"0\" YPosition=\"0\" OwnPage=\"0\" ItemID=\"6\" \
+             PTYPE=\"4\" ItemType=\"6\"><StoryText><ITEXT CH=\"Not this\"/></StoryText>\
+             </PageObject></Document>"
+        ),
+    );
+    assert_eq!(
+        body,
+        "<table><tr>\t<td><p>Wind</p>\n</td></tr>\n</table>\n<h1>The Ledger</h1>\n\
+         <p>Lit at dusk\t</p>\n<p>Anchored</p>\n<p>Calm sea.</p>\n"
+    );
+    assert_eq!(metadata["dc:title"], ["The Keeper's Ledger"]);
+    assert_eq!(metadata["dc:creator"], ["Anna Berg"]);
+    assert_eq!(metadata["dc:language"], ["en-US"]);
+    assert_eq!(metadata["xmpTPg:NPages"], ["2"]);
+    assert_eq!(metadata["xmp:CreatorTool"], ["Scribus 1.7.3"]);
+    let exception = &metadata["tk:exception:embedded-stream-exception"][0];
+    assert!(exception.contains("\"Lens.png\""), "{exception}");
+}
+
 #[test]
 fn reads_compressed_documents_through_the_gzip_parser() {
     let document = format!(
@@ -266,6 +324,20 @@ fn tells_the_versions_that_write_raw_control_characters() {
     }
     for version in ["1.3.4", "1.4.8", "1.5.8", "1.6.0.svn", "2"] {
         assert!(!writes_raw_text(version), "{version}");
+    }
+}
+
+#[test]
+fn tells_the_versions_that_spell_out_their_names() {
+    for version in ["1.3.4", "1.5.8", "1.6.4", "1.7.0", "1.7.0.svn"] {
+        assert_eq!(
+            Vocabulary::of(version),
+            Vocabulary::Abbreviated,
+            "{version}"
+        );
+    }
+    for version in ["1.7.1", "1.7.3", "1.7.10.svn", "1.8.0", "2"] {
+        assert_eq!(Vocabulary::of(version), Vocabulary::SpelledOut, "{version}");
     }
 }
 
