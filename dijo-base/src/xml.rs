@@ -894,9 +894,21 @@ fn is_name_start(c: char) -> bool {
     c == ':' || c == '_' || c.is_ascii_alphabetic() || (!c.is_ascii() && is_unicode_name(c))
 }
 
+/// Whether each byte is an ASCII character [`is_name_char`] accepts.
+const ASCII_NAME_BYTES: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut byte: u8 = 0;
+    while byte.is_ascii() {
+        table[byte as usize] =
+            byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.');
+        byte += 1;
+    }
+    table
+};
+
 /// [`is_name_char`] of an ASCII character, told by its byte.
 fn is_ascii_name_char(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.')
+    ASCII_NAME_BYTES[usize::from(byte)]
 }
 
 fn is_name_char(c: char) -> bool {
@@ -1038,7 +1050,10 @@ impl Parser<'_> {
     }
 
     fn peek(&mut self) -> Result<Option<char>> {
-        self.peek_at(0)
+        match self.rest().as_bytes() {
+            [byte, _, _, _, ..] if byte.is_ascii() => Ok(Some(char::from(*byte))),
+            _ => self.peek_at(0),
+        }
     }
 
     fn next(&mut self) -> Result<Option<char>> {
@@ -1059,31 +1074,30 @@ impl Parser<'_> {
 
     /// Whether the text goes on with the ASCII `literal`, read up to the first character that
     /// differs.
-    fn starts_with(&mut self, literal: &str) -> Result<bool> {
+    fn starts_with<const N: usize>(&mut self, literal: &[u8; N]) -> Result<bool> {
         debug_assert!(literal.is_ascii());
-        self.buffer(literal.len());
+        self.buffer(N);
         let rest = self.rest().as_bytes();
-        let compared = rest.len().min(literal.len());
-        if !rest.iter().zip(literal.as_bytes()).all(|(a, b)| a == b) {
+        if let Some(prefix) = rest.first_chunk::<N>() {
+            return Ok(prefix == literal);
+        }
+        if !literal.starts_with(rest) {
             return Ok(false);
         }
-        if compared < literal.len() {
-            self.text_end()?;
-            return Ok(false);
-        }
-        Ok(true)
+        self.text_end()?;
+        Ok(false)
     }
 
-    fn skip(&mut self, literal: &str) -> Result<bool> {
+    fn skip<const N: usize>(&mut self, literal: &[u8; N]) -> Result<bool> {
         if self.starts_with(literal)? {
-            self.position += literal.len();
+            self.position += N;
             Ok(true)
         } else {
             Ok(false)
         }
     }
 
-    fn require(&mut self, literal: &str, what: &str) -> Result<()> {
+    fn require<const N: usize>(&mut self, literal: &[u8; N], what: &str) -> Result<()> {
         if self.skip(literal)? {
             Ok(())
         } else {
@@ -1176,8 +1190,12 @@ impl Parser<'_> {
     /// Reads up to and past the ASCII `terminator`, each character on the way one Xerces
     /// accepts in `what`, as a loop of [`Parser::skip`] and [`Parser::expect_char`] would; the
     /// characters before the terminator, which the window holds until the mark moves on.
-    fn until(&mut self, terminator: &str, what: &str) -> Result<std::ops::Range<usize>> {
-        let first = terminator.as_bytes()[0];
+    fn until<const N: usize>(
+        &mut self,
+        terminator: &[u8; N],
+        what: &str,
+    ) -> Result<std::ops::Range<usize>> {
+        let first = terminator[0];
         let start = self.position;
         self.mark = start;
         loop {
@@ -1195,7 +1213,7 @@ impl Parser<'_> {
     /// the parse even when the document starts otherwise.
     fn declaration_follows(&mut self) -> Result<bool> {
         self.peek_at(4)?;
-        Ok(self.starts_with("<?xml")? && self.peek_at(5)?.is_some_and(is_space))
+        Ok(self.starts_with(b"<?xml")? && self.peek_at(5)?.is_some_and(is_space))
     }
 
     fn document(
@@ -1215,11 +1233,11 @@ impl Parser<'_> {
                 Some('<') => {}
                 Some(_) => return fatal("content is not allowed in prolog"),
             }
-            if self.skip("<!--")? {
+            if self.skip(b"<!--")? {
                 self.report_comment(handler)?;
-            } else if self.skip("<?")? {
+            } else if self.skip(b"<?")? {
                 self.report_processing_instruction(handler)?;
-            } else if self.skip("<!DOCTYPE")? {
+            } else if self.skip(b"<!DOCTYPE")? {
                 if seen_doctype {
                     return fatal("a second DOCTYPE");
                 }
@@ -1244,9 +1262,9 @@ impl Parser<'_> {
                 Some('<') => {}
                 Some(_) => return fatal("content after the root element"),
             }
-            if self.skip("<!--")? {
+            if self.skip(b"<!--")? {
                 self.report_comment(handler)?;
-            } else if self.skip("<?")? {
+            } else if self.skip(b"<?")? {
                 self.report_processing_instruction(handler)?;
             } else {
                 return fatal("markup after the root element");
@@ -1261,17 +1279,17 @@ impl Parser<'_> {
         let mut found = false;
         while self.peek()? != Some('?') {
             found = true;
-            let name = if self.skip("version")? {
+            let name = if self.skip(b"version")? {
                 "version"
-            } else if self.skip("encoding")? {
+            } else if self.skip(b"encoding")? {
                 "encoding"
-            } else if self.skip("standalone")? {
+            } else if self.skip(b"standalone")? {
                 "standalone"
             } else {
                 return malformed("a pseudo attribute expected in the XML declaration");
             };
             self.skip_spaces()?;
-            self.require("=", "= in the XML declaration")?;
+            self.require(b"=", "= in the XML declaration")?;
             self.skip_spaces()?;
             let quote = match self.next()? {
                 Some(q @ ('"' | '\'')) => q,
@@ -1314,7 +1332,7 @@ impl Parser<'_> {
         if !found || state == 0 {
             return malformed("the XML declaration has no version");
         }
-        self.require("?>", "the end of the XML declaration")?;
+        self.require(b"?>", "the end of the XML declaration")?;
         if let Some(encoding) = encoding {
             if !is_encoding_name(&encoding) {
                 return malformed(format!("invalid encoding name {encoding}"));
@@ -1327,8 +1345,8 @@ impl Parser<'_> {
 
     /// Reads a comment after its `<!--`: where its text lies.
     fn comment(&mut self) -> Result<std::ops::Range<usize>> {
-        let text = self.until("--", "a comment")?;
-        if self.skip(">")? {
+        let text = self.until(b"--", "a comment")?;
+        if self.skip(b">")? {
             return Ok(text);
         }
         malformed("-- inside a comment")
@@ -1343,11 +1361,11 @@ impl Parser<'_> {
         if target.contains(':') {
             return malformed("a colon in a processing instruction target");
         }
-        if self.skip("?>")? {
+        if self.skip(b"?>")? {
             return Ok((target, self.position..self.position));
         }
         self.require_spaces("after a processing instruction target")?;
-        let data = self.until("?>", "a processing instruction")?;
+        let data = self.until(b"?>", "a processing instruction")?;
         Ok((target, data))
     }
 
@@ -1393,12 +1411,12 @@ impl Parser<'_> {
     }
 
     fn external_id(&mut self, system_required: bool) -> Result<bool> {
-        if self.skip("SYSTEM")? {
+        if self.skip(b"SYSTEM")? {
             self.require_spaces("after SYSTEM")?;
             self.quoted("system literal")?;
             return Ok(true);
         }
-        if self.skip("PUBLIC")? {
+        if self.skip(b"PUBLIC")? {
             self.require_spaces("after PUBLIC")?;
             let public = self.quoted("public identifier")?;
             if !public
@@ -1434,14 +1452,14 @@ impl Parser<'_> {
                 external_subset && self.document_types == DocumentTypes::Processed;
             self.skip_spaces()?;
         }
-        if self.skip("[")? {
+        if self.skip(b"[")? {
             match self.document_types {
                 DocumentTypes::Processed => self.internal_subset()?,
                 DocumentTypes::Skipped => self.skip_internal_subset()?,
             }
             self.skip_spaces()?;
         }
-        self.require(">", "the end of the DOCTYPE")
+        self.require(b">", "the end of the DOCTYPE")
     }
 
     /// Skips an internal subset up to the `]` that ends it, as a reader without DTD support
@@ -1465,22 +1483,22 @@ impl Parser<'_> {
         loop {
             self.mark = self.position;
             self.skip_spaces()?;
-            if self.skip("]")? {
+            if self.skip(b"]")? {
                 return Ok(());
             }
-            if self.skip("%")? {
+            if self.skip(b"%")? {
                 self.name("a parameter entity reference")?;
-                self.require(";", "; after a parameter entity reference")?;
+                self.require(b";", "; after a parameter entity reference")?;
                 self.parameter_references = true;
-            } else if self.skip("<!--")? {
+            } else if self.skip(b"<!--")? {
                 self.comment()?;
-            } else if self.skip("<?")? {
+            } else if self.skip(b"<?")? {
                 self.processing_instruction()?;
-            } else if self.skip("<!ENTITY")? {
+            } else if self.skip(b"<!ENTITY")? {
                 self.entity_declaration()?;
-            } else if self.skip("<!ATTLIST")? {
+            } else if self.skip(b"<!ATTLIST")? {
                 self.attlist_declaration()?;
-            } else if self.skip("<!ELEMENT")? || self.skip("<!NOTATION")? {
+            } else if self.skip(b"<!ELEMENT")? || self.skip(b"<!NOTATION")? {
                 self.require_spaces("in a declaration")?;
                 self.name("a declaration")?;
                 loop {
@@ -1501,7 +1519,7 @@ impl Parser<'_> {
 
     fn entity_declaration(&mut self) -> Result<()> {
         self.require_spaces("after ENTITY")?;
-        let parameter = self.skip("%")?;
+        let parameter = self.skip(b"%")?;
         if parameter {
             self.require_spaces("after %")?;
         }
@@ -1518,7 +1536,7 @@ impl Parser<'_> {
                 return malformed("an entity value or external identifier expected");
             }
             let spaced = self.skip_spaces()?;
-            if self.starts_with("NDATA")? {
+            if self.starts_with(b"NDATA")? {
                 if !spaced || parameter {
                     return malformed("NDATA misplaced");
                 }
@@ -1529,7 +1547,7 @@ impl Parser<'_> {
             Entity::External
         };
         self.skip_spaces()?;
-        self.require(">", "the end of an entity declaration")?;
+        self.require(b">", "the end of an entity declaration")?;
         if !parameter {
             self.entities.entry(name).or_insert(entity);
         }
@@ -1541,7 +1559,7 @@ impl Parser<'_> {
         let element = self.name("an attribute list")?;
         loop {
             let spaced = self.skip_spaces()?;
-            if self.skip(">")? {
+            if self.skip(b">")? {
                 return Ok(());
             }
             if !spaced {
@@ -1549,7 +1567,7 @@ impl Parser<'_> {
             }
             let name = self.name("an attribute definition")?;
             self.require_spaces("after an attribute name")?;
-            if self.skip("(")? {
+            if self.skip(b"(")? {
                 self.enumeration()?;
             } else {
                 let kind = self.name("an attribute type")?;
@@ -1558,17 +1576,17 @@ impl Parser<'_> {
                     | "NMTOKENS" => {}
                     "NOTATION" => {
                         self.require_spaces("after NOTATION")?;
-                        self.require("(", "a notation list")?;
+                        self.require(b"(", "a notation list")?;
                         self.enumeration()?;
                     }
                     _ => return malformed(format!("invalid attribute type {kind}")),
                 }
             }
             self.require_spaces("before an attribute default")?;
-            let value = if self.skip("#REQUIRED")? || self.skip("#IMPLIED")? {
+            let value = if self.skip(b"#REQUIRED")? || self.skip(b"#IMPLIED")? {
                 None
             } else {
-                if self.skip("#FIXED")? {
+                if self.skip(b"#FIXED")? {
                     self.require_spaces("after #FIXED")?;
                 }
                 Some(self.attribute_value()?)
@@ -1632,8 +1650,8 @@ impl Parser<'_> {
     }
 
     fn reference(&mut self) -> Result<Reference> {
-        if self.skip("#")? {
-            let hex = self.skip("x")?;
+        if self.skip(b"#")? {
+            let hex = self.skip(b"x")?;
             let mut digits = String::new();
             while let Some(c) = self.peek()? {
                 if c == ';' {
@@ -1650,7 +1668,7 @@ impl Parser<'_> {
                 digits.push(c);
                 self.position += 1;
             }
-            self.require(";", "; after a character reference")?;
+            self.require(b";", "; after a character reference")?;
             let code = u32::from_str_radix(&digits, if hex { 16 } else { 10 })
                 .ok()
                 .and_then(char::from_u32)
@@ -1669,7 +1687,7 @@ impl Parser<'_> {
             }
         }
         let name = self.name("an entity reference")?;
-        self.require(";", "; after an entity reference")?;
+        self.require(b";", "; after an entity reference")?;
         Ok(Reference::Entity(name))
     }
 
@@ -1775,7 +1793,7 @@ impl Parser<'_> {
     ) -> std::result::Result<(), Stop> {
         let mut open: Vec<Name> = Vec::new();
         loop {
-            self.require("<", "a start tag")?;
+            self.require(b"<", "a start tag")?;
             let (name, empty) = self.start_tag(scopes, handler)?;
             if !empty {
                 open.push(name);
@@ -1788,11 +1806,11 @@ impl Parser<'_> {
                     return Ok(());
                 }
                 self.content(handler)?;
-                if self.skip("</")? {
+                if self.skip(b"</")? {
                     let mut qname = self.spare_names.pop().unwrap_or_default();
                     self.qname_into("an end tag", &mut qname)?;
                     self.skip_spaces()?;
-                    self.require(">", "the end of an end tag")?;
+                    self.require(b">", "the end of an end tag")?;
                     let name = open.pop().expect("an element is open");
                     if name.qualified_name() != qname {
                         return fatal(format!(
@@ -1844,12 +1862,12 @@ impl Parser<'_> {
                     }) {
                         return Ok(());
                     }
-                    if self.skip("<!--")? {
+                    if self.skip(b"<!--")? {
                         self.report_comment(handler)?;
-                    } else if self.skip("<![CDATA[")? {
-                        let section = self.until("]]>", "a CDATA section")?;
+                    } else if self.skip(b"<![CDATA[")? {
+                        let section = self.until(b"]]>", "a CDATA section")?;
                         emit_text(handler, self.text.slice(section), TextKind::CData)?;
-                    } else if self.skip("<?")? {
+                    } else if self.skip(b"<?")? {
                         self.report_processing_instruction(handler)?;
                     } else if self.peek_at(1)? == Some('/')
                         || self.peek_at(1)?.is_some_and(is_name_start)
@@ -1913,7 +1931,7 @@ impl Parser<'_> {
             match self.peek()? {
                 None | Some('<' | '&') => return Ok(start..self.position),
                 Some(_) => {
-                    if self.starts_with("]]>")? {
+                    if self.starts_with(b"]]>")? {
                         return fatal("]]> in content");
                     }
                     self.expect_char("content")?;
@@ -2050,10 +2068,10 @@ impl Parser<'_> {
         let mut count = 0;
         let empty = loop {
             let spaced = self.skip_spaces()?;
-            if self.skip("/>")? {
+            if self.skip(b"/>")? {
                 break true;
             }
-            if self.skip(">")? {
+            if self.skip(b">")? {
                 break false;
             }
             if !spaced {
@@ -2064,7 +2082,7 @@ impl Parser<'_> {
             }
             let local_start = self.qname_into("an attribute", &mut slots[count].qualified_name)?;
             self.skip_spaces()?;
-            self.require("=", "= after an attribute name")?;
+            self.require(b"=", "= after an attribute name")?;
             self.skip_spaces()?;
             self.attribute_value_into(&mut slots[count].value)?;
             let (read, slot) = slots.split_at_mut(count);
@@ -2571,6 +2589,17 @@ mod tests {
                 }
             })
             .map_or(text.len(), |(at, _)| at)
+    }
+
+    #[test]
+    fn tells_the_ascii_name_characters_by_their_bytes() {
+        for byte in 0..=u8::MAX {
+            assert_eq!(
+                is_ascii_name_char(byte),
+                byte.is_ascii() && is_name_char(char::from(byte)),
+                "{byte:#04X}"
+            );
+        }
     }
 
     #[test]
