@@ -99,6 +99,11 @@ dijo takes models and techniques from PaddleOCR / PP-OCRv5 (PaddlePaddle, Apache
     use a BatchNormalization attribute rten refuses (5af5d649).
 - **In-process pure-Rust runtime.** The models run on rten (now 0.28, f922a5a8), so no native library or Python
   joins the build. How they are loaded and charged to memory is under "Streaming and memory".
+- **Under evaluation** (from PaddleOCR's papers list; each must hold accuracy, time per page and RSS before it
+  ships): the Korean PP-OCRv5 recogniser (#372), PP-OCRv6 small/tiny recognisers and tiny detector (#373),
+  rotated line crops as in PP-OCR v1 (#374), PP-DocLayout-S for region order on scans (#375), table structure on
+  scanned pages against a model-free baseline (#376), and int8 models (#377). Server, large-layout, formula and
+  vision-language models were rejected for size or speed; orientation classifiers fix no failing row.
 
 ## Throughput and memory
 
