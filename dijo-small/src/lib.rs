@@ -61,14 +61,15 @@ pub mod formats {
     pub mod sas;
     pub mod scribus;
     pub mod source_code;
+    mod style_headings;
     pub mod subtitle;
     pub mod svg;
-    pub mod translation;
     pub mod swf;
+    pub mod translation;
     pub mod tsd;
     pub mod vcard;
-    pub mod word_pro;
     pub mod winhelp;
+    pub mod word_pro;
     pub mod wordperfect;
     pub mod xml_2003;
 }

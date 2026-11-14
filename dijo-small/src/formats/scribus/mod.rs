@@ -40,6 +40,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::{record_stream_exception, ResourceType, Wrapping, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::style_headings::{StyleHeadings, HEADINGS};
 use crate::formats::xhtml::Xhtml;
 use crate::formats::xml::{self, attribute, Attribute, SaxHandler};
 use crate::formats::{Decline, Failure, Parser, Prepared};
@@ -50,7 +51,8 @@ const NAME: &str = "dijo::ScribusParser";
 const WHAT: &str = "The Scribus document";
 const MEDIA_TYPE: &str = "application/vnd.scribus";
 
-const HEADINGS: [&str; 6] = ["h1", "h2", "h3", "h4", "h5", "h6"];
+/// The names of Scribus's built-in heading styles, before their level.
+const HEADING_STYLES: &[&str] = &["Heading "];
 /// The deepest frames are written in one another, through groups and frames anchored in text.
 const MAX_NESTING: usize = 64;
 /// The first version of Scribus that writes paragraph breaks and tabs as elements.
@@ -352,13 +354,10 @@ impl Document {
 
     /// The heading level of each style read, by its id.
     fn style_levels(&self) -> Vec<Option<usize>> {
-        let headings = heading_levels(&self.styles, built_in_heading);
+        let headings = StyleHeadings::new(&self.styles, HEADING_STYLES);
         let mut levels = vec![None; self.style_ids.len()];
         for (name, &StyleId(id)) in &self.style_ids {
-            levels[id] = headings
-                .get(name)
-                .copied()
-                .or_else(|| built_in_heading(name));
+            levels[id] = headings.level(name);
         }
         levels
     }
@@ -408,56 +407,6 @@ fn writes_raw_text(version: &str) -> bool {
     });
     let release = [(); 3].map(|()| numbers.next().unwrap_or(0));
     release < ELEMENT_TEXT_VERSION
-}
-
-/// The heading level of a style named `Heading N`.
-fn built_in_heading(style: &str) -> Option<usize> {
-    style
-        .strip_prefix("Heading ")?
-        .parse::<usize>()
-        .ok()
-        .filter(|level| (1..=HEADINGS.len()).contains(level))
-}
-
-/// The heading level of each style of `styles`, its name and the style it is based on, that is
-/// a heading's by `built_in` or is based on one; a cycle of styles is none.
-fn heading_levels(
-    styles: &[(String, String)],
-    built_in: impl Fn(&str) -> Option<usize>,
-) -> HashMap<String, usize> {
-    let based_on: HashMap<&str, &str> = styles
-        .iter()
-        .map(|(name, base)| (name.as_str(), base.as_str()))
-        .collect();
-    let mut resolved: HashMap<&str, Option<usize>> = HashMap::with_capacity(styles.len());
-    let mut chain = Vec::new();
-    for (name, _) in styles {
-        chain.clear();
-        let mut current = name.as_str();
-        let level = loop {
-            if let Some(&level) = resolved.get(current) {
-                break level;
-            }
-            if let Some(level) = built_in(current) {
-                break Some(level);
-            }
-            if chain.contains(&current) {
-                break None;
-            }
-            chain.push(current);
-            match based_on.get(current) {
-                Some(&base) if !base.is_empty() => current = base,
-                Some(_) | None => break None,
-            }
-        };
-        for &link in &chain {
-            resolved.insert(link, level);
-        }
-    }
-    resolved
-        .into_iter()
-        .filter_map(|(name, level)| Some((name.to_owned(), level?)))
-        .collect()
 }
 
 /// The value of the attribute `name` of `element` as a number, if it has one.

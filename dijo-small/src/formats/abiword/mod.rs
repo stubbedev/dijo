@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{ResourceType, Wrapping, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::style_headings::{StyleHeadings, HEADINGS};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::xml::{self, attribute, Attribute, SaxHandler};
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
@@ -41,7 +42,8 @@ const WHAT: &str = "The AbiWord document";
 const AWML_NAMESPACE: &str = "http://www.abisource.com/awml.dtd";
 const XLINK_NAMESPACE: &str = "http://www.w3.org/1999/xlink";
 
-const HEADINGS: [&str; 6] = ["h1", "h2", "h3", "h4", "h5", "h6"];
+/// The names of AbiWord's built-in heading styles, before their level.
+const HEADING_STYLES: &[&str] = &["Heading ", "Numbered Heading "];
 /// The deepest a list is nested: AbiWord's list levels go no deeper.
 const MAX_LIST_DEPTH: usize = 9;
 
@@ -90,7 +92,7 @@ fn read_document(input: &[u8], pages: Pages<'_>, xhtml: &mut Xhtml) -> Result<()
         xhtml,
         open: Vec::new(),
         styles: Vec::new(),
-        headings: HashMap::new(),
+        headings: StyleHeadings::new(&[], HEADING_STYLES),
         lists: HashMap::new(),
         stories: vec![Story::default()],
         tables: Vec::new(),
@@ -235,55 +237,6 @@ impl ListKind {
             ListKind::Unordered | ListKind::None => "ul",
         }
     }
-}
-
-/// The heading level of AbiWord's built-in style named `style`, if it is a heading's.
-fn built_in_heading(style: &str) -> Option<usize> {
-    let level = style
-        .strip_prefix("Heading ")
-        .or_else(|| style.strip_prefix("Numbered Heading "))?;
-    level
-        .parse::<usize>()
-        .ok()
-        .filter(|level| (1..=HEADINGS.len()).contains(level))
-}
-
-/// The heading level of each style of `styles`, its name and the style it is based on, that is
-/// a heading's or is based on one; a cycle of styles is none.
-fn heading_levels(styles: &[(String, String)]) -> HashMap<String, usize> {
-    let based_on: HashMap<&str, &str> = styles
-        .iter()
-        .map(|(name, base)| (name.as_str(), base.as_str()))
-        .collect();
-    let mut resolved: HashMap<&str, Option<usize>> = HashMap::with_capacity(styles.len());
-    let mut chain = Vec::new();
-    for (name, _) in styles {
-        chain.clear();
-        let mut current = name.as_str();
-        let level = loop {
-            if let Some(&level) = resolved.get(current) {
-                break level;
-            }
-            if let Some(level) = built_in_heading(current) {
-                break Some(level);
-            }
-            if chain.contains(&current) {
-                break None;
-            }
-            chain.push(current);
-            match based_on.get(current) {
-                Some(&base) if !base.is_empty() => current = base,
-                Some(_) | None => break None,
-            }
-        };
-        for &link in &chain {
-            resolved.insert(link, level);
-        }
-    }
-    resolved
-        .into_iter()
-        .filter_map(|(name, level)| Some((name.to_owned(), level?)))
-        .collect()
 }
 
 /// What a paragraph is written as.
@@ -531,7 +484,7 @@ struct Reading<'x, 'h> {
     open: Vec<Open>,
     /// The name and base of each style, until `<styles>` ends.
     styles: Vec<(String, String)>,
-    headings: HashMap<String, usize>,
+    headings: StyleHeadings,
     lists: HashMap<String, ListKind>,
     /// The stories being written, the innermost last, the document's own first.
     stories: Vec<Story>,
@@ -573,12 +526,7 @@ impl Reading<'_, '_> {
     /// What the paragraph with `attributes` is written as.
     fn paragraph_kind(&self, attributes: &[Attribute]) -> Kind {
         let style = attribute(attributes, "", "style").unwrap_or("");
-        if let Some(level) = self
-            .headings
-            .get(style)
-            .copied()
-            .or_else(|| built_in_heading(style))
-        {
+        if let Some(level) = self.headings.level(style) {
             return Kind::Heading(level);
         }
         let Some(list) = attribute(attributes, "", "listid").filter(|id| *id != "0") else {
@@ -733,7 +681,7 @@ impl Reading<'_, '_> {
         match open {
             Open::Nothing => {}
             Open::Styles => {
-                self.headings = heading_levels(&self.styles);
+                self.headings = StyleHeadings::new(&self.styles, HEADING_STYLES);
                 self.styles = Vec::new();
             }
             Open::Property => {
