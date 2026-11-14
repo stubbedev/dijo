@@ -10,8 +10,10 @@ const REFERENCE: &[u8] = include_bytes!("../../../tests/fixtures/text/text-refer
 /// the Basic Multilingual Plane on a read boundary, which Tika splits into two U+FFFD (#66);
 /// malformed UTF-8 and UTF-16, which the port replaces as WHATWG delimits malformed sequences and
 /// Java's decoders otherwise, and a declared UTF-16 starting with two byte order marks, of which
-/// Tika drops both and the port only the one that sets the byte order (#186).
-const DEPARTURES: [&str; 8] = [
+/// Tika drops both and the port only the one that sets the byte order (#186); and Romanian in
+/// ISO-8859-16, which Tika's junk filter turns into ISO-8859-2 for its cedilla s and t where the
+/// port keeps the comma below.
+const DEPARTURES: [&str; 9] = [
     "synthetic/emoji-after-sniff.txt",
     "synthetic/emoji-at-4096.txt",
     "synthetic/emoji-at-8192.txt",
@@ -20,6 +22,7 @@ const DEPARTURES: [&str; 8] = [
     "synthetic/utf8-malformed-1.txt",
     "synthetic/utf8-malformed-2.txt",
     "declared/utf16-double-bom-declared-utf16",
+    "corpus/romanian-iso-8859-16.txt",
 ];
 
 #[test]
