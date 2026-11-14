@@ -27,6 +27,7 @@ let
             (root + "/Cargo.lock")
             (root + "/LICENSE")
             (root + "/THIRD-PARTY-LICENSES.md")
+            (root + "/vendor")
           ]
           ++ map (member: root + "/${member}") members
         ))

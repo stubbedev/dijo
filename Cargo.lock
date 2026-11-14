@@ -2974,8 +2974,6 @@ dependencies = [
 [[package]]
 name = "rten"
 version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68a8eceaf794b6a9cc37c59ea921031a51f527edce05293f72e795641556ca2c"
 dependencies = [
  "num_cpus",
  "rayon",

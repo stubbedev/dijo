@@ -17,6 +17,7 @@ members = [
     "dijo-core",
     "dijo-cli",
 ]
+exclude = ["vendor/rten"]
 
 [profile.dev]
 opt-level = 1
@@ -43,3 +44,8 @@ opt-level = 3
 # rav1d 1.1.0 panics through its C API, aborting the process, when a damaged frame fails before
 # its header is read; the fix (memorysafety/rav1d 6c6f4637) is not yet released (#313).
 rav1d = { git = "https://github.com/memorysafety/rav1d", rev = "6c6f463785a546dea18fd9ca0f14634c2ee0557c" }
+# rustc 1.99 (LLVM 23) compiles rten 0.28's portable depthwise convolution loop to twice the
+# instructions LLVM 21 did, making PP-OCR pages 18-28% slower. vendor/rten is rten 0.28.0 from
+# crates.io with a contiguous stride-1 path in src/ops/conv/depthwise.rs that vectorizes on any
+# LLVM, until rten releases one.
+rten = { path = "vendor/rten" }
