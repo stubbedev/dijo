@@ -9,8 +9,8 @@
 //! line of more than [`LINE`] of an em is a new line; less is kerning, or a sub- or superscript.
 //!
 //! A character is decoded in its font's encoding, which its name tells ([`encoding`]): the TeX
-//! text (OT1), typewriter and math encodings of Computer Modern, and Cork (T1) of the European
-//! Computer Modern and Latin Modern fonts. An accent TeX sets apart from its letter is written as
+//! text (OT1), typewriter and math encodings of Computer Modern, and Cork (T1) and the text
+//! companion (TS1) of the European Computer Modern and Latin Modern fonts. An accent TeX sets apart from its letter is written as
 //! the combining mark after the letter. The characters of a font whose encoding is not known are
 //! not written, and the font is named in a warning; a code an encoding does not assign is written
 //! as U+FFFD.

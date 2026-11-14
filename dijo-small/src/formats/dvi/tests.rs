@@ -231,9 +231,15 @@ fn knows_the_encodings_of_fonts_by_their_names() {
         ("ptmr8t", Some(Encoding::T1)),
         ("ptmri7t", Some(Encoding::Ot1Italic)),
         ("pcrr7t", Some(Encoding::Ot1Typewriter)),
+        ("tcrm1000", Some(Encoding::Ts1)),
+        ("tcss1000", Some(Encoding::Ts1)),
+        ("tctt1200", Some(Encoding::Ts1)),
+        ("ts1-lmr10", Some(Encoding::Ts1)),
+        ("ts1-lmtt10", Some(Encoding::Ts1)),
+        ("ptmr8c", Some(Encoding::Ts1)),
         ("cmex10", None),
         ("msbm10", None),
-        ("tcrm1000", None),
+        ("tcrmx1000", None),
     ] {
         assert_eq!(Encoding::of_font(name), encoding, "{name}");
     }
@@ -245,6 +251,58 @@ fn knows_the_encodings_of_fonts_by_their_names() {
     assert!(
         matches!(Encoding::T1.glyph(0x00), Some(Glyph::Accent(accent)) if accent.mark == '\u{300}')
     );
+}
+
+#[test]
+fn decodes_the_text_companion_symbols() {
+    for (code, text) in [
+        (0x27, "'"),
+        (0x2a, "\u{2217}"),
+        (0x30, "0"),
+        (0x39, "9"),
+        (0x3d, "\u{2212}"),
+        (0x7e, "\u{2f7}"),
+        (0x7f, "\u{2e40}"),
+        (0x80, "\u{2d8}"),
+        (0x8c, "\u{192}"),
+        (0x97, "\u{2122}"),
+        (0xa2, "\u{a2}"),
+        (0xab, "\u{1f12f}"),
+        (0xbf, "\u{20ac}"),
+        (0xd6, "\u{d7}"),
+        (0xf6, "\u{f7}"),
+        (0x17, ""),
+    ] {
+        assert_eq!(
+            Encoding::Ts1.glyph(code),
+            Some(Glyph::Text(text)),
+            "{code:#x}"
+        );
+    }
+    for (code, mark) in [(0x00, '\u{300}'), (0x0c, '\u{328}'), (0x1d, '\u{361}')] {
+        assert!(
+            matches!(Encoding::Ts1.glyph(code), Some(Glyph::Accent(accent)) if accent.mark == mark),
+            "{code:#x}"
+        );
+    }
+    for code in [0x0e, 0x11, 0x1e, 0x41, 0x61, 0xc0, 0xff] {
+        assert_eq!(Encoding::Ts1.glyph(code), None, "{code:#x}");
+    }
+
+    let (body, metadata) = extract(&dvi(
+        &[font(0, "ec-lmr10", EM), font(1, "ts1-lmr10", EM)],
+        &[page(&[line(&[
+            vec![FNT_NUM_0],
+            b"Keeper".to_vec(),
+            vec![FNT_NUM_0 + 1, 0x27, FNT_NUM_0],
+            b"s".to_vec(),
+            right(EM / 3),
+            vec![FNT_NUM_0 + 1, SET1, 0xbf, FNT_NUM_0],
+            b"5".to_vec(),
+        ])])],
+    ));
+    assert_eq!(body, "<div class=\"page\"><p>Keeper's \u{20ac}5</p></div>");
+    assert!(!metadata.contains_key(EXCEPTION_WARNING));
 }
 
 #[test]

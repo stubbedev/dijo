@@ -1,8 +1,9 @@
 //! The font encodings of TeX's text and math fonts: which character each code of a font sets,
 //! from the encodings' Unicode mappings. A font's encoding is known by its name: the Computer
 //! Modern fonts by their families (`cmr10`, `cmtt12`, `cmmi7`), the European Computer Modern
-//! (`ecrm1000`) and Latin Modern fonts (`ec-lmr10`, `rm-lmr10`) by their prefixes, and fonts of
-//! Karl Berry's names (`ptmr8t`) by their encoding suffix.
+//! (`ecrm1000`), text companion (`tcrm1000`) and Latin Modern fonts (`ec-lmr10`, `rm-lmr10`,
+//! `ts1-lmr10`) by their prefixes, and fonts of Karl Berry's names (`ptmr8t`) by their encoding
+//! suffix.
 
 /// The codes of an encoding, and the text each assigned sets.
 type Table = [Option<&'static str>; 256];
@@ -18,6 +19,9 @@ pub enum Encoding {
     Ot1Typewriter,
     /// Cork (T1), the European Computer Modern encoding.
     T1,
+    /// The LaTeX text companion encoding (TS1) of `textcomp`: quotes, currencies, symbols and
+    /// old-style figures.
+    Ts1,
     /// TeX math italic (OML).
     Oml,
     /// TeX math symbols (OMS).
@@ -66,13 +70,14 @@ impl Encoding {
         if family.starts_with("ec-lm") {
             return Some(Encoding::T1);
         }
+        if family.starts_with("ts1-lm") {
+            return Some(Encoding::Ts1);
+        }
         if let Some(shape) = family.strip_prefix("rm-lm") {
             return Some(latin_modern_ot1(shape));
         }
-        if let Some(shape) = family.strip_prefix("ec") {
-            if shape.len() == 2 && shape.bytes().all(|byte| byte.is_ascii_lowercase()) {
-                return Some(Encoding::T1);
-            }
+        if let Some(encoding) = european_computer_modern(family) {
+            return Some(encoding);
         }
         berry(name)
     }
@@ -84,6 +89,7 @@ impl Encoding {
             Encoding::Ot1Italic => &OT1_ITALIC,
             Encoding::Ot1Typewriter => &OT1_TYPEWRITER,
             Encoding::T1 => &T1,
+            Encoding::Ts1 => &TS1,
             Encoding::Oml => &OML,
             Encoding::Oms => &OMS,
         };
@@ -105,8 +111,22 @@ fn latin_modern_ot1(shape: &str) -> Encoding {
     }
 }
 
+/// The encoding of a European Computer Modern `family`: `ec` and two letters of its shape is
+/// T1, `ecrm`, and `tc` and two letters TS1, `tcrm`.
+fn european_computer_modern(family: &str) -> Option<Encoding> {
+    let (prefix, shape) = family.split_at_checked(2)?;
+    if shape.len() != 2 || !shape.bytes().all(|byte| byte.is_ascii_lowercase()) {
+        return None;
+    }
+    match prefix {
+        "ec" => Some(Encoding::T1),
+        "tc" => Some(Encoding::Ts1),
+        _ => None,
+    }
+}
+
 /// The encoding of a font of Karl Berry's naming scheme, `ptmri7t`, by its suffix: `8t` is T1,
-/// `7t` OT1, of typewriter text for Courier (`pcr`) and of italic text for an italic variant
+/// `8c` TS1, `7t` OT1, of typewriter text for Courier (`pcr`) and of italic text for an italic variant
 /// (`i`) before the suffix.
 fn berry(name: &str) -> Option<Encoding> {
     if name.len() < 6 || !name.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
@@ -114,6 +134,9 @@ fn berry(name: &str) -> Option<Encoding> {
     }
     if name.ends_with("8t") {
         return Some(Encoding::T1);
+    }
+    if name.ends_with("8c") {
+        return Some(Encoding::Ts1);
     }
     let stem = name.strip_suffix("7t")?;
     Some(if stem.starts_with("pcr") {
@@ -261,16 +284,23 @@ const OT1_TYPEWRITER: Table = {
     with(table, 0x7f, &["\u{308}"])
 };
 
+/// The accents T1 and TS1 begin with, codes 0x00 to 0x0c: grave, acute, circumflex, tilde,
+/// dieresis, double acute, ring, caron, breve, macron, dot, cedilla and ogonek.
+const CORK_ACCENTS: [&str; 13] = [
+    "\u{300}", "\u{301}", "\u{302}", "\u{303}", "\u{308}", "\u{30b}", "\u{30a}", "\u{30c}",
+    "\u{306}", "\u{304}", "\u{307}", "\u{327}", "\u{328}",
+];
+
 /// The T1 encoding of `ecrm1000`.
 const T1: Table = {
+    let table = with(ascii(), 0x00, &CORK_ACCENTS);
     let table = with(
-        ascii(),
-        0x00,
+        table,
+        0x0d,
         &[
-            "\u{300}", "\u{301}", "\u{302}", "\u{303}", "\u{308}", "\u{30b}", "\u{30a}", "\u{30c}",
-            "\u{306}", "\u{304}", "\u{307}", "\u{327}", "\u{328}", "\u{201a}", "\u{2039}",
-            "\u{203a}", "\u{201c}", "\u{201d}", "\u{201e}", "\u{ab}", "\u{bb}", "\u{2013}",
-            "\u{2014}", "", "", "\u{131}", "\u{237}", "ff", "fi", "fl", "ffi", "ffl", "\u{2423}",
+            "\u{201a}", "\u{2039}", "\u{203a}", "\u{201c}", "\u{201d}", "\u{201e}", "\u{ab}",
+            "\u{bb}", "\u{2013}", "\u{2014}", "", "", "\u{131}", "\u{237}", "ff", "fi", "fl",
+            "ffi", "ffl", "\u{2423}",
         ],
     );
     let table = with(table, 0x27, &["\u{2019}"]);
@@ -304,6 +334,117 @@ const T1_LETTERS: [&str; 64] = [
     "\u{ee}", "\u{ef}", "\u{f0}", "\u{f1}", "\u{f2}", "\u{f3}", "\u{f4}", "\u{f5}", "\u{f6}",
     "\u{153}", "\u{f8}", "\u{f9}", "\u{fa}", "\u{fb}", "\u{fc}", "\u{fd}", "\u{fe}", "\u{df}",
 ];
+
+/// The TS1 encoding of `tcrm1000`, from LaTeX's `ts1enc.def`, each symbol as the character
+/// `tuenc.def` sets for it, or Unicode has for one it does not: the old-style figures as the
+/// figures they are, the capital accents and ties as the accents, the compound word marks as
+/// nothing, the straight low quotes as the low quotes, `born` as `*` and `leaf` as `❦`.
+const TS1: Table = {
+    let table = with([None; 256], 0x00, &CORK_ACCENTS);
+    let table = with(table, 0x0d, &["\u{201a}"]);
+    let table = with(table, 0x12, &["\u{201e}"]);
+    let table = with(
+        table,
+        0x15,
+        &[
+            "\u{2013}", "\u{2014}", "", "\u{2190}", "\u{2192}", "\u{361}", "\u{361}", "\u{361}",
+            "\u{361}",
+        ],
+    );
+    let table = with(table, 0x1f, &["", "\u{2422}"]);
+    let table = with(table, 0x24, &["$"]);
+    let table = with(table, 0x27, &["'"]);
+    let table = with(table, 0x2a, &["\u{2217}"]);
+    let table = with(
+        table,
+        0x2c,
+        &[
+            ",", "\u{2e40}", ".", "\u{2044}", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+        ],
+    );
+    let table = with(table, 0x3c, &["\u{27e8}", "\u{2212}", "\u{27e9}"]);
+    let table = with(table, 0x4d, &["\u{2127}"]);
+    let table = with(table, 0x4f, &["\u{25ef}"]);
+    let table = with(table, 0x57, &["\u{2126}"]);
+    let table = with(table, 0x5b, &["\u{27e6}"]);
+    let table = with(table, 0x5d, &["\u{27e7}", "\u{2191}", "\u{2193}", "`"]);
+    let table = with(table, 0x62, &["*", "\u{26ae}", "\u{2020}"]);
+    let table = with(table, 0x6c, &["\u{2766}", "\u{26ad}", "\u{266a}"]);
+    let table = with(
+        table,
+        0x7e,
+        &[
+            "\u{2f7}",
+            "\u{2e40}",
+            "\u{2d8}",
+            "\u{2c7}",
+            "\u{2dd}",
+            "\u{2f5}",
+            "\u{2020}",
+            "\u{2021}",
+            "\u{2016}",
+            "\u{2030}",
+            "\u{2022}",
+            "\u{2103}",
+            "$",
+            "\u{a2}",
+            "\u{192}",
+            "\u{20a1}",
+            "\u{20a9}",
+            "\u{20a6}",
+            "\u{20b2}",
+            "\u{20b1}",
+            "\u{20a4}",
+            "\u{211e}",
+            "\u{203d}",
+            "\u{2e18}",
+            "\u{20ab}",
+            "\u{2122}",
+            "\u{2031}",
+            "\u{b6}",
+            "\u{e3f}",
+            "\u{2116}",
+            "\u{2052}",
+            "\u{212e}",
+            "\u{25e6}",
+            "\u{2120}",
+            "\u{2045}",
+            "\u{2046}",
+            "\u{a2}",
+            "\u{a3}",
+            "\u{a4}",
+            "\u{a5}",
+            "\u{a6}",
+            "\u{a7}",
+            "\u{a8}",
+            "\u{a9}",
+            "\u{aa}",
+            "\u{1f12f}",
+            "\u{ac}",
+            "\u{2117}",
+            "\u{ae}",
+            "\u{af}",
+            "\u{b0}",
+            "\u{b1}",
+            "\u{b2}",
+            "\u{b3}",
+            "\u{b4}",
+            "\u{b5}",
+            "\u{b6}",
+            "\u{b7}",
+            "\u{203b}",
+            "\u{b9}",
+            "\u{ba}",
+            "\u{221a}",
+            "\u{bc}",
+            "\u{bd}",
+            "\u{be}",
+            "\u{20ac}",
+        ],
+    );
+    let table = with(table, 0xd6, &["\u{d7}"]);
+    with(table, 0xf6, &["\u{f7}"])
+};
 
 /// The OML encoding of `cmmi10`: its italic letters as the letters they are.
 const OML: Table = {
