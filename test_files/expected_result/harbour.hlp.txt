@@ -1,0 +1,25 @@
+The Lighthouse
+
+The lighthouse keeper lights the lamp at dusk.
+
+Lamp:	Fresnel lens
+Range:	18 nautical miles
+
+Fyret lyser om natten, og Ove Grøn holder vagt. See the tide table.
+
+Tide Table
+
+The harbour tides for the first of May.
+
+	Hour	Height
+
+	06:00	1.2 m
+
+	18:00	1.4 m
+Spring tide
+
+		calm
+
+
+Tides are given in metres above chart datum.
+

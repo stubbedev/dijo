@@ -77,6 +77,10 @@
   header and footer sections in their own `div`s. The `<metadata>` is the document's Dublin Core, keywords and
   generator, its dates ISO local date-times (AbiWord saves them without a time zone); each `<data>` item is handed on
   as an embedded document. Gzip-compressed `.zabw` files are read through the gzip parser.
+* Windows Help files (`.hlp`) of WinHelp 3.0, 3.1 and 4 are read (#350), where Tika reads nothing of them: each
+  topic's title and text in order, its paragraphs, line breaks, tabs and tables, decompressed from LZ77 and from old
+  or Hall phrase compression and decoded in the code page of the file's LCID, with the title, copyright notice and
+  index keywords as metadata. Pictures and macros are not read.
 * Apache Parquet files are read (#352), where Tika reads nothing of them: a table of the leaf columns' paths and of
   every row, row group by row group, every column written (text, numbers, decimals, dates, times and timestamps by
   their logical types, a list's values apart by spaces, nulls as empty cells). Data pages of version 1 and 2 in every

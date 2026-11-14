@@ -70,6 +70,8 @@ documents	greek-danish-greek-scan.tif	file	image/tiff	tk:content-type-magic-dete
 documents	greek-danish-greek-scan.tif	bytes	image/tiff	tk:content-type-magic-detected=image/tiff
 documents	harbour.abw	file	application/x-abiword	tk:content-type-magic-detected=application/x-abiword
 documents	harbour.abw	bytes	application/x-abiword	tk:content-type-magic-detected=application/x-abiword
+documents	harbour.hlp	file	application/winhlp	tk:content-type-magic-detected=application/winhlp
+documents	harbour.hlp	bytes	application/winhlp	tk:content-type-magic-detected=application/winhlp
 documents	harbour.parquet	file	application/x-parquet	tk:content-type-magic-detected=application/x-parquet
 documents	harbour.parquet	bytes	application/x-parquet	tk:content-type-magic-detected=application/x-parquet
 documents	keynote2018.key	file	application/vnd.apple.keynote.18	tk:content-type-magic-detected=application/vnd.apple.keynote	zip:detector-zip-file-opened=true

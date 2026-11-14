@@ -68,6 +68,7 @@ pub mod formats {
     pub mod tsd;
     pub mod vcard;
     pub mod word_pro;
+    pub mod winhelp;
     pub mod wordperfect;
     pub mod xml_2003;
 }

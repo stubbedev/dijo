@@ -2150,6 +2150,23 @@ fn parquet_files_are_read_for_their_rows() {
     );
 }
 
+/// `harbour.hlp` is written by dijo-small/tests/fixtures/winhelp/harbour.py from Manfred
+/// Winterhoff's notes on the format: a WinHelp 4 file of LZ77-compressed topic blocks and phrases.
+#[test]
+fn winhelp_files_are_read_for_their_topics() {
+    let objects = json_objects(&[&document("harbour.hlp")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "application/winhlp");
+    assert_eq!(objects[0]["metadata"]["title"], "Harbour Help");
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("Lamp:\tFresnel lens\nRange:\t18 nautical miles\n"),
+        "{text}"
+    );
+    assert!(text.contains("Ove Gr\u{f8}n holder vagt."), "{text}");
+    assert!(text.contains("18:00\t1.4 m\nSpring tide\n"), "{text}");
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

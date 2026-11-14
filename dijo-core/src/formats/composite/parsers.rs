@@ -319,6 +319,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/vnd.wordperfect; version=6.x",
         "org.apache.tika.parser.wordperfect.WordPerfectParser",
     ),
+    ("application/winhlp", "dijo::WinHelpParser"),
     ("application/warc", "org.apache.tika.parser.warc.WARCParser"),
     (
         "application/warc+gz",

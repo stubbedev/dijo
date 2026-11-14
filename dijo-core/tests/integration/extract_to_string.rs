@@ -31,6 +31,7 @@ use crate::test_utils;
 #[test_case("lighthouse.dvi", 0.9; "Test DVI file")]
 #[test_case("lighthouse.dmg", 0.9; "Test Apple disk image")]
 #[test_case("harbour.parquet", 0.9; "Test Parquet file")]
+#[test_case("harbour.hlp", 0.9; "Test generated WinHelp 4 file")]
 #[test_case("lighthouse.swf", 0.9; "Test CWS Flash movie")]
 #[test_case("lighthouse-uncompressed.swf", 0.9; "Test FWS Flash movie")]
 #[test_case("lighthouse-lzma.swf", 0.9; "Test ZWS Flash movie")]

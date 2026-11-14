@@ -102,6 +102,7 @@ pub(crate) use dijo_small::formats::swf;
 pub(crate) use dijo_small::formats::translation;
 pub(crate) use dijo_small::formats::tsd;
 pub(crate) use dijo_small::formats::vcard;
+pub(crate) use dijo_small::formats::winhelp;
 pub(crate) use dijo_small::formats::word_pro;
 pub(crate) use dijo_small::formats::wordperfect;
 pub(crate) use dijo_small::formats::xml_2003;
@@ -243,6 +244,7 @@ static PARSERS: &[&dyn Parser] = &[
     &warc::WarcParser,
     &warc::HttpParser,
     &warc::WaczParser,
+    &winhelp::WinHelpParser,
     &word_pro::WordProParser,
     &wordperfect::OldQuattroProParser,
     &wordperfect::QuattroProParser,
