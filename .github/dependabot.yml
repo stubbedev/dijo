@@ -7,11 +7,6 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
-    ignore:
-      - dependency-name: rten
-        versions: [">=0.24"]
-      - dependency-name: rten-tensor
-        versions: [">=0.24"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
