@@ -1449,7 +1449,7 @@
     "reading_order": 1.0
   },
   "prose-pandoc.docx": {
-    "character_error_rate": 0.0005668934240362812,
+    "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
     "spurious": 0.0,
@@ -1674,10 +1674,10 @@
   },
   "prose.dvi": {
     "character_error_rate": 0.0017006802721088435,
-    "token_error_rate": 0.003278688524590164,
-    "recall": 1.0,
-    "spurious": 0.0032679738562091504,
-    "reading_order": 1.0
+    "token_error_rate": 0.009836065573770493,
+    "recall": 0.9934426229508196,
+    "spurious": 0.006557377049180328,
+    "reading_order": 0.8333333333333334
   },
   "prose.dxf": {
     "character_error_rate": 0.0,
@@ -1687,21 +1687,21 @@
     "reading_order": 1.0
   },
   "prose.epub": {
-    "character_error_rate": 0.008503401360544218,
+    "character_error_rate": 0.007936507936507936,
     "token_error_rate": 0.006557377049180328,
     "recall": 1.0,
     "spurious": 0.006514657980456026,
     "reading_order": 1.0
   },
   "prose.fb2": {
-    "character_error_rate": 0.0045351473922902496,
+    "character_error_rate": 0.003968253968253968,
     "token_error_rate": 0.003278688524590164,
     "recall": 1.0,
     "spurious": 0.0032679738562091504,
     "reading_order": 1.0
   },
   "prose.html": {
-    "character_error_rate": 0.0045351473922902496,
+    "character_error_rate": 0.003968253968253968,
     "token_error_rate": 0.003278688524590164,
     "recall": 1.0,
     "spurious": 0.0032679738562091504,
@@ -1722,7 +1722,7 @@
     "reading_order": 1.0
   },
   "prose.mobi": {
-    "character_error_rate": 0.022675736961451247,
+    "character_error_rate": 0.022108843537414966,
     "token_error_rate": 0.019672131147540985,
     "recall": 1.0,
     "spurious": 0.01929260450160772,
@@ -1743,7 +1743,7 @@
     "reading_order": 1.0
   },
   "prose.ps": {
-    "character_error_rate": 0.0017006802721088435,
+    "character_error_rate": 0.0011337868480725624,
     "token_error_rate": 0.003278688524590164,
     "recall": 1.0,
     "spurious": 0.0032679738562091504,

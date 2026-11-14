@@ -5,9 +5,9 @@
 | prose.doc | born-digital | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.rtf | born-digital | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.pdf | born-digital | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| prose.html | born-digital | 0.005 | 0.003 | 1.000 | 0.003 | 1.000 |
-| prose.epub | born-digital | 0.009 | 0.007 | 1.000 | 0.007 | 1.000 |
-| prose-pandoc.docx | born-digital | 0.001 | 0.000 | 1.000 | 0.000 | 1.000 |
+| prose.html | born-digital | 0.004 | 0.003 | 1.000 | 0.003 | 1.000 |
+| prose.epub | born-digital | 0.008 | 0.007 | 1.000 | 0.007 | 1.000 |
+| prose-pandoc.docx | born-digital | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-columns.pdf | multi-column | 0.001 | 0.007 | 0.993 | 0.003 | 1.000 |
 | prose-columns-reversed.pdf | multi-column | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-newspaper.pdf | multi-column | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -307,10 +307,10 @@
 | inventory.parquet | spreadsheets | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | letters.eml | email | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | letters.mbox | email | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| prose.fb2 | e-book | 0.005 | 0.003 | 1.000 | 0.003 | 1.000 |
-| prose.mobi | e-book | 0.023 | 0.020 | 1.000 | 0.019 | 1.000 |
-| prose.dvi | niche-formats | 0.002 | 0.003 | 1.000 | 0.003 | 1.000 |
-| prose.ps | niche-formats | 0.002 | 0.003 | 1.000 | 0.003 | 1.000 |
+| prose.fb2 | e-book | 0.004 | 0.003 | 1.000 | 0.003 | 1.000 |
+| prose.mobi | e-book | 0.022 | 0.020 | 1.000 | 0.019 | 1.000 |
+| prose.dvi | niche-formats | 0.002 | 0.010 | 0.993 | 0.007 | 0.833 |
+| prose.ps | niche-formats | 0.001 | 0.003 | 1.000 | 0.003 | 1.000 |
 | prose.svg | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.abw | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.sla | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

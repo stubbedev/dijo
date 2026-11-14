@@ -23,6 +23,10 @@ export FONTCONFIG_FILE="$work/fonts.conf"
 export HOME="$work/home"
 mkdir -p "$HOME"
 
+pandoc_prose() {
+    pandoc --from=markdown-smart "$work/prose.md" "$@"
+}
+
 xml_escape() {
     sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
@@ -95,9 +99,9 @@ convert "$work/prose.fodt" prose rtf rtf
 convert "$work/prose.fodt" prose pdf pdf
 
 awk 'NF' "$truth/prose.txt" | sed 's/^/\n/' > "$work/prose.md"
-pandoc "$work/prose.md" -o "$corpus/prose-pandoc.docx"
-pandoc "$work/prose.md" --standalone --metadata title=Ledger -o "$corpus/prose.html"
-pandoc "$work/prose.md" --metadata title=Ledger -o "$corpus/prose.epub"
+pandoc_prose -o "$corpus/prose-pandoc.docx"
+pandoc_prose --standalone --metadata title=Ledger -o "$corpus/prose.html"
+pandoc_prose --metadata title=Ledger -o "$corpus/prose.epub"
 
 fodt "$truth/prose.txt" "$work/prose-columns.fodt" columns lr-tb
 convert "$work/prose-columns.fodt" prose-columns pdf pdf
@@ -317,10 +321,10 @@ python3 "$here/mail.py" "$truth/letters.txt" "$corpus/letters.eml" "$corpus/lett
 python3 "$here/ical.py" "$truth/events.txt" "$corpus/events.ics"
 python3 "$here/vcard.py" "$truth/contacts.txt" "$corpus/contacts.vcf"
 
-pandoc "$work/prose.md" --metadata title=Ledger -o "$corpus/prose.fb2"
+pandoc_prose --metadata title=Ledger -o "$corpus/prose.fb2"
 ebook-convert "$corpus/prose.epub" "$corpus/prose.mobi" > /dev/null
 
-pandoc "$work/prose.md" --standalone -o "$work/prose.tex"
+pandoc_prose --standalone -o "$work/prose.tex"
 (cd "$work" && latex -interaction=batchmode prose.tex > /dev/null && dvips -q prose.dvi -o "$corpus/prose.ps")
 cp "$work/prose.dvi" "$corpus/prose.dvi"
 soffice --headless --infilter=draw_pdf_import --convert-to svg:draw_svg_Export --outdir "$work/out" "$corpus/prose.pdf" > /dev/null

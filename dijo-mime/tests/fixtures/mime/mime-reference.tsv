@@ -773,7 +773,7 @@ quality	prose.dvi	bytes	application/x-dvi	tk:content-type-magic-detected=applica
 quality	prose.dxf	file	image/vnd.dxf; format=ascii	tk:content-type-magic-detected=image/vnd.dxf; format=ascii
 quality	prose.dxf	bytes	image/vnd.dxf; format=ascii	tk:content-type-magic-detected=image/vnd.dxf; format=ascii
 quality	prose.epub	file	application/epub+zip	tk:content-type-magic-detected=application/epub+zip	zip:detector-zip-file-opened=true
-quality	prose.epub	bytes	application/epub+zip	tk:content-type-magic-detected=application/epub+zip	Content-Length=5846	zip:detector-zip-file-opened=true
+quality	prose.epub	bytes	application/epub+zip	tk:content-type-magic-detected=application/epub+zip	Content-Length=5841	zip:detector-zip-file-opened=true
 quality	prose.fb2	file	application/x-fictionbook+xml	tk:content-type-magic-detected=application/x-fictionbook+xml
 quality	prose.fb2	bytes	application/x-fictionbook+xml	tk:content-type-magic-detected=application/x-fictionbook+xml
 quality	prose.html	file	application/xhtml+xml	tk:content-type-magic-detected=application/xhtml+xml
