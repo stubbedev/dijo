@@ -145,13 +145,12 @@ fn prepare<'a>(
         Recorded::Whole {
             mut recording,
             page_ocr,
-            ocr_pages,
         } => Box::new(move |xhtml| {
             let written = match page_ocr {
                 None => recording.flush(xhtml, None),
                 Some(page_ocr) => write_read(&page_ocr, &mut recording, xhtml, configs),
             };
-            ended(xhtml, written, ocr_pages, recording.caught())
+            ended(xhtml, written, &recording)
         }),
         Recorded::Large(loaded, settings) => {
             let metadata = metadata.clone();
@@ -165,32 +164,27 @@ fn prepare<'a>(
                     known,
                 };
                 let (written, recording) = streamed.write(metadata, xhtml);
-                let ocr_pages = match settings.ocr.dispatches_every_page() {
-                    true => loaded.document.page_count(),
-                    false => 0,
-                };
-                ended(xhtml, written, ocr_pages, recording.caught())
+                ended(xhtml, written, &recording)
             })
         }
     };
     unless_different(reading, difference)
 }
 
-/// The document `written` to `xhtml`, with the count of pages Tika's `PDFParser` handed its OCR
-/// parser, `ocr_pages`: none where our `TextLayerCheckingPdfParser` reads them. A document
-/// whose writer `caught` an `IOException` fails with the first, as `PDF2XHTML.process` throws
-/// it once the document is written.
+/// The document `written` to `xhtml` through `recording`, with the count of pages Tika's
+/// `PDFParser` wants OCRed, whether dijo or the OCR parser Tika hands them to reads them. A
+/// document whose writer caught an `IOException` fails with the first, as `PDF2XHTML.process`
+/// throws it once the document is written.
 fn ended(
     xhtml: &mut Xhtml,
     written: Result<(), Failure>,
-    ocr_pages: usize,
-    caught: Option<&Exception>,
+    recording: &Recording,
 ) -> Result<(), Failure> {
     xhtml
         .metadata_mut()
-        .set("pdf:ocr-page-count", ocr_pages.to_string());
+        .set("pdf:ocr-page-count", recording.ocr_wanted().to_string());
     written?;
-    let Some(cause) = caught else {
+    let Some(cause) = recording.caught() else {
         return Ok(());
     };
     let unable = Exception::new(
@@ -253,12 +247,10 @@ const RECORDING_LIMIT: usize = 16 << 20;
 
 /// What recording a document gave.
 enum Recorded<'a> {
-    /// The whole extraction, the OCR of the pages read, and how many pages Tika's PDF parser
-    /// hands its OCR parser.
+    /// The whole extraction and the OCR of the pages read.
     Whole {
         recording: Box<Recording>,
         page_ocr: Option<PageOcr>,
-        ocr_pages: usize,
     },
     /// The document, loaded, whose recording grew past its limit before a page to read by OCR:
     /// it is streamed.
@@ -329,14 +321,9 @@ fn record<'a>(
         configs,
         &loaded.document,
     );
-    let ocr_pages = match settings.ocr.dispatches_every_page() {
-        true => page_count,
-        false => 0,
-    };
     let whole = Recorded::Whole {
         recording: Box::new(recording),
         page_ocr,
-        ocr_pages,
     };
     Ok((whole, difference(&loaded.document)))
 }
@@ -731,7 +718,7 @@ fn is_illustrator(pdf: &Pdf) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{PdfParserConfig, TesseractOcrConfig};
+    use crate::config::{PdfOcrStrategy, PdfParserConfig, TesseractOcrConfig};
     use crate::formats::embedded::EXCEPTION_WARNING;
     use crate::formats::testing::documents;
     use std::collections::BTreeMap;
@@ -1048,6 +1035,44 @@ mod tests {
             }
         }
         assert!(streamed > 20, "{streamed} documents streamed");
+    }
+
+    /// `pdf:ocr-page-count` counts the pages Tika's PDF parser wants OCRed, as Tika 4.1 counts
+    /// them: a scanned page, which dijo reads by OCR itself, and no page with a text layer, or
+    /// every page under the OCR strategies and none without OCR (#363).
+    #[test]
+    fn counts_the_pages_tika_wants_ocred() {
+        let extract = |input: &[u8], pdf: PdfParserConfig, ocr: TesseractOcrConfig| {
+            let (text, metadata) = crate::Extractor::new()
+                .set_pdf_config(pdf)
+                .set_ocr_config(ocr)
+                .extract_bytes_to_string(input)
+                .unwrap();
+            let count = metadata.get("pdf:ocr-page-count").cloned();
+            (text, count)
+        };
+        let counted = |count: &str| Some(vec![count.to_owned()]);
+        let scanned = std::fs::read("../test_files/documents/eng-ocr.pdf").unwrap();
+        let text = document(&page_objects(TEXT), b"", &[]);
+        let (read, count) = extract(&scanned, PdfParserConfig::new(), TesseractOcrConfig::new());
+        assert!(read.contains("Inventors Are Everywhere"), "{read}");
+        assert_eq!(count, counted("1"));
+        let (read, count) = extract(&text, PdfParserConfig::new(), TesseractOcrConfig::new());
+        assert!(read.contains("Den yngste"), "{read}");
+        assert_eq!(count, counted("0"));
+        let skipped = || TesseractOcrConfig::new().set_skip_ocr(true);
+        for (strategy, expected) in [
+            (PdfOcrStrategy::NO_OCR, ["0", "0"]),
+            (PdfOcrStrategy::AUTO, ["1", "0"]),
+            (PdfOcrStrategy::OCR_AND_TEXT_EXTRACTION, ["1", "1"]),
+            (PdfOcrStrategy::OCR_ONLY, ["1", "1"]),
+        ] {
+            let pdf = || PdfParserConfig::new().set_ocr_strategy(strategy);
+            for (input, expected) in [&scanned, &text].into_iter().zip(expected) {
+                let (_, count) = extract(input, pdf(), skipped());
+                assert_eq!(count, counted(expected), "{strategy:?}");
+            }
+        }
     }
 
     /// A document of a form with a field of each kind, a non-terminal field holding `address`

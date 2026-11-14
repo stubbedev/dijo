@@ -157,7 +157,7 @@ Where the answers differ from tika-server 3's:
 - `/rmeta` has each document's content twice, in `tk:content` and `X-TIKA:content`, and every other renamed key under
   both names.
 - `pdf:charsPerPage` and `pdf:unmappedUnicodeCharsPerPage` count each page's text layer, as Tika 3 and 4 count them,
-  not the OCR text dijo adds in the same pass, and `pdf:ocrPageCount` counts none of the pages dijo decides to OCR.
+  not the OCR text dijo adds in the same pass, and `pdf:ocrPageCount` counts the pages Tika would OCR, as Tika 4.1 counts them, including those dijo OCRs itself.
   dijo OCRs the pages without usable text in the first request, so a second request for an OCR pass answers the same.
 
 Responses stream as the document is extracted. A document that cannot be extracted gets a JSON error with 415

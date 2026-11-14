@@ -388,6 +388,9 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         out.add("pdf:unmapped-unicode-chars-per-page", unmapped.to_string());
         self.total_glyphs += i64::from(glyphs);
         self.total_unmapped += i64::from(unmapped);
+        if self.settings.ocr.wants_ocr(glyphs, unmapped) {
+            out.want_ocr();
+        }
         self.annotations(pdf, page)?;
         let layer_text = self.page.layer_text.take();
         let layer = match (layer_text.as_deref(), self.page.embeds) {

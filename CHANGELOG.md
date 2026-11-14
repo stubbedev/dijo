@@ -109,7 +109,9 @@
   the content in `X-TIKA:content`. `/rmeta`, `/meta`, `/meta/{field}` and `/unpack/all`, which tika-server 3 and 4 both
   serve, carry each value under its 4.x key and its 3.x key (`X-TIKA:content`, `X-TIKA:Parsed-By`,
   `pdf:charsPerPage`, `access_permission:*`, …), named by Tika's own 3.x-to-4.x key table. `/tika/{handler}` now
-  answers an `Accept` it has no form for with 406, as tika-server 4 does.
+  answers an `Accept` it has no form for with 406, as tika-server 4 does. `pdf:ocr-page-count` (`pdf:ocrPageCount`)
+  counts the pages Tika 4.1 would OCR, including those dijo OCRs itself, rather than none under AUTO, so a client
+  can tell that a scan was already read.
 * BitTorrent metainfo files are read (#354), where Tika reads nothing of them: the torrent's name, its comment, its
   files with their sizes (version 1 `files`, version 2 `file tree` or the single file, padding files left out) and its
   announce URLs, as text, and the name, comment, creating client, creation date and announce URLs as metadata. The

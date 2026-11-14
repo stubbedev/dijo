@@ -46,6 +46,21 @@ const DEFAULT: Thresholds = Thresholds {
 const FASTER_UNMAPPED: Unmapped = Unmapped::Share(0.1);
 
 impl Thresholds {
+    /// `AbstractPDF2XHTML.ocrWanted`: whether Tika's PDF parser wants a page of `glyphs` glyphs,
+    /// `unmapped` of them without characters, OCRed under `AUTO`: one of at most `total_chars`
+    /// glyphs, or one with more unmapped glyphs than the limit, a share of the page's glyphs
+    /// where the limit is below 1 and a count from 1.
+    fn want_ocr(self, glyphs: i32, unmapped: i32) -> bool {
+        if glyphs <= self.total_chars {
+            return true;
+        }
+        let (Unmapped::Share(limit) | Unmapped::Count(limit)) = self.unmapped;
+        match limit < 1.0 {
+            true => unmapped as f32 / glyphs as f32 > limit,
+            false => unmapped as f32 > limit,
+        }
+    }
+
     /// `PdfConfig.setOcrStrategyAuto`: `better`, `faster` or `unmapped[%][,characters]`, as its
     /// pattern `\s*(?:(better|faster)|(\d{1,3})(%)?)(?:,\s*(\d{1,3}))?\s*` matches the whole
     /// setting, or why the setter throws.
@@ -167,10 +182,16 @@ impl OcrCheck {
         self == Self::Only
     }
 
-    /// Whether Tika's PDF parser dispatches every page to its OCR parser itself, as
-    /// `pdf:ocr-page-count` counts them.
-    pub(super) fn dispatches_every_page(self) -> bool {
-        matches!(self, Self::Only | Self::AndText)
+    /// Whether Tika's PDF parser wants a page of `glyphs` glyphs, `unmapped` of them without
+    /// characters, OCRed, as `pdf:ocr-page-count` counts the pages (`OCRPageCounter`): every
+    /// page under `OCR_ONLY` and `OCR_AND_TEXT_EXTRACTION`, by the page's glyphs under `AUTO`,
+    /// whether or not an OCR parser reads it then.
+    pub(super) fn wants_ocr(self, glyphs: i32, unmapped: i32) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Only | Self::AndText => true,
+            Self::Assessed(thresholds) => thresholds.want_ocr(glyphs, unmapped),
+        }
     }
 
     /// The resolution pages are rendered at for OCR: by our `TextLayerCheckingPdfParser`, or by
@@ -655,6 +676,31 @@ mod tests {
             OcrCheck::AndText.page(300, 0, Layer::Unheld),
             PageCheck::Recognize
         );
+    }
+
+    #[test]
+    fn wants_the_pages_ocred_that_tika_counts() {
+        let auto = |setting: &str| OcrCheck::Assessed(Thresholds::parse(setting).unwrap());
+        let better = OcrCheck::Assessed(DEFAULT);
+        assert!(better.wants_ocr(10, 0));
+        assert!(!better.wants_ocr(11, 10));
+        assert!(better.wants_ocr(300, 11));
+        let faster = auto("faster");
+        assert!(!faster.wants_ocr(100, 10));
+        assert!(faster.wants_ocr(100, 11));
+        assert!(auto("100%").wants_ocr(300, 2));
+        assert!(!auto("100%").wants_ocr(300, 1));
+        assert!(auto("0,5").wants_ocr(6, 1));
+        assert!(!auto("0,5").wants_ocr(6, 0));
+        assert!(auto("50,100").wants_ocr(100, 0));
+        for (check, wants) in [
+            (OcrCheck::Never, false),
+            (OcrCheck::Only, true),
+            (OcrCheck::AndText, true),
+        ] {
+            assert_eq!(check.wants_ocr(0, 0), wants, "{check:?}");
+            assert_eq!(check.wants_ocr(300, 0), wants, "{check:?}");
+        }
     }
 
     #[test]

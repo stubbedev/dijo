@@ -79,6 +79,8 @@ pub(super) struct Recording {
     /// The first `IOException` Tika's writer caught and recorded, which fails the extraction
     /// once the document is written.
     caught: Option<Exception>,
+    /// How many pages Tika's PDF parser wants OCRed, as `pdf:ocr-page-count` counts them.
+    ocr_wanted: usize,
 }
 
 impl Recording {
@@ -93,6 +95,7 @@ impl Recording {
             text: String::new(),
             spans: Vec::new(),
             caught: None,
+            ocr_wanted: 0,
         }
     }
 
@@ -290,6 +293,16 @@ impl Recording {
     /// The first `IOException` caught, if any.
     pub(super) fn caught(&self) -> Option<&Exception> {
         self.caught.as_ref()
+    }
+
+    /// Counts a page Tika's PDF parser wants OCRed.
+    pub(super) fn want_ocr(&mut self) {
+        self.ocr_wanted += 1;
+    }
+
+    /// How many pages Tika's PDF parser wants OCRed.
+    pub(super) fn ocr_wanted(&self) -> usize {
+        self.ocr_wanted
     }
 
     /// Whether a page is read by OCR.
