@@ -13,8 +13,10 @@ const DEFAULT_LANGUAGE: &str = "eng";
 const SCRIPT_MODEL_PREFIX: &str = "script/";
 pub(crate) const BLACKLETTER_SCRIPT: &str = "Fraktur";
 
-/// The most common language of each script tesseract's detection reports.
-const LANGUAGE_BY_SCRIPT: [(&str, &str); 26] = [
+/// The most common language of each script tesseract's detection reports. Detection names a
+/// page Korean when it holds Han among its Hangul and Japanese when it mixes kana or holds Han
+/// among them, but a page all in Hangul, Hiragana or Katakana by that script's own name.
+const LANGUAGE_BY_SCRIPT: [(&str, &str); 29] = [
     ("Latin", "eng"),
     (BLACKLETTER_SCRIPT, "deu_latf"),
     ("Arabic", "ara"),
@@ -23,6 +25,9 @@ const LANGUAGE_BY_SCRIPT: [(&str, &str); 26] = [
     ("Hebrew", "heb"),
     ("Han", "chi_sim"),
     ("Japanese", "jpn"),
+    ("Hiragana", "jpn"),
+    ("Katakana", "jpn"),
+    ("Korean", "kor"),
     ("Hangul", "kor"),
     ("Thai", "tha"),
     ("Devanagari", "hin"),
@@ -289,6 +294,30 @@ mod tests {
             installed_language(&models, "Armenian").as_deref(),
             Some("script/Armenian")
         );
+    }
+
+    #[test]
+    fn reads_korean_and_japanese_pages_with_their_models() {
+        let models = installed(&["eng", "jpn", "kor"]);
+        for (script, model) in [
+            ("Korean", "kor"),
+            ("Hangul", "kor"),
+            ("Japanese", "jpn"),
+            ("Hiragana", "jpn"),
+            ("Katakana", "jpn"),
+        ] {
+            assert_eq!(language(&models, Some(script)), model, "{script}");
+        }
+    }
+
+    #[test]
+    fn every_script_named_after_a_writing_system_has_a_language() {
+        for (name, _) in LETTERS_BY_SCRIPT {
+            assert!(
+                LANGUAGE_BY_SCRIPT.iter().any(|(script, _)| *script == name),
+                "{name} has no language"
+            );
+        }
     }
 
     #[test]
