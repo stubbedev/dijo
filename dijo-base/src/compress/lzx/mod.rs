@@ -333,8 +333,8 @@ impl Huffman {
         }
         let incomplete = Malformed::Incomplete(self.tree);
         let mut left = 1i32;
-        for length in 1..=MAX_CODE as usize {
-            left = 2 * left - i32::from(self.count[length]);
+        for &count in &self.count[1..=MAX_CODE as usize] {
+            left = 2 * left - i32::from(count);
             if left < 0 {
                 return Err(incomplete);
             }

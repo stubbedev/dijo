@@ -81,12 +81,12 @@ impl Header {
         }
         header.pool_counts[0] = count(input)?;
         if header.has(HAVE_CP_NUMBERS) {
-            for at in 1..5 {
-                header.pool_counts[at] = count(input)?;
+            for pool_count in &mut header.pool_counts[1..5] {
+                *pool_count = count(input)?;
             }
         }
-        for at in 5..12 {
-            header.pool_counts[at] = count(input)?;
+        for pool_count in &mut header.pool_counts[5..12] {
+            *pool_count = count(input)?;
         }
         header.ic_count = count(input)?;
         header.default_minor = scalar(input)? as u16;

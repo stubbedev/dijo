@@ -116,10 +116,9 @@ impl BigUint {
     pub(crate) fn sub(&self, other: &Self) -> Self {
         let mut limbs = Vec::with_capacity(self.limbs.len());
         let mut borrow = 0i64;
-        for i in 0..self.limbs.len() {
-            let mut difference = i64::from(self.limbs[i])
-                - i64::from(other.limbs.get(i).copied().unwrap_or(0))
-                - borrow;
+        for (i, &limb) in self.limbs.iter().enumerate() {
+            let mut difference =
+                i64::from(limb) - i64::from(other.limbs.get(i).copied().unwrap_or(0)) - borrow;
             borrow = 0;
             if difference < 0 {
                 difference += 1 << 32;
