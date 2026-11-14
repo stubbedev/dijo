@@ -31,6 +31,8 @@
 | japanese.pdf | script | 0.015 | 0.000 | 1.000 | 0.000 | 1.000 |
 | japanese.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | japanese-vertical.pdf | script | 0.008 | 0.000 | 1.000 | 0.000 | 1.000 |
+| korean.pdf | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
+| korean.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | thai.pdf | script | 0.007 | 0.000 | 1.000 | 0.000 | 1.000 |
 | thai.docx | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hindi.pdf | script | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -67,7 +69,7 @@
 | prose-scan.tga | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-upside-down.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-perspective.jpg | ocr | 0.001 | 0.003 | 0.997 | 0.003 | 1.000 |
-| prose-photo-curled.jpg | ocr | 0.024 | 0.036 | 0.993 | 0.013 | 0.833 |
+| prose-photo-curled.jpg | ocr | 0.025 | 0.036 | 0.993 | 0.013 | 0.833 |
 | arabic-scan-300dpi.png | ocr | 0.125 | 0.107 | 0.893 | 0.000 | 1.000 |
 | prose-broken-private-use.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-broken-offset.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -219,6 +221,9 @@
 | ukrainian-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | chinese-scan.png | ocr | 0.029 | 0.016 | 0.992 | 0.016 | 1.000 |
 | japanese-scan.png | ocr | 0.015 | 0.000 | 1.000 | 0.000 | 1.000 |
+| korean-scan.png | ocr | 0.530 | 0.736 | 0.509 | 0.400 | 0.000 |
+| korean-scan-150dpi.png | ocr | 0.520 | 0.528 | 0.491 | 0.133 | 0.000 |
+| korean-scan-fax.png | ocr | 0.292 | 0.642 | 0.472 | 0.569 | 0.500 |
 | thai-scan.png | ocr | 0.028 | 0.018 | 0.986 | 0.014 | 0.667 |
 | hindi-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hebrew-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

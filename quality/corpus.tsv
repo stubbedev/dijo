@@ -30,6 +30,8 @@ chinese.docx	chinese	script
 japanese.pdf	japanese	script	
 japanese.docx	japanese	script	
 japanese-vertical.pdf	japanese	script	
+korean.pdf	korean	script	
+korean.docx	korean	script	
 thai.pdf	thai	script	
 thai.docx	thai	script	
 hindi.pdf	hindi	script	
@@ -218,6 +220,9 @@ spanish-scan.png	spanish	ocr
 ukrainian-scan.png	ukrainian	ocr	
 chinese-scan.png	chinese	ocr	
 japanese-scan.png	japanese	ocr	
+korean-scan.png	korean	ocr	
+korean-scan-150dpi.png	korean	ocr	
+korean-scan-fax.png	korean	ocr	
 thai-scan.png	thai	ocr	
 hindi-scan.png	hindi	ocr	
 hebrew-scan.png	hebrew	ocr	

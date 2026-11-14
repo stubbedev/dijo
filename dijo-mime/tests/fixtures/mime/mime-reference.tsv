@@ -540,6 +540,16 @@ quality	japanese.docx	file	application/vnd.openxmlformats-officedocument.wordpro
 quality	japanese.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5903	zip:detector-zip-file-opened=true
 quality	japanese.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	japanese.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	korean-scan-150dpi.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	korean-scan-150dpi.png	bytes	image/png	tk:content-type-magic-detected=image/png
+quality	korean-scan-fax.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	korean-scan-fax.png	bytes	image/png	tk:content-type-magic-detected=image/png
+quality	korean-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	korean-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
+quality	korean.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
+quality	korean.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=5982	zip:detector-zip-file-opened=true
+quality	korean.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	korean.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	latvian-cp1257.txt	file	text/plain	tk:content-type-magic-detected=text/plain
 quality	latvian-cp1257.txt	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
 quality	latvian-scan.png	file	image/png	tk:content-type-magic-detected=image/png

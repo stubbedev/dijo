@@ -114,7 +114,7 @@ european=(german danish swedish norwegian nynorsk polish czech turkish greek rus
     georgian hungarian icelandic irish italian latvian lithuanian luxembourgish macedonian maltese
     portuguese romanian romansh serbian serbian-latin slovak slovenian spanish ukrainian)
 
-for language in "${european[@]}" arabic hebrew chinese japanese thai hindi; do
+for language in "${european[@]}" arabic hebrew chinese japanese korean thai hindi; do
     direction=lr-tb
     complex="Noto Sans"
     asian="Noto Sans CJK SC"
@@ -124,6 +124,7 @@ for language in "${european[@]}" arabic hebrew chinese japanese thai hindi; do
         thai) complex="Noto Sans Thai" ;;
         hindi) complex="Noto Sans Devanagari" ;;
         japanese) asian="Noto Sans CJK JP" ;;
+        korean) asian="Noto Sans CJK KR" ;;
     esac
     fodt "$truth/$language.txt" "$work/$language.fodt" plain "$direction" "$complex" "$asian"
     convert "$work/$language.fodt" "$language" pdf pdf
@@ -175,6 +176,8 @@ pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-300"
 pdftoppm -r 150 -f 1 -l 1 -png -singlefile "$corpus/prose.pdf" "$work/scan-150"
 magick "$work/scan-300.png" -colorspace Gray -depth 8 "$corpus/prose-scan-300dpi.png"
 magick "$work/scan-150.png" -colorspace Gray -depth 8 "$corpus/prose-scan-150dpi.png"
+pdftoppm -r 150 -f 1 -l 1 -png -singlefile "$corpus/korean.pdf" "$work/korean-scan-150"
+magick "$work/korean-scan-150.png" -colorspace Gray -depth 8 "$corpus/korean-scan-150dpi.png"
 magick "$work/scan-300.png" -colorspace Gray -background white -rotate 2.5 -depth 8 "$corpus/prose-scan-skewed.png"
 magick "$work/scan-300.png" -colorspace Gray -rotate 90 -depth 8 "$corpus/prose-scan-rotated.png"
 magick "$work/scan-300.png" -colorspace Gray -rotate 180 -depth 8 "$corpus/prose-scan-upside-down.png"
@@ -203,11 +206,11 @@ for language in "${european[@]}"; do
     pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/$language.pdf" "$work/$language-scan"
     magick "$work/$language-scan.png" -colorspace Gray -depth 8 "$corpus/$language-scan.png"
 done
-for language in chinese japanese thai hindi hebrew; do
+for language in chinese japanese korean thai hindi hebrew; do
     pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/$language.pdf" "$work/$language-scan"
     magick "$work/$language-scan.png" -colorspace Gray -depth 8 "$corpus/$language-scan.png"
 done
-for language in danish polish; do
+for language in danish polish korean; do
     magick "$corpus/$language-scan.png" -resize 50% -seed 1 -attenuate 0.3 +noise Impulse -threshold 55% \
         "$corpus/$language-scan-fax.png"
 done

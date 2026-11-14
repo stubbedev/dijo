@@ -874,6 +874,41 @@
     "spurious": 0.0,
     "reading_order": 1.0
   },
+  "korean-scan-150dpi.png": {
+    "character_error_rate": 0.5198019801980198,
+    "token_error_rate": 0.5283018867924528,
+    "recall": 0.49056603773584906,
+    "spurious": 0.13333333333333333,
+    "reading_order": 0.0
+  },
+  "korean-scan-fax.png": {
+    "character_error_rate": 0.29207920792079206,
+    "token_error_rate": 0.6415094339622641,
+    "recall": 0.4716981132075472,
+    "spurious": 0.5689655172413793,
+    "reading_order": 0.5
+  },
+  "korean-scan.png": {
+    "character_error_rate": 0.5297029702970297,
+    "token_error_rate": 0.7358490566037735,
+    "recall": 0.5094339622641509,
+    "spurious": 0.4,
+    "reading_order": 0.0
+  },
+  "korean.docx": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "korean.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
   "latvian-cp1257.txt": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
@@ -1239,7 +1274,7 @@
     "reading_order": 1.0
   },
   "prose-photo-curled.jpg": {
-    "character_error_rate": 0.024376417233560092,
+    "character_error_rate": 0.024943310657596373,
     "token_error_rate": 0.036065573770491806,
     "recall": 0.9934426229508196,
     "spurious": 0.013029315960912053,

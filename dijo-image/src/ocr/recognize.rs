@@ -69,9 +69,10 @@ const MIN_UNWARPED_GAIN: i32 = 10;
 /// flat photographs bend theirs by none.
 const MIN_CURL_DEGREES: f64 = 1.0;
 /// Scripts tesseract's detection takes for others (Armenian for upside-down Latin, Georgian for
-/// Malayalam, Hebrew for Thai), tried in turn when no reading of an image with plenty of text is
-/// confident.
-const OVERLOOKED_SCRIPTS: [&str; 3] = ["Armenian", "Georgian", "Hebrew"];
+/// Malayalam, Hebrew for Thai, and Hebrew, Han, Japanese, Devanagari or none for Korean, whose
+/// Hangul it tells apart only at some sizes), tried in turn when no reading of an image with
+/// plenty of text is confident.
+const OVERLOOKED_SCRIPTS: [&str; 4] = ["Armenian", "Georgian", "Hebrew", "Korean"];
 /// Scripts detection reports for pages in another script, which is read first in its place:
 /// Georgian pages are reported as Malayalam. The reported script is then the first of the
 /// overlooked ones tried.
@@ -1349,12 +1350,15 @@ mod tests {
     fn tries_the_reported_script_then_the_overlooked_ones() {
         assert_eq!(
             overlooked(Some("Georgian"), &["Latin"]),
-            ["Georgian", "Armenian", "Hebrew"]
+            ["Georgian", "Armenian", "Hebrew", "Korean"]
         );
-        assert_eq!(overlooked(None, &["Armenian"]), ["Georgian", "Hebrew"]);
+        assert_eq!(
+            overlooked(None, &["Armenian"]),
+            ["Georgian", "Hebrew", "Korean"]
+        );
         assert_eq!(
             overlooked(Some("Cyrillic"), &["Latin"]),
-            ["Cyrillic", "Armenian", "Georgian", "Hebrew"]
+            ["Cyrillic", "Armenian", "Georgian", "Hebrew", "Korean"]
         );
     }
 
@@ -1758,6 +1762,16 @@ mod tests {
             at("英國に於ける成人教育\n") < at("英國の成人教育は"),
             "{text}"
         );
+    }
+
+    /// Detection reports no script for this page of Hangul at 150 pixels to the inch, and
+    /// Japanese for it faxed: it is read in Korean all the same (#364).
+    #[test]
+    fn reads_a_korean_page_detection_does_not_report_with_the_korean_model() {
+        for name in ["korean-scan-150dpi.png", "korean-scan-fax.png"] {
+            let report = recognized(name).report(None);
+            assert!(report.contains(r#""language":"kor""#), "{name}: {report}");
+        }
     }
 
     #[test]
