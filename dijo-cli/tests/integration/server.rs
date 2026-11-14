@@ -185,7 +185,7 @@ fn tika_clients_are_answered_unchanged() {
 
     assert_eq!(
         server
-            .request("PUT", "/tika", &[("Accept", "application/json")], b"x")
+            .request("PUT", "/tika", &[("Accept", "image/png")], b"x")
             .status,
         406
     );
@@ -294,6 +294,175 @@ fn tika_metadata_endpoints_answer_tikas_objects() {
         .status,
         422
     );
+}
+
+/// The keys a tika-server 3 client reads a PDF's content and page counts by.
+const TIKA_3_PDF_KEYS: &[&str] = &[
+    "X-TIKA:content",
+    "X-TIKA:Parsed-By",
+    "pdf:charsPerPage",
+    "pdf:unmappedUnicodeCharsPerPage",
+    "access_permission:can_print",
+];
+
+fn assert_tika_3_pdf_keys(object: &serde_json::Value, context: &str) {
+    for key in TIKA_3_PDF_KEYS {
+        assert!(
+            object.get(key).is_some(),
+            "{context} has no {key}: {object}"
+        );
+    }
+    assert_eq!(
+        object["pdf:charsPerPage"].as_array().map(Vec::len),
+        Some(28),
+        "{context}"
+    );
+}
+
+/// A tika-server 3 client gets what tika-server 3 answered: `PUT /tika/{handler}` with
+/// `Accept: application/json` is one JSON object in tika-server 3's keys, the content as the
+/// handler writes it, and no 4.x key that has a 3.x one.
+#[test]
+fn tika_3_clients_get_tika_3s_json_object() {
+    let server = Server::start(&[]);
+    let accept_json = [
+        ("Accept", "application/json"),
+        ("Content-Type", "application/pdf"),
+    ];
+    for (target, marker) in [
+        ("/tika/text", "Apple Inc."),
+        ("/tika/html", "<html"),
+        ("/tika/xml", "<html"),
+        ("/tika", "<html"),
+    ] {
+        let answer = put_file(&server, target, &accept_json, "2022_Q3_AAPL.pdf");
+        assert_eq!(answer.status, 200, "{target}");
+        assert_eq!(
+            answer.header("content-type"),
+            Some("application/json"),
+            "{target}"
+        );
+        let object = answer.json();
+        assert_tika_3_pdf_keys(&object, target);
+        assert!(
+            object["X-TIKA:content"].as_str().unwrap().contains(marker),
+            "{target}"
+        );
+        for key in ["tk:content", "tk:parsed-by", "pdf:chars-per-page"] {
+            assert!(object.get(key).is_none(), "{target} has {key}");
+        }
+    }
+    let text = put_file(&server, "/tika/text", &accept_json, "2022_Q3_AAPL.pdf").json();
+    assert!(!text["X-TIKA:content"].as_str().unwrap().contains("<html"));
+
+    let plain = put_file(&server, "/tika/text", &[], "2022_Q3_AAPL.pdf");
+    assert_eq!(
+        plain.header("content-type"),
+        Some("text/plain; charset=utf-8")
+    );
+    assert_eq!(
+        plain.text(),
+        server.post_file("/extract", &[], "2022_Q3_AAPL.pdf").text()
+    );
+    assert_eq!(
+        put_file(
+            &server,
+            "/tika/text",
+            &[("Accept", "image/png")],
+            "simple.odt"
+        )
+        .status,
+        406
+    );
+}
+
+/// The endpoints both tika-server 3 and 4 serve answer each value under its 4.x key and its
+/// 3.x key; those only tika-server 4 serves, under its keys alone.
+#[test]
+fn endpoints_both_tika_servers_serve_answer_both_keys() {
+    let server = Server::start(&[]);
+    let records = put_file(&server, "/rmeta/text", &[], "2022_Q3_AAPL.pdf").json();
+    let upload = &records[0];
+    assert_tika_3_pdf_keys(upload, "/rmeta/text");
+    for (v4, v3) in [
+        ("tk:content", "X-TIKA:content"),
+        ("tk:parsed-by", "X-TIKA:Parsed-By"),
+        ("tk:embedded-depth", "X-TIKA:embedded_depth"),
+        ("pdf:chars-per-page", "pdf:charsPerPage"),
+        ("access-permission:can-print", "access_permission:can_print"),
+    ] {
+        assert_eq!(upload[v4], upload[v3], "{v4} and {v3}");
+    }
+
+    let named = [("Content-Disposition", "attachment; filename=\"a.pdf\"")];
+    let meta = put_file(&server, "/meta", &named, "2022_Q3_AAPL.pdf").json();
+    assert_eq!(meta["tk:resource-name"], "a.pdf");
+    assert_eq!(meta["resourceName"], "a.pdf");
+    assert_eq!(meta["pdf:charsPerPage"], meta["pdf:chars-per-page"]);
+    let field = put_file(
+        &server,
+        "/meta/pdf:charsPerPage",
+        &[("Accept", "text/plain")],
+        "2022_Q3_AAPL.pdf",
+    );
+    assert_eq!(field.status, 200);
+    assert_eq!(
+        field.text(),
+        meta["pdf:chars-per-page"][0].as_str().unwrap()
+    );
+
+    let json = put_file(&server, "/tika/json/text", &[], "2022_Q3_AAPL.pdf").json();
+    assert!(json["tk:content"].is_string());
+    for key in TIKA_3_PDF_KEYS {
+        assert!(json.get(key).is_none(), "/tika/json/text has {key}");
+    }
+}
+
+/// `dijo serve` answers a tika-server 3 client as tika-server 3 does: the same status, media
+/// type and keys for the content and the page counts. Needs tika-server 3 at
+/// TIKA3_SERVER_ADDRESS, such as `docker run -p 9998:9998 apache/tika:3.3.1.0-full`.
+#[test]
+#[ignore = "needs a running tika-server 3 at TIKA3_SERVER_ADDRESS"]
+fn dijo_answers_tika_3_clients_as_tika_server_3_does() {
+    let tika = std::env::var("TIKA3_SERVER_ADDRESS").expect("TIKA3_SERVER_ADDRESS");
+    let server = Server::start(&[]);
+    let body = std::fs::read(format!("{DOCUMENTS}/2022_Q3_AAPL.pdf")).unwrap();
+    let headers = [
+        ("Accept", "application/json"),
+        ("Content-Type", "application/pdf"),
+    ];
+    let media_type = |response: &Response| {
+        response
+            .header("content-type")
+            .and_then(|value| value.split(';').next())
+            .map(str::to_string)
+    };
+    for target in ["/tika/text", "/tika/html", "/tika/xml", "/rmeta/text"] {
+        let theirs = crate::common::server::request(&tika, "PUT", target, &headers, &body);
+        let ours = server.request("PUT", target, &headers, &body);
+        assert_eq!(ours.status, theirs.status, "{target}");
+        assert_eq!(media_type(&ours), media_type(&theirs), "{target}");
+        let first = |response: &Response| match response.json() {
+            serde_json::Value::Array(mut records) => records.swap_remove(0),
+            object => object,
+        };
+        let (theirs, ours) = (first(&theirs), first(&ours));
+        for key in TIKA_3_PDF_KEYS
+            .iter()
+            .chain(&["pdf:ocrPageCount", "resourceName"])
+        {
+            assert_eq!(
+                ours.get(key).is_some(),
+                theirs.get(key).is_some(),
+                "{target}: {key}"
+            );
+        }
+        assert_eq!(
+            ours["pdf:charsPerPage"].as_array().map(Vec::len),
+            theirs["pdf:charsPerPage"].as_array().map(Vec::len),
+            "{target}"
+        );
+    }
 }
 
 /// Every document of the upload has an object, numbered in the order it is found, duplicates

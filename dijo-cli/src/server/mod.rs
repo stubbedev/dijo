@@ -452,6 +452,17 @@ enum TikaAnswer {
     Output(tika::output::Output),
 }
 
+impl From<tika::Answer> for TikaAnswer {
+    fn from(answer: tika::Answer) -> Self {
+        match answer {
+            tika::Answer::Content(handler) => TikaAnswer::Content(handler),
+            tika::Answer::Json(handler) => {
+                TikaAnswer::Output(tika::output::Output::Json(handler, tika::keys::Keys::Tika3))
+            }
+        }
+    }
+}
+
 /// Answers a tika-server endpoint: a listing at once, anything else from the upload, with the
 /// extraction Tika's headers ask for.
 async fn tika(
@@ -486,10 +497,12 @@ fn tika_task(
     let not_acceptable = || (406, "No form of this endpoint is acceptable".to_string());
     let answer = match endpoint {
         tika::Endpoint::Listing(_) => unreachable!("listings are answered without an upload"),
-        tika::Endpoint::Negotiated => {
-            TikaAnswer::Content(tika::negotiated_handler(headers).ok_or_else(not_acceptable)?)
-        }
-        tika::Endpoint::Content(handler) => TikaAnswer::Content(handler),
+        tika::Endpoint::Negotiated => tika::negotiated_answer(headers)
+            .ok_or_else(not_acceptable)?
+            .into(),
+        tika::Endpoint::Content(handler) => tika::content_answer(headers, handler)
+            .ok_or_else(not_acceptable)?
+            .into(),
         tika::Endpoint::Meta => TikaAnswer::Output(tika::output::Output::Meta(
             tika::meta_form(headers).ok_or_else(not_acceptable)?,
         )),

@@ -109,15 +109,15 @@ curl --data-binary @mystery.bin localhost:9998/detect
 | `POST /detect` | The detected media type, as text. |
 | `GET /healthz`, `GET /readyz` | Liveness, and whether a request would be accepted now. |
 | `GET /metrics` | Prometheus metrics. |
-| tika-server's API | The endpoints of tika-server 4.1, so a Tika client can switch to dijo by its base URL alone. See below. |
+| tika-server's API | The endpoints of tika-server 4.1, and what clients of tika-server 3 ask of them, so a Tika client can switch to dijo by its base URL alone. See below. |
 
 ### tika-server's API
 
 | Endpoint | Answer |
 | --- | --- |
 | `GET /tika` | The greeting Tika clients check the server is up by. |
-| `PUT /tika` | The text, as `POST /extract` answers it. `Accept: text/html` or `text/xml` answers the XHTML, as tika-server 3 did. |
-| `PUT /tika/text`, `/tika/html`, `/tika/xml`, `/tika/md` | The text, the XHTML (as `text/html` or `text/xml`) or Markdown. |
+| `PUT /tika` | The text, as `POST /extract` answers it. `Accept: text/html` or `text/xml` answers the XHTML, and `application/json` the JSON object of `/tika/xml` below, as tika-server 3 did. |
+| `PUT /tika/text`, `/tika/html`, `/tika/xml`, `/tika/md` | The text, the XHTML (as `text/html` or `text/xml`) or Markdown. `Accept: application/json` answers one JSON object, as tika-server 3 did: the metadata in tika-server 3's keys and the content in `X-TIKA:content` as the handler writes it. |
 | `PUT /tika/json[/{handler}]` | One JSON object: the metadata under Tika's keys, the content in `tk:content` as the handler (`text`, `html`, `xml`, `md`, the default, or `ignore`) writes it, and errors in `tk:exception:container-exception`. 200 even when the document could not be read. |
 | `PUT /rmeta[/{handler}]` | A JSON array of such objects: the upload, then every document embedded in it, with `tk:embedded-id`, `tk:embedded-resource-path`, `tk:embedded-depth` and `tk:resource-name`. |
 | `PUT /meta`, `PUT /meta/{field}` | The metadata alone, as JSON or, by `Accept`, CSV; one field also as plain text, 404 when the document has none. |
@@ -132,6 +132,13 @@ languages in `X-Tika-OCRLanguage`. dijo decides when and how to OCR and when to 
 `X-Tika-Timeout-Millis`; `/unpack` does not OCR at all. Any other `X-Tika-` header is refused with 400, and an `Accept`
 the endpoint has no form for with 406.
 
+tika-server 4 renamed the metadata keys of tika-server 3: `X-TIKA:content` became `tk:content`, `pdf:charsPerPage`
+`pdf:chars-per-page`, `access_permission:can_print` `access-permission:can-print`. dijo derives each 3.x key from its
+4.x key by Tika's own 3.x-to-4.x key table and the prefix rules of its `LegacyKeyMigrationFilter`. The endpoints both
+serve, `/rmeta`, `/meta`, `/meta/{field}` and the metadata of `/unpack/all`, carry each value under both keys, so a
+client of either reads the keys it knows, and `/meta/{field}` answers a field by either name; `/tika/json` has only the
+4.x keys, and the JSON object of `/tika/{handler}` only the 3.x keys.
+
 Where the answers differ from tika-server's:
 
 - The metadata is dijo's: Tika's keys, but parsers named `dijo::…`, and none of the keys only Tika's own parsers record.
@@ -141,6 +148,17 @@ Where the answers differ from tika-server's:
 - An empty upload is a document without text, answered 200, where tika-server answers 422.
 - `/mime-types/{type}/{subtype}` has no description, acronym or links, which dijo's media types do not carry.
 - The presets, the `/config` and `/form` uploads, the XMP endpoints, `/translate`, `/pipes` and `/async` are not served.
+
+Where the answers differ from tika-server 3's:
+
+- `/tika/text`, `/tika/html` and `/tika/xml` answer the content unless `Accept` asks for `application/json`, as
+  tika-server 4 does; tika-server 3 answered nothing but its JSON object there.
+- The JSON object of `/tika/{handler}` also has `tk:content-handler-type`, as `/tika/json` does.
+- `/rmeta` has each document's content twice, in `tk:content` and `X-TIKA:content`, and every other renamed key under
+  both names.
+- `pdf:charsPerPage` and `pdf:unmappedUnicodeCharsPerPage` count each page's text layer, as Tika 3 and 4 count them,
+  not the OCR text dijo adds in the same pass, and `pdf:ocrPageCount` counts none of the pages dijo decides to OCR.
+  dijo OCRs the pages without usable text in the first request, so a second request for an OCR pass answers the same.
 
 Responses stream as the document is extracted. A document that cannot be extracted gets a JSON error with 415
 (unsupported), 422 (corrupt or encrypted) or 500; partial results come back as 200 with their status in the JSON.

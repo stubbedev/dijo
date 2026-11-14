@@ -77,6 +77,12 @@
   header and footer sections in their own `div`s. The `<metadata>` is the document's Dublin Core, keywords and
   generator, its dates ISO local date-times (AbiWord saves them without a time zone); each `<data>` item is handed on
   as an embedded document. Gzip-compressed `.zabw` files are read through the gzip parser.
+* tika-server 3 clients can switch to dijo by its base URL (#363). `PUT /tika/text`, `/tika/html`, `/tika/xml` and
+  `/tika` with `Accept: application/json` answer tika-server 3's JSON object: the metadata in tika-server 3's keys and
+  the content in `X-TIKA:content`. `/rmeta`, `/meta`, `/meta/{field}` and `/unpack/all`, which tika-server 3 and 4 both
+  serve, carry each value under its 4.x key and its 3.x key (`X-TIKA:content`, `X-TIKA:Parsed-By`,
+  `pdf:charsPerPage`, `access_permission:*`, …), named by Tika's own 3.x-to-4.x key table. `/tika/{handler}` now
+  answers an `Accept` it has no form for with 406, as tika-server 4 does.
 * BitTorrent metainfo files are read (#354), where Tika reads nothing of them: the torrent's name, its comment, its
   files with their sizes (version 1 `files`, version 2 `file tree` or the single file, padding files left out) and its
   announce URLs, as text, and the name, comment, creating client, creation date and announce URLs as metadata. The

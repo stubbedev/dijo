@@ -12,6 +12,7 @@ use zip::write::{SimpleFileOptions, StreamWriter};
 use zip::{CompressionMethod, ZipWriter};
 
 use super::iso639;
+use super::keys::{self, Field, Keys, Named};
 use crate::cli::Format;
 use crate::render::{self, Opened, Outcome, RenderOptions};
 use crate::schema::{self, ExtractionError, Source, Status};
@@ -102,9 +103,10 @@ pub enum FieldForm {
 /// What a worker answers an upload with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Output {
-    /// `/tika/json`: the document's metadata and content, its embedded documents' content
-    /// inlined, as one object.
-    Json(Handler),
+    /// `/tika/json`, and `/tika/{handler}` as tika-server 3 answers `application/json`: the
+    /// document's metadata and content, its embedded documents' content inlined, as one object
+    /// in the keys of the tika-server that serves the endpoint.
+    Json(Handler, Keys),
     /// `/rmeta`: an object per document, the upload first, then each document embedded in it.
     Rmeta(Handler),
     /// `/meta`: the metadata alone.
@@ -124,7 +126,7 @@ type Object = BTreeMap<String, Value>;
 
 pub fn run(request: &ExtractRequest, output: &Output, files: &Files, respond: &mut dyn Respond) {
     let answered = match output {
-        Output::Json(handler) => json(request, *handler, files, respond),
+        Output::Json(handler, keys) => json(request, *handler, *keys, files, respond),
         Output::Rmeta(handler) => rmeta(request, *handler, files, respond),
         Output::Meta(form) => meta(request, *form, files, respond),
         Output::MetaField { field, form } => meta_field(request, field, *form, files, respond),
@@ -349,13 +351,14 @@ fn failure_head(outcome: &Outcome) -> Option<Head> {
 fn json(
     request: &ExtractRequest,
     handler: Handler,
+    keys: Keys,
     files: &Files,
     respond: &mut dyn Respond,
 ) -> io::Result<()> {
     let started = Instant::now();
     let (object, outcome) = upload_record(request, Some(handler), files)?;
     report(respond, &outcome, started);
-    respond.head(json_head(&object)?)
+    respond.head(json_head(&Named::new(&object, keys))?)
 }
 
 fn meta(
@@ -367,9 +370,10 @@ fn meta(
     let started = Instant::now();
     let (object, outcome) = upload_record(request, None, files)?;
     report(respond, &outcome, started);
+    let named = Named::new(&object, Keys::Both);
     respond.head(match form {
-        MetaForm::Json => json_head(&object)?,
-        MetaForm::Csv => csv_head(object.iter()),
+        MetaForm::Json => json_head(&named)?,
+        MetaForm::Csv => csv_head(named.iter()),
     })
 }
 
@@ -386,33 +390,28 @@ fn meta_field(
     if let Some(head) = failure_head(&outcome) {
         return respond.head(head);
     }
-    let Some(value) = object.get(field) else {
+    let named = Named::new(&object, Keys::Both);
+    let Some(values) = named.get(field) else {
         return respond.head(error_head(
             404,
             &format!("Failed to get metadata field {field}"),
         ));
     };
     respond.head(match form {
-        FieldForm::Json => json_head(&BTreeMap::from([(field, value)]))?,
-        FieldForm::Csv => csv_head([(field, value)]),
-        FieldForm::Plain => text_head(200, values(value).next().unwrap_or_default()),
+        FieldForm::Json => json_head(&BTreeMap::from([(field, Field(values))]))?,
+        FieldForm::Csv => csv_head([(field, values)]),
+        FieldForm::Plain => text_head(200, keys::strings(values).next().unwrap_or_default()),
     })
 }
 
-fn values(value: &Value) -> impl Iterator<Item = &str> {
-    let values = match value {
-        Value::Array(values) => values.as_slice(),
-        value => std::slice::from_ref(value),
-    };
-    values.iter().filter_map(Value::as_str)
-}
-
 /// A line per field: its name, then its values, each a CSV field.
-fn csv_head<'v>(fields: impl IntoIterator<Item = (impl AsRef<str>, &'v Value)>) -> Head {
+fn csv_head<'f, 'v: 'f>(
+    fields: impl IntoIterator<Item = (impl AsRef<str>, &'f [&'v Value])>,
+) -> Head {
     let mut csv = String::new();
-    for (name, value) in fields {
+    for (name, values) in fields {
         csv_field(&mut csv, name.as_ref());
-        for value in values(value) {
+        for value in keys::strings(values) {
             csv.push(',');
             csv_field(&mut csv, value);
         }
@@ -488,7 +487,7 @@ impl RmetaRecords<'_> {
             self.sink.write_all(b",")?;
         }
         self.written = true;
-        serde_json::to_writer(&mut *self.sink, object)?;
+        serde_json::to_writer(&mut *self.sink, &Named::new(object, Keys::Both))?;
         Ok(())
     }
 }
@@ -627,7 +626,7 @@ impl<'a> UnpackRecords<'a> {
         io::copy(&mut File::open(document.path)?, zip)?;
         if all {
             zip.start_file(format!("{name}{METADATA_SUFFIX}"), options)?;
-            serde_json::to_writer(&mut *zip, object)?;
+            serde_json::to_writer(&mut *zip, &Named::new(object, Keys::Both))?;
         }
         Ok(())
     }

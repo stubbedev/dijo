@@ -1,14 +1,16 @@
 //! tika-server's API, answered by dijo's extraction, so that a Tika client can be pointed at
-//! dijo unchanged: the endpoints of tika-server 4.1, and the paths and `Accept` types of
-//! tika-server 3 they replaced.
+//! dijo unchanged: the endpoints of tika-server 4.1, and the paths, `Accept` types and
+//! metadata keys of tika-server 3 they replaced.
 
 mod iso639;
+pub mod keys;
 pub mod listings;
 pub mod output;
 
 use hyper::header::{HeaderMap, ACCEPT};
 use hyper::Method;
 
+use keys::Keys;
 use listings::Listing;
 use output::{FieldForm, Handler, MetaForm, Output};
 
@@ -24,6 +26,9 @@ const IGNORED_OPTIONS: &[&str] = &[
     "x-tika-ocrminfilesizetoocr",
     "x-tika-timeout-millis",
 ];
+const JSON_RANGES: &[&str] = &["application/json"];
+/// The ranges that accept any content handler's answer.
+const ANY_TEXT_RANGES: &[&str] = &["text/*", "*/*"];
 
 /// An endpoint of tika-server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +37,7 @@ pub enum Endpoint {
     Listing(Listing),
     /// `PUT /tika`: the content as the request's `Accept` asks for it.
     Negotiated,
-    /// `PUT /tika/{text,html,xml,md}`.
+    /// `PUT /tika/{text,html,xml,md}`: the content, or tika-server 3's JSON object by `Accept`.
     Content(Handler),
     /// `PUT /meta`, in the form the request's `Accept` asks for.
     Meta,
@@ -50,7 +55,7 @@ impl Endpoint {
             Endpoint::Listing(_) => "tika_listing",
             Endpoint::Negotiated | Endpoint::Content(_) => "tika",
             Endpoint::Meta | Endpoint::MetaField(_) => "tika_meta",
-            Endpoint::Upload(Output::Json(_)) => "tika_json",
+            Endpoint::Upload(Output::Json(..)) => "tika_json",
             Endpoint::Upload(Output::Rmeta(_)) => "tika_rmeta",
             Endpoint::Upload(Output::Meta(_) | Output::MetaField { .. }) => "tika_meta",
             Endpoint::Upload(Output::Unpack { .. }) => "tika_unpack",
@@ -93,8 +98,8 @@ pub fn route(method: &Method, path: &str) -> Option<Endpoint> {
     }
     match segments.as_slice() {
         ["tika"] => Some(Endpoint::Negotiated),
-        ["tika", "json"] => upload(Output::Json(Handler::Markdown)),
-        ["tika", "json", handler] => upload(Output::Json(Handler::named(handler)?)),
+        ["tika", "json"] => upload(Output::Json(Handler::Markdown, Keys::Tika4)),
+        ["tika", "json", handler] => upload(Output::Json(Handler::named(handler)?, Keys::Tika4)),
         ["tika", handler] => match Handler::named(handler)? {
             Handler::Ignore => None,
             handler => Some(Endpoint::Content(handler)),
@@ -143,15 +148,54 @@ fn negotiate<T: Copy>(headers: &HeaderMap, forms: &[(&[&str], T)]) -> Option<T> 
     })
 }
 
-/// The content `PUT /tika` answers with: plain text, as tika-server 4 answers alone, or the
-/// XHTML or XML tika-server 3 answered `text/html` and `text/xml` with.
-pub fn negotiated_handler(headers: &HeaderMap) -> Option<Handler> {
+/// What `PUT /tika` and `PUT /tika/{handler}` answer with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// The content as the handler writes it.
+    Content(Handler),
+    /// One JSON object of the metadata in tika-server 3's keys and the content as the handler
+    /// writes it, as tika-server 3 answered `application/json`.
+    Json(Handler),
+}
+
+/// The media ranges that name the content `handler` writes.
+fn handler_ranges(handler: Handler) -> &'static [&'static str] {
+    match handler {
+        Handler::Text | Handler::Ignore => &["text/plain"],
+        Handler::Markdown => &["text/plain", "text/markdown"],
+        Handler::Html => &["text/html", "application/xhtml+xml"],
+        Handler::Xml => &["text/xml", "application/xml"],
+    }
+}
+
+/// What `PUT /tika` answers with: plain text, as tika-server 4 answers alone, or what
+/// tika-server 3 answered `text/html`, `text/xml` and `application/json` with: the XHTML, the
+/// XML, or the JSON object of its default XML handler.
+pub fn negotiated_answer(headers: &HeaderMap) -> Option<Answer> {
+    let text = [handler_ranges(Handler::Text), ANY_TEXT_RANGES].concat();
     negotiate(
         headers,
         &[
-            (&["text/plain", "text/*", "*/*"], Handler::Text),
-            (&["text/html", "application/xhtml+xml"], Handler::Html),
-            (&["text/xml", "application/xml"], Handler::Xml),
+            (text.as_slice(), Answer::Content(Handler::Text)),
+            (
+                handler_ranges(Handler::Html),
+                Answer::Content(Handler::Html),
+            ),
+            (handler_ranges(Handler::Xml), Answer::Content(Handler::Xml)),
+            (JSON_RANGES, Answer::Json(Handler::Xml)),
+        ],
+    )
+}
+
+/// What `PUT /tika/{handler}` answers with: the content, as tika-server 4 answers alone, or
+/// the JSON object tika-server 3 answered `application/json` with.
+pub fn content_answer(headers: &HeaderMap, handler: Handler) -> Option<Answer> {
+    let content = [handler_ranges(handler), ANY_TEXT_RANGES].concat();
+    negotiate(
+        headers,
+        &[
+            (content.as_slice(), Answer::Content(handler)),
+            (JSON_RANGES, Answer::Json(handler)),
         ],
     )
 }
@@ -238,7 +282,14 @@ mod tests {
         assert_eq!(put("/tika/ignore"), None);
         assert_eq!(
             put("/tika/json"),
-            Some(Endpoint::Upload(Output::Json(Handler::Markdown)))
+            Some(Endpoint::Upload(Output::Json(
+                Handler::Markdown,
+                Keys::Tika4
+            )))
+        );
+        assert_eq!(
+            put("/tika/json/xml"),
+            Some(Endpoint::Upload(Output::Json(Handler::Xml, Keys::Tika4)))
         );
         assert_eq!(
             put("/rmeta/text"),
@@ -273,24 +324,28 @@ mod tests {
 
     #[test]
     fn accept_picks_the_first_form_it_lists() {
-        assert_eq!(negotiated_handler(&headers(&[])), Some(Handler::Text));
         assert_eq!(
-            negotiated_handler(&headers(&[("accept", "text/plain")])),
-            Some(Handler::Text)
+            negotiated_answer(&headers(&[])),
+            Some(Answer::Content(Handler::Text))
         );
         assert_eq!(
-            negotiated_handler(&headers(&[(
-                "accept",
-                "application/json, Text/HTML; q=0.5"
-            )])),
-            Some(Handler::Html)
+            negotiated_answer(&headers(&[("accept", "text/plain")])),
+            Some(Answer::Content(Handler::Text))
         );
         assert_eq!(
-            negotiated_handler(&headers(&[("accept", "text/xml, */*")])),
-            Some(Handler::Xml)
+            negotiated_answer(&headers(&[("accept", "image/png, Text/HTML; q=0.5")])),
+            Some(Answer::Content(Handler::Html))
         );
         assert_eq!(
-            negotiated_handler(&headers(&[("accept", "application/json")])),
+            negotiated_answer(&headers(&[("accept", "text/xml, */*")])),
+            Some(Answer::Content(Handler::Xml))
+        );
+        assert_eq!(
+            negotiated_answer(&headers(&[("accept", "application/json")])),
+            Some(Answer::Json(Handler::Xml))
+        );
+        assert_eq!(
+            negotiated_answer(&headers(&[("accept", "image/png")])),
             None
         );
         assert_eq!(
@@ -301,6 +356,44 @@ mod tests {
         assert_eq!(
             field_form(&headers(&[("accept", "text/plain")])),
             Some(FieldForm::Plain)
+        );
+    }
+
+    #[test]
+    fn content_endpoints_answer_tika_3s_json_object_by_accept() {
+        for handler in [
+            Handler::Text,
+            Handler::Html,
+            Handler::Xml,
+            Handler::Markdown,
+        ] {
+            assert_eq!(
+                content_answer(&headers(&[]), handler),
+                Some(Answer::Content(handler))
+            );
+            assert_eq!(
+                content_answer(&headers(&[("accept", "application/json")]), handler),
+                Some(Answer::Json(handler))
+            );
+            assert_eq!(
+                content_answer(&headers(&[("accept", "*/*, application/json")]), handler),
+                Some(Answer::Content(handler))
+            );
+            assert_eq!(
+                content_answer(&headers(&[("accept", "image/png")]), handler),
+                None
+            );
+        }
+        assert_eq!(
+            content_answer(
+                &headers(&[("accept", "application/xhtml+xml")]),
+                Handler::Html
+            ),
+            Some(Answer::Content(Handler::Html))
+        );
+        assert_eq!(
+            content_answer(&headers(&[("accept", "text/html")]), Handler::Text),
+            None
         );
     }
 

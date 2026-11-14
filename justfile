@@ -186,6 +186,17 @@ conformance-bless:
     CONFORMANCE_BLESS=1 cargo nextest run --package dijo --cargo-profile release --run-ignored only \
         --test integration -E 'test(/^conformance::/)'
 
+# Check that `dijo serve` answers tika-server 3's clients as tika-server 3.3.1 does; needs Docker.
+[unix]
+tika3-compare:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    container=$(docker run --detach --rm --publish 127.0.0.1::9998 apache/tika:3.3.1.0-full)
+    trap 'docker stop "$container" > /dev/null' EXIT
+    address=$(docker port "$container" 9998/tcp | head -n 1)
+    timeout 180 bash -c "until curl --silent --fail --max-time 2 http://$address/tika > /dev/null; do sleep 1; done"
+    TIKA3_SERVER_ADDRESS="$address" cargo nextest run --package dijo --run-ignored only --test integration -E 'test(=server::dijo_answers_tika_3_clients_as_tika_server_3_does)'
+
 # Score extraction against the quality corpus and write quality/SCOREBOARD.md.
 [unix]
 quality:
