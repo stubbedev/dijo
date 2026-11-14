@@ -4,9 +4,9 @@
 //!
 //! Tika reads none of them: their types specialize `application/x-tika-msoffice`, so its
 //! composite parser hands them to `OfficeParser`, which fails them as no compound documents
-//! (#158). Each page is written as a table of its rows, each row with a cell for each column up
-//! to its last: labels and the text results of formulas as text, numbers and the values of other
-//! formulas as numbers, without their display formats. An error or a value that is not
+//! (#158). Each page that holds a cell is written as the xls parser writes a sheet
+//! ([`SheetTable`]), without a name: labels and the text results of formulas as text, numbers and
+//! the values of other formulas as numbers, without their display formats. An error or a value that is not
 //! available, which these files hold as a NaN, is an empty cell. Text is in the code page of the
 //! system the file was written on, which the file does not name: IBM437 for DOS, windows-1252
 //! for Windows.
@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::sheet_table::SheetTable;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::java;
@@ -399,42 +400,19 @@ impl<'a> Records<'a> {
     }
 }
 
-/// Each page as a table of its rows, of `cells` in the order of their addresses.
+/// Each page as a sheet's table, of `cells` in the order of their addresses.
 fn write(cells: impl Iterator<Item = (Address, String)>, xhtml: &mut Xhtml) -> Result<(), Stop> {
     let mut cells = cells.peekable();
     while let Some(&(first, _)) = cells.peek() {
-        xhtml.start_element_with("div", &[("class", "page")])?;
-        xhtml.start_element("table")?;
-        xhtml.start_element("tbody")?;
-        while let Some(&(row, _)) = cells.peek() {
-            if row.page != first.page {
-                break;
-            }
-            xhtml.start_element("tr")?;
-            let mut column = 0;
-            while let Some((address, text)) =
-                cells.next_if(|(address, _)| address.page == row.page && address.row == row.row)
-            {
-                for _ in column..address.column {
-                    cell(xhtml, "")?;
-                }
-                cell(xhtml, &text)?;
-                column = address.column + 1;
-            }
-            xhtml.end_element("tr")?;
+        let mut table = SheetTable::start(None, false, xhtml)?;
+        while let Some((address, text)) = cells.next_if(|(address, _)| address.page == first.page) {
+            table.enter((i32::from(address.row), i32::from(address.column)), xhtml)?;
+            xhtml.characters(&text)?;
         }
-        xhtml.end_element("tbody")?;
-        xhtml.end_element("table")?;
+        table.end(xhtml)?;
         xhtml.end_element("div")?;
     }
     Ok(())
-}
-
-/// A cell of a row, empty or holding `text`.
-fn cell(xhtml: &mut Xhtml, text: &str) -> Result<(), Stop> {
-    xhtml.start_element("td")?;
-    xhtml.characters(text)?;
-    xhtml.end_element("td")
 }
 
 #[cfg(test)]

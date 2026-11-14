@@ -107,21 +107,23 @@ fn quattro_dos() -> Vec<u8> {
     .concat()
 }
 
+/// The body of a cell record of Quattro Pro for Windows.
+fn windows_cell(column: u8, page: u8, row: u16, data: &[u8]) -> Vec<u8> {
+    let mut body = vec![column, page];
+    body.extend(row.to_le_bytes());
+    body.extend(1u16.to_le_bytes());
+    body.extend(data);
+    body
+}
+
 /// A spreadsheet of Quattro Pro for Windows (`.wb1`) of two pages, a label on each, and what
 /// follows its end.
 fn quattro_windows() -> Vec<u8> {
-    fn cell(column: u8, page: u8, row: u16, data: &[u8]) -> Vec<u8> {
-        let mut body = vec![column, page];
-        body.extend(row.to_le_bytes());
-        body.extend(1u16.to_le_bytes());
-        body.extend(data);
-        body
-    }
     [
         record(0x0000, &0x1001u16.to_le_bytes()),
-        record(0x000F, &cell(0, 0, 0, b"'Sild\xe6\0x")),
-        record(0x000D, &cell(0, 0, 1, &(-3i16).to_le_bytes())),
-        record(0x000F, &cell(1, 1, 0, b"^Kuller\0")),
+        record(0x000F, &windows_cell(0, 0, 0, b"'Sild\xe6\0x")),
+        record(0x000D, &windows_cell(0, 0, 1, &(-3i16).to_le_bytes())),
+        record(0x000F, &windows_cell(1, 1, 0, b"^Kuller\0")),
         record(0x0001, &[]),
         record(0x0000, b"QPW$ExtendedStorage"),
     ]
@@ -246,6 +248,39 @@ fn reads_quattro_pro_for_windows_pages() {
     assert!(xml.contains("<td>Sild\u{e6}</td>"), "{xml}");
     assert!(xml.contains("<td>-3</td>"), "{xml}");
     assert!(xml.contains("<tr>\t<td />\t<td>Kuller</td></tr>"), "{xml}");
+}
+
+/// Each page is written as the xls parser writes a sheet: a page whose cells start below its
+/// first row begins with an empty row, and a row skipped between two cells is left out.
+#[test]
+fn writes_quattro_pro_pages_as_sheet_tables() {
+    let notebook = [
+        record(0x0000, &0x1002u16.to_le_bytes()),
+        record(0x000F, &windows_cell(1, 0, 2, b"'Hummer\0")),
+        record(0x000F, &windows_cell(0, 0, 5, b"'Rejer\0")),
+        record(0x000F, &windows_cell(0, 3, 0, b"'Krabber\0")),
+        record(0x0001, &[]),
+    ]
+    .concat();
+    let xml = extract_xml(&notebook);
+    let pages: Vec<&str> = xml
+        .split("<div class=\"page\">")
+        .skip(1)
+        .map(|page| &page[..page.find("</div>").unwrap()])
+        .collect();
+    let rows = |page: &str| -> Vec<String> {
+        page.split("<tr>")
+            .skip(1)
+            .map(|row| row[..row.find("</tr>").unwrap()].replace(['\t', '\n'], ""))
+            .collect()
+    };
+    assert_eq!(pages.len(), 2, "{xml}");
+    assert_eq!(
+        rows(pages[0]),
+        ["<td />", "<td /><td>Hummer</td>", "<td>Rejer</td>"],
+        "{xml}"
+    );
+    assert_eq!(rows(pages[1]), ["<td>Krabber</td>"], "{xml}");
 }
 
 #[test]
