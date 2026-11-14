@@ -11,12 +11,13 @@ use super::engine::PageContent;
 use super::jfloat;
 use super::position::TextPosition;
 use super::reading_order;
-use super::stripper::{self, Order, WORD_SEPARATOR};
+use super::stripper::{self, Callbacks, Order, WORD_SEPARATOR};
 use super::structure::{
     self, attribute_int, attributes, is_standard_type, Label, Leaf, StructureIndex,
 };
 use super::writer::{PageWriter, WriteFailure};
 use crate::formats::xhtml::Stop;
+use crate::formats::Difference;
 use crate::java::is_blank;
 
 /// `PDF.MARKED_CONTENT_REJECTIONS`.
@@ -27,6 +28,8 @@ const MIN_WORDS_FOR_SHREDDING: usize = 10;
 const MAX_SHREDDED_RATIO: f32 = 0.3;
 const MIN_COVERAGE: f32 = 0.5;
 const MAX_DANGLING_RATIO: f32 = 0.2;
+const NO_TAGGED_TEXT: &str = "no-tagged-text";
+const NO_BLOCK_STRUCTURE: &str = "no-block-structure";
 const GROUPING_TYPES: [&str; 9] = [
     "Part",
     "Art",
@@ -359,65 +362,70 @@ impl<'p> Tagged<'p> {
         Ok(())
     }
 
-    /// `writePage`: the page recorded, then written through the tree or flat.
+    /// `writePage`: the page recorded, then written through the tree or flat. A page its glyphs
+    /// alone show the gate rejects is written flat without being recorded first.
     pub(super) fn write_page(
         writer: &mut PageWriter<'p, '_>,
         page_number: usize,
         content: &mut PageContent,
     ) -> Result<(), WriteFailure> {
         if !Self::of(writer).has_index() {
-            let tagged = Self::of(writer);
-            tagged.state = State::Flat;
-            let order = reading_order::arrange_page(&mut content.articles, tagged.reading_order);
-            let result = Self::flush_pending_page_start(writer)
-                .map_err(WriteFailure::from)
-                .and_then(|()| {
-                    stripper::write_page(&mut content.articles, order, writer)
-                        .map_err(WriteFailure::from)
-                });
-            Self::of(writer).state = State::Idle;
-            return result;
+            return Self::write_flat(writer, content).map_err(WriteFailure::from);
+        }
+        if let Some(rejection) = Self::of(writer).rejection_before_recording(&mut content.articles)
+        {
+            Self::reject(writer, page_number, rejection);
+            return Self::write_flat(writer, content).map_err(WriteFailure::from);
         }
         Self::of(writer).state = State::Routing;
         let routed = stripper::write_page(&mut content.articles, Order::Drawn, writer);
         Self::of(writer).state = State::Idle;
         routed?;
         let tagged = Self::of(writer);
-        let rejection = tagged.gate(content);
-        match rejection {
-            None => {
-                tagged.pages_tagged += 1;
-                tagged.page_tagged = true;
-                tagged.pending_page_start = false;
-                tagged.state = State::Tagged;
-                let result = Self::emit_tagged(writer, content);
-                let tagged = Self::of(writer);
-                tagged.state = State::Idle;
-                tagged.events.clear();
-                result.map_err(WriteFailure::from)
-            }
-            Some(rejection) => {
-                tagged.pages_fallback += 1;
-                tagged.state = State::Flat;
-                let reads_in_reading_order = tagged.reading_order;
-                writer.out.add(
-                    MARKED_CONTENT_REJECTIONS,
-                    format!("{page_number}:{rejection}"),
-                );
-                let result = Self::flush_pending_page_start(writer).and_then(|()| {
-                    if !reads_in_reading_order {
-                        return Self::replay_flat(writer);
-                    }
-                    Self::of(writer).events.clear();
-                    let order = reading_order::arrange_page(&mut content.articles, true);
-                    stripper::write_page(&mut content.articles, order, writer)
-                });
-                let tagged = Self::of(writer);
-                tagged.state = State::Idle;
-                tagged.events.clear();
-                result.map_err(WriteFailure::from)
-            }
-        }
+        let Some(rejection) = tagged.gate(content) else {
+            tagged.pages_tagged += 1;
+            tagged.page_tagged = true;
+            tagged.pending_page_start = false;
+            tagged.state = State::Tagged;
+            let result = Self::emit_tagged(writer, content);
+            let tagged = Self::of(writer);
+            tagged.state = State::Idle;
+            tagged.events.clear();
+            return result.map_err(WriteFailure::from);
+        };
+        Self::reject(writer, page_number, &rejection);
+        let result = if Self::of(writer).reading_order {
+            Self::of(writer).events.clear();
+            Self::write_flat(writer, content)
+        } else {
+            Self::of(writer).state = State::Flat;
+            let replayed =
+                Self::flush_pending_page_start(writer).and_then(|()| Self::replay_flat(writer));
+            Self::of(writer).state = State::Idle;
+            replayed
+        };
+        Self::of(writer).events.clear();
+        result.map_err(WriteFailure::from)
+    }
+
+    /// A page the gate rejects counted and noted with why.
+    fn reject(writer: &mut PageWriter<'p, '_>, page_number: usize, rejection: &str) {
+        Self::of(writer).pages_fallback += 1;
+        writer.out.add(
+            MARKED_CONTENT_REJECTIONS,
+            format!("{page_number}:{rejection}"),
+        );
+    }
+
+    /// The page as `PDF2XHTML` writes it, arranged first when it is read in reading order.
+    fn write_flat(writer: &mut PageWriter<'p, '_>, content: &mut PageContent) -> Result<(), Stop> {
+        let tagged = Self::of(writer);
+        tagged.state = State::Flat;
+        let order = reading_order::arrange_page(&mut content.articles, tagged.reading_order);
+        let result = Self::flush_pending_page_start(writer)
+            .and_then(|()| stripper::write_page(&mut content.articles, order, writer));
+        Self::of(writer).state = State::Idle;
+        result
     }
 
     /// `replayFlat`: the recorded calls, as `PDF2XHTML` would have made them.
@@ -437,6 +445,18 @@ impl<'p> Tagged<'p> {
 
     /// The recorded word of `writeString` while routing.
     fn word(&self, text: &str, positions: &[&TextPosition]) -> Event {
+        let (words, shredded) = self.count_shredding(positions);
+        Event::Word {
+            text: text.to_owned(),
+            segments: self.segments(text, positions),
+            words,
+            shredded,
+        }
+    }
+
+    /// A recorded word's glyphs under each label: its glyphs' own labels, or, where its text is
+    /// not theirs joined, the label most of them carry.
+    fn segments(&self, text: &str, positions: &[&TextPosition]) -> Vec<Segment> {
         let label_of = |position: &TextPosition| {
             if self.index.is_some() {
                 position.label
@@ -484,13 +504,7 @@ impl<'p> Tagged<'p> {
                 positions: glyphs,
             });
         }
-        let (words, shredded) = self.count_shredding(positions);
-        Event::Word {
-            text: text.to_owned(),
-            segments,
-            words,
-            shredded,
-        }
+        segments
     }
 
     /// `countShredding`: the words of three glyphs or more, and those of them whose glyphs the
@@ -532,6 +546,40 @@ impl<'p> Tagged<'p> {
         match label {
             Label::Tagged { scope, mcid } => self.index.as_ref()?.leaf(scope, mcid),
             _ => None,
+        }
+    }
+
+    /// The gate's rejection of a page where its glyphs settle it, before the page is recorded.
+    /// A recorded word is labelled only with labels its glyphs carry, so a page none of whose
+    /// glyphs the tree owns has no tagged text, and, gated, a page none of whose glyphs the tree
+    /// owns in a block has no block structure, or no tagged text if no word keeps a label the
+    /// tree owns.
+    fn rejection_before_recording(
+        &self,
+        articles: &mut [Vec<TextPosition>],
+    ) -> Option<&'static str> {
+        let mut owned = false;
+        let mut previous = None;
+        for glyph in articles.iter().flatten() {
+            if previous == Some(glyph.label) {
+                continue;
+            }
+            previous = Some(glyph.label);
+            let Some(leaf) = self.leaf(glyph.label) else {
+                continue;
+            };
+            if !self.gated || self.wrapper_tag(self.block_of(leaf.node)).is_none() {
+                return None;
+            }
+            owned = true;
+        }
+        if !owned {
+            return Some(NO_TAGGED_TEXT);
+        }
+        let mut probe = TaggedWordProbe { tagged: self };
+        match stripper::write_page(articles, Order::Drawn, &mut probe) {
+            Ok(()) => Some(NO_TAGGED_TEXT),
+            Err(TaggedWord) => Some(NO_BLOCK_STRUCTURE),
         }
     }
 
@@ -585,13 +633,13 @@ impl<'p> Tagged<'p> {
             }
         }
         if tagged == 0 {
-            return Some("no-tagged-text".to_owned());
+            return Some(NO_TAGGED_TEXT.to_owned());
         }
         if !self.gated {
             return None;
         }
         if in_block == 0 {
-            return Some("no-block-structure".to_owned());
+            return Some(NO_BLOCK_STRUCTURE.to_owned());
         }
         if words >= MIN_WORDS_FOR_SHREDDING && (shredded as f32) > words as f32 * MAX_SHREDDED_RATIO
         {
@@ -609,6 +657,56 @@ impl<'p> Tagged<'p> {
             }
         }
         None
+    }
+}
+
+/// The stripper's calls on a page whose glyphs the tree owns only outside blocks, made as the
+/// page would be recorded until a word keeps a label the tree owns.
+struct TaggedWordProbe<'t, 'p> {
+    tagged: &'t Tagged<'p>,
+}
+
+/// A word the probe found keeping a label the tree owns.
+struct TaggedWord;
+
+impl Callbacks for TaggedWordProbe<'_, '_> {
+    type Stop = TaggedWord;
+
+    fn differ(&mut self, difference: Difference) {
+        self.tagged.pdf.differ(difference);
+    }
+
+    fn write_page_start(&mut self, articles: &mut [Vec<TextPosition>]) {
+        if self.tagged.reading_order {
+            reading_order::order_lines(articles);
+        }
+    }
+
+    fn write_paragraph_start(&mut self) -> Result<(), TaggedWord> {
+        Ok(())
+    }
+
+    fn write_paragraph_end(&mut self) -> Result<(), TaggedWord> {
+        Ok(())
+    }
+
+    fn write_string(&mut self, text: &str, positions: &[&TextPosition]) -> Result<(), TaggedWord> {
+        let segments = self.tagged.segments(text, positions);
+        if segments
+            .iter()
+            .any(|segment| self.tagged.leaf(segment.label).is_some())
+        {
+            return Err(TaggedWord);
+        }
+        Ok(())
+    }
+
+    fn write_word_separator(&mut self) -> Result<(), TaggedWord> {
+        Ok(())
+    }
+
+    fn write_line_separator(&mut self) -> Result<(), TaggedWord> {
+        Ok(())
     }
 }
 

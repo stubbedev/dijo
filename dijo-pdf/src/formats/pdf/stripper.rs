@@ -9,7 +9,6 @@ use unicode_normalization::UnicodeNormalization;
 
 use super::jfloat;
 use super::position::{TextPosition, FIRST_RIGHT_TO_LEFT};
-use crate::formats::xhtml::Stop;
 use crate::formats::Difference;
 use crate::hash::FastMap;
 
@@ -26,14 +25,16 @@ pub(super) const WORD_SEPARATOR: &str = " ";
 /// The calls `writePage` makes, which Tika's writers override, and where the port writes a
 /// word otherwise than PDFBox, the difference.
 pub(super) trait Callbacks {
+    /// Why the callbacks stop the page being written before its end.
+    type Stop;
     fn differ(&mut self, difference: Difference);
     /// `writePageStart`, where dijo orders a tagged page's lines.
     fn write_page_start(&mut self, articles: &mut [Vec<TextPosition>]);
-    fn write_paragraph_start(&mut self) -> Result<(), Stop>;
-    fn write_paragraph_end(&mut self) -> Result<(), Stop>;
-    fn write_string(&mut self, text: &str, positions: &[&TextPosition]) -> Result<(), Stop>;
-    fn write_word_separator(&mut self) -> Result<(), Stop>;
-    fn write_line_separator(&mut self) -> Result<(), Stop>;
+    fn write_paragraph_start(&mut self) -> Result<(), Self::Stop>;
+    fn write_paragraph_end(&mut self) -> Result<(), Self::Stop>;
+    fn write_string(&mut self, text: &str, positions: &[&TextPosition]) -> Result<(), Self::Stop>;
+    fn write_word_separator(&mut self) -> Result<(), Self::Stop>;
+    fn write_line_separator(&mut self) -> Result<(), Self::Stop>;
 }
 
 /// The order a page's glyphs come to `write_page` in, which decides, as PDFBox's
@@ -87,11 +88,11 @@ enum LineItem {
 }
 
 /// `PDFTextStripper.writePage`.
-pub(super) fn write_page(
+pub(super) fn write_page<C: Callbacks>(
     articles: &mut [Vec<TextPosition>],
     order: Order,
-    callbacks: &mut impl Callbacks,
-) -> Result<(), Stop> {
+    callbacks: &mut C,
+) -> Result<(), C::Stop> {
     if !articles.is_empty() {
         callbacks.write_page_start(articles);
     }
@@ -252,14 +253,14 @@ fn multiply_float(value1: f32, value2: f32) -> f32 {
 
 /// `handleLineSeparation`: the separation of a new line from the last, a paragraph break
 /// where `isParagraphSeparation` sees one.
-fn handle_line_separation(
+fn handle_line_separation<C: Callbacks>(
     articles: &[Vec<TextPosition>],
     current: &mut Wrapper,
     last: &Wrapper,
     last_line_start: Option<&Wrapper>,
     max_height_for_line: f32,
-    callbacks: &mut impl Callbacks,
-) -> Result<(), Stop> {
+    callbacks: &mut C,
+) -> Result<(), C::Stop> {
     current.line_start = true;
     is_paragraph_separation(
         articles,
@@ -384,7 +385,7 @@ struct Word<'a> {
 }
 
 /// `writeLine`.
-fn write_line(line: &[Word], callbacks: &mut impl Callbacks) -> Result<(), Stop> {
+fn write_line<C: Callbacks>(line: &[Word], callbacks: &mut C) -> Result<(), C::Stop> {
     for (index, word) in line.iter().enumerate() {
         callbacks.write_string(&word.text, &word.positions)?;
         if index + 1 < line.len() {

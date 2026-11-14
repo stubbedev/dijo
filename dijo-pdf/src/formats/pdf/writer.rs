@@ -174,15 +174,15 @@ impl PageWriter<'_, '_> {
 }
 
 impl Callbacks for PageWriter<'_, '_> {
+    type Stop = Stop;
+
     fn differ(&mut self, difference: Difference) {
         self.pdf.differ(difference);
     }
 
     fn write_page_start(&mut self, articles: &mut [Vec<TextPosition>]) {
         if self.tagged.as_ref().is_some_and(Tagged::orders_lines) {
-            for article in articles.iter_mut() {
-                reading_order::order_lines(article);
-            }
+            reading_order::order_lines(articles);
         }
     }
 

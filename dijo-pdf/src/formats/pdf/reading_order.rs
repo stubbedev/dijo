@@ -87,12 +87,14 @@ fn arrange_in_one_direction(glyphs: &mut Vec<TextPosition>) {
     }
 }
 
-/// `ReadingOrder.orderLines`: the font runs of each line merged from the left.
-pub(super) fn order_lines(glyphs: &mut [TextPosition]) {
-    if glyphs.len() < 2 || has_mixed_directions(glyphs) || is_right_to_left_glyphs(glyphs) {
-        return;
+/// `ReadingOrder.orderLines`: the font runs of each line of each article merged from the left.
+pub(super) fn order_lines(articles: &mut [Vec<TextPosition>]) {
+    for glyphs in articles {
+        if glyphs.len() < 2 || has_mixed_directions(glyphs) || is_right_to_left_glyphs(glyphs) {
+            continue;
+        }
+        order_lines_from_the_left(glyphs);
     }
-    order_lines_from_the_left(glyphs);
 }
 
 fn order_lines_from_the_left(glyphs: &mut [TextPosition]) {

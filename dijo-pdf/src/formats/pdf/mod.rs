@@ -1041,6 +1041,26 @@ mod tests {
         assert!(text.contains(COLUMNS_IN_ORDER), "{text}");
     }
 
+    #[test]
+    fn arranges_a_tagged_page_whose_text_the_tree_holds_in_no_block() {
+        let mut objects = page_objects(&format!("/P << /MCID 0 >> BDC {COLUMNS_RIGHT_FIRST} EMC"));
+        objects[0] = "<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 6 0 R \
+                      /MarkInfo << /Marked true >> >>"
+            .to_owned();
+        objects.push(
+            "<< /Type /StructTreeRoot /K << /Type /StructElem /S /Div /Pg 3 0 R /K 0 >> >>"
+                .to_owned(),
+        );
+        let input = document(&objects, b"", &[]);
+        let (_, metadata) = native_xml(&input);
+        assert_eq!(
+            metadata.get(MARKED_CONTENT_REJECTIONS).unwrap(),
+            &["1:no-block-structure"]
+        );
+        let text = native_text(&input);
+        assert!(text.contains(COLUMNS_IN_ORDER), "{text}");
+    }
+
     pub(super) const TEXT: &str =
         "BT /F1 12 Tf 72 720 Td (Det var en gang en konge, som havde tre d\\370tre.) Tj \
                         0 -14 Td (Den yngste var den smukkeste af dem alle sammen.) Tj ET";
