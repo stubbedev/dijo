@@ -281,7 +281,7 @@ impl Block {
         let mut at = payload + self.literal_payload;
         let mut bits = Bits::new(stream, &mut at, 0, self.literal_bits)?;
         let mut states = self.literal_states;
-        for quad in literals.chunks_exact_mut(4) {
+        for quad in literals.as_chunks_mut::<4>().0 {
             bits.flush(stream, &mut at, 0)?;
             for (literal, state) in quad.iter_mut().zip(&mut states) {
                 *literal = literal_table[usize::from(*state)].decode(state, &mut bits);

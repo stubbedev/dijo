@@ -489,8 +489,10 @@ fn catalog_key(key: &[u8]) -> Result<(u32, &[u8]), String> {
 /// The name `utf16` as macOS shows it in a path.
 fn name(utf16: &[u8]) -> String {
     let units = utf16
-        .chunks_exact(2)
-        .map(|unit| u16::from_be_bytes([unit[0], unit[1]]));
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|unit| u16::from_be_bytes(*unit));
     char::decode_utf16(units)
         .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
         .nfc()

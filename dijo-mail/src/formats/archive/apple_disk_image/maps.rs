@@ -80,8 +80,10 @@ fn gpt(disk: &mut Disk, header: &[u8]) -> Result<Vec<Partition>, Fault> {
             )));
         }
         let units: Vec<u16> = entry[56..128]
-            .chunks_exact(2)
-            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|unit| u16::from_le_bytes(*unit))
             .take_while(|&unit| unit != 0)
             .collect();
         let name = String::from_utf16_lossy(&units);

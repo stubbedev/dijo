@@ -2049,9 +2049,14 @@ fn lotus_notes_databases_are_read_for_their_documents() {
         &document("lotus-notes-log.nsf"),
     ]);
     let text = objects[0]["text"].as_str().unwrap();
-    assert!(text.contains("Keepers\nAnna Berg\nOve Gr\u{f8}n\n"), "{text}");
     assert!(
-        text.contains("Waves broke over the north pier;\nno ships passed.\nHour\tWind\n21:00\tSW 9\n"),
+        text.contains("Keepers\nAnna Berg\nOve Gr\u{f8}n\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "Waves broke over the north pier;\nno ships passed.\nHour\tWind\n21:00\tSW 9\n"
+        ),
         "{text}"
     );
     assert_eq!(embedded_paths(&objects), ["<root>", "tide.txt"]);

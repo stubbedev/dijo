@@ -375,7 +375,7 @@ fn read_mish(
     let base = (koly.data_fork.0 as u64)
         .checked_add(base)
         .ok_or("its data offset is out of range")?;
-    for entry in table.chunks_exact(MISH_CHUNK) {
+    for entry in table.as_chunks::<MISH_CHUNK>().0 {
         let word = |at: usize| u32::from_be_bytes(entry[at..at + 4].try_into().expect("four"));
         let long = |at: usize| u64::from_be_bytes(entry[at..at + 8].try_into().expect("eight"));
         let kind = word(0);

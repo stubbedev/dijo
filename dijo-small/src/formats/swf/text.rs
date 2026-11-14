@@ -146,7 +146,7 @@ impl<'d> Fonts<'d> {
         }
         let table = bytes.rest();
         let wide = flags & FONT_INFO_WIDE_CODES != 0;
-        if wide && table.len() % 2 != 0 {
+        if wide && !table.len().is_multiple_of(2) {
             return Err(tag.malformed(format_args!(
                 "has a code table of two-byte codes of {} bytes",
                 table.len()

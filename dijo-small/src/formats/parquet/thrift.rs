@@ -253,17 +253,6 @@ impl<'a> Reader<'a> {
         self.i32_value()
     }
 
-    /// An i32 element of a list, whose type is `kind`.
-    pub fn i32_element(&mut self, kind: Type) -> Result<i32, Problem> {
-        if kind != Type::I32 {
-            return Err(Problem::Malformed(format!(
-                "a Thrift list before byte {} holds {kind:?} elements, not i32",
-                self.at
-            )));
-        }
-        self.i32_value()
-    }
-
     fn i32_value(&mut self) -> Result<i32, Problem> {
         let at = self.at;
         let value = self.zigzag()?;
