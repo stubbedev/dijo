@@ -3,10 +3,14 @@ use flate2::{Compress, Compression, FlushCompress};
 use super::cabinet::Malformed;
 use super::folder::MAX_BLOCK;
 use super::*;
+use crate::compress::lzx::tests::{Stream, Token};
+use crate::compress::lzx::{self, WindowSize};
 
 const STORED: u16 = 0;
 const MSZIP: u16 = 1;
 const QUANTUM: u16 = 0x0F02;
+/// LZX with a window of 2^15 bytes.
+const LZX: u16 = 0x0F03;
 
 const PREV_FLAG: u16 = 0x0001;
 const NEXT_FLAG: u16 = 0x0002;
@@ -424,6 +428,53 @@ fn records_files_whose_data_does_not_decode_or_is_missing() {
         reason(3).contains("the stored block holds 10 bytes, where its header says 9"),
         "{read:?}"
     );
+}
+
+/// A cabinet of one LZX folder of one block, `stream`, which decodes into the file `name` of
+/// `size` bytes.
+fn lzx_cabinet(stream: Stream, name: &str, size: usize) -> Vec<u8> {
+    cabinet(
+        0,
+        &[Folder {
+            type_compress: LZX,
+            blocks: vec![(stream.finish(), size as u16)],
+        }],
+        &[entry(name, 0, 0, size)],
+        0,
+    )
+}
+
+fn lzx_window() -> WindowSize {
+    WindowSize::from_bits(15).unwrap()
+}
+
+#[test]
+fn translates_an_lzx_call_to_offset_0_back_as_libmspack_does() {
+    let mut code = vec![0x90, 0x90, 0xE8, 0, 0, 0, 0];
+    code.extend([0x90; 16]);
+    let mut stream = Stream::new(lzx_window(), Some(1_000_000));
+    stream.uncompressed([1, 1, 1], &code);
+    let mut expected = code.clone();
+    expected[3..7].copy_from_slice(&(-2i32).to_le_bytes());
+    assert_eq!(
+        files(&lzx_cabinet(stream, "call.bin", code.len())),
+        [("call.bin".to_owned(), Ok(expected))]
+    );
+}
+
+#[test]
+fn records_lzx_data_whose_repeated_offsets_pass_the_window_unread() {
+    let mut stream = Stream::new(lzx_window(), None);
+    stream
+        .uncompressed([0xFFFF_FFF0; 3], b"ab")
+        .verbatim(&[Token::Repeat { slot: 0, length: 2 }]);
+    let read = files(&lzx_cabinet(stream, "repeat.bin", 4));
+    let malformed = lzx::Malformed::RepeatedOffset {
+        offset: 0xFFFF_FFF0,
+        window: 0x8000,
+    };
+    let reason = read[0].1.clone().unwrap_err();
+    assert!(reason.contains(&malformed.to_string()), "{read:?}");
 }
 
 #[test]

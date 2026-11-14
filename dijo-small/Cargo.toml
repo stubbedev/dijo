@@ -16,7 +16,6 @@ testing = ["dijo-base/testing", "dijo-html/testing", "dep:md-5"]
 dijo-base = { path = "../dijo-base", default-features = false }
 dijo-html = { path = "../dijo-html", default-features = false }
 dijo-mime = { path = "../dijo-mime", default-features = false }
-lzxd = "0.2.7"
 flate2 = "1.1.5"
 md-5 = { version = "0.11.0", optional = true }
 memchr = "2.8.3"

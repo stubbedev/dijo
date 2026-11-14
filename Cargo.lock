@@ -874,7 +874,6 @@ dependencies = [
  "dijo-mime",
  "dijo-small",
  "flate2",
- "lzxd",
  "memchr",
  "regex",
  "rusqlite",
@@ -995,7 +994,6 @@ dependencies = [
  "dijo-html",
  "dijo-mime",
  "flate2",
- "lzxd",
  "md-5",
  "memchr",
  "pulldown-cmark",
@@ -2176,12 +2174,6 @@ checksum = "f1c46f3fcd2e888afdb01a07efc071cb21300e07c68d32c3e8b01b5c8cb1fcaa"
 dependencies = [
  "sha2",
 ]
-
-[[package]]
-name = "lzxd"
-version = "0.2.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c17f346186eccb574ba5581acefc514f0c70a642db4f96e245034a0a158a7168"
 
 [[package]]
 name = "markup5ever"

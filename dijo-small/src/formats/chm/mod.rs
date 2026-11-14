@@ -1,9 +1,9 @@
 //! Compiled HTML Help (CHM) files, as Tika's `ChmParser` reads them with its `ChmExtractor`: the
 //! entries of the directory listing whose names end in `.html` or `.htm`, in the listing's
 //! order, each extracted ([`directory`] reads the structures that say where) and parsed by the
-//! HTML parser into the document's body. The LZX-compressed content is decompressed with the
-//! `lzxd` crate, frame by frame from the reset point before the entry, as Tika's decoder
-//! decodes its blocks.
+//! HTML parser into the document's body. The LZX-compressed content is decompressed with
+//! [`Lzx`], frame by frame from the reset point before the entry, as Tika's decoder decodes its
+//! blocks.
 
 mod directory;
 
@@ -14,6 +14,7 @@ use directory::{
     Listing, ResetTable,
 };
 
+use crate::compress::lzx::{Lzx, WindowSize};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::handlers::parse_inline;
@@ -139,9 +140,10 @@ struct Extractor<'a> {
 
 /// The decoder of the reset interval decoded last, and the frames it decoded, from the block of
 /// its reset point on: a page in another interval is decoded again from that interval's reset
-/// point, so that only one interval's frames are held, however long the content.
+/// point, by the same decoder reset, so that only one interval's frames are held, however long
+/// the content.
 struct Frames {
-    decoder: Option<lzxd::Lzxd>,
+    decoder: Option<Lzx>,
     reset: usize,
     decoded: Vec<Vec<u8>>,
 }
@@ -297,7 +299,11 @@ impl<'a> Extractor<'a> {
             decoded,
         } = &mut *frames;
         if decoder.is_none() || *decoded_from != reset {
-            *decoder = Some(lzxd::Lzxd::new(self.window()?));
+            if let Some(decoder) = decoder.as_mut() {
+                decoder.reset();
+            } else {
+                *decoder = Some(Lzx::new(self.window()?));
+            }
             *decoded_from = reset;
             decoded.clear();
         }
@@ -307,7 +313,7 @@ impl<'a> Extractor<'a> {
             let segment = self.segment(current)?;
             let length = self.frame_length(current);
             let frame = decoder
-                .decompress_next(segment, length)
+                .decode_frame(segment, length)
                 .map_err(|error| Thrown::Tika(format!("LZX block {current}: {error}")))?
                 .to_vec();
             self.paging.read(segment.len());
@@ -349,21 +355,12 @@ impl<'a> Extractor<'a> {
     }
 
     /// The LZX window the control data names.
-    fn window(&self) -> Result<lzxd::WindowSize, Thrown> {
-        use lzxd::WindowSize;
-        Ok(match self.control.window_size {
-            0x8000 => WindowSize::KB32,
-            0x1_0000 => WindowSize::KB64,
-            0x2_0000 => WindowSize::KB128,
-            0x4_0000 => WindowSize::KB256,
-            0x8_0000 => WindowSize::KB512,
-            0x10_0000 => WindowSize::MB1,
-            0x20_0000 => WindowSize::MB2,
-            other => {
-                return Err(Thrown::Parsing(format!(
-                    "an LZX window of {other} bytes, which is no power of two from 2^15 to 2^21"
-                )))
-            }
+    fn window(&self) -> Result<WindowSize, Thrown> {
+        let bytes = self.control.window_size;
+        WindowSize::from_bytes(bytes).ok_or_else(|| {
+            Thrown::Parsing(format!(
+                "an LZX window of {bytes} bytes, which is no power of two from 2^15 to 2^21"
+            ))
         })
     }
 }

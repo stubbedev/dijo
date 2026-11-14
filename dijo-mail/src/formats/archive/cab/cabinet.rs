@@ -5,6 +5,7 @@
 use std::fmt;
 
 use crate::compress::dos_millis;
+use crate::compress::lzx::WindowSize;
 use crate::java;
 use crate::text::charset::Charset;
 
@@ -60,7 +61,7 @@ impl fmt::Display for Malformed {
 pub(super) enum Method {
     Stored,
     Mszip,
-    Lzx(lzxd::WindowSize),
+    Lzx(WindowSize),
     Quantum,
     /// A method the format does not define, of this number, or LZX with a window of a size it
     /// does not allow, `typeCompress` whole.
@@ -69,18 +70,12 @@ pub(super) enum Method {
 
 impl Method {
     fn of(type_compress: u16) -> Self {
-        use lzxd::WindowSize;
         match (type_compress & 0x000F, type_compress >> 8 & 0x1F) {
             (0, _) => Method::Stored,
             (1, _) => Method::Mszip,
             (2, _) => Method::Quantum,
-            (3, 15) => Method::Lzx(WindowSize::KB32),
-            (3, 16) => Method::Lzx(WindowSize::KB64),
-            (3, 17) => Method::Lzx(WindowSize::KB128),
-            (3, 18) => Method::Lzx(WindowSize::KB256),
-            (3, 19) => Method::Lzx(WindowSize::KB512),
-            (3, 20) => Method::Lzx(WindowSize::MB1),
-            (3, 21) => Method::Lzx(WindowSize::MB2),
+            (3, bits) => WindowSize::from_bits(u32::from(bits))
+                .map_or(Method::Undefined(type_compress), Method::Lzx),
             _ => Method::Undefined(type_compress),
         }
     }

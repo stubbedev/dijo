@@ -1,12 +1,12 @@
 //! The data of a cabinet's folder ([MS-CAB] 2.4): its `CFDATA` blocks decoded in order, each
 //! into at most 32 KiB, stored, MSZIP ([MS-MCI] 2.1: a deflate stream after `CK`, whose window
-//! is the folder's 32 KiB decoded before it) or LZX (the `lzxd` crate, each block one LZX frame
-//! of the folder's stream, with its E8 call translation), and the bytes of a file copied out of
-//! them.
+//! is the folder's 32 KiB decoded before it) or LZX ([`Lzx`], each block one LZX frame of the
+//! folder's stream, with its E8 call translation), and the bytes of a file copied out of them.
 
 use flate2::{Decompress, FlushDecompress, Status};
 
 use super::cabinet::{Folder, Method};
+use crate::compress::lzx::Lzx;
 use crate::compress::{Decoding, Held, Undecoded};
 use crate::input::Paging;
 
@@ -19,7 +19,7 @@ const BLOCK_HEADER: usize = 8;
 enum Codec {
     Stored,
     Mszip(Box<Mszip>),
-    Lzx(Box<lzxd::Lzxd>),
+    Lzx(Box<Lzx>),
 }
 
 /// The state MSZIP keeps across a folder's blocks: the inflater, reused, and the last 32 KiB the
@@ -118,7 +118,7 @@ impl<'a, 'p> FolderStream<'a, 'p> {
                 inflater: Decompress::new(false),
                 window: Vec::with_capacity(MAX_BLOCK),
             })),
-            Method::Lzx(window) => Codec::Lzx(Box::new(lzxd::Lzxd::new(window))),
+            Method::Lzx(window) => Codec::Lzx(Box::new(Lzx::new(window))),
             Method::Quantum => {
                 return Err("its folder is compressed with Quantum, which is not decoded".into())
             }
@@ -213,7 +213,7 @@ impl<'a, 'p> FolderStream<'a, 'p> {
             )),
             Codec::Mszip(mszip) => mszip.inflate(data, decoded, &mut self.block),
             Codec::Lzx(lzx) => lzx
-                .decompress_next(data, decoded)
+                .decode_frame(data, decoded)
                 .map(|frame| self.block.extend_from_slice(frame))
                 .map_err(|error| format!("the LZX frame does not decode: {error}")),
         };
