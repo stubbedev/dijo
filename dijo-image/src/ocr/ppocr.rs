@@ -6,6 +6,7 @@ use rten::{Model, ModelOptions};
 use rten_tensor::prelude::*;
 use rten_tensor::NdTensor;
 
+use super::flatten::{warp, Point};
 use super::prepare::resized;
 use super::tesseract::{Area, OcrError, Reading};
 use crate::{bundle, memory};
@@ -30,6 +31,13 @@ const BOX_PROBABILITY: f32 = 0.6;
 const UNCLIP_RATIO: f32 = 1.5;
 const MIN_BOX_SIDE: u32 = 3;
 const MIN_UNCLIPPED_SIDE: u32 = MIN_BOX_SIDE + 2;
+/// How far a line must rise or fall along its length, as a share of its thickness, to be read
+/// along its slant rather than cut out upright: from its thickness, an upright cut is at least
+/// twice as tall as the line, its neighbours filling the rest.
+const MIN_SLANT_DRIFT: f64 = 1.0;
+/// How many times as long as it is thick a region must be to run along a slant: as long as a
+/// short word. A character or a mark alone slants only by its shape.
+const MIN_SLANT_ELONGATION: f64 = 3.0;
 const LINE_HEIGHT: u32 = 48;
 const MIN_LINE_WIDTH: u32 = 320;
 const MIN_LINE_CONFIDENCE: f32 = 0.5;
@@ -59,22 +67,52 @@ pub(crate) struct LineModel(usize);
 /// column where its punctuation leaves a gap.
 #[derive(Debug)]
 pub(crate) struct Lines {
-    areas: Vec<Area>,
+    lines: Vec<Line>,
     vertical: bool,
 }
 
+/// A line DBNet found: the area that bounds it and, when it runs aslant, the corners of the
+/// rectangle it fills, top left, top right, bottom right and bottom left, along which it is read,
+/// as PaddleOCR reads every line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Line {
+    area: Area,
+    slant: Option<[Point; 4]>,
+}
+
+impl Line {
+    fn upright(area: Area) -> Self {
+        Self { area, slant: None }
+    }
+
+    /// The line cut out of an image: its area, or its rectangle turned upright.
+    fn cropped(&self, image: &GrayImage) -> GrayImage {
+        match &self.slant {
+            Some(corners) => warp(image, corners),
+            None => crop(image, self.area),
+        }
+    }
+}
+
 impl Lines {
-    fn of(areas: Vec<Area>) -> Self {
-        let area = |line: &Area| i64::from(line.width()) * i64::from(line.height());
-        let all: i64 = areas.iter().map(area).sum();
-        let upright: i64 = areas.iter().filter(|line| upright(line)).map(area).sum();
+    fn of(lines: Vec<Line>) -> Self {
+        let area = |line: &Line| i64::from(line.area.width()) * i64::from(line.area.height());
+        let all: i64 = lines.iter().map(area).sum();
+        let upright: i64 = lines
+            .iter()
+            .filter(|line| upright(&line.area))
+            .map(area)
+            .sum();
         match 2 * upright > all {
-            true => Self {
-                areas: columns(&areas),
-                vertical: true,
-            },
+            true => {
+                let areas: Vec<Area> = lines.iter().map(|line| line.area).collect();
+                Self {
+                    lines: columns(&areas).into_iter().map(Line::upright).collect(),
+                    vertical: true,
+                }
+            }
             false => Self {
-                areas,
+                lines,
                 vertical: false,
             },
         }
@@ -233,11 +271,11 @@ impl PpOcr {
         blocks: &[Area],
     ) -> Result<Reading, OcrError> {
         let reader = self.line_reader(model)?;
-        let mut read = Vec::with_capacity(lines.areas.len());
+        let mut read = Vec::with_capacity(lines.lines.len());
         let (mut characters, mut confident) = (0f32, 0f32);
-        for &line in &lines.areas {
-            let cropped = crop(image, line);
-            let cropped = match lines.vertical && upright(&line) {
+        for line in &lines.lines {
+            let cropped = line.cropped(image);
+            let cropped = match lines.vertical && upright(&line.area) {
                 true => image::imageops::rotate270(&cropped),
                 false => cropped,
             };
@@ -246,7 +284,7 @@ impl PpOcr {
             characters += length;
             confident += length * confidence;
             if confidence >= MIN_LINE_CONFIDENCE && !text.trim().is_empty() {
-                read.push((line, text));
+                read.push((line.area, text));
             }
         }
         let confidence = match characters > 0.0 {
@@ -297,7 +335,7 @@ impl PpOcr {
         Ok(Lines::of(
             text_areas(&probabilities.to_vec(), map_width, map_height)
                 .into_iter()
-                .filter_map(|area| scaled(area, map_width, map_height, width, height))
+                .filter_map(|line| scaled(line, map_width, map_height, width, height))
                 .collect(),
         ))
     }
@@ -405,25 +443,27 @@ fn detection_size(width: u32, height: u32) -> (u32, u32) {
     (rounded(width), rounded(height))
 }
 
-fn text_areas(map: &[f32], width: usize, height: usize) -> Vec<Area> {
+fn text_areas(map: &[f32], width: usize, height: usize) -> Vec<Line> {
     let mut seen = vec![false; width * height];
-    let mut areas = Vec::new();
+    let mut lines = Vec::new();
     let mut pending = Vec::new();
+    let mut members = Vec::new();
     for start in 0..width * height {
         if seen[start] || map[start] <= TEXT_PROBABILITY {
             continue;
         }
         seen[start] = true;
         pending.push(start);
+        members.clear();
         let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
-        let (mut pixels, mut probability) = (0usize, 0f64);
+        let mut probability = 0f64;
         while let Some(index) = pending.pop() {
             let (x, y) = (index % width, index / width);
             left = left.min(x);
             right = right.max(x + 1);
             top = top.min(y);
             bottom = bottom.max(y + 1);
-            pixels += 1;
+            members.push(index);
             probability += f64::from(map[index]);
             for ny in y.saturating_sub(1)..(y + 2).min(height) {
                 for nx in x.saturating_sub(1)..(x + 2).min(width) {
@@ -435,6 +475,7 @@ fn text_areas(map: &[f32], width: usize, height: usize) -> Vec<Area> {
                 }
             }
         }
+        let pixels = members.len();
         let length = (right - left).max(bottom - top) as f64;
         let thickness = pixels as f64 / length;
         if thickness < f64::from(MIN_BOX_SIDE)
@@ -442,45 +483,119 @@ fn text_areas(map: &[f32], width: usize, height: usize) -> Vec<Area> {
         {
             continue;
         }
-        let distance = length * thickness * f64::from(UNCLIP_RATIO) / (2.0 * (length + thickness));
+        let distance = unclipping(length, thickness);
         if thickness + 2.0 * distance < f64::from(MIN_UNCLIPPED_SIDE) {
             continue;
         }
-        let distance = distance.round() as i32;
-        areas.push(Area {
-            left: left as i32 - distance,
-            top: top as i32 - distance,
-            right: right as i32 + distance,
-            bottom: bottom as i32 + distance,
+        let margin = distance.round() as i32;
+        lines.push(Line {
+            area: Area {
+                left: left as i32 - margin,
+                top: top as i32 - margin,
+                right: right as i32 + margin,
+                bottom: bottom as i32 + margin,
+            },
+            slant: slant(&members, width, distance),
         });
     }
-    areas
+    lines
+}
+
+/// How far PaddleOCR widens a text region on every side: by its area times the unclip ratio over
+/// its perimeter.
+fn unclipping(length: f64, thickness: f64) -> f64 {
+    length * thickness * f64::from(UNCLIP_RATIO) / (2.0 * (length + thickness))
+}
+
+/// The corners of the rectangle the pixels of a region of DBNet's map fill along the axis they
+/// spread along most, widened by `distance` on every side, when that axis runs nearer across than
+/// down, the region is at least [`MIN_SLANT_ELONGATION`] times as long along it as it is thick and
+/// rises or falls along it by at least [`MIN_SLANT_DRIFT`] of its thickness; else none, the line
+/// cut out upright.
+fn slant(members: &[usize], width: usize, distance: f64) -> Option<[Point; 4]> {
+    let count = members.len() as f64;
+    let pixel = |index: usize| ((index % width) as f64, (index / width) as f64);
+    let (sum_x, sum_y) = members
+        .iter()
+        .map(|&index| pixel(index))
+        .fold((0.0, 0.0), |(sum_x, sum_y), (x, y)| (sum_x + x, sum_y + y));
+    let mean = (sum_x / count + 0.5, sum_y / count + 0.5);
+    let (mut xx, mut yy, mut xy) = (0.0, 0.0, 0.0);
+    for &index in members {
+        let (x, y) = pixel(index);
+        let (dx, dy) = (x + 0.5 - mean.0, y + 0.5 - mean.1);
+        xx += dx * dx;
+        yy += dy * dy;
+        xy += dx * dy;
+    }
+    let angle = 0.5 * (2.0 * xy).atan2(xx - yy);
+    let along = (angle.cos(), angle.sin());
+    if along.1.abs() >= along.0 {
+        return None;
+    }
+    let across = (-along.1, along.0);
+    let mut bounds = [f64::MAX, f64::MIN, f64::MAX, f64::MIN];
+    for &index in members {
+        let (x, y) = pixel(index);
+        for (corner_x, corner_y) in [(x, y), (x + 1.0, y), (x, y + 1.0), (x + 1.0, y + 1.0)] {
+            let (dx, dy) = (corner_x - mean.0, corner_y - mean.1);
+            let (a, n) = (dx * along.0 + dy * along.1, dx * across.0 + dy * across.1);
+            bounds = [
+                bounds[0].min(a),
+                bounds[1].max(a),
+                bounds[2].min(n),
+                bounds[3].max(n),
+            ];
+        }
+    }
+    let [first, last, low, high] = bounds;
+    let length = last - first;
+    let thickness = count / length;
+    if length < MIN_SLANT_ELONGATION * thickness
+        || length * along.1.abs() < MIN_SLANT_DRIFT * thickness
+    {
+        return None;
+    }
+    let (middle_along, middle_across) = ((first + last) / 2.0, (low + high) / 2.0);
+    let (half_long, half_short) = (length / 2.0 + distance, (high - low) / 2.0 + distance);
+    let corner = |a: f64, n: f64| {
+        let (a, n) = (middle_along + a * half_long, middle_across + n * half_short);
+        Point {
+            x: mean.0 + a * along.0 + n * across.0,
+            y: mean.1 + a * along.1 + n * across.1,
+        }
+    };
+    Some([
+        corner(-1.0, -1.0),
+        corner(1.0, -1.0),
+        corner(1.0, 1.0),
+        corner(-1.0, 1.0),
+    ])
 }
 
 fn scaled(
-    area: Area,
+    line: Line,
     map_width: usize,
     map_height: usize,
     width: u32,
     height: u32,
-) -> Option<Area> {
-    let x = |value: i32| {
-        (f64::from(value) * f64::from(width) / map_width as f64)
-            .round()
-            .clamp(0.0, f64::from(width)) as i32
-    };
-    let y = |value: i32| {
-        (f64::from(value) * f64::from(height) / map_height as f64)
-            .round()
-            .clamp(0.0, f64::from(height)) as i32
-    };
+) -> Option<Line> {
+    let x = |value: f64| value * f64::from(width) / map_width as f64;
+    let y = |value: f64| value * f64::from(height) / map_height as f64;
+    let slant = line.slant.map(|corners| {
+        corners.map(|corner| Point {
+            x: x(corner.x),
+            y: y(corner.y),
+        })
+    });
+    let within = |value: f64, side: u32| value.round().clamp(0.0, f64::from(side)) as i32;
     let area = Area {
-        left: x(area.left),
-        top: y(area.top),
-        right: x(area.right),
-        bottom: y(area.bottom),
+        left: within(x(f64::from(line.area.left)), width),
+        top: within(y(f64::from(line.area.top)), height),
+        right: within(x(f64::from(line.area.right)), width),
+        bottom: within(y(f64::from(line.area.bottom)), height),
     };
-    (area.width() > 0 && area.height() > 0).then_some(area)
+    (area.width() > 0 && area.height() > 0).then_some(Line { area, slant })
 }
 
 fn crop(image: &GrayImage, area: Area) -> GrayImage {
@@ -665,7 +780,7 @@ mod tests {
     fn decodes_the_most_likely_labels_without_repeats_or_blanks() {
         let labels: Vec<String> = ["", "a", "b", " "].map(str::to_owned).to_vec();
         let scores = [
-            0.1, 0.8, 0.05, 0.05, //
+            0.1, 0.8, 0.06, 0.04, //
             0.1, 0.8, 0.05, 0.05, //
             0.9, 0.05, 0.03, 0.02, //
             0.1, 0.7, 0.1, 0.1, //
@@ -687,7 +802,10 @@ mod tests {
             }
         }
         map[15 * width + 35] = 0.9;
-        assert_eq!(text_areas(&map, width, height), [area(1, 2, 33, 13)]);
+        assert_eq!(
+            text_areas(&map, width, height),
+            [Line::upright(area(1, 2, 33, 13))]
+        );
     }
 
     #[test]
@@ -700,9 +818,99 @@ mod tests {
                 map[y * width + x] = 0.9;
             }
         }
-        let areas = text_areas(&map, width, height);
-        assert_eq!(areas.len(), 1);
-        assert!(areas[0].left < 10 && areas[0].right > 190, "{areas:?}");
+        let lines = text_areas(&map, width, height);
+        assert_eq!(lines.len(), 1);
+        let area = lines[0].area;
+        assert!(area.left < 10 && area.right > 190, "{lines:?}");
+    }
+
+    #[test]
+    fn reads_a_slanted_line_along_the_rectangle_it_fills() {
+        let (width, height) = (200, 60);
+        let mut map = vec![0f32; width * height];
+        for x in 10..190 {
+            let middle = 10 + x * 40 / 200;
+            for y in middle..middle + 5 {
+                map[y * width + x] = 0.9;
+            }
+        }
+        let lines = text_areas(&map, width, height);
+        let [top_left, top_right, bottom_right, bottom_left] =
+            lines[0].slant.expect("a slanted line");
+        let slope = |from: Point, to: Point| (to.y - from.y) / (to.x - from.x);
+        assert!((slope(top_left, top_right) - 0.2).abs() < 0.02, "{lines:?}");
+        assert!(
+            (slope(bottom_left, bottom_right) - 0.2).abs() < 0.02,
+            "{lines:?}"
+        );
+        let thickness = (bottom_left.y - top_left.y).hypot(bottom_left.x - top_left.x);
+        assert!((11.0..15.0).contains(&thickness), "{lines:?}");
+    }
+
+    #[test]
+    fn cuts_out_a_level_line_upright() {
+        let (width, height) = (200, 60);
+        let mut map = vec![0f32; width * height];
+        for y in 20..26 {
+            for x in 10..190 {
+                map[y * width + x] = 0.9;
+            }
+        }
+        map[19 * width + 12] = 0.9;
+        map[26 * width + 180] = 0.9;
+        let lines = text_areas(&map, width, height);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].slant, None, "{lines:?}");
+    }
+
+    #[test]
+    fn cuts_out_a_slanted_mark_upright() {
+        let (width, height) = (60, 60);
+        let mut map = vec![0f32; width * height];
+        for x in 20..26 {
+            let middle = 20 + (x - 20) / 2;
+            for y in middle..middle + 5 {
+                map[y * width + x] = 0.9;
+            }
+        }
+        let lines = text_areas(&map, width, height);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].slant, None, "{lines:?}");
+    }
+
+    #[test]
+    fn turns_a_slanted_line_upright_to_read_it() {
+        let band = |x: u32, y: u32| {
+            let middle = 30.0 + f64::from(x) * 0.2;
+            (f64::from(y) - middle).abs() < 6.0
+        };
+        let image = GrayImage::from_fn(300, 120, |x, y| {
+            image::Luma([if band(x, y) { 0 } else { 255 }])
+        });
+        let corner = |x: f64, offset: f64| Point {
+            x,
+            y: 30.0 + x * 0.2 + offset,
+        };
+        let line = Line {
+            area: area(20, 20, 280, 100),
+            slant: Some([
+                corner(20.0, -12.0),
+                corner(280.0, -12.0),
+                corner(280.0, 12.0),
+                corner(20.0, 12.0),
+            ]),
+        };
+        let strip = line.cropped(&image);
+        let (strip_width, strip_height) = strip.dimensions();
+        assert_eq!(strip_height, 24);
+        let dark = |row: u32| {
+            (0..strip_width)
+                .filter(|&x| strip.get_pixel(x, row).0[0] < 128)
+                .count() as u32
+        };
+        assert!(dark(strip_height / 2) > strip_width * 9 / 10);
+        assert_eq!(dark(1), 0);
+        assert_eq!(dark(strip_height - 2), 0);
     }
 
     #[test]
@@ -719,15 +927,16 @@ mod tests {
             area(0, 40, 380, 70),
             area(0, 80, 20, 120),
         ];
-        assert!(!Lines::of(across.to_vec()).vertical());
+        let upright_lines = |areas: &[Area]| areas.iter().copied().map(Line::upright).collect();
+        assert!(!Lines::of(upright_lines(&across)).vertical());
         let down = [
             area(300, 0, 330, 400),
             area(250, 0, 280, 380),
             area(0, 0, 60, 30),
         ];
-        let lines = Lines::of(down.to_vec());
+        let lines = Lines::of(upright_lines(&down));
         assert!(lines.vertical());
-        assert_eq!(lines.areas, columns(&down));
+        assert_eq!(lines.lines, upright_lines(&columns(&down)) as Vec<Line>);
         assert!(!Lines::of(Vec::new()).vertical());
     }
 

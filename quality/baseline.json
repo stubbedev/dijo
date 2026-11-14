@@ -1456,11 +1456,11 @@
     "reading_order": 1.0
   },
   "prose-photo-curled.jpg": {
-    "character_error_rate": 0.024943310657596373,
-    "token_error_rate": 0.036065573770491806,
-    "recall": 0.9934426229508196,
-    "spurious": 0.013029315960912053,
-    "reading_order": 0.8333333333333334
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
   },
   "prose-photo-perspective.jpg": {
     "character_error_rate": 0.0005668934240362812,

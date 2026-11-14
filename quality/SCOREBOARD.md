@@ -69,7 +69,7 @@
 | prose-scan.tga | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-upside-down.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-perspective.jpg | ocr | 0.001 | 0.003 | 0.997 | 0.003 | 1.000 |
-| prose-photo-curled.jpg | ocr | 0.025 | 0.036 | 0.993 | 0.013 | 0.833 |
+| prose-photo-curled.jpg | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | arabic-scan-300dpi.png | ocr | 0.125 | 0.107 | 0.893 | 0.000 | 1.000 |
 | prose-broken-private-use.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-broken-offset.pdf | broken-text-layer | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

@@ -22,9 +22,9 @@ const MIN_EDGE_CONTRAST: i64 = 64;
 
 /// A point in an image, in pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Point {
-    x: f64,
-    y: f64,
+pub(crate) struct Point {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
 }
 
 /// The page made flat, in grey, or none when the image has no page to flatten.
@@ -219,14 +219,18 @@ fn level(gray: &GrayImage, x: f64, y: f64) -> Option<u8> {
         .map(|pixel| pixel.0[0])
 }
 
-/// The quadrilateral of `image` within `corners`, mapped onto an upright rectangle.
-fn warp(image: &GrayImage, corners: &[Point; 4]) -> GrayImage {
+/// The quadrilateral of `image` within `corners`, top left, top right, bottom right and bottom
+/// left, mapped onto an upright rectangle as wide as its longer side across and as tall as its
+/// longer side down.
+pub(crate) fn warp(image: &GrayImage, corners: &[Point; 4]) -> GrayImage {
     let out_width = distance(corners[0], corners[1])
         .max(distance(corners[3], corners[2]))
-        .round() as u32;
+        .round()
+        .max(1.0) as u32;
     let out_height = distance(corners[0], corners[3])
         .max(distance(corners[1], corners[2]))
-        .round() as u32;
+        .round()
+        .max(1.0) as u32;
     let mapping = square_to_quad(corners);
     GrayImage::from_fn(out_width, out_height, |u, v| {
         let s = (f64::from(u) + 0.5) / f64::from(out_width);
