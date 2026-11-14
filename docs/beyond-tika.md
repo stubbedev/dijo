@@ -98,9 +98,7 @@ dijo takes models and techniques from PaddleOCR / PP-OCRv5 (PaddlePaddle, Apache
   - Ready-made conversions were rejected. RapidOCR's Latin model has 502 of the 836 characters and no long s; others
     use a BatchNormalization attribute rten refuses (5af5d649).
 - **In-process pure-Rust runtime.** The models run on rten (now 0.28, f922a5a8), so no native library or Python
-  joins the build. Each model is loaded lazily, once per process (`OnceLock`), and shared by every thread.
-- **Activations count against the memory budget.** Detection activations are reserved at 128 bytes per input pixel
-  (115 measured) and UVDoc's at 48 (31–43 measured), so an oversized page fails cleanly with `MemoryLimit`.
+  joins the build. How they are loaded and charged to memory is under "Streaming and memory".
 
 ## Throughput and memory
 
@@ -114,17 +112,6 @@ dijo takes models and techniques from PaddleOCR / PP-OCRv5 (PaddlePaddle, Apache
 - **A static, in-process binary.** Tika, GraalVM and JNI were removed in 0.2.2. The static Linux binaries need no C
   library and run `FROM scratch`. Tesseract, the language data, the PP-OCR models and the HEIC/AVIF decoder are
   linked or embedded. No `tesseract` on `PATH` or `heif-dec` is ever run (#317).
-- **Bounded memory on large inputs.**
-  - Files over 64 MiB are mapped, and pages already read are released with `MADV_DONTNEED` as parsing goes on
-    (`dijo-base/src/input.rs`).
-  - Parsers declare a bounded footprint (#179), and `just test-large` checks peak memory on generated inputs up to
-    1 GiB.
-  - A 512 MiB DOCX peaks at 78 MiB (0.2.7).
-- **A memory budget per extraction.** A counting global allocator charges every allocation to its extraction, and
-  memory used by C libraries (tesseract, rten) is reserved explicitly. `--max-heap-bytes` fails one extraction
-  cleanly instead of the process (`dijo-base/src/memory.rs`).
-- **Allocator tuning.** glibc arenas are capped at the processor count, and blocks of 4 MiB or more get their own
-  mapping, so a long-running server's memory stays level (0.2.7, 0.2.11).
 - **Hot paths.** Some 75 targeted changes (#230–#304) remove per-cell, per-glyph and per-pixel allocations and
   repeated lookups, with output unchanged.
 - **Fewer OCR passes.**
@@ -132,20 +119,99 @@ dijo takes models and techniques from PaddleOCR / PP-OCRv5 (PaddlePaddle, Apache
     its lines are small (#199): old print takes a third less CPU.
   - The first image's language is detected from a strip of six lines, about a fifth less CPU on Latin scans (#218).
   - `invert_threshold=0` cuts 3.4% of OCR CPU on the corpus, and up to 27% on vertical Japanese (#331).
-- **Concurrency.** OCR'd PDF pages are rendered and read in parallel while output streams in order. CLI batches run
-  one job per core in worker processes. `--isolation process` confines a crash or runaway document to one request.
-- **Tesseract patches** (`ci/tesseract-patches/`, rationale in `ci/tesseract.nix`):
+
+## Streaming and memory
+
+What an extraction holds is bounded by its parser, not by its input, and every byte it allocates is charged to it.
+
+- **Prepare, then write.** A `Parser` (`dijo-base/src/formats/mod.rs`) reads a document only as far as deciding
+  whether it extracts it. It returns a `Prepared` closure that writes the XHTML, or a `Decline`: unread, read
+  differently from Tika, failing as Tika fails, or written as no document. Nothing is written before the decision,
+  and the closure keeps what was read, so nothing is read twice.
+- **Declared footprints (#179).** `Footprint::Bounded` means the parser reads only bounded parts of its input in
+  place (headers, indexes, one entry, record or page at a time) and reads a file of any size mapped.
+  `Proportional` builds structures as large as the input and reads a large file mapped under the memory budget.
+  Every format parser is `Bounded` except DIF and Markdown, which need whole-document state (529af4d4).
+- **Checked on generated files.** `just test-large` (`dijo-cli/tests/integration/large.rs`) extracts 1 GiB of
+  text, 512 MiB of CSV, UTF-16 text and DOCX, a 256 MiB mbox, PDFs of 50,000 pages and over 256 MiB, million-row
+  XLSX sheets stored and deflated, a ZIP of deflated entries, ZIPs nested nine deep and a sparse 3 GiB WAV. Each
+  must be read by the native parser and stay under 512 MiB peak RSS. Except the WAV, each must also give its text
+  and its first output before half the run is over. A 512 MiB DOCX peaks at 78 MiB (0.2.7). `just test-soak`
+  fails a server whose memory grows past 1.25× + 64 MiB over a long run (#305).
+- **Input.** A file up to 64 MiB (`MAX_READ_WHOLE`) is read whole. A larger one is mapped read-only. A parser
+  that reads all of it goes through `Paging`, which searches 16 MiB windows and releases the pages read with
+  `MADV_DONTNEED` every 64 MiB (`dijo-base/src/input.rs`).
+- **Embedded documents in place.** An entry stored whole is handed on as `Input::Within`, a slice of its parent
+  that shares the parent's pages, not a copy. Only an entry stored in several pieces is joined into a spool.
+- **Decoded streams are spooled.** Compressed content is decoded into a `Spool` (`spool_limited`,
+  `dijo-base/src/compress/mod.rs`). It stays in memory up to 64 MiB, and beyond that goes to an unlinked
+  temporary file that is mapped once complete. A stream whose container declares it larger goes to the file from
+  its first byte, and a declared size reserves at most 1 MiB in advance (0069f0cc). Decoding stops at
+  `decode_limit`: 256 MiB, or 100 bytes per compressed byte (Tika's zip-bomb ratio), whichever is more.
+- **Output streams.** Parsers write XHTML as they read, and the budget is checked on each write. With one job,
+  CLI output goes straight to standard output. With more, each input's output is spooled and emitted in input
+  order. Server responses stream as the document is extracted. A PDF is recorded whole while its output stays
+  under 16 MiB, so it can still decline before writing anything. Past that it is flushed page by page (`RECORDING_LIMIT`,
+  `dijo-pdf/src/formats/pdf/recording.rs`). Pages that need OCR are rendered and read on one thread per processor,
+  and each page's output is passed on in order (`dijo-image/src/ocr/pages.rs`).
+- **Per format.**
+
+  | Format | What is held at once |
+  | --- | --- |
+  | ZIP, 7z, RAR | One entry, decoded, spooled and parsed before the next (9c698eb5, e1d0d9c5) |
+  | Parquet | A row group, read a page per column chunk at a time, at most 256 MiB of pages (`dijo-small/src/formats/parquet/`) |
+  | Apple DMG | Coded chunks of up to 16 MiB decoded on demand, the last four kept (`apple_disk_image/disk.rs`) |
+  | CAB, CHM | One LZX window per decoder, allocated once and kept across resets. A CHM page's frames go into one reused buffer (`dijo-base/src/compress/lzx/`, 46b03947) |
+  | OOXML | A part whose size the package declares spooled straight to a file (a5d28d02) |
+  | Word `.doc` | About 4 bytes per paragraph instead of about 80 plus a copy of its properties (d18f32a9) |
+  | XPS, multi-page TIFF | One page laid out or decoded, written and dropped at a time (c287517c, e3cca64b) |
+  | UTF-8 XML | Parsed in place through a window that grows a checked chunk at a time (3e712350) |
+  | WARC, RSS/Atom | One record or entry at a time (e3dc87d5, d2d78dd0) |
+
+- **A budget per extraction.** `CountingAllocator` (`dijo-base/src/memory.rs`) wraps the global allocator (mimalloc
+  in the static build) and charges each allocation to its extraction. Allocations of 4 KiB or more are tracked by
+  address, so a block freed on another thread credits the right budget. OCR threads charge the extraction that
+  started them (`memory::share`). `--max-heap-bytes` sets the budget. Once it is overrun, that extraction fails with
+  `MemoryLimit` and the next one starts afresh. One allocation may overrun the budget before the check.
+- **C libraries are reserved explicitly.** Tesseract's memory is outside the allocator's view, so it is reserved at 4
+  bytes per pixel for grey images and 11 for colour, measured from `tesseract`'s peak on 14-megapixel images, plus a
+  byte per 3 pixels while a layout is kept (`dijo-image/src/ocr/tesseract.rs`). PP-OCR detection activations are
+  reserved at 128 bytes per input pixel (115 measured) and UVDoc's at 48 (31–43 measured, `ppocr.rs`). An oversized
+  page therefore fails cleanly.
+- **OCR is what needs bounding.** One OCR reading peaks at 250–470 MiB. Documents without OCR peak at 15–25 MiB
+  (#307).
+  - No more readings run at once than the process has processors, however many documents are read
+    (`dijo-image/src/ocr/slots.rs`, #305, #307).
+  - Idle tesseract engines share one least-recently-used list of at most one engine per processor, whatever their
+    model, and an engine idle for 5 minutes is freed. Before this, a soak run created 96 engines in four minutes,
+    and an idle server held 1.5 GB of them (8b83d9f5).
+- **Models.** Tesseract's models come in the OCR bundle, which is unpacked once into a cache directory
+  (`dijo-native/src/lib.rs`) and then mapped (see `mmap-models` below). PP-OCR models are read into memory by rten's
+  `Model::load_file`, lazily, once per process (`OnceLock`), and shared by every thread. Unlike tesseract's, each
+  process holds its own copy.
+- **Tesseract patches and build** (`ci/tesseract-patches/`, rationale in `ci/tesseract.nix`):
 
   | Patch or build change | Effect |
   | --- | --- |
   | `mmap-models` | Models are mapped read-only and their dictionaries (88.8 of `script/Latin`'s 89.4 MB) read in place, shared by every process through the page cache. Peak for a Latin page falls from 305 MB to 191 MB, about 85 MB less per worker (#211) |
-  | `adapts-only-while-learning`, `lstm-skips-universal-ambigs` | A chi_sim engine takes 9 MiB instead of 43, eng 2 instead of 10, OSD 19 instead of 32 (#308, #311) |
-  | `inline-stridemap` | 10–13% faster per page; `-O3` adds about 5% |
-  | `lstm-copies-in-place`, Pix word images, skipped fixed-pitch test | Up to a quarter fewer instructions per page, same text (#217, #219, #223) |
-  | `shares-page-layout` | Layout analysis was 28% of corpus reading time; a reread with another model now saves 400 ms (#334) |
-  | `rows-restart-in-place` | A page of thousands of tiny words reads in seconds instead of hanging (#316) |
+  | `adapts-only-while-learning`, `lstm-skips-universal-ambigs` | No empty adapted class per character unless the legacy classifier learns, and no universal ambiguities loaded for LSTM models. A chi_sim engine takes 9 MiB instead of 43, eng 2 instead of 10, OSD 19 instead of 32 (#308, #311) |
+  | `shares-page-layout` | Engines of compatible models recognise an image in a layout already found instead of thresholding and analysing it again. Layout analysis was 28% of corpus reading time, and a reread with another model now saves 400 ms (#334) |
+  | `rows-restart-in-place` | Iterators return to the start of a row from where they entered it instead of walking the page from its start. A page of thousands of tiny words reads in seconds instead of hanging (#316) |
   | `takes-empty-pages-as-read` | An empty layout is not analysed again for every confidence query (#359) |
-  | No OpenMP | One page per thread instead: an OpenMP team cost 2.6× the CPU for a 1.2× faster single page (#62) |
+  | `inline-stridemap` | 10–13% faster per page. `-O3` adds about 5% |
+  | `lstm-copies-in-place`, Pix word images, skipped fixed-pitch test | Up to a quarter fewer instructions per page, same text (#217, #219, #223) |
+  | No OpenMP | One page per thread instead. An OpenMP team cost 2.6× the CPU for a 1.2× faster single page (#62) |
+
+- **Processes.** A CLI batch of more than two parallel jobs runs in worker processes of two jobs each
+  (`JOBS_PER_PROCESS`, `dijo-cli/src/batch.rs`). A worker that dies costs only its jobs, which run again one at a
+  time. In the server, `--isolation process` confines a crash or runaway document to one request,
+  `--worker-max-rss-bytes` caps each worker on Linux, and a worker whose extraction overran its timeout is replaced
+  (0.2.7).
+- **glibc allocator** (`dijo-cli/src/lib.rs`). Arenas are capped at the processor count (0.2.7). Blocks of 4 MiB or
+  more are mapped on their own (0.2.11, #309). With glibc's dynamic threshold, an idle server held 2.58 GB of arenas
+  for 47 MB in use. With the threshold fixed at 4 MiB (4ad636d0), peak RSS on a four-client server run fell from
+  1700–1857 to 1271–1392 MiB, and idle RSS from 1581–1768 to 1101–1156 MiB, at no measurable CPU cost. 128 KiB cost
+  8–12% more CPU.
 
 ## File types
 
