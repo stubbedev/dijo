@@ -60,21 +60,18 @@ and the CDC.
   flagged `"noise":true` (#194).
 - **Image formats.** On the quality corpus Tika returns no text for the WebP, HEIC, AVIF, PBM, DjVu, JB2, PSD, PCX and
   TGA scans, and dijo reads each of them with CER 0.000 (`COMPARISON.md`).
-- **Where dijo is behind** (`quality/COMPARISON.md`; none of these is tuned yet):
-  - `mixed.pdf`, one page with paragraphs in seven scripts, recalls 27.7% of words, against Docling's 83.5% and
-    Kreuzberg's 88.1% (Tika 26.6%); the same page scanned recalls 28.8%. The ODT and DOCX of the same text score
-    0.000.
+- **Where dijo is behind** (`quality/COMPARISON.md`):
+  - `mixed-scan.png`, one scanned page with paragraphs in seven scripts, recalls 28.8% of words: OCR reads a page
+    in one script (#388). Its text-layer PDF, `mixed.pdf`, now reads at recall 100% (#384), against Docling's 83.5%,
+    Kreuzberg's 88.1% and Tika's 26.6%.
   - `kronen-zeitung-1933.jpg`, a colour sports page mixing Fraktur, roman type and results tables, has CER 0.834
     against Kreuzberg's 0.300 and Tika's 0.487.
   - On the four real two-column PDFs dijo recalls 92.4% to 100% of words, but its CER (0.089 to 0.468) is higher
     than Docling's on three of them: `article-biollett-2016.pdf` 0.226 against 0.068,
     `article-atenprimaria-2026.pdf` 0.468 against 0.195, `cdc-mmwr-prep-2024.pdf` 0.314 against 0.228.
-  - The PostScript that dvips writes (`prose.ps`) and the Scribus 1.7 document (`prose.sla`) yield no text.
   - Some scripts stay weak: the Ukrainian page of 1861 with printed stress accents recalls 24.6% of words, the
     Tamil page of 1921 58.3%.
-  - Kreuzberg's CER is lower on `table.xlsx` (0.044 against 0.080) and `inventory.ods` (0.012 against 0.058), and
-    Docling, Kreuzberg and Tika keep the subject lines of the letters in `letters.eml`, which dijo leaves out
-    (recall 95.4% against 96.9%).
+  - Kreuzberg's CER is lower on `table.xlsx` (0.044 against 0.080) and `inventory.ods` (0.012 against 0.058).
 - **Tika and JVM quirks are fixed on purpose.**
   - Output follows document order, not Java hash-map order.
   - Malformed text decodes as WHATWG specifies (0.2.2).

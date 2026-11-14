@@ -19,8 +19,9 @@ Extract text and metadata from documents. One native binary, no JVM.
 - **Faster and lighter**: a 28-page PDF in 55 ms and 23 MiB, against 4.0 s and 301 MiB for `tika-app` 4.1.0; a DOCX in
   6 ms and 17 MiB, against 3.3 s and 213 MiB (`hyperfine` on `test_files/documents/2022_Q3_AAPL.pdf` and
   `ooxml/sorvino.docx`). Files of any size stream through bounded memory.
-- **More accurate text**: on the 240 ground-truth documents of `quality/` compared with Tika, dijo recalls 99.6% of
-  the words, Tika 84.8% ([comparison](quality/COMPARISON.md)).
+- **More accurate text**: on the 333 ground-truth documents of `quality/` compared with Tika, Docling and Kreuzberg,
+  dijo recalls 96.4% of the words, Tika 76.0%; on its 122 scanned pages, 92.9% against 48.6%
+  ([comparison](quality/COMPARISON.md), [how](docs/beyond-tika.md)).
 
 ## Install
 
