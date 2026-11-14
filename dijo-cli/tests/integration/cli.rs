@@ -2090,6 +2090,34 @@ fn apple_disk_images_are_read_as_archives() {
     );
 }
 
+/// `lighthouse.swf` was written by `dijo-small/tests/fixtures/swf/lighthouse.py`: a CWS movie of
+/// SWF 10 with XMP, three fonts, static text of three lines, HTML and plain text fields, a
+/// password field, a JPEG and an MP3 sound.
+#[test]
+fn flash_movies_are_read_for_their_text() {
+    let objects = json_objects(&[
+        "--ocr",
+        "never",
+        "--embedded",
+        "separate",
+        &document("lighthouse.swf"),
+    ]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "application/x-shockwave-flash");
+    assert_eq!(objects[0]["metadata"]["title"], "The Lighthouse");
+    assert_eq!(objects[0]["metadata"]["authors"][0], "Anna Berg");
+    assert_eq!(
+        objects[0]["text"],
+        "Skagen Lighthouse\nLit every evening at dusk\nTide 06:12\n\
+         Fyret lyser om natten over N\u{f8}rre Kaj.\nKeeper's log\nOil delivered on Mondays.\n\
+         Wicks trimmed at dusk.\nLamp\nLens\nVisitors welcome\nClosed on Sundays\n"
+    );
+    assert_eq!(
+        embedded_paths(&objects),
+        ["<root>", "image-20.jpg", "sound-21.mp3"]
+    );
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

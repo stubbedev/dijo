@@ -63,6 +63,7 @@ pub mod formats {
     pub mod subtitle;
     pub mod svg;
     pub mod translation;
+    pub mod swf;
     pub mod tsd;
     pub mod vcard;
     pub mod word_pro;

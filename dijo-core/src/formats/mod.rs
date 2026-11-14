@@ -97,6 +97,7 @@ pub(crate) use dijo_small::formats::scribus;
 pub(crate) use dijo_small::formats::source_code;
 pub(crate) use dijo_small::formats::subtitle;
 pub(crate) use dijo_small::formats::svg;
+pub(crate) use dijo_small::formats::swf;
 pub(crate) use dijo_small::formats::translation;
 pub(crate) use dijo_small::formats::tsd;
 pub(crate) use dijo_small::formats::vcard;
@@ -229,6 +230,7 @@ static PARSERS: &[&dyn Parser] = &[
     &sqlite::Sqlite3Parser,
     &subtitle::SubtitleParser,
     &svg::SvgParser,
+    &swf::SwfParser,
     &text::TextAndCsvParser,
     &tnef::TnefParser,
     &tsd::TsdParser,

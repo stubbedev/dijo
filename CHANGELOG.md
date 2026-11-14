@@ -77,6 +77,12 @@
   header and footer sections in their own `div`s. The `<metadata>` is the document's Dublin Core, keywords and
   generator, its dates ISO local date-times (AbiWord saves them without a time zone); each `<data>` item is handed on
   as an embedded document. Gzip-compressed `.zabw` files are read through the gzip parser.
+* Flash movies are read (#357), where Tika reads nothing of them: uncompressed, zlib or LZMA, decoded no further
+  than the length their header declares. Static text is mapped through the code tables of its fonts, a line to each
+  Y offset, and text fields give their initial plain or HTML text, paragraphs and list items kept; password fields are
+  left out. The XMP of the Metadata tag and the version, frame rate, frame count and ActionScript 3 flag are metadata.
+  JPEGs (and the PNGs and GIFs Flash stores in their place) and MP3 sounds are handed on as embedded documents;
+  lossless bitmaps, other sounds and streamed sound are named in a warning.
 * Apple disk images (`.dmg`) are read as archives (#355), where Tika reads nothing of them: their UDIF block map and
   its zlib, bzip2, ADC and LZFSE chunks are decoded on demand, and each file of each HFS Plus or HFSX volume becomes
   an embedded document with its path, size and dates, fragmented files read through the extents overflow file, hard

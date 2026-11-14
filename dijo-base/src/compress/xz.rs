@@ -2,6 +2,8 @@
 //! `XZCompressorInputStream` without `decompressConcatenated` and `LZMACompressorInputStream`
 //! read them, under the memory limit Tika's `CompressorParser` sets.
 
+use std::io::Read;
+
 use super::{decoder_failure, spool_limited, Decoding, Held, Limited, Undecoded, MEMORY_LIMIT_KIB};
 use crate::input::Input;
 
@@ -32,6 +34,32 @@ pub(crate) fn decode_lzma(data: &[u8]) -> Result<Limited<Input<'static>>, Undeco
     let reader = lzma_rust2::LzmaReader::new_mem_limit(data, MEMORY_LIMIT_KIB, None)
         .map_err(decoder_failure)?;
     spool_limited(reader, data.len(), lzma_declared_size(data))
+}
+
+/// A reader of the raw LZMA stream `data`, without a header, of the properties byte `props` and
+/// dictionary size `dict_size`, that decodes into `size` bytes, as SWF's ZWS movies hold one:
+/// an error past `size` bytes is deferred to a read beyond them, so a reader taking `size` bytes
+/// takes what the stream holds up to there. Decoding it needing more memory than
+/// [`MEMORY_LIMIT_KIB`] is [`Undecoded::MemoryLimit`].
+pub fn raw_lzma_reader(
+    data: &[u8],
+    props: u8,
+    dict_size: u32,
+    size: u64,
+) -> Result<impl Read + '_, Undecoded> {
+    let history = u32::try_from(size).map_or(dict_size, |size| dict_size.min(size));
+    let needed =
+        lzma_rust2::lzma_get_memory_usage_by_props(history, props).map_err(decoder_failure)?;
+    if needed > MEMORY_LIMIT_KIB {
+        return Err(Undecoded::MemoryLimit(format!(
+            "an LZMA dictionary of {history} bytes needs {needed} KiB, the limit being \
+             {MEMORY_LIMIT_KIB} KiB"
+        )));
+    }
+    let mut reader = lzma_rust2::LzmaReader::new_with_props(data, size, props, dict_size, None)
+        .map_err(decoder_failure)?;
+    reader.set_defer_errors(true);
+    Ok(reader)
 }
 
 /// The uncompressed size the header of the `.lzma` file `data` declares, unless it declares it
