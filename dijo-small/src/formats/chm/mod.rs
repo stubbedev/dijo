@@ -20,8 +20,7 @@ use crate::errors::Error;
 use crate::formats::handlers::parse_inline;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{
-    decision, html, reading, unless_different, Decline, Difference, Failure, Footprint, Parser,
-    Prepared,
+    html, unless_different, Decline, Difference, Failure, Footprint, Parser, Prepared,
 };
 use crate::input::{Pages, Paging};
 
@@ -75,11 +74,11 @@ impl Parser for ChmParser {
         self.prepare_paged(input, Pages::IN_MEMORY, metadata, configs)
     }
 
-    /// Extracts and prepares every page before writing any, so a page the HTML parser does not
-    /// read leaves the file unread; a page that cannot be extracted fails the parse after the pages
-    /// before it, as Tika's extraction of it throws there. Each page is prepared again as it is
-    /// written: holding every page's document at once would hold a help file's whole content
-    /// parsed, where writing holds one page at a time.
+    /// Extracts and inspects every page before writing any, so a page that cannot be extracted
+    /// fails the parse after the pages before it, as Tika's extraction of it throws there. Each
+    /// page is extracted again and built from its inspection as it is written: holding every
+    /// page's document at once would hold a help file's whole content parsed, where writing holds
+    /// one page at a time, and an inspection only the charset detected.
     fn prepare_paged<'a>(
         &self,
         input: &'a [u8],
@@ -90,35 +89,32 @@ impl Parser for ChmParser {
         let extractor = Extractor::new(input, pages)
             .map_err(|thrown| Decline::Fails(Error::ParseError(thrown.reason().to_owned())))?;
         let mut difference = None;
+        let mut inspections = Vec::new();
         let mut data = Vec::new();
         for entry in extractor.pages() {
             if extractor.extract(entry, &mut data).is_err() {
                 break;
             }
-            let name = &entry.name;
-            let read_otherwise = decision(html::prepare(&data, &TikaMetadata::new()))
-                .map_err(|reason| {
-                    Decline::Unread(format!("the page {name} is not read: {reason}"))
-                })?
-                .map(|Difference(reason)| Difference(format!("the page {name}: {reason}")));
-            difference = difference.or(read_otherwise);
+            let (inspection, read_otherwise) = html::inspect(&data, &TikaMetadata::new());
+            inspections.push(inspection);
+            difference = difference.or_else(|| {
+                read_otherwise.map(|Difference(reason)| {
+                    Difference(format!("the page {}: {reason}", entry.name))
+                })
+            });
         }
         unless_different(
             Box::new(move |xhtml| {
                 xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
+                let mut inspections = inspections.into_iter();
                 for entry in extractor.pages() {
                     extractor.extract(entry, &mut data).map_err(|thrown| {
                         Failure::Malformed(format!("TikaException: {}", thrown.reason()))
                     })?;
-                    let name = &entry.name;
-                    let prepared =
-                        reading(html::prepare(&data, &TikaMetadata::new())).map_err(|reason| {
-                            Failure::Malformed(format!(
-                                "the page {name} is not read, which it was as it was prepared: \
-                                 {reason}"
-                            ))
-                        })?;
-                    parse_inline(prepared, xhtml)?;
+                    let inspection = inspections
+                        .next()
+                        .expect("every page extracted was inspected as it was prepared");
+                    parse_inline(inspection.prepare(&data), xhtml)?;
                 }
                 Ok(())
             }),

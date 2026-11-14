@@ -545,13 +545,24 @@ fn icbm(value: &str) -> Option<(&str, &str)> {
     Some((latitude, &rest[..second_end]))
 }
 
+/// What the `src` of an element starts with when it holds a data URI.
+const DATA_URI: &str = "data:";
+
 /// The data URI of an element's `src`, which `HtmlHandler` hands to the embedded document
 /// extractor outside a script.
 fn embedded_data_uri(attributes: SaxAttributes<'_>) -> Option<data_uri::DataUri> {
     attributes
         .value("src")
-        .filter(|src| src.starts_with("data:"))
+        .filter(|src| src.starts_with(DATA_URI))
         .and_then(data_uri::parse)
+}
+
+/// Whether the document `html` holds may hold an attribute that starts with a data URI: one
+/// spelled out, or spelled with a character reference, numeric or `&colon;`, as no named
+/// reference stands for a letter. A document that holds none the parser reads as Tika's does,
+/// as far as [`Scan`] finds, without building it.
+pub(super) fn may_hold_data_uri(html: &str) -> bool {
+    html.contains(DATA_URI) || html.contains("&#") || html.contains("&colon")
 }
 
 /// Whether `attributes` hold a data URI the parser may read differently from Tika's, as
@@ -722,6 +733,18 @@ mod tests {
         assert!(difference(&format!("<script src=\"{windows}\"></script>")).is_none());
         assert!(difference(&format!("<svg><script><image src=\"{windows}\"/>")).is_none());
         assert!(difference("<img src=\"data:text/plain;charset=UTF-8,hej\">").is_none());
+        let spellings = [
+            windows,
+            "&#100;ata:",
+            "dat&#x61;:",
+            "data&colon;",
+            "data&colon",
+        ];
+        for spelled in spellings {
+            let html = format!("<img src=\"{spelled}\">");
+            assert!(may_hold_data_uri(&html), "{spelled}");
+        }
+        assert!(!may_hold_data_uri("<img src=\"data.png\"> &nbsp; &amp;"));
     }
 
     #[test]

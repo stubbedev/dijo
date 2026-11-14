@@ -22,7 +22,10 @@
 //!
 //! The parser reads a document differently from Tika's where a declaration names a charset the
 //! native decoders do not decode ([`AutoDetectReader::difference`]), and where it embeds the text
-//! of a data URI in a charset it does not encode ([`handler::difference`]).
+//! of a data URI in a charset it does not encode ([`handler::difference`]). A parser that must
+//! know that of each of many documents before it writes any [`inspect`]s each first, which
+//! holds the charset detected rather than the document built, and builds it again from that as
+//! it writes it.
 
 mod dom;
 mod handler;
@@ -37,7 +40,7 @@ mod trees;
 
 pub use dom::Attribute;
 use dom::Dom;
-use handler::{Base, HtmlHandler, Scan};
+use handler::{may_hold_data_uri, Base, HtmlHandler, Scan};
 use walk::{walk_whole, Holds};
 pub use walk::{ParsedNode, Visitor};
 
@@ -140,6 +143,46 @@ pub fn prepare_input(
     prepared(document, &input, previous, Base::of(metadata))
 }
 
+/// What [`inspect`] finds of a document that [`Inspection::prepare`] needs to prepare it as
+/// [`prepare`] does: the charset detected, and what the metadata given says.
+pub struct Inspection {
+    detection: Detection,
+    previous: Option<String>,
+    base: Base,
+}
+
+/// Where [`JSoupParser`] reads `input` differently from Tika's parser, as [`prepare`] finds,
+/// without holding the document it builds to find it: its [`Inspection`] prepares it later
+/// without detecting its charset again.
+pub fn inspect(input: &[u8], metadata: &TikaMetadata) -> (Inspection, Option<Difference>) {
+    let previous = metadata.get("Content-Type").map(str::to_owned);
+    let detection = charset::detect_decodable(input, previous.as_deref());
+    let difference = AutoDetectReader::difference(input, previous.as_deref())
+        .or_else(|| read_otherwise(input, detection.decode_as, SIZES));
+    let inspection = Inspection {
+        detection,
+        previous,
+        base: Base::of(metadata),
+    };
+    (inspection, difference)
+}
+
+impl Inspection {
+    /// What [`prepare`] prepares of `input`, the input inspected, which reads it differently
+    /// from Tika's parser where [`inspect`] said so.
+    pub fn prepare(self, input: &[u8]) -> Prepared<'static> {
+        let source = Bytes::Borrowed(input, Pages::IN_MEMORY);
+        let (reading, difference) = read_decoded(source, self.detection.decode_as, SIZES);
+        let document = Document {
+            detection: self.detection,
+            reading,
+            difference,
+        }
+        .into_owned();
+        Box::new(move |xhtml| write(document, self.previous.as_deref(), self.base, xhtml))
+    }
+}
+
 /// What the parser prepares of `document`, read from `input` when the metadata's
 /// `Content-Type` was `previous`, with links resolved against `base`.
 fn prepared<'a>(
@@ -159,16 +202,31 @@ fn prepared<'a>(
 /// What `JSoupParser.parseString` prepares of HTML already decoded, as Java's UTF-16 units: a
 /// lone surrogate is U+FFFD, as the WHATWG decoder of UTF-16 makes it, and where the parser
 /// reads the HTML differently from Tika's, if anywhere: the parser reads any HTML.
+/// The document is built as it is written, unless finding that difference builds it already.
 pub fn prepare_string(html: &[u16]) -> (Prepared<'static>, Option<Difference>) {
-    let (mut dom, difference) = build(&String::from_utf16_lossy(html));
+    let text = String::from_utf16_lossy(html);
+    let (whole, difference) = match build_if_it_may_differ(&text) {
+        Some((dom, difference)) => (Whole::Built(dom), difference),
+        None => (Whole::Text(text), None),
+    };
     (
         Box::new(move |xhtml| {
+            let mut dom = match whole {
+                Whole::Built(dom) => dom,
+                Whole::Text(text) => tree_builder::build(&text).dom,
+            };
             let mut handler = HtmlHandler::new(Base::Unknown, xhtml);
             let written = walk_whole(&mut dom, &mut handler);
             ended(written, xhtml)
         }),
         difference,
     )
+}
+
+/// A document read whole: built, or its text, to be built.
+enum Whole {
+    Built(Dom),
+    Text(String),
 }
 
 /// Walks the document `html` holds, built whole, as `TikaNodeFilter` traverses it, for a parser
@@ -334,19 +392,27 @@ fn read_by<'a>(
 
 /// [`read_by`] of the bytes `source`.
 fn read_from<'a>(source: Bytes<'a>, content_type: Option<&str>, sizes: Sizes) -> Document<'a> {
+    let detection = charset::detect_decodable(source.bytes(), content_type);
+    let (reading, difference) = read_decoded(source, detection.decode_as, sizes);
+    Document {
+        detection,
+        reading,
+        difference,
+    }
+}
+
+/// Decodes and builds the bytes `source` as JSoupParser does when its detection decodes them
+/// as `decode_as`, by the `sizes` given, and finds where it reads them differently from Tika's.
+fn read_decoded(
+    source: Bytes<'_>,
+    decode_as: Charset,
+    sizes: Sizes,
+) -> (Reading<'_>, Option<Difference>) {
     let input = source.bytes();
-    let detection = charset::detect_decodable(input, content_type);
-    let (charset, bytes) = jsoup_charset(input, detection.decode_as);
+    let (charset, bytes) = jsoup_charset(input, decode_as);
     if input.len() <= sizes.whole {
-        let text = charset
-            .decode(bytes)
-            .expect("the port decodes every charset its detection settles on");
-        let (dom, difference) = build(&text);
-        return Document {
-            detection,
-            reading: Reading::Whole(dom),
-            difference,
-        };
+        let (dom, difference) = build(&decode(charset, bytes));
+        return (Reading::Whole(dom), difference);
     }
     let skipped = input.len() - bytes.len();
     let text = Text {
@@ -363,14 +429,34 @@ fn read_from<'a>(source: Bytes<'a>, content_type: Option<&str>, sizes: Sizes) ->
     } else {
         None
     };
-    Document {
-        detection,
-        reading: Reading::Surveyed {
-            holds: survey.holds,
-            text,
-        },
-        difference,
+    let reading = Reading::Surveyed {
+        holds: survey.holds,
+        text,
+    };
+    (reading, difference)
+}
+
+/// Where the parser reads `input` differently from Tika's when its detection decodes it as
+/// `decode_as`, as [`read_decoded`] finds by the `sizes` given, without building a document read
+/// whole that holds no data URI.
+fn read_otherwise(input: &[u8], decode_as: Charset, sizes: Sizes) -> Option<Difference> {
+    if input.len() > sizes.whole {
+        return read_decoded(Bytes::Borrowed(input, Pages::IN_MEMORY), decode_as, sizes).1;
     }
+    let (charset, bytes) = jsoup_charset(input, decode_as);
+    build_if_it_may_differ(&decode(charset, bytes)).and_then(|(_, difference)| difference)
+}
+
+/// [`build`] of `html`, unless it holds no data URI, which the parser reads as Tika's does.
+fn build_if_it_may_differ(html: &str) -> Option<(Dom, Option<Difference>)> {
+    may_hold_data_uri(html).then(|| build(html))
+}
+
+/// The text of `bytes` in `charset`, which jsoup decodes them with.
+fn decode(charset: Charset, bytes: &[u8]) -> String {
+    charset
+        .decode(bytes)
+        .expect("the port decodes every charset its detection settles on")
 }
 
 /// The document `html` holds, built whole, and where the parser reads it differently from
@@ -483,8 +569,16 @@ mod tests {
         given.set("Content-Type", content_type);
         let previous = Some(content_type.to_owned());
         let document = read_by(input, Pages::IN_MEMORY, previous.as_deref(), sizes);
-        let (prepared, difference) =
-            noted(prepared(document, input, previous, Base::of(&given))).unwrap();
+        let reading = noted(prepared(document, input, previous, Base::of(&given))).unwrap();
+        events_of(reading, given)
+    }
+
+    /// The events, metadata and outcome of writing `prepared` from the metadata `given`, and
+    /// the difference noted of it.
+    fn events_of(
+        (prepared, difference): (Prepared<'_>, Option<Difference>),
+        given: TikaMetadata,
+    ) -> String {
         let configs = ParserConfigs::default();
         let context = ParseContext::new(&configs);
         let mut events = Events::default();
@@ -496,21 +590,12 @@ mod tests {
         format!("{}{metadata:?}\n{result:?}\n{difference:?}", events.written)
     }
 
-    /// Every document of the references, read a few bytes at a time and written as it is built,
+    /// Every document of [`every_input`], read a few bytes at a time and written as it is built,
     /// is written as it is once built whole.
     #[test]
     fn writes_a_document_as_it_is_built_as_once_it_is_built_whole() {
         dijo_core::testing::install_routes();
-        let mut inputs: Vec<(String, Vec<u8>, String)> =
-            crate::formats::reference::cases(reference::REFERENCE)
-                .into_iter()
-                .map(|case| (case.label, case.input, case.content_type))
-                .collect();
-        inputs.extend(
-            trees::html5lib_inputs()
-                .into_iter()
-                .map(|(name, input)| (name, input.into_bytes(), "text/html".to_owned())),
-        );
+        let inputs = every_input();
         assert!(inputs.len() > 3000, "{} inputs", inputs.len());
         let whole = Sizes {
             whole: usize::MAX,
@@ -527,6 +612,112 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Documents that embed data URIs the parser reads differently from Tika's, spelled out and
+    /// with character references, and one that declares a charset it does not decode.
+    const DIFFERING: [&str; 4] = [
+        "<p>a</p><img src=\"data:text/plain;charset=windows-1252,hej\">",
+        "<img src=\"&#100;ata:text/plain;charset=windows-1252,hej\">",
+        "<img src=\"data&colon;text/plain;charset=windows-1252,hej\">",
+        "<meta charset=\"x-IBM930\"><p>plain text</p>",
+    ];
+
+    /// The documents of the references, and [`DIFFERING`], each with its label and content type.
+    fn reference_inputs() -> Vec<(String, Vec<u8>, String)> {
+        let mut inputs: Vec<(String, Vec<u8>, String)> =
+            crate::formats::reference::cases(reference::REFERENCE)
+                .into_iter()
+                .map(|case| (case.label, case.input, case.content_type))
+                .collect();
+        inputs.extend(DIFFERING.map(|html| {
+            (
+                html.to_owned(),
+                html.as_bytes().to_vec(),
+                "text/html".to_owned(),
+            )
+        }));
+        inputs
+    }
+
+    /// [`reference_inputs`] and html5lib's documents.
+    fn every_input() -> Vec<(String, Vec<u8>, String)> {
+        let mut inputs = reference_inputs();
+        inputs.extend(
+            trees::html5lib_inputs()
+                .into_iter()
+                .map(|(name, input)| (name, input.into_bytes(), "text/html".to_owned())),
+        );
+        inputs
+    }
+
+    /// Every document of [`every_input`], built or not, read whole or a piece at a time, is read
+    /// differently from Tika's where it is once built whole.
+    #[test]
+    fn finds_where_it_reads_a_document_otherwise_without_building_it() {
+        let inputs = every_input();
+        let whole = Sizes {
+            whole: usize::MAX,
+            piece: PIECE,
+        };
+        let streamed = Sizes {
+            whole: 0,
+            piece: 61,
+        };
+        let mut differences = 0;
+        for (label, input, content_type) in &inputs {
+            let built = read_by(input, Pages::IN_MEMORY, Some(content_type), whole);
+            let decode_as = built.detection.decode_as;
+            differences += usize::from(built.difference.is_some());
+            for sizes in [whole, streamed] {
+                assert_eq!(
+                    read_otherwise(input, decode_as, sizes),
+                    built.difference,
+                    "{label}"
+                );
+            }
+        }
+        assert!(differences >= 3, "{differences} differences");
+    }
+
+    /// Every document of [`every_input`] given decoded is written, and read differently from
+    /// Tika's, as it is once built at once.
+    #[test]
+    fn prepares_a_decoded_document_as_once_it_is_built() {
+        dijo_core::testing::install_routes();
+        for (label, input, _) in every_input() {
+            let text = String::from_utf8_lossy(&input).into_owned();
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let (mut dom, difference) = build(&text);
+            let built: Prepared<'static> = Box::new(move |xhtml| {
+                let mut handler = HtmlHandler::new(Base::Unknown, xhtml);
+                let written = walk_whole(&mut dom, &mut handler);
+                ended(written, xhtml)
+            });
+            let expected = events_of((built, difference), TikaMetadata::new());
+            let prepared = events_of(prepare_string(&units), TikaMetadata::new());
+            assert_eq!(prepared, expected, "{label}");
+        }
+    }
+
+    /// Every document of the references and of [`DIFFERING`], inspected and then prepared, is
+    /// written as it is once prepared, with the same difference.
+    #[test]
+    fn prepares_an_inspected_document_as_it_prepares_it_at_once() {
+        dijo_core::testing::install_routes();
+        let inputs = reference_inputs();
+        let mut differences = 0;
+        for (label, input, content_type) in &inputs {
+            let mut given = TikaMetadata::new();
+            given.set("Content-Type", content_type);
+            given.set("Content-Location", "http://example.com/dir/page.html");
+            let expected = events_of(noted(prepare(input, &given)).unwrap(), given.clone());
+            let (inspection, difference) = inspect(input, &given);
+            differences += usize::from(difference.is_some());
+            let inspected = events_of((inspection.prepare(input), difference), given);
+            assert_eq!(inspected, expected, "{label}");
+        }
+        assert!(differences >= DIFFERING.len(), "{differences} differences");
     }
 
     /// A document larger than the memory budget allows to build whole is written as it is
