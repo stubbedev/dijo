@@ -664,9 +664,13 @@ impl Lzx {
             3 => {
                 bits.align()?;
                 let header = bits.raw(12)?;
-                for (repeated, offset) in self.state.repeated.iter_mut().zip(header.chunks_exact(4))
+                for (repeated, offset) in self
+                    .state
+                    .repeated
+                    .iter_mut()
+                    .zip(header.as_chunks::<4>().0)
                 {
-                    let offset = u32::from_le_bytes([offset[0], offset[1], offset[2], offset[3]]);
+                    let offset = u32::from_le_bytes(*offset);
                     if offset as usize >= self.window.len() {
                         return Err(Malformed::RepeatedOffset {
                             offset,

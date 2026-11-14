@@ -12,7 +12,7 @@ let
   tessdata = import ./tessdata.nix { inherit pkgs; };
   ppocr = import ./ppocr.nix { inherit pkgs; };
   licenses = import ./licenses.nix "$out/licenses";
-  tesseract = pkgs.tesseract5.passthru.tesseractBase;
+  tesseract = pkgs.tesseract5.passthru.tesseractBase.overrideAttrs static.tesseractSource;
   source = pkgs.applyPatches {
     name = "tesseract-${tesseract.version}-patched-source";
     inherit (tesseract) src;
