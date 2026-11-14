@@ -2,14 +2,27 @@
 
 What dijo does differently from Apache Tika, grouped by its three goals. Each item gives the mechanism and its
 evidence: a figure from `quality/`, `conformance/`, the README or the CHANGELOG, or the commit or issue that landed it.
-`quality/COMPARISON.md` scores dijo, Docling 2.131.0, Kreuzberg 4.10.4 and Tika 4.1.0 on 240 ground-truth documents.
+`quality/COMPARISON.md` scores dijo, Docling 2.131.0, Kreuzberg 4.10.4 and Tika 4.1.0 (with tesseract 5.5.4 on its
+path) on 333 ground-truth documents in 17 categories: 292 generated from texts in `quality/truth` by LibreOffice,
+pandoc, LaTeX and the other producers `quality/generate.sh` runs, and 41 real ones listed in `quality/SOURCES.md`.
+The real ones are scans with published transcriptions (newspapers from 1864 to 1994, books from 1520 to 1948 in
+Latin, Cyrillic, Greek, Hebrew, Arabic, Armenian, Devanagari, Bengali, Tamil, Han and Japanese script, letters,
+leases and financial tables), an Internet Archive PDF with its OCR layer, and two-column PDFs from three journals
+and the CDC.
 `quality/SCOREBOARD.md` holds dijo's current scores, and `just quality` fails when a score falls below
 `quality/baseline.json`.
 
 ## Accuracy
 
-- **Overall.** Over the 240 compared documents dijo recalls 99.6% of words and Tika 84.8%. Mean CER is 0.004
-  against 0.160, and mean spurious text 0.003 against 0.125 (`quality/COMPARISON.md`).
+- **Overall.** Over the 333 compared documents dijo recalls 96.4% of words and Tika 76.0%. Mean CER is 0.035
+  against 0.252, and mean spurious text 0.029 against 0.197 (`quality/COMPARISON.md`). On the 240 documents compared
+  before the corpus grew, recall is 99.7% against 84.7%; the 41 real documents and the new document classes are
+  harder for every extractor.
+- **Real scans.** Over the 122 OCR rows dijo's mean CER is 0.051 and recall 92.9%, Tika's 0.412 and 48.6%. Tika
+  reads with English only, so it recalls nothing of the Greek, Bengali, Hebrew, Chinese and Ukrainian book pages,
+  which dijo reads at CER 0.037, 0.083, 0.067, 0.168 and 0.192. A scanned financial table set in old-style figures
+  (`unlv-table-9521-052.tif`) has CER 0.188 against Tika's 0.649, and Fraktur newspapers of 1864 and 1873 0.025 and
+  0.092 against 0.156 and 0.265.
 - **PDF text layers are judged page by page.** A port of `TextLayerQuality` scores unmapped glyphs, impossible
   characters, mixed alphabets and vowel-less words (`dijo-pdf/src/formats/pdf/quality.rs`). OCR replaces a garbage
   layer, and a doubtful one is read both ways, keeping the better reading. CER on `prose-broken-private-use.pdf` is
@@ -19,8 +32,8 @@ evidence: a figure from `quality/`, `conformance/`, the README or the CHANGELOG,
 - **Normalisation for indexing.** Hyphenated words are joined across lines, ligatures expanded, text put in NFC,
   invisible characters dropped. `hyphenated.pdf` has a token error rate of 0.006 against Tika's 0.290. Running
   headers and footers are learnt across every window of pages, left and right pages apart (#201, #213).
-- **Complex scripts in PDFs.** CER on `thai.pdf` is 0.007 (Tika 0.958), `hindi.pdf` 0.000 (Tika 0.838) and
-  `arabic.pdf` 0.178 (Tika 0.835).
+- **Complex scripts in PDFs.** CER on `thai.pdf` is 0.007 (Tika 0.958), `hindi.pdf` 0.000 (Tika 0.832) and
+  `arabic.pdf` 0.178 (Tika 0.838).
 - **Legacy encodings.** On `japanese-shift_jis.txt` dijo's CER is 0.000 and Tika's 1.008. Of the 52
   legacy-encoding rows, all score 0.000 except `romanian-iso-8859-16.txt` at 0.032 (`SCOREBOARD.md`).
 - **Language detection.** dijo starts from the logits of Tika 4's CharSoup and adds two things: a -2 prior for 41
@@ -32,7 +45,7 @@ evidence: a figure from `quality/`, `conformance/`, the README or the CHANGELOG,
   (0.2.4).
 - **OCR preprocessing.**
   - Deskew and orientation: `prose-scan-skewed.png` CER 0.000, Tika 0.950.
-  - Division by the background under uneven light: `prose-scan-shadow.png` 0.002, Tika 0.312 (#227).
+  - Division by the background under uneven light: `prose-scan-shadow.png` 0.000, Tika 0.312 (#227).
   - Perspective flattening of photographed pages (`flatten.rs`).
   - Light-on-dark regions inverted by dijo itself, so tesseract's inverted retry can be switched off (#331).
   - Small text beside photos enlarged (#306).
@@ -47,6 +60,21 @@ evidence: a figure from `quality/`, `conformance/`, the README or the CHANGELOG,
   flagged `"noise":true` (#194).
 - **Image formats.** On the quality corpus Tika returns no text for the WebP, HEIC, AVIF, PBM, DjVu, JB2, PSD, PCX and
   TGA scans, and dijo reads each of them with CER 0.000 (`COMPARISON.md`).
+- **Where dijo is behind** (`quality/COMPARISON.md`; none of these is tuned yet):
+  - `mixed.pdf`, one page with paragraphs in seven scripts, recalls 27.7% of words, against Docling's 83.5% and
+    Kreuzberg's 88.1% (Tika 26.6%); the same page scanned recalls 28.8%. The ODT and DOCX of the same text score
+    0.000.
+  - `kronen-zeitung-1933.jpg`, a colour sports page mixing Fraktur, roman type and results tables, has CER 0.834
+    against Kreuzberg's 0.300 and Tika's 0.487.
+  - On the four real two-column PDFs dijo recalls 92.4% to 100% of words, but its CER (0.089 to 0.468) is higher
+    than Docling's on three of them: `article-biollett-2016.pdf` 0.226 against 0.068,
+    `article-atenprimaria-2026.pdf` 0.468 against 0.195, `cdc-mmwr-prep-2024.pdf` 0.314 against 0.228.
+  - The PostScript that dvips writes (`prose.ps`) and the Scribus 1.7 document (`prose.sla`) yield no text.
+  - Some scripts stay weak: the Ukrainian page of 1861 with printed stress accents recalls 24.6% of words, the
+    Tamil page of 1921 58.3%.
+  - Kreuzberg's CER is lower on `table.xlsx` (0.044 against 0.080) and `inventory.ods` (0.012 against 0.058), and
+    Docling, Kreuzberg and Tika keep the subject lines of the letters in `letters.eml`, which dijo leaves out
+    (recall 95.4% against 96.9%).
 - **Tika and JVM quirks are fixed on purpose.**
   - Output follows document order, not Java hash-map order.
   - Malformed text decodes as WHATWG specifies (0.2.2).
@@ -233,6 +261,11 @@ Tika reads none of these, or only their summary information or raw lines; dijo r
 - **Data, media and other.** Apache Parquet (#352), Matroska/WebM subtitle tracks and tags (#337), Flash SWF (#357),
   BitTorrent metainfo (#354), AutoCAD DXF text (#351; binary DXF detected where Tika's magic misses it).
 - **Structured reads where Tika dumps raw text.** iCalendar (#343), vCard (#344), SVG visible text only (#345).
+- **On the quality corpus.** The lighthouse text rendered as DVI by LaTeX, as Matroska subtitles by mkvmerge, as
+  ISO 9660, cabinet and RPM packages, as Parquet by DuckDB, as MOBI by calibre and as DXF is read by dijo with
+  recall 1.000 and by Tika, Docling and Kreuzberg not at all. dijo also reads the AbiWord, SVG, SubRip, iCalendar and
+  vCard files completely; Tika reads them too, with more spurious text on the calendar and the cards. dijo reads
+  nothing from the PostScript dvips writes or from the Scribus 1.7 file (`niche-formats` rows of `COMPARISON.md`).
 - **Coverage of Tika's own formats.** Every format Tika reads is read natively; Pack200 was the last (0.2.3).
 
 ## Compatibility
