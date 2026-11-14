@@ -112,24 +112,24 @@
     "reading_order": 1.0
   },
   "article-atenprimaria-2026.pdf": {
-    "character_error_rate": 0.40647058823529414,
-    "token_error_rate": 0.459070796460177,
+    "character_error_rate": 0.1584033613445378,
+    "token_error_rate": 0.17146017699115043,
     "recall": 0.9994469026548672,
-    "spurious": 0.2539223781998348,
+    "spurious": 0.007688083470620538,
     "reading_order": 0.9473684210526315
   },
   "article-biollett-2016.pdf": {
-    "character_error_rate": 0.1608241082410824,
-    "token_error_rate": 0.21232020012507818,
-    "recall": 0.9937460913070669,
-    "spurious": 0.16784498559832417,
+    "character_error_rate": 0.024087740877408774,
+    "token_error_rate": 0.03689806128830519,
+    "recall": 0.9934333958724203,
+    "spurious": 0.024861878453038673,
     "reading_order": 0.9104477611940298
   },
   "article-bmcresnotes-2020.pdf": {
-    "character_error_rate": 0.08891776498979023,
-    "token_error_rate": 0.09068702290076336,
-    "recall": 0.9987786259541984,
-    "spurious": 0.018012608826178327,
+    "character_error_rate": 0.07648041581585298,
+    "token_error_rate": 0.07786259541984733,
+    "recall": 0.9984732824427481,
+    "spurious": 0.005776831863788386,
     "reading_order": 0.9797979797979798
   },
   "azerbaijani-scan.png": {
@@ -273,10 +273,10 @@
     "reading_order": 1.0
   },
   "cdc-mmwr-prep-2024.pdf": {
-    "character_error_rate": 0.3143775033377837,
-    "token_error_rate": 0.3633633633633634,
+    "character_error_rate": 0.24582777036048065,
+    "token_error_rate": 0.29404404404404405,
     "recall": 1.0,
-    "spurious": 0.06482564942663234,
+    "spurious": 0.0,
     "reading_order": 0.7222222222222222
   },
   "chinese-gb18030.txt": {
@@ -742,10 +742,10 @@
     "reading_order": 0.5
   },
   "hindi-diksita-1895-02.jpg": {
-    "character_error_rate": 0.23440134907251264,
-    "token_error_rate": 0.5108695652173914,
-    "recall": 0.5434782608695652,
-    "spurious": 0.4444444444444444,
+    "character_error_rate": 0.23102866779089376,
+    "token_error_rate": 0.5,
+    "recall": 0.5543478260869565,
+    "spurious": 0.43333333333333335,
     "reading_order": 0.5
   },
   "hindi-scan.png": {
@@ -1029,11 +1029,11 @@
     "reading_order": 1.0
   },
   "kronen-zeitung-1933.jpg": {
-    "character_error_rate": 0.8340205095676075,
-    "token_error_rate": 0.9506089309878214,
-    "recall": 0.12516914749661706,
-    "spurious": 0.5717592592592593,
-    "reading_order": 0.023255813953488372
+    "character_error_rate": 0.1069880537054657,
+    "token_error_rate": 0.2821380243572395,
+    "recall": 0.7665764546684709,
+    "spurious": 0.24966887417218542,
+    "reading_order": 0.3953488372093023
   },
   "latvian-cp1257.txt": {
     "character_error_rate": 0.0,
@@ -1190,11 +1190,11 @@
     "reading_order": 1.0
   },
   "mixed-scan.png": {
-    "character_error_rate": 0.6013564431047476,
-    "token_error_rate": 0.7122302158273381,
-    "recall": 0.28776978417266186,
-    "spurious": 0.13978494623655913,
-    "reading_order": 0.25
+    "character_error_rate": 0.012057272042200452,
+    "token_error_rate": 0.02877697841726619,
+    "recall": 0.9712230215827338,
+    "spurious": 0.02877697841726619,
+    "reading_order": 0.875
   },
   "mixed.docx": {
     "character_error_rate": 0.0,
@@ -1337,10 +1337,10 @@
     "reading_order": 1.0
   },
   "polish-polanowski-1888.png": {
-    "character_error_rate": 0.013662979830839297,
-    "token_error_rate": 0.027450980392156862,
-    "recall": 0.9803921568627451,
-    "spurious": 0.027237354085603113,
+    "character_error_rate": 0.01236174365647365,
+    "token_error_rate": 0.0196078431372549,
+    "recall": 0.9882352941176471,
+    "spurious": 0.019455252918287938,
     "reading_order": 1.0
   },
   "polish-scan-fax.png": {
@@ -1484,10 +1484,10 @@
     "reading_order": 1.0
   },
   "prose-scan-100dpi-degraded.png": {
-    "character_error_rate": 0.011337868480725623,
-    "token_error_rate": 0.04590163934426229,
-    "recall": 0.9540983606557377,
-    "spurious": 0.04590163934426229,
+    "character_error_rate": 0.00963718820861678,
+    "token_error_rate": 0.036065573770491806,
+    "recall": 0.9639344262295082,
+    "spurious": 0.036065573770491806,
     "reading_order": 0.8333333333333334
   },
   "prose-scan-150dpi.png": {
@@ -1673,11 +1673,11 @@
     "reading_order": 1.0
   },
   "prose.dvi": {
-    "character_error_rate": 0.0017006802721088435,
-    "token_error_rate": 0.009836065573770493,
-    "recall": 0.9934426229508196,
-    "spurious": 0.006557377049180328,
-    "reading_order": 0.8333333333333334
+    "character_error_rate": 0.0011337868480725624,
+    "token_error_rate": 0.003278688524590164,
+    "recall": 1.0,
+    "spurious": 0.0032679738562091504,
+    "reading_order": 1.0
   },
   "prose.dxf": {
     "character_error_rate": 0.0,
@@ -1785,10 +1785,10 @@
     "reading_order": 1.0
   },
   "quixote-1605.pdf": {
-    "character_error_rate": 0.058061495239581706,
-    "token_error_rate": 0.20930232558139536,
-    "recall": 0.8172757475083057,
-    "spurious": 0.18272425249169436,
+    "character_error_rate": 0.05728109879818948,
+    "token_error_rate": 0.20431893687707642,
+    "recall": 0.8222591362126246,
+    "spurious": 0.1777408637873754,
     "reading_order": 0.6
   },
   "report-scan-skewed.tif": {

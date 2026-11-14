@@ -78,7 +78,7 @@
 | prose-scan-inverted.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan-reversed-regions.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan-72dpi.png | ocr | 0.001 | 0.007 | 0.993 | 0.007 | 1.000 |
-| prose-scan-100dpi-degraded.png | ocr | 0.011 | 0.046 | 0.954 | 0.046 | 0.833 |
+| prose-scan-100dpi-degraded.png | ocr | 0.010 | 0.036 | 0.964 | 0.036 | 0.833 |
 | prose-scan-600dpi.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-scan-shadow.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose-photo-shadow.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -227,7 +227,7 @@
 | thai-scan.png | ocr | 0.028 | 0.018 | 0.986 | 0.014 | 0.667 |
 | hindi-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hebrew-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| quixote-1605.pdf | ocr | 0.058 | 0.209 | 0.817 | 0.183 | 0.600 |
+| quixote-1605.pdf | ocr | 0.057 | 0.204 | 0.822 | 0.178 | 0.600 |
 | arbeiter-zeitung-1895.jpg | ocr | 0.044 | 0.118 | 0.906 | 0.106 | 0.640 |
 | neue-freie-presse-1895.tif | ocr | 0.161 | 0.276 | 0.842 | 0.170 | 0.262 |
 | more-epigrammata-1520.jpg | ocr | 0.045 | 0.256 | 0.824 | 0.237 | 0.000 |
@@ -237,7 +237,7 @@
 | betrayed-armenia-1910-p46.tif | ocr | 0.031 | 0.033 | 0.985 | 0.021 | 1.000 |
 | colonial-florida-1892-p14.tif | ocr | 0.030 | 0.066 | 0.955 | 0.050 | 0.750 |
 | hindi-diksita-1895-01.jpg | ocr | 0.146 | 0.327 | 0.673 | 0.271 | 0.500 |
-| hindi-diksita-1895-02.jpg | ocr | 0.234 | 0.511 | 0.543 | 0.444 | 0.500 |
+| hindi-diksita-1895-02.jpg | ocr | 0.231 | 0.500 | 0.554 | 0.433 | 0.500 |
 | arabic-wikipedia-dolphin-scan.png | ocr | 0.073 | 0.180 | 0.861 | 0.131 | 0.600 |
 | arabic-wikipedia-village-scan.png | ocr | 0.365 | 0.822 | 0.887 | 0.452 | 0.000 |
 | japanese-ndl-1910s.jpg | ocr | 0.233 | 0.153 | 0.853 | 0.075 | 0.500 |
@@ -292,11 +292,11 @@
 | unlv-table-9560-036.tif | ocr | 0.032 | 0.047 | 0.969 | 0.043 | 0.800 |
 | innsbrucker-nachrichten-1864.tif | ocr | 0.025 | 0.094 | 0.921 | 0.091 | 0.833 |
 | neue-freie-presse-1873.tif | ocr | 0.092 | 0.243 | 0.810 | 0.210 | 0.217 |
-| kronen-zeitung-1933.jpg | ocr | 0.834 | 0.951 | 0.125 | 0.572 | 0.023 |
+| kronen-zeitung-1933.jpg | ocr | 0.107 | 0.282 | 0.767 | 0.250 | 0.395 |
 | mixed.pdf | mixed-language | 0.004 | 0.000 | 1.000 | 0.000 | 1.000 |
 | mixed.odt | mixed-language | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | mixed.docx | mixed-language | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| mixed-scan.png | ocr | 0.601 | 0.712 | 0.288 | 0.140 | 0.250 |
+| mixed-scan.png | ocr | 0.012 | 0.029 | 0.971 | 0.029 | 0.875 |
 | slides.odp | slides | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | slides.pptx | slides | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | slides.ppt | slides | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -309,7 +309,7 @@
 | letters.mbox | email | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.fb2 | e-book | 0.004 | 0.003 | 1.000 | 0.003 | 1.000 |
 | prose.mobi | e-book | 0.022 | 0.020 | 1.000 | 0.019 | 1.000 |
-| prose.dvi | niche-formats | 0.002 | 0.010 | 0.993 | 0.007 | 0.833 |
+| prose.dvi | niche-formats | 0.001 | 0.003 | 1.000 | 0.003 | 1.000 |
 | prose.ps | niche-formats | 0.001 | 0.003 | 1.000 | 0.003 | 1.000 |
 | prose.svg | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.abw | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
@@ -322,7 +322,7 @@
 | prose.rpm | niche-formats | 0.027 | 0.026 | 1.000 | 0.026 | 1.000 |
 | events.ics | niche-formats | 0.486 | 0.553 | 1.000 | 0.356 | 0.750 |
 | contacts.vcf | niche-formats | 0.431 | 0.333 | 1.000 | 0.250 | 0.000 |
-| polish-polanowski-1888.png | ocr | 0.014 | 0.027 | 0.980 | 0.027 | 1.000 |
+| polish-polanowski-1888.png | ocr | 0.012 | 0.020 | 0.988 | 0.019 | 1.000 |
 | ukrainian-osnova-kulish-1861.png | ocr | 0.192 | 0.770 | 0.246 | 0.757 | 0.000 |
 | greek-anatoliko-zitima-1876.png | ocr | 0.037 | 0.124 | 0.911 | 0.114 | 0.667 |
 | bengali-anandamath-1938.png | ocr | 0.083 | 0.224 | 0.802 | 0.211 | 0.000 |
@@ -331,7 +331,7 @@
 | chinese-luxun-fengzheng-1948.png | ocr | 0.168 | 0.038 | 0.966 | 0.038 | 1.000 |
 | czech-certuv-svagr-1899.png | ocr | 0.018 | 0.014 | 0.997 | 0.013 | 1.000 |
 | english-macaulay-minutes-1862.pdf | broken-text-layer | 0.027 | 0.109 | 0.952 | 0.103 | 1.000 |
-| article-biollett-2016.pdf | multi-column | 0.161 | 0.212 | 0.994 | 0.168 | 0.910 |
-| article-bmcresnotes-2020.pdf | multi-column | 0.089 | 0.091 | 0.999 | 0.018 | 0.980 |
-| article-atenprimaria-2026.pdf | multi-column | 0.406 | 0.459 | 0.999 | 0.254 | 0.947 |
-| cdc-mmwr-prep-2024.pdf | multi-column | 0.314 | 0.363 | 1.000 | 0.065 | 0.722 |
+| article-biollett-2016.pdf | multi-column | 0.024 | 0.037 | 0.993 | 0.025 | 0.910 |
+| article-bmcresnotes-2020.pdf | multi-column | 0.076 | 0.078 | 0.998 | 0.006 | 0.980 |
+| article-atenprimaria-2026.pdf | multi-column | 0.158 | 0.171 | 0.999 | 0.008 | 0.947 |
+| cdc-mmwr-prep-2024.pdf | multi-column | 0.246 | 0.294 | 1.000 | 0.000 | 0.722 |
