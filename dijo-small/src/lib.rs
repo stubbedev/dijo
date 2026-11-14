@@ -55,6 +55,7 @@ pub mod formats {
     pub mod notebook;
     pub mod onenote;
     pub mod open_pgp;
+    pub mod parquet;
     pub mod plist;
     pub mod prt;
     pub mod sas;

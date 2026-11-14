@@ -77,6 +77,13 @@
   header and footer sections in their own `div`s. The `<metadata>` is the document's Dublin Core, keywords and
   generator, its dates ISO local date-times (AbiWord saves them without a time zone); each `<data>` item is handed on
   as an embedded document. Gzip-compressed `.zabw` files are read through the gzip parser.
+* Apache Parquet files are read (#352), where Tika reads nothing of them: a table of the leaf columns' paths and of
+  every row, row group by row group, every column written (text, numbers, decimals, dates, times and timestamps by
+  their logical types, a list's values apart by spaces, nulls as empty cells). Data pages of version 1 and 2 in every
+  encoding Parquet defines, compressed with Snappy, gzip, Brotli, Zstandard or LZ4, are read a page of each column at
+  a time; the Thrift footer is checked whole, its nesting and sizes bounded, before anything is written. The writer,
+  row and column counts, column paths and key-value metadata (`parquet:` keys) are metadata. LZO is not decoded, and
+  an encrypted file fails as encrypted.
 * Flash movies are read (#357), where Tika reads nothing of them: uncompressed, zlib or LZMA, decoded no further
   than the length their header declares. Static text is mapped through the code tables of its fonts, a line to each
   Y offset, and text fields give their initial plain or HTML text, paragraphs and list items kept; password fields are

@@ -991,15 +991,18 @@ dependencies = [
 name = "dijo-small"
 version = "0.2.14"
 dependencies = [
+ "brotli-decompressor 6.0.1",
  "dijo-base",
  "dijo-core",
  "dijo-html",
  "dijo-mime",
  "flate2",
+ "lz4_flex",
  "md-5",
  "memchr",
  "pulldown-cmark",
  "regex",
+ "ruzstd",
  "serde",
  "serde_json",
  "snap",

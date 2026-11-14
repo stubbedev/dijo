@@ -2118,6 +2118,38 @@ fn flash_movies_are_read_for_their_text() {
     );
 }
 
+/// `harbour.parquet` was written by `dijo-small/tests/fixtures/parquet/harbour.py log` with
+/// pyarrow 24.0.0: two row groups of a berth log, of strings, numbers, a date, a timestamp, a
+/// boolean, a decimal and a list, with nulls.
+#[test]
+fn parquet_files_are_read_for_their_rows() {
+    let objects = json_objects(&[&document("harbour.parquet")]);
+    assert_matches_schema(&objects[0]);
+    assert_eq!(objects[0]["mime_type"], "application/x-parquet");
+    let text = objects[0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(
+            "berth\tvessel\tflag\tskipper\tremarks\tcargo\tlength_m\ttonnage\tarrived\t\
+             moored_at\tpaid\tfee\tcrew.list.element\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "4\tSkagerrak\tDK\t\u{c5}se Lund\twaiting for the pilot\ttimber, pine\t48.0\t1650\t\
+             1999-12-31\t1999-12-31T23:59:59Z\ttrue\t1234567.89\t\u{c5}se Karl Nils\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "2\tHav\u{f8}rn\tNO\t\t\therring, smoked\t14.25\t45\t2024-03-02\t\
+             2024-03-02T18:05:12.250Z\tfalse\t75.50\t"
+        ),
+        "{text}"
+    );
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

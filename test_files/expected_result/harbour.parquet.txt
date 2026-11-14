@@ -1,0 +1,15 @@
+	berth	vessel	flag	skipper	remarks	cargo	length_m	tonnage	arrived	moored_at	paid	fee	crew.list.element
+
+	1	Ellen Marie	DK	Jens Holm	fenders split	herring, salted	21.5	120	2024-03-01	2024-03-01T06:30:00Z	true	150.00	Jens Ole
+
+	2	Havørn	NO			herring, smoked	14.25	45	2024-03-02	2024-03-02T18:05:12.250Z	false	75.50	
+
+	3	Ellen Marie		Jens Holm	lines doubled at high water	timber	21.5	118	2024-03-02			-0.05	
+
+	4	Skagerrak	DK	Åse Lund	waiting for the pilot	timber, pine	48.0	1650	1999-12-31	1999-12-31T23:59:59Z	true	1234567.89	Åse Karl Nils
+
+	5	Havørn	NO		left before dawn	coal	14.25	46		2024-03-05T04:00:00Z	true		Ida
+
+	6	Nordlys	SE	Pia Berg	arrived under sail	coal and coke	1.0E-5	-3	2024-03-09	2024-03-09T12:00:00Z	false	0.00	Pia
+
+

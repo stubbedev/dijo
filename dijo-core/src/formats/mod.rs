@@ -90,6 +90,7 @@ pub(crate) use dijo_small::formats::ms_owner;
 pub(crate) use dijo_small::formats::notebook;
 pub(crate) use dijo_small::formats::onenote;
 pub(crate) use dijo_small::formats::open_pgp;
+pub(crate) use dijo_small::formats::parquet;
 pub(crate) use dijo_small::formats::plist;
 pub(crate) use dijo_small::formats::prt;
 pub(crate) use dijo_small::formats::sas;
@@ -213,6 +214,7 @@ static PARSERS: &[&dyn Parser] = &[
     &odf::FlatOpenDocumentParser,
     &onenote::OneNoteParser,
     &open_pgp::OpenPgpParser,
+    &parquet::ParquetParser,
     &pdf::PdfParser,
     &plist::PListParser,
     &postscript::PostScriptParser,
