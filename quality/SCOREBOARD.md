@@ -272,7 +272,7 @@
 | hungarian-iso-8859-2.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | bosnian-cp1250.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | serbian-latin-cp1250.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| romanian-iso-8859-16.txt | legacy-encoding | 0.032 | 0.211 | 0.789 | 0.211 | 0.286 |
+| romanian-iso-8859-16.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | bulgarian-cp1251.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | ukrainian-cp1251.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | ukrainian-koi8-u.txt | legacy-encoding | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

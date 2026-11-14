@@ -440,6 +440,33 @@ pub mod tests {
         }
     }
 
+    /// How many reference inputs the port detects, unlike Tika, as the ISO-8859-16 that
+    /// Mojibuster ranks first rather than as a charset whose decoding differs from it only in
+    /// writing ş, ţ, Ş and Ţ with a cedilla where ISO-8859-16 writes Romanian's ș, ț, Ș and Ț
+    /// with a comma below: [`keeps_comma_below`] tells them apart, and every other input must
+    /// be detected exactly as Tika does.
+    #[cfg(test)]
+    const COMMA_BELOW_OVER_CEDILLA: usize = 5;
+
+    /// Whether the port detects `input` as ISO-8859-16 where Tika detects `tika`, which decodes
+    /// it differently only in the cedilla or comma below on s and t.
+    #[cfg(test)]
+    fn keeps_comma_below(input: &[u8], tika: &str, port: &Detection) -> bool {
+        if port.charset.name() != "ISO-8859-16" {
+            return false;
+        }
+        let decode = |charset: Charset| mojibuster::superset(charset).decode(input);
+        match (
+            decode(port.charset),
+            Charset::for_name(tika).and_then(decode),
+        ) {
+            (Some(ours), Some(theirs)) => {
+                ours != theirs && junk_filter::same_but_for_comma_below(&ours, &theirs)
+            }
+            _ => false,
+        }
+    }
+
     #[test]
     fn detects_as_tika_does() {
         let mut reference = String::new();
@@ -449,6 +476,7 @@ pub mod tests {
         let mut count = 0;
         let mut mojibuster_mismatches = Vec::new();
         let mut detection_mismatches = Vec::new();
+        let mut comma_below_over_cedilla = 0;
         for line in reference.lines() {
             let fields: Vec<&str> = line.split('\t').collect();
             let input = base64(fields[0]);
@@ -480,7 +508,9 @@ pub mod tests {
                 detection.detector.tika_name(),
             );
             let expected = (fields[2], fields[3], fields[4]);
-            if actual != expected {
+            if actual != expected && keeps_comma_below(&input, fields[3], &detection) {
+                comma_below_over_cedilla += 1;
+            } else if actual != expected {
                 detection_mismatches.push(format!(
                     "{content_type} {:?}: Tika {expected:?}, port {actual:?}",
                     String::from_utf8_lossy(&input[..input.len().min(60)])
@@ -505,6 +535,10 @@ pub mod tests {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join("\n")
+        );
+        assert_eq!(
+            comma_below_over_cedilla, COMMA_BELOW_OVER_CEDILLA,
+            "inputs detected as ISO-8859-16 where Tika's charset differs only in s and t with a cedilla"
         );
     }
 }

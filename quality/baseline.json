@@ -1848,11 +1848,11 @@
     "reading_order": 1.0
   },
   "romanian-iso-8859-16.txt": {
-    "character_error_rate": 0.03155680224403927,
-    "token_error_rate": 0.21052631578947367,
-    "recall": 0.7894736842105263,
-    "spurious": 0.21052631578947367,
-    "reading_order": 0.2857142857142857
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
   },
   "romanian-scan.png": {
     "character_error_rate": 0.0,

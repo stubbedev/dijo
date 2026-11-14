@@ -5,7 +5,8 @@
 //! contradicts it; a Chinese, Japanese or Korean pick yields to a Western one its letters read
 //! clearly better in; an IBM or Mac pick yields to windows-1252 when that decodes clearly more
 //! cased letters; and a declaration wins outright when the statistics had nothing confident to
-//! say.
+//! say. Unlike Tika, decodings that differ only in a cedilla or comma below on s or t score as
+//! one, so that Romanian text keeps the charset the detectors ranked first.
 
 use super::jdk::Charset;
 use super::mojibuster::{cased_high_letters, high_bytes, superset, WINDOWS_1252};
@@ -160,7 +161,7 @@ pub(super) fn arbitrate(reports: &[Report], probe: &[u8]) -> Arbitration {
             champion = Some(*charset);
         }
     }
-    let mut champion = champion.unwrap_or(candidates[0].0);
+    let mut champion = first_alike(&candidates, champion.unwrap_or(candidates[0].0));
 
     if is_cjk(champion) {
         let mut best_cjk = f64::NEG_INFINITY;
@@ -207,6 +208,38 @@ fn memoized<'a>(memo: &mut Vec<(&'a str, f64)>, text: &'a str, score: impl Fn(&s
     let computed = score(text);
     memo.push((text, computed));
     computed
+}
+
+/// The first candidate whose decoding reads as `champion`'s does, treating ş and ș, ţ and ț and
+/// their capitals as one letter: Romanian writes them either way, the junk model cannot tell
+/// which is right, and the earlier candidate is the one the detectors ranked higher.
+fn first_alike(candidates: &[(Charset, String)], champion: Charset) -> Charset {
+    let Some(position) = candidates
+        .iter()
+        .position(|(charset, _)| *charset == champion)
+    else {
+        return champion;
+    };
+    let text = &candidates[position].1;
+    candidates[..position]
+        .iter()
+        .find(|(_, other)| same_but_for_comma_below(other, text))
+        .map_or(champion, |(charset, _)| *charset)
+}
+
+pub(super) fn same_but_for_comma_below(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.chars().map(comma_below).eq(b.chars().map(comma_below))
+}
+
+/// The letter with a comma below that a letter with a cedilla may stand for.
+fn comma_below(c: char) -> char {
+    match c {
+        '\u{15E}' => '\u{218}',
+        '\u{15F}' => '\u{219}',
+        '\u{162}' => '\u{21A}',
+        '\u{163}' => '\u{21B}',
+        _ => c,
+    }
 }
 
 fn unique_charsets(reports: &[Report]) -> Vec<Charset> {
