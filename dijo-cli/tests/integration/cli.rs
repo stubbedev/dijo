@@ -2057,6 +2057,39 @@ fn lotus_notes_databases_are_read_for_their_documents() {
     assert_eq!(embedded_paths(&objects), ["<root>", "tide.txt"]);
 }
 
+/// `lighthouse.dmg` is written by dijo-mail/tests/fixtures/apple_disk_image/lighthouse.py: an
+/// HFS Plus volume in a GPT-laid UDIF image of zlib, stored, bzip2, ADC and ignored chunks.
+#[test]
+fn apple_disk_images_are_read_as_archives() {
+    let objects = json_objects(&["--embedded", "separate", &document("lighthouse.dmg")]);
+    for object in &objects {
+        assert_matches_schema(object);
+    }
+    assert_eq!(objects[0]["mime_type"], "application/x-apple-diskimage");
+    assert_eq!(objects[0]["metadata"]["title"], "Lighthouse");
+    assert_eq!(
+        objects[0]["raw_metadata"]["dmg:symbolic-link"][0],
+        "latest.txt -> ReadMe.txt"
+    );
+    assert_eq!(
+        embedded_paths(&objects),
+        [
+            "<root>",
+            "ReadMe.txt",
+            "shared.txt",
+            "charts/soundings.bin",
+            "logbook/Café visits.txt",
+            "logbook/maintenance notes.txt",
+            "logbook/shared again.txt",
+            "logbook/1890s/Første storm.txt",
+        ]
+    );
+    assert_eq!(
+        objects[7]["text"],
+        "Storm from the north-west; the lamp burned until dawn.\n"
+    );
+}
+
 /// `cabinet.cab` was written by `dijo-mail/tests/fixtures/cab/cabinet.py`: the first cabinet of
 /// a set, of a stored, an MSZIP, an LZX, a Quantum and a stored folder the next cabinet goes on.
 #[test]

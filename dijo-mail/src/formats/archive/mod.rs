@@ -5,8 +5,11 @@
 //! `RarParser` ([`rar`]); and ISO 9660 disc images and Microsoft Cabinet archives, which Tika
 //! does not read, with `Iso9660Parser` ([`iso9660`]) and `CabParser` ([`cab`]).
 //!
-//! RPM packages, which Tika does not read either, are read with `RpmParser` ([`rpm`]).
+//! RPM packages, which Tika does not read either, are read with `RpmParser` ([`rpm`]), and
+//! Apple disk images, which it detects but does not read, with `AppleDiskImageParser`
+//! ([`apple_disk_image`]).
 
+mod apple_disk_image;
 mod cab;
 mod compressor;
 mod iso9660;
@@ -18,6 +21,7 @@ mod rpm;
 mod seven_z;
 mod zip;
 
+pub use apple_disk_image::AppleDiskImageParser;
 pub use cab::CabParser;
 pub use compressor::CompressorParser;
 pub use iso9660::Iso9660Parser;

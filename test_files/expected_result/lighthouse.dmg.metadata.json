@@ -1,0 +1,20 @@
+{
+    "Content-Type": [
+        "application/x-apple-diskimage"
+    ],
+    "tk:parsed-by": [
+        "dijo::AppleDiskImageParser"
+    ],
+    "dc:title": [
+        "Lighthouse"
+    ],
+    "dcterms:created": [
+        "2026-11-14T12:00:00Z"
+    ],
+    "dcterms:modified": [
+        "2026-11-14T12:00:00Z"
+    ],
+    "dmg:symbolic-link": [
+        "latest.txt -> ReadMe.txt"
+    ]
+}

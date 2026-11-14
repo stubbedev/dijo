@@ -333,6 +333,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "application/x-activemime",
         "org.apache.tika.parser.microsoft.activemime.ActiveMimeParser",
     ),
+    ("application/x-apple-diskimage", "dijo::AppleDiskImageParser"),
     (
         "application/x-archive",
         "org.apache.tika.parser.pkg.PackageParser",

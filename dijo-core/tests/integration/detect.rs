@@ -27,6 +27,7 @@ use test_case::test_case;
 #[test_case("gazette.sla", "application/vnd.scribus")]
 #[test_case("lighthouse.torrent", "application/x-bittorrent")]
 #[test_case("lighthouse.dvi", "application/x-dvi")]
+#[test_case("lighthouse.dmg", "application/x-apple-diskimage")]
 #[test_case("lotus-notes-stocks.nsf", "application/vnd.lotus-notes")]
 #[test_case("pier.dxf", "image/vnd.dxf; format=ascii")]
 #[test_case("pier-binary.dxf", "image/vnd.dxf; format=binary")]

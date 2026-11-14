@@ -1,0 +1,48 @@
+ReadMe.txt
+
+The Lighthouse Keeper
+
+Every evening at dusk the keeper climbed the tower and lit the lamp.
+
+
+
+
+shared.txt
+
+This entry is shared by two names through a hard link.
+
+
+
+
+charts/soundings.bin
+
+
+
+
+logbook/Café visits.txt
+
+Visitors took coffee in the keeper's café on Sundays.
+
+
+
+
+logbook/maintenance notes.txt
+
+Oil the lamp weekly and trim the wick each night.
+
+
+
+
+logbook/shared again.txt
+
+This entry is shared by two names through a hard link.
+
+
+
+
+logbook/1890s/Første storm.txt
+
+Storm from the north-west; the lamp burned until dawn.
+
+
+

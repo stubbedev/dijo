@@ -127,6 +127,7 @@ const CHUNKS_AHEAD: usize = 16;
 static PARSERS: &[&dyn Parser] = &[
     &abiword::AbiWordParser,
     &access::JackcessParser,
+    &archive::AppleDiskImageParser,
     &archive::CabParser,
     &archive::CompressorParser,
     &archive::Iso9660Parser,

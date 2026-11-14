@@ -867,6 +867,7 @@ name = "dijo-mail"
 version = "0.2.14"
 dependencies = [
  "ar",
+ "bzip2",
  "cpio",
  "dijo-base",
  "dijo-core",
@@ -878,6 +879,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "tar",
+ "unicode-normalization",
  "zip",
 ]
 

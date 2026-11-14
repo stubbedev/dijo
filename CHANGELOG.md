@@ -77,6 +77,11 @@
   header and footer sections in their own `div`s. The `<metadata>` is the document's Dublin Core, keywords and
   generator, its dates ISO local date-times (AbiWord saves them without a time zone); each `<data>` item is handed on
   as an embedded document. Gzip-compressed `.zabw` files are read through the gzip parser.
+* Apple disk images (`.dmg`) are read as archives (#355), where Tika reads nothing of them: their UDIF block map and
+  its zlib, bzip2, ADC and LZFSE chunks are decoded on demand, and each file of each HFS Plus or HFSX volume becomes
+  an embedded document with its path, size and dates, fragmented files read through the extents overflow file, hard
+  links read as their files and symbolic links listed in `dmg:symbolic-link`. Raw images are read through their GUID
+  or Apple partition map. APFS, HFS, sparse and encrypted images, and LZMA chunks, are reported as not read.
 * Lotus Notes databases (`.nsf`) are read (#356), where Tika reads nothing of them: the title and ODS version, and
   the data notes' text, text lists, numbers, times, number and time ranges and rich text (paragraphs, line breaks,
   tables), with file attachments as embedded documents. What no documentation describes (LZ1- or Huffman-compressed
