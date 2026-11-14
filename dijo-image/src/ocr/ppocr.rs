@@ -9,6 +9,7 @@ use rten_tensor::NdTensor;
 use super::flatten::{warp, Point};
 use super::prepare::resized;
 use super::tesseract::{Area, OcrError, Reading};
+use crate::unicode::{is_letter, is_mark};
 use crate::{bundle, memory};
 
 const DETECTOR: &str = "det";
@@ -41,6 +42,16 @@ const MIN_SLANT_ELONGATION: f64 = 3.0;
 const LINE_HEIGHT: u32 = 48;
 const MIN_LINE_WIDTH: u32 = 320;
 const MIN_LINE_CONFIDENCE: f32 = 0.5;
+/// The score from which a recognizer is sure of a character, and its other likely labels are not
+/// kept to try against the word list.
+const MIN_SURE_SCORE: f32 = 0.9;
+/// How likely another label of a character must be, as a share of the score of the label read,
+/// to be tried against the word list: a tenth, so that a word list never turns a character the
+/// recognizer all but ruled out into one that makes a word.
+const MIN_OTHER_SHARE: f32 = 0.1;
+/// The most characters of a word tried as their other likely labels, so that a word takes at most
+/// fifteen lookups.
+const MAX_UNSURE: usize = 4;
 /// How many times taller than wide a line's area must be to run down the page, as PaddleOCR turns
 /// the areas at least 1.5 times as tall as they are wide: as a ratio of height to width.
 const MIN_VERTICAL_ASPECT: (i32, i32) = (3, 2);
@@ -269,7 +280,7 @@ impl PpOcr {
         model: LineModel,
         lines: &Lines,
         blocks: &[Area],
-    ) -> Result<Reading, OcrError> {
+    ) -> Result<Reread<'_>, OcrError> {
         let reader = self.line_reader(model)?;
         let mut read = Vec::with_capacity(lines.lines.len());
         let (mut characters, mut confident) = (0f32, 0f32);
@@ -279,29 +290,26 @@ impl PpOcr {
                 true => image::imageops::rotate270(&cropped),
                 false => cropped,
             };
-            let (text, confidence) = reader.read(&cropped, model)?;
+            let glyphs = reader.read(&cropped, model)?;
+            let text = spelled(&glyphs, &reader.labels);
+            let confidence = confidence(&glyphs);
             let length = text.chars().count() as f32;
             characters += length;
             confident += length * confidence;
             if confidence >= MIN_LINE_CONFIDENCE && !text.trim().is_empty() {
-                read.push((line.area, text));
+                read.push((line.area, glyphs));
             }
         }
         let confidence = match characters > 0.0 {
             true => (confident / characters * 100.0).round() as i32,
             false => 0,
         };
-        let text = match lines.vertical {
-            true => in_columns(read.iter().map(|(_, text)| text.trim())),
-            false => {
-                let areas: Vec<Area> = read.iter().map(|&(line, _)| line).collect();
-                in_blocks(&areas, blocks, |index| read[index].1.trim())
-            }
-        };
-        Ok(Reading {
-            text,
+        Ok(Reread {
+            labels: &reader.labels,
+            lines: read,
+            blocks: blocks.to_vec(),
+            vertical: lines.vertical,
             confidence,
-            blocks: Vec::new(),
         })
     }
 
@@ -342,7 +350,7 @@ impl PpOcr {
 }
 
 impl LineReader {
-    fn read(&self, line: &GrayImage, model: LineModel) -> Result<(String, f32), OcrError> {
+    fn read(&self, line: &GrayImage, model: LineModel) -> Result<Vec<Glyph>, OcrError> {
         let (width, height) = line.dimensions();
         let scaled_width =
             ((f64::from(width) * f64::from(LINE_HEIGHT) / f64::from(height)).ceil() as u32).max(1);
@@ -380,7 +388,7 @@ impl LineReader {
             ));
         }
         let scores = probabilities.to_vec();
-        Ok(decoded(&scores[..steps * classes], classes, &self.labels))
+        Ok(decoded(&scores[..steps * classes], classes))
     }
 }
 
@@ -410,10 +418,56 @@ fn label(item: &str) -> Option<String> {
     (!character.is_empty()).then_some(character)
 }
 
-fn decoded(scores: &[f32], classes: usize, labels: &[String]) -> (String, f32) {
-    let mut text = String::new();
-    let mut confidences = 0f32;
-    let mut emitted = 0u32;
+/// What a recognizer read in the lines of an image: each line's characters, and where it was
+/// unsure of one, the likeliest other label, for a word list to choose between.
+pub(crate) struct Reread<'r> {
+    labels: &'r [String],
+    lines: Vec<(Area, Vec<Glyph>)>,
+    blocks: Vec<Area>,
+    vertical: bool,
+    confidence: i32,
+}
+
+impl Reread<'_> {
+    /// The text of the likeliest label of every character.
+    pub(crate) fn reading(&self) -> Reading {
+        self.reading_by(|glyphs| spelled(glyphs, self.labels))
+    }
+
+    /// The text with each word that `is_word` does not hold as read made the likeliest word it
+    /// holds with some of its unsure characters read as their other likely labels.
+    pub(crate) fn reading_in(&self, is_word: &dyn Fn(&str) -> bool) -> Reading {
+        self.reading_by(|glyphs| worded(glyphs, self.labels, is_word))
+    }
+
+    fn reading_by(&self, spell: impl Fn(&[Glyph]) -> String) -> Reading {
+        let texts: Vec<String> = self.lines.iter().map(|(_, glyphs)| spell(glyphs)).collect();
+        let text = match self.vertical {
+            true => in_columns(texts.iter().map(|text| text.trim())),
+            false => {
+                let areas: Vec<Area> = self.lines.iter().map(|&(area, _)| area).collect();
+                in_blocks(&areas, &self.blocks, |index| texts[index].trim())
+            }
+        };
+        Reading {
+            text,
+            confidence: self.confidence,
+            blocks: Vec::new(),
+        }
+    }
+}
+
+/// A character a recognizer read: its label, the score it gave it, and, when that score is below
+/// [`MIN_SURE_SCORE`], the likeliest other label but the blank and its score.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Glyph {
+    label: usize,
+    score: f32,
+    other: Option<(usize, f32)>,
+}
+
+fn decoded(scores: &[f32], classes: usize) -> Vec<Glyph> {
+    let mut glyphs: Vec<Glyph> = Vec::new();
     let mut previous = 0;
     for step in scores.chunks_exact(classes) {
         let (best, &score) = step
@@ -422,16 +476,114 @@ fn decoded(scores: &[f32], classes: usize, labels: &[String]) -> (String, f32) {
             .max_by(|(_, a), (_, b)| a.total_cmp(b))
             .expect("a step scores every class");
         if best != 0 && best != previous {
-            text.push_str(&labels[best]);
-            confidences += score;
-            emitted += 1;
+            glyphs.push(Glyph {
+                label: best,
+                score,
+                other: None,
+            });
         }
         previous = best;
+        if best == 0 || score >= MIN_SURE_SCORE {
+            continue;
+        }
+        let Some(glyph) = glyphs.last_mut() else {
+            continue;
+        };
+        let runner_up = step
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|&(label, _)| label != best)
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(label, &score)| (label, score));
+        if runner_up.is_some_and(|(_, score)| glyph.other.is_none_or(|(_, kept)| score > kept)) {
+            glyph.other = runner_up;
+        }
     }
-    match emitted {
-        0 => (text, 0.0),
-        _ => (text, confidences / emitted as f32),
+    glyphs
+}
+
+fn spelled(glyphs: &[Glyph], labels: &[String]) -> String {
+    glyphs
+        .iter()
+        .map(|glyph| labels[glyph.label].as_str())
+        .collect()
+}
+
+fn confidence(glyphs: &[Glyph]) -> f32 {
+    match glyphs.len() {
+        0 => 0.0,
+        emitted => glyphs.iter().map(|glyph| glyph.score).sum::<f32>() / emitted as f32,
     }
+}
+
+/// The text of a line with each of its words that `is_word` does not hold as read, but holds with
+/// some of its [`MAX_UNSURE`] least sure characters read as other labels at least
+/// [`MIN_OTHER_SHARE`] as likely, written as the likeliest such word: the one whose changed
+/// characters' other labels were scored highest against what was read.
+fn worded(glyphs: &[Glyph], labels: &[String], is_word: &dyn Fn(&str) -> bool) -> String {
+    let in_word = |label: usize| labels[label].chars().all(|c| is_letter(c) || is_mark(c));
+    let mut text = String::new();
+    let mut rest = glyphs;
+    while let Some(first) = rest.first() {
+        let length = match in_word(first.label) {
+            true => rest
+                .iter()
+                .position(|glyph| !in_word(glyph.label))
+                .unwrap_or(rest.len()),
+            false => 1,
+        };
+        let (word, after) = rest.split_at(length);
+        rest = after;
+        let read = spelled(word, labels);
+        if !in_word(first.label) {
+            text.push_str(&read);
+            continue;
+        }
+        let mut unsure: Vec<(usize, usize, f32)> = word
+            .iter()
+            .enumerate()
+            .filter_map(|(at, glyph)| {
+                let (label, score) = glyph.other.filter(|&(label, score)| {
+                    in_word(label) && score >= MIN_OTHER_SHARE * glyph.score
+                })?;
+                Some((at, label, score.ln() - glyph.score.ln()))
+            })
+            .collect();
+        if unsure.is_empty() || is_word(&read) {
+            text.push_str(&read);
+            continue;
+        }
+        unsure.sort_by(|a, b| b.2.total_cmp(&a.2));
+        unsure.truncate(MAX_UNSURE);
+        let mut choices: Vec<(f32, u32)> = (1..1u32 << unsure.len())
+            .map(|chosen| {
+                let likelihood = unsure
+                    .iter()
+                    .enumerate()
+                    .filter(|&(bit, _)| chosen >> bit & 1 == 1)
+                    .map(|(_, &(_, _, odds))| odds)
+                    .sum();
+                (likelihood, chosen)
+            })
+            .collect();
+        choices.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let found = choices.into_iter().find_map(|(_, chosen)| {
+            let mut labelled: Vec<usize> = word.iter().map(|glyph| glyph.label).collect();
+            for (bit, &(at, label, _)) in unsure.iter().enumerate() {
+                if chosen >> bit & 1 == 1 {
+                    labelled[at] = label;
+                }
+            }
+            let candidate: String = labelled
+                .iter()
+                .map(|&label| labels[label].as_str())
+                .collect();
+            is_word(&candidate).then_some(candidate)
+        });
+        text.push_str(found.as_deref().unwrap_or(&read));
+    }
+    text
 }
 
 fn detection_size(width: u32, height: u32) -> (u32, u32) {
@@ -787,9 +939,72 @@ mod tests {
             0.1, 0.1, 0.1, 0.7, //
             0.2, 0.1, 0.6, 0.1,
         ];
-        let (text, confidence) = decoded(&scores, 4, &labels);
-        assert_eq!(text, "aa b");
-        assert!((confidence - 0.7).abs() < 1e-6, "{confidence}");
+        let glyphs = decoded(&scores, 4);
+        assert_eq!(spelled(&glyphs, &labels), "aa b");
+        assert!((confidence(&glyphs) - 0.7).abs() < 1e-6);
+        assert_eq!(glyphs[0].other, Some((2, 0.06)));
+        assert_eq!(glyphs[3].other, Some((3, 0.1)));
+    }
+
+    #[test]
+    fn keeps_no_other_label_of_a_character_it_is_sure_of() {
+        let scores = [0.02, 0.95, 0.03, 0.0];
+        assert_eq!(decoded(&scores, 4)[0].other, None);
+    }
+
+    fn glyph(label: usize, score: f32, other: Option<(usize, f32)>) -> Glyph {
+        Glyph {
+            label,
+            score,
+            other,
+        }
+    }
+
+    #[test]
+    fn reads_an_unknown_word_as_the_likeliest_known_one_its_unsure_characters_spell() {
+        let labels: Vec<String> = ["", "c", "a", "f", "s", "e", ",", " "]
+            .map(str::to_owned)
+            .to_vec();
+        let words = ["casa", "case"];
+        let is_word = |word: &str| words.contains(&word);
+        let read = [
+            glyph(1, 0.99, None),
+            glyph(2, 0.99, None),
+            glyph(3, 0.6, Some((4, 0.35))),
+            glyph(5, 0.5, Some((2, 0.45))),
+            glyph(6, 0.99, None),
+            glyph(7, 0.99, None),
+            glyph(3, 0.7, Some((4, 0.25))),
+            glyph(5, 0.99, None),
+        ];
+        assert_eq!(worded(&read, &labels, &is_word), "case, fe");
+        assert_eq!(spelled(&read, &labels), "cafe, fe");
+    }
+
+    #[test]
+    fn keeps_a_known_word_and_one_no_unsure_character_makes_known() {
+        let labels: Vec<String> = ["", "c", "a", "f", "e", "x"].map(str::to_owned).to_vec();
+        let is_word = |word: &str| ["cafe"].contains(&word);
+        let known = [
+            glyph(1, 0.99, None),
+            glyph(2, 0.99, None),
+            glyph(3, 0.6, Some((5, 0.35))),
+            glyph(4, 0.99, None),
+        ];
+        assert_eq!(worded(&known, &labels, &is_word), "cafe");
+        let unknown = [
+            glyph(1, 0.6, Some((4, 0.3))),
+            glyph(3, 0.99, None),
+            glyph(4, 0.99, None),
+        ];
+        assert_eq!(worded(&unknown, &labels, &is_word), "cfe");
+        let ruled_out = [
+            glyph(1, 0.99, None),
+            glyph(2, 0.99, None),
+            glyph(5, 0.8, Some((3, 0.07))),
+            glyph(4, 0.99, None),
+        ];
+        assert_eq!(worded(&ruled_out, &labels, &is_word), "caxe");
     }
 
     #[test]

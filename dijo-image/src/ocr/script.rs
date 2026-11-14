@@ -207,6 +207,12 @@ pub(crate) fn language(installed: &BTreeSet<String>, script: Option<&str>) -> St
         .unwrap_or_else(|| DEFAULT_LANGUAGE.to_owned())
 }
 
+/// Whether a model is a script's, read with for every language written in it, rather than a
+/// language's.
+pub(crate) fn is_script_model(model: &str) -> bool {
+    model.starts_with(SCRIPT_MODEL_PREFIX)
+}
+
 /// The installed model for a script: the script model, then the script's most common language,
 /// or none when neither is installed.
 pub(crate) fn installed_language(installed: &BTreeSet<String>, script: &str) -> Option<String> {

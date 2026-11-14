@@ -38,8 +38,8 @@ use super::ppocr::{ppocr, LineModel, Lines};
 use super::prepare::{self, Orientation};
 use super::report::Report;
 use super::script::{
-    holds, installed_language, kin, language, language_model, tagged_language, vertical_script,
-    written_in, BLACKLETTER_SCRIPT,
+    holds, installed_language, is_script_model, kin, language, language_model, tagged_language,
+    vertical_script, written_in, BLACKLETTER_SCRIPT,
 };
 use super::slots;
 use super::tesseract::{
@@ -970,7 +970,9 @@ impl<'t> Recognizer<'t> {
         if !lines.vertical() {
             return Ok(best);
         }
-        let reading = ppocr().read(&made.bitmap.gray(), LineModel::VERTICAL, lines, &[])?;
+        let reading = ppocr()
+            .read(&made.bitmap.gray(), LineModel::VERTICAL, lines, &[])?
+            .reading();
         let script = vertical_script(&reading.text);
         let vertical = Attempt {
             prepared: best
@@ -1344,6 +1346,12 @@ impl<'t> Recognizer<'t> {
         let lines = self.lines(made)?;
         let blocks: Vec<Area> = reading.blocks.iter().map(|block| block.area).collect();
         let reread = ppocr().read(&made.bitmap.gray(), model, lines, &blocks)?;
+        let reread = match is_script_model(dictionary) {
+            true => reread.reading(),
+            false => self.tesseract.with_dictionary(dictionary, |is_word| {
+                reread.reading_in(&|word| is_word(&corrected(word)))
+            })?,
+        };
         let again = Attempt {
             prepared: read.prepared.clone(),
             reading: Some(Reading {
