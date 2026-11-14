@@ -90,10 +90,12 @@ impl Parser for ChmParser {
         let extractor = Extractor::new(input, pages)
             .map_err(|thrown| Decline::Fails(Error::ParseError(thrown.reason().to_owned())))?;
         let mut difference = None;
-        for page in extractor.pages() {
-            let Ok((name, data)) = page else {
+        let mut data = Vec::new();
+        for entry in extractor.pages() {
+            if extractor.extract(entry, &mut data).is_err() {
                 break;
-            };
+            }
+            let name = &entry.name;
             let read_otherwise = decision(html::prepare(&data, &TikaMetadata::new()))
                 .map_err(|reason| {
                     Decline::Unread(format!("the page {name} is not read: {reason}"))
@@ -104,10 +106,11 @@ impl Parser for ChmParser {
         unless_different(
             Box::new(move |xhtml| {
                 xhtml.metadata_mut().set("Content-Type", MEDIA_TYPE);
-                for page in extractor.pages() {
-                    let (name, data) = page.map_err(|thrown| {
+                for entry in extractor.pages() {
+                    extractor.extract(entry, &mut data).map_err(|thrown| {
                         Failure::Malformed(format!("TikaException: {}", thrown.reason()))
                     })?;
+                    let name = &entry.name;
                     let prepared =
                         reading(html::prepare(&data, &TikaMetadata::new())).map_err(|reason| {
                             Failure::Malformed(format!(
@@ -139,13 +142,15 @@ struct Extractor<'a> {
 }
 
 /// The decoder of the reset interval decoded last, and the frames it decoded, from the block of
-/// its reset point on: a page in another interval is decoded again from that interval's reset
-/// point, by the same decoder reset, so that only one interval's frames are held, however long
-/// the content.
+/// its reset point on, one after another in one buffer: a page in another interval is decoded
+/// again from that interval's reset point, by the same decoder reset into the same buffer, so
+/// that only one interval's frames are held, however long the content.
 struct Frames {
     decoder: Option<Lzx>,
     reset: usize,
-    decoded: Vec<Vec<u8>>,
+    /// Where each frame decoded starts in `decoded`.
+    starts: Vec<usize>,
+    decoded: Vec<u8>,
 }
 
 impl<'a> Extractor<'a> {
@@ -201,53 +206,50 @@ impl<'a> Extractor<'a> {
             frames: RefCell::new(Frames {
                 decoder: None,
                 reset: 0,
+                starts: Vec::new(),
                 decoded: Vec::new(),
             }),
         })
     }
 
-    /// The pages of the directory listing, the entries whose names end in `.html` or `.htm`,
-    /// each by its name and data, in the listing's order, up to the first that cannot be
-    /// extracted, whose failure ends them.
-    fn pages(&self) -> impl Iterator<Item = Result<(&str, Vec<u8>), Thrown>> + '_ {
-        let mut failed = false;
+    /// The pages of the directory listing, the entries whose names end in `.html` or `.htm`, in
+    /// the listing's order.
+    fn pages(&self) -> impl Iterator<Item = &Entry> + '_ {
         self.listing
             .entries
             .iter()
             .filter(|entry| entry.name.ends_with(".html") || entry.name.ends_with(".htm"))
-            .map_while(move |entry| {
-                if failed {
-                    return None;
-                }
-                let page = self.extract(entry).map(|data| (entry.name.as_str(), data));
-                failed = page.is_err();
-                Some(page)
-            })
     }
 
     /// `extractChmEntry`: the data of an entry, stored or decompressed, which must come to the
-    /// entry's length; none for a system entry or an empty stored one.
-    fn extract(&self, entry: &Entry) -> Result<Vec<u8>, Thrown> {
+    /// entry's length, in place of what `data` held; none for a system entry or an empty stored
+    /// one.
+    fn extract(&self, entry: &Entry, data: &mut Vec<u8>) -> Result<(), Thrown> {
+        data.clear();
         if entry.is_skipped() {
-            return Ok(Vec::new());
+            return Ok(());
         }
         match entry.kind {
             EntryType::Uncompressed if entry.length > 0 => {
                 let offset = (self.itsf.data_offset + i64::from(entry.offset)) as i32;
-                Ok(copy_of_range(self.data, offset, offset.wrapping_add(entry.length))?.to_vec())
+                data.extend_from_slice(copy_of_range(
+                    self.data,
+                    offset,
+                    offset.wrapping_add(entry.length),
+                )?);
+                Ok(())
             }
-            EntryType::Uncompressed => Ok(Vec::new()),
-            EntryType::Compressed => self.decompress(entry),
+            EntryType::Uncompressed => Ok(()),
+            EntryType::Compressed => self.decompress(entry, data),
         }
     }
 
-    fn decompress(&self, entry: &Entry) -> Result<Vec<u8>, Thrown> {
+    fn decompress(&self, entry: &Entry, data: &mut Vec<u8>) -> Result<(), Thrown> {
         let block_length = self.reset_table.block_length as i32;
         if block_length <= 0 {
             return Err(Thrown::Parsing("Please check you parameters".to_owned()));
         }
         let (content_offset, content_length) = self.content;
-        let mut out = Vec::new();
         if content_length < i64::from(i32::MAX) && content_offset < i64::from(i32::MAX) {
             let start = entry.offset;
             let end = entry.offset.wrapping_add(entry.length);
@@ -259,32 +261,28 @@ impl<'a> Extractor<'a> {
                 ));
             }
             for block in first..=last {
-                let frame = self.frame(block as usize)?;
                 let from = if block == first { first_offset } else { 0 } as usize;
-                let to = if block == last {
-                    last_offset as usize
-                } else {
-                    frame.len()
-                };
-                let piece = frame.get(from..to).ok_or_else(|| {
-                    Thrown::Runtime(format!(
-                        "the block {block} decodes to {} bytes, not {to}",
-                        frame.len()
-                    ))
-                })?;
-                out.extend_from_slice(piece);
+                let to = (block == last).then_some(last_offset as usize);
+                self.frame(block as usize, from, to, data)?;
             }
         }
-        if out.len() != entry.length as usize {
+        if data.len() != entry.length as usize {
             return Err(Thrown::Tika(
                 "CHM file extract error: extracted Length is wrong.".to_owned(),
             ));
         }
-        Ok(out)
+        Ok(())
     }
 
-    /// The decoded frame of `block`, decoded from the reset point before it as needed.
-    fn frame(&self, block: usize) -> Result<Vec<u8>, Thrown> {
+    /// Appends to `data` the bytes `from` up to `to`, or else to its end, of the decoded frame
+    /// of `block`, decoding the frames of its reset interval up to it as needed.
+    fn frame(
+        &self,
+        block: usize,
+        from: usize,
+        to: Option<usize>,
+        data: &mut Vec<u8>,
+    ) -> Result<(), Thrown> {
         if block >= self.reset_table.addresses.len() {
             return Err(Thrown::Runtime(format!(
                 "ArrayIndexOutOfBoundsException: the reset table has no block {block}"
@@ -296,6 +294,7 @@ impl<'a> Extractor<'a> {
         let Frames {
             decoder,
             reset: decoded_from,
+            starts,
             decoded,
         } = &mut *frames;
         if decoder.is_none() || *decoded_from != reset {
@@ -305,21 +304,34 @@ impl<'a> Extractor<'a> {
                 *decoder = Some(Lzx::new(self.window()?));
             }
             *decoded_from = reset;
+            starts.clear();
             decoded.clear();
         }
         let decoder = decoder.as_mut().expect("a decoder was set");
-        while reset + decoded.len() <= block {
-            let current = reset + decoded.len();
+        while reset + starts.len() <= block {
+            let current = reset + starts.len();
             let segment = self.segment(current)?;
             let length = self.frame_length(current);
             let frame = decoder
                 .decode_frame(segment, length)
-                .map_err(|error| Thrown::Tika(format!("LZX block {current}: {error}")))?
-                .to_vec();
+                .map_err(|error| Thrown::Tika(format!("LZX block {current}: {error}")))?;
             self.paging.read(segment.len());
-            decoded.push(frame);
+            starts.push(decoded.len());
+            decoded.extend_from_slice(frame);
         }
-        Ok(decoded[block - reset].clone())
+        let index = block - reset;
+        let frame_start = starts[index];
+        let frame_end = starts.get(index + 1).copied().unwrap_or(decoded.len());
+        let frame = &decoded[frame_start..frame_end];
+        let to = to.unwrap_or(frame.len());
+        let piece = frame.get(from..to).ok_or_else(|| {
+            Thrown::Runtime(format!(
+                "the block {block} decodes to {} bytes, not {to}",
+                frame.len()
+            ))
+        })?;
+        data.extend_from_slice(piece);
+        Ok(())
     }
 
     /// The uncompressed length of the frame of `block`: a whole block, but for the last.
