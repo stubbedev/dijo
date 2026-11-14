@@ -312,13 +312,14 @@ impl Pixels<'_> {
     }
 }
 
-/// What tesseract read in an image: its text as the text renderer writes it, and the mean
-/// confidence of its words from 0 to 100, as `MeanTextConf` takes it, 0 without words.
+/// What tesseract read in an image: its text as the text renderer writes it, the mean
+/// confidence of its words from 0 to 100, as `MeanTextConf` takes it, 0 without words, and the
+/// blocks of text it read, in the order their texts make up its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Reading {
     pub(crate) text: String,
     pub(crate) confidence: i32,
-    pub(crate) blocks: Vec<Area>,
+    pub(crate) blocks: Vec<Block>,
 }
 
 #[cfg(test)]
@@ -945,23 +946,25 @@ fn models_under(dir: &std::path::Path) -> Result<BTreeSet<String>, OcrError> {
 
 /// The text an engine recognized, and its words' mean confidence.
 unsafe fn text_of(api: &Api, handle: *mut BaseApi) -> Option<Reading> {
-    let blocks = blocks_of(api, handle)?;
-    let order = reading_order(&blocks);
+    let found = blocks_of(api, handle)?;
+    let order = reading_order(&found);
+    let mut found: Vec<Option<Block>> = found.into_iter().map(Some).collect();
+    let blocks: Vec<Block> = order
+        .into_iter()
+        .filter_map(|block| found[block].take())
+        .collect();
     Some(Reading {
-        text: order
-            .iter()
-            .map(|&block| blocks[block].text.as_str())
-            .collect(),
+        text: blocks.iter().map(|block| block.text.as_str()).collect(),
         confidence: (api.mean_text_conf)(handle),
-        blocks: order.iter().map(|&block| blocks[block].area).collect(),
+        blocks,
     })
 }
 
 /// A block of text an engine read: where it lies on the image, and its paragraphs' text.
-#[derive(Debug)]
-struct Block {
-    area: Area,
-    text: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Block {
+    pub(crate) area: Area,
+    pub(crate) text: String,
 }
 
 /// A rectangle on an image, in pixels from its top left corner, `right` and `bottom` exclusive.

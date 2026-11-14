@@ -257,6 +257,15 @@ pub(crate) fn holds(script_name: &str, letters: Script) -> bool {
     }
 }
 
+/// Whether two scripts, named as tesseract names them, share letters: Fraktur and Latin, or
+/// Japanese and Han, are read with each other's models where Arabic and Latin are not.
+pub(crate) fn kin(one: &str, other: &str) -> bool {
+    match LETTERS_BY_SCRIPT.iter().find(|(name, _)| *name == other) {
+        Some((_, letters)) => letters.iter().any(|&letters| holds(one, letters)),
+        None => Script::from_full_name(other).is_some_and(|letters| holds(one, letters)),
+    }
+}
+
 /// Whether most letters of a text are in a script, named as tesseract names it. A model for a
 /// script that detection overlooked reads a page in another script with the Latin letters its
 /// model also has, often with more confidence than a reading spoiled by noise, and without that
@@ -352,6 +361,27 @@ mod tests {
         assert!(holds("Cyrillic", Script::Cyrillic));
         assert!(!holds("Latin", Script::Cyrillic));
         assert!(!holds("Klingon", Script::Latin));
+    }
+
+    #[test]
+    fn tells_scripts_that_share_letters() {
+        for (one, other) in [
+            ("Latin", "Latin"),
+            ("Latin", BLACKLETTER_SCRIPT),
+            ("Japanese", "Han"),
+            ("Korean", "Hangul"),
+        ] {
+            assert!(kin(one, other), "{one} and {other}");
+            assert!(kin(other, one), "{other} and {one}");
+        }
+        for (one, other) in [
+            ("Latin", "Arabic"),
+            (BLACKLETTER_SCRIPT, "Cyrillic"),
+            ("Han", "Klingon"),
+        ] {
+            assert!(!kin(one, other), "{one} and {other}");
+            assert!(!kin(other, one), "{other} and {one}");
+        }
     }
 
     #[test]

@@ -16,7 +16,12 @@
 //! a script PP-OCRv5 reads but not in blackletter, the page is read again with PP-OCRv5 and the
 //! more confident reading kept. A page tesseract reads neither confidently nor in a language whose
 //! text lines run down it, as Chinese and Japanese set vertically do, is read with PP-OCRv5 column
-//! by column, and the more confident reading kept.
+//! by column, and the more confident reading kept. A page whose paper may be stained, first read
+//! neither confidently nor in a language, is read again with its background normalised and
+//! thresholded locally when a strip of it reads clearly more confidently so. With the automatic
+//! language, the blocks of a page read unconfidently that are not text in its language are read
+//! again line by line in the scripts detection finds in them, each run of lines in another script
+//! with its model, and such a page is not read again with PP-OCRv5.
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -33,12 +38,13 @@ use super::ppocr::{ppocr, LineModel, Lines};
 use super::prepare::{self, Orientation};
 use super::report::Report;
 use super::script::{
-    holds, installed_language, language, language_model, tagged_language, vertical_script,
+    holds, installed_language, kin, language, language_model, tagged_language, vertical_script,
     written_in, BLACKLETTER_SCRIPT,
 };
 use super::slots;
 use super::tesseract::{
-    Detection, Layouts, OcrError, PageSegMode, Pixels, Reading, Tesseract, Thresholding,
+    Area, Block, Detection, Layouts, OcrError, PageSegMode, Pixels, Reading, Tesseract,
+    Thresholding,
 };
 use super::text::{corrected, lexicality, with_long_s};
 use crate::config::TesseractOcrConfig;
@@ -64,6 +70,17 @@ const MIN_CONFIDENCE: i32 = 80;
 const MIN_TEXT_CONFIDENCE: i32 = 50;
 const MAX_REREAD_CONFIDENCE: i32 = 90;
 const MIN_UNWARPED_GAIN: i32 = 10;
+/// The lines of a block whose script detection judges, and whose reading in that script must be
+/// text in a language, before each of its lines has its script detected: a block of fewer lines,
+/// such as a heading, a caption or a fragment of a table, is left as it was read, since detection
+/// rarely judges a single line.
+const HEAD_LINES: usize = 2;
+/// The confidence by which the [`sample_strip`] of a page on [`prepare::stained`] paper, read with
+/// its background normalised and thresholded locally, must exceed the page's first reading for
+/// the page to be read so. A strip reads within 2 of its page prepared alike; a newspaper page
+/// whose stains a single threshold turns into ink reads its strip 10 more confidently so, while
+/// pages that read as well either way read it within 1 of the page or less confidently.
+const MIN_EVENED_GAIN: i32 = 5;
 /// The [`prepare::curl_degrees`] from which a page is curled, and flattened by UVDoc to read
 /// again: a photographed page curling away from the camera bends its lines by 6.6, while scans and
 /// flat photographs bend theirs by none.
@@ -223,6 +240,9 @@ pub struct Attempt {
     /// Whether what tesseract read was taken for noise and dropped.
     noise: bool,
     recognizer: Option<&'static str>,
+    /// The models of the runs of lines in scripts other than the page's that were read again
+    /// with them, in their order.
+    block_languages: Vec<String>,
 }
 
 impl Attempt {
@@ -232,6 +252,7 @@ impl Attempt {
             reading: Some(reading),
             noise: false,
             recognizer: None,
+            block_languages: Vec::new(),
         }
     }
 
@@ -264,19 +285,14 @@ impl Attempt {
     /// The language of what was read, when it is detected with confidence.
     fn detected_language(&self) -> Option<DetectedLanguage> {
         let reading = self.reading.as_ref()?;
-        detection::detect(&reading.text).filter(|detected| detected.reliable)
+        language_in_script(&reading.text, None)
     }
 
     /// The language of what was read, when it is detected with confidence in letters of the
     /// script it was read in, or in any script when it was read in the configured language.
     fn language_in_its_script(&self) -> Option<DetectedLanguage> {
-        let script = self.prepared.script.as_deref();
-        self.detected_language().filter(|detected| {
-            script.is_none_or(|script| {
-                Script::from_full_name(detected.script)
-                    .is_some_and(|letters| holds(script, letters))
-            })
-        })
+        let reading = self.reading.as_ref()?;
+        language_in_script(&reading.text, self.prepared.script.as_deref())
     }
 
     /// Whether what was read is text: in a language detected with confidence in its script, and
@@ -331,6 +347,7 @@ impl Attempt {
             .noise(self.noise)
             .unwarped(prepared.unwarped)
             .ppocr(self.recognizer)
+            .block_languages(&self.block_languages)
             .json()
     }
 
@@ -338,6 +355,18 @@ impl Attempt {
     pub fn text(&self) -> Option<&str> {
         self.reading.as_ref().map(|reading| reading.text.as_str())
     }
+}
+
+/// The language of a text, when it is detected with confidence in letters of a script, or in any
+/// script when none is given.
+fn language_in_script(text: &str, script: Option<&str>) -> Option<DetectedLanguage> {
+    detection::detect(text).filter(|detected| {
+        detected.reliable
+            && script.is_none_or(|script| {
+                Script::from_full_name(detected.script)
+                    .is_some_and(|letters| holds(script, letters))
+            })
+    })
 }
 
 /// Whether most of the characters of a text, but for whitespace, are letters.
@@ -360,6 +389,16 @@ fn word_count(text: &str) -> usize {
         .count()
 }
 
+/// How the background of an image is evened out before it is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Background {
+    /// Normalised and thresholded locally when its lighting is uneven, its faint marks whitened
+    /// and thresholded once otherwise.
+    Detected,
+    /// Normalised and thresholded locally, as stained paper reads best.
+    Normalised,
+}
+
 /// How an image was prepared to be read, and with which model.
 #[derive(Debug, Clone)]
 struct Prepared {
@@ -368,7 +407,10 @@ struct Prepared {
     /// The model to read it with: the configured one, or with the automatic language the one
     /// for its script.
     model: String,
+    background: Background,
     uneven_lighting: bool,
+    /// Whether its paper may be [`prepare::stained`].
+    stained: bool,
     /// The script it is read in: the one detection found, the one assumed for a first reading,
     /// or none.
     script: Option<String>,
@@ -392,7 +434,9 @@ impl Prepared {
         Self {
             image: None,
             model,
+            background: Background::Detected,
             uneven_lighting: false,
+            stained: false,
             script,
             exif_orientation: None,
             decoded: false,
@@ -460,7 +504,7 @@ struct Oriented {
     image: Upright,
     exif_orientation: Option<Orientation>,
     flattened: bool,
-    unscaled: [OnceCell<Unscaled>; 4],
+    unscaled: [[OnceCell<Unscaled>; 2]; 4],
 }
 
 /// The image as preparing it starts.
@@ -508,11 +552,17 @@ struct Unscaled {
     inverted_regions: usize,
     despeckled: bool,
     uneven_lighting: bool,
+    stained: bool,
     skew_degrees: f64,
 }
 
 impl Unscaled {
-    fn of(upright: &Bitmap, quarter_turns: u8, density: Option<Density>) -> Self {
+    fn of(
+        upright: &Bitmap,
+        quarter_turns: u8,
+        density: Option<Density>,
+        background: Background,
+    ) -> Self {
         let turned = upright.turned_clockwise(quarter_turns);
         let turned = turned.as_ref().unwrap_or(upright);
         let analysis = prepare::analysis(turned);
@@ -534,6 +584,8 @@ impl Unscaled {
             let uneven_lighting = prepare::uneven_lighting(turned, &analysis);
             (analysis, uneven_lighting, gray)
         };
+        let stained = !uneven_lighting && prepare::stained(&analysis);
+        let uneven_lighting = uneven_lighting || background == Background::Normalised;
         let evened = Bitmap::Gray(if uneven_lighting {
             prepare::normalise_background(gray.into_owned())
         } else {
@@ -563,6 +615,7 @@ impl Unscaled {
             inverted_regions: reversed.len(),
             despeckled,
             uneven_lighting,
+            stained,
             skew_degrees,
         }
     }
@@ -634,6 +687,7 @@ impl<'t> Recognizer<'t> {
                     reading: None,
                     noise: false,
                     recognizer: None,
+                    block_languages: Vec::new(),
                 },
                 language: None,
             });
@@ -643,6 +697,7 @@ impl<'t> Recognizer<'t> {
             _ => None,
         };
         let (optimistic, unconfident_seeded) = self.read_first(image, first, seeded)?;
+        let optimistic = self.on_stained_paper(optimistic, image, &oriented)?;
         let best = match optimistic.confident() || optimistic.in_a_language() {
             true => optimistic,
             false => self.read_vertical(self.read_detected(optimistic, image, &oriented)?)?,
@@ -662,6 +717,7 @@ impl<'t> Recognizer<'t> {
             .as_ref()
             .map_or(&best.prepared.model, |language| &language.model)
             .clone();
+        let best = self.in_scripts_of_blocks(best)?;
         let read_with_f = best.text().map(str::to_owned);
         let best = self.with_long_s(best, &dictionary)?;
         let best = match best.text() == read_with_f.as_deref() {
@@ -711,8 +767,22 @@ impl<'t> Recognizer<'t> {
             }),
         };
         Ok(match first_language {
-            Some(OcrLanguage { script, model }) => finish(image, oriented, Some(script), model, 0),
-            None => finish(image, oriented, None, self.model(None)?, 0),
+            Some(OcrLanguage { script, model }) => finish(
+                image,
+                oriented,
+                Some(script),
+                model,
+                0,
+                Background::Detected,
+            ),
+            None => finish(
+                image,
+                oriented,
+                None,
+                self.model(None)?,
+                0,
+                Background::Detected,
+            ),
         })
     }
 
@@ -734,6 +804,39 @@ impl<'t> Recognizer<'t> {
         }
         let unseeded = Attempt::read(first.clone(), self.read(image, &first)?);
         Ok((unseeded.or(seeded.clone()), Some(seeded)))
+    }
+
+    /// Reads a page whose paper may be [`prepare::stained`], and whose first reading, made with
+    /// its faint marks whitened and thresholded once, is neither confident nor text in a
+    /// language, again with its background normalised and thresholded locally, when its
+    /// [`sample_strip`] reads at least [`MIN_EVENED_GAIN`] more confidently so than the page did:
+    /// the more confident reading.
+    fn on_stained_paper(
+        &self,
+        read: Attempt,
+        image: &Image<'_>,
+        oriented: &Oriented,
+    ) -> Result<Attempt, OcrError> {
+        if !read.prepared.stained || read.confident() || read.in_a_language() {
+            return Ok(read);
+        }
+        let prepared = &read.prepared;
+        let evened = finish(
+            image,
+            oriented,
+            prepared.script.clone(),
+            prepared.model.clone(),
+            prepared.quarter_turns,
+            Background::Normalised,
+        );
+        let Some(sample) = self.read_sample(&evened)? else {
+            return Ok(read);
+        };
+        if sample.confidence < read.confidence() + MIN_EVENED_GAIN {
+            return Ok(read);
+        }
+        let reading = self.read(image, &evened)?;
+        Ok(read.or(Attempt::read(evened, reading)))
     }
 
     fn in_language_of_strip(&self, first: &Prepared) -> Result<Option<Prepared>, OcrError> {
@@ -774,13 +877,7 @@ impl<'t> Recognizer<'t> {
         let Some(rows) = strip(made, image) else {
             return Ok(None);
         };
-        let width = image.width() as usize;
-        let pixels = Pixels::Gray {
-            data: &image.as_raw()[rows.start * width..rows.end * width],
-            width: image.width(),
-            height: rows.len() as u32,
-        };
-        self.read_pixels(pixels, made.density, None, prepared)
+        self.read_pixels(gray_rows(image, rows), made.density, None, prepared)
             .map(Some)
     }
 
@@ -788,12 +885,17 @@ impl<'t> Recognizer<'t> {
     /// than the best reading so far: whether its [`sample_strip`] reads more confidently than that
     /// reading, or it has none.
     fn may_read_better(&self, prepared: &Prepared, best: &Attempt) -> Result<bool, OcrError> {
-        let sample = self.read_strip(prepared, |made, image| {
+        let sample = self.read_sample(prepared)?;
+        Ok(sample.is_none_or(|sample| sample.confidence > best.confidence()))
+    }
+
+    /// Reads the [`sample_strip`] of an image as it was prepared, when it has one.
+    fn read_sample(&self, prepared: &Prepared) -> Result<Option<Reading>, OcrError> {
+        self.read_strip(prepared, |made, image| {
             made.sample
                 .get_or_init(|| sample_strip(&prepare::ink_per_row(image)))
                 .clone()
-        })?;
-        Ok(sample.is_none_or(|sample| sample.confidence > best.confidence()))
+        })
     }
 
     fn model_of_detected_language(&self, read: &Attempt) -> Result<Option<OcrLanguage>, OcrError> {
@@ -880,6 +982,7 @@ impl<'t> Recognizer<'t> {
             }),
             noise: false,
             recognizer: Some(LineModel::VERTICAL.name()),
+            block_languages: Vec::new(),
         };
         Ok(best.or(vertical))
     }
@@ -961,6 +1064,207 @@ impl<'t> Recognizer<'t> {
         Ok(overlooked)
     }
 
+    /// Reads again, each with a model for its own script, the runs of lines in other scripts in
+    /// the blocks of a page read with the automatic language but not confidently: each block whose
+    /// text is not text in a language in the page's script is read again in its scripts, as
+    /// [`Recognizer::read_block_in_its_scripts`] reads it, and what it reads replaces the
+    /// block's text. A page read confidently, or whose blocks all read as text in its language,
+    /// has no block detected again.
+    fn in_scripts_of_blocks(&self, read: Attempt) -> Result<Attempt, OcrError> {
+        if !self.settings.auto() || read.noise || read.recognizer.is_some() {
+            return Ok(read);
+        }
+        let (Some(page_script), Some(made), Some(reading)) = (
+            read.prepared.script.as_deref(),
+            read.prepared.image.as_deref(),
+            read.reading.as_ref(),
+        ) else {
+            return Ok(read);
+        };
+        let Bitmap::Gray(page) = &made.bitmap else {
+            return Ok(read);
+        };
+        if read.confident() {
+            return Ok(read);
+        }
+        let mut reread: Vec<Option<RereadBlock>> = Vec::with_capacity(reading.blocks.len());
+        for block in &reading.blocks {
+            reread.push(match language_in_script(&block.text, Some(page_script)) {
+                Some(_) => None,
+                None => self.read_block_in_its_scripts(&read.prepared, page, made, block)?,
+            });
+        }
+        if reread.iter().all(Option::is_none) {
+            return Ok(read);
+        }
+        Ok(with_blocks_reread(read, reread))
+    }
+
+    /// The runs of lines of a block read each with the model for its script: when orientation and
+    /// script detection finds in the block's first [`HEAD_LINES`] lines a script that shares no
+    /// letters with the page's, and they read as text in a language in it, each of the block's
+    /// lines has its script detected, a line detection cannot judge taking the script that reads
+    /// it most confidently in that script's letters among the one detection finds in the lines it
+    /// cannot judge about it, taken together, and those of the nearest lines above and below it
+    /// that it judges, and each run of lines in one
+    /// script is read with its model. A run in another script that does not read as text in a
+    /// language in it is read with the page's model. None when no run in another script reads as
+    /// text in a language in it, or detection finds none.
+    fn read_block_in_its_scripts(
+        &self,
+        prepared: &Prepared,
+        page: &GrayImage,
+        made: &Readable,
+        block: &Block,
+    ) -> Result<Option<RereadBlock>, OcrError> {
+        let Some(page_script) = prepared.script.as_deref() else {
+            return Ok(None);
+        };
+        let Some(crop) = cropped(page, block.area) else {
+            return Ok(None);
+        };
+        let installed = self.tesseract.languages()?;
+        let readable = |script: &str| {
+            kin(page_script, script) || installed_language(&installed, script).is_some()
+        };
+        let detect = |rows: Range<usize>| -> Result<Option<String>, OcrError> {
+            let detected = self
+                .tesseract
+                .detect(gray_rows(&crop, rows), made.density)?;
+            Ok(detected.script.filter(|script| readable(script)))
+        };
+        let foreign = |script: &str| !kin(page_script, script);
+        let lines = inked_lines(&prepare::ink_per_row(&crop));
+        let fragments = fragments(&lines);
+        let Some((head, _)) = lines
+            .iter()
+            .zip(&fragments)
+            .filter(|(_, &fragment)| !fragment)
+            .nth(HEAD_LINES - 1)
+        else {
+            return Ok(None);
+        };
+        let head_end = head.end;
+        let Some(script) = detect(0..head_end)?.filter(|script| foreign(script)) else {
+            return Ok(None);
+        };
+        let Some(model) = installed_language(&installed, &script) else {
+            return Ok(None);
+        };
+        let in_script = prepared.read_in(Some(script), model);
+        let head = self.read_pixels(
+            gray_rows(&crop, 0..head_end),
+            made.density,
+            None,
+            &in_script,
+        )?;
+        if !Attempt::read(in_script, head).in_a_language() {
+            return Ok(None);
+        }
+        let mut scripts = Vec::with_capacity(lines.len());
+        for (line, &fragment) in lines.iter().zip(&fragments) {
+            scripts.push(match fragment {
+                true => None,
+                false => detect(line.clone())?,
+            });
+        }
+        let read_line_in = |rows: Range<usize>, script: &str| -> Result<Option<i32>, OcrError> {
+            let (model, letters) = match kin(page_script, script) {
+                true => (prepared.model.clone(), page_script),
+                false => match installed_language(&installed, script) {
+                    Some(model) => (model, script),
+                    None => return Ok(None),
+                },
+            };
+            let in_script = prepared.read_in(Some(script.to_owned()), model);
+            let reading =
+                self.read_pixels(gray_rows(&crop, rows), made.density, None, &in_script)?;
+            Ok(written_in(&reading.text, letters).then_some(reading.confidence))
+        };
+        let mut start = 0;
+        while let Some(first) =
+            (start..lines.len()).find(|&i| scripts[i].is_none() && !fragments[i])
+        {
+            let end = (first..lines.len())
+                .find(|&i| scripts[i].is_some())
+                .unwrap_or(lines.len());
+            let mut candidates: Vec<String> = Vec::new();
+            let above = scripts[..first].iter().rev().flatten().next().cloned();
+            let below = scripts[end..].iter().flatten().next().cloned();
+            for script in [
+                detect(lines[first].start..lines[end - 1].end)?,
+                above,
+                below,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if !candidates.contains(&script) {
+                    candidates.push(script);
+                }
+            }
+            for line in (first..end).filter(|&i| !fragments[i]) {
+                let mut best: Option<(i32, &String)> = None;
+                for script in &candidates {
+                    if let Some(confidence) = read_line_in(lines[line].clone(), script)? {
+                        if best.is_none_or(|(most, _)| confidence > most) {
+                            best = Some((confidence, script));
+                        }
+                    }
+                }
+                scripts[line] = best.map(|(_, script)| script.clone());
+            }
+            start = end;
+        }
+        let runs = runs_of_script(&lines, scripts, crop.height() as usize);
+        if !runs.iter().any(|(_, script)| foreign(script)) {
+            return Ok(None);
+        }
+        let in_page_script = |rows: Range<usize>| {
+            self.read_pixels(gray_rows(&crop, rows), made.density, None, prepared)
+        };
+        let mut text = String::new();
+        let mut models = Vec::new();
+        let mut confidence_sum = 0i64;
+        let mut words = 0usize;
+        for (rows, script) in runs {
+            let reading = match installed_language(&installed, &script).filter(|_| foreign(&script))
+            {
+                Some(model) => {
+                    let in_script = prepared.read_in(Some(script), model.clone());
+                    let reading = self.read_pixels(
+                        gray_rows(&crop, rows.clone()),
+                        made.density,
+                        None,
+                        &in_script,
+                    )?;
+                    let run = Attempt::read(in_script, reading);
+                    match (run.in_a_language(), run.reading) {
+                        (true, Some(reading)) => {
+                            models.push(model);
+                            reading
+                        }
+                        _ => in_page_script(rows)?,
+                    }
+                }
+                None => in_page_script(rows)?,
+            };
+            let run_words = word_count(&reading.text);
+            confidence_sum += i64::from(reading.confidence) * run_words as i64;
+            words += run_words;
+            text.push_str(&reading.text);
+        }
+        if models.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(RereadBlock {
+            text,
+            confidence_sum,
+            words,
+            models,
+        }))
+    }
+
     /// The attempt with the long s restored in what it read, by the dictionary of `model`.
     fn with_long_s(&self, mut attempt: Attempt, model: &str) -> Result<Attempt, OcrError> {
         if let Some(reading) = attempt
@@ -1013,6 +1317,7 @@ impl<'t> Recognizer<'t> {
         if !self.settings.auto()
             || read.noise
             || read.recognizer.is_some()
+            || !read.block_languages.is_empty()
             || read.confidence() > MAX_REREAD_CONFIDENCE
         {
             return Ok(read);
@@ -1037,7 +1342,8 @@ impl<'t> Recognizer<'t> {
             return Ok(read);
         }
         let lines = self.lines(made)?;
-        let reread = ppocr().read(&made.bitmap.gray(), model, lines, &reading.blocks)?;
+        let blocks: Vec<Area> = reading.blocks.iter().map(|block| block.area).collect();
+        let reread = ppocr().read(&made.bitmap.gray(), model, lines, &blocks)?;
         let again = Attempt {
             prepared: read.prepared.clone(),
             reading: Some(Reading {
@@ -1046,6 +1352,7 @@ impl<'t> Recognizer<'t> {
             }),
             noise: false,
             recognizer: Some(model.name()),
+            block_languages: Vec::new(),
         };
         Ok(read.or(self.with_long_s(again, dictionary)?))
     }
@@ -1132,6 +1439,125 @@ impl<'t> Recognizer<'t> {
             text: corrected(&reading.text),
             ..reading
         })
+    }
+}
+
+/// What the runs of lines of a block read with the models of their scripts: their text, the sum
+/// of their words' confidences and the count of their words, and the models of the runs in
+/// scripts other than the page's.
+struct RereadBlock {
+    text: String,
+    confidence_sum: i64,
+    words: usize,
+    models: Vec<String>,
+}
+
+/// A reading with the blocks read again in their scripts in place of what it read in them: its
+/// text made up of its blocks' again, and its confidence the mean of its words', each word of a
+/// block kept taken at the confidence of the whole reading.
+fn with_blocks_reread(mut read: Attempt, reread: Vec<Option<RereadBlock>>) -> Attempt {
+    let Some(reading) = read.reading.as_mut() else {
+        return read;
+    };
+    let mut confidence_sum = 0i64;
+    let mut words = 0usize;
+    for (block, again) in reading.blocks.iter_mut().zip(reread) {
+        match again {
+            Some(again) => {
+                confidence_sum += again.confidence_sum;
+                words += again.words;
+                for model in again.models {
+                    if !read.block_languages.contains(&model) {
+                        read.block_languages.push(model);
+                    }
+                }
+                block.text = again.text;
+            }
+            None => {
+                let kept = word_count(&block.text);
+                confidence_sum += i64::from(reading.confidence) * kept as i64;
+                words += kept;
+            }
+        }
+    }
+    let text: String = reading
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect();
+    reading.text = corrected(&text);
+    reading.confidence = match words {
+        0 => 0,
+        words => (confidence_sum / words as i64) as i32,
+    };
+    read
+}
+
+/// The runs of a block's lines in one script, each the rows from midway to the line above it to
+/// midway to the line below it, of the lines and the script detection found in each, as rows
+/// of a block `height` rows high: a line in no script detection could judge is in the script of
+/// the line above it, or of the first line below it in one. None when detection judged no line.
+fn runs_of_script(
+    lines: &[Range<usize>],
+    scripts: Vec<Option<String>>,
+    height: usize,
+) -> Vec<(Range<usize>, String)> {
+    let Some(first) = scripts.iter().flatten().next().cloned() else {
+        return Vec::new();
+    };
+    let mut current = first;
+    let mut runs: Vec<(Range<usize>, String)> = Vec::new();
+    for (index, (line, script)) in lines.iter().zip(scripts).enumerate() {
+        if let Some(script) = script {
+            current = script;
+        }
+        let top = match index {
+            0 => 0,
+            _ => lines[index - 1].end.midpoint(line.start),
+        };
+        match runs.last_mut().filter(|(_, script)| *script == current) {
+            Some((rows, _)) => rows.end = line.end,
+            None => {
+                if let Some((rows, _)) = runs.last_mut() {
+                    rows.end = top;
+                }
+                runs.push((top..line.end, current.clone()));
+            }
+        }
+    }
+    if let Some((rows, _)) = runs.last_mut() {
+        rows.end = height;
+    }
+    runs
+}
+
+/// Which of a block's lines are fragments of the lines beside them, such as the dots and marks
+/// above or below Arabic or Devanagari letters that leave a row without ink between them and
+/// their line: those under half as high as the block's median line.
+fn fragments(lines: &[Range<usize>]) -> Vec<bool> {
+    let mut heights: Vec<usize> = lines.iter().map(ExactSizeIterator::len).collect();
+    heights.sort_unstable();
+    let median = heights.get(heights.len() / 2).copied().unwrap_or(0);
+    lines.iter().map(|line| 2 * line.len() < median).collect()
+}
+
+/// The part of an image an area covers, within the image: none when it covers none of it.
+fn cropped(image: &GrayImage, area: Area) -> Option<GrayImage> {
+    let left = area.left.clamp(0, image.width() as i32) as u32;
+    let top = area.top.clamp(0, image.height() as i32) as u32;
+    let right = area.right.clamp(0, image.width() as i32) as u32;
+    let bottom = area.bottom.clamp(0, image.height() as i32) as u32;
+    (left < right && top < bottom)
+        .then(|| image::imageops::crop_imm(image, left, top, right - left, bottom - top).to_image())
+}
+
+/// The pixels of some rows of a grey image, as tesseract reads them.
+fn gray_rows(image: &GrayImage, rows: Range<usize>) -> Pixels<'_> {
+    let width = image.width() as usize;
+    Pixels::Gray {
+        data: &image.as_raw()[rows.start * width..rows.end * width],
+        width: image.width(),
+        height: rows.len() as u32,
     }
 }
 
@@ -1269,7 +1695,14 @@ fn prepare_again(
     {
         return earlier.read_in(script, model);
     }
-    finish(image, oriented, script, model, quarter_turns)
+    finish(
+        image,
+        oriented,
+        script,
+        model,
+        quarter_turns,
+        earlier.background,
+    )
 }
 
 /// Prepares an oriented image turned by the quarter turns detection found to read in a script
@@ -1281,6 +1714,7 @@ fn finish(
     script: Option<String>,
     model: String,
     quarter_turns: u8,
+    background: Background,
 ) -> Prepared {
     let upright: &Bitmap = match &oriented.image {
         Upright::Unprepared => return Prepared::unprepared(script, model),
@@ -1296,8 +1730,8 @@ fn finish(
             .density
             .map(|density| density.transformed(sideways, scale))
     };
-    let unscaled = oriented.unscaled[usize::from(quarter_turns % 4)]
-        .get_or_init(|| Unscaled::of(upright, quarter_turns, density(1.0)));
+    let unscaled = oriented.unscaled[usize::from(quarter_turns % 4)][background as usize]
+        .get_or_init(|| Unscaled::of(upright, quarter_turns, density(1.0), background));
     let unscaled_bitmap = &unscaled.image.bitmap;
     let scale = prepare::scale_factor(unscaled_bitmap, MAX_PIXELS, reducible(script.as_deref()));
     let made = if scale != 1.0 {
@@ -1311,7 +1745,9 @@ fn finish(
     Prepared {
         image: Some(made),
         model,
+        background,
         uneven_lighting: unscaled.uneven_lighting,
+        stained: unscaled.stained,
         script,
         exif_orientation: oriented.exif_orientation,
         decoded: true,
@@ -1441,7 +1877,14 @@ mod tests {
             flattened: false,
             unscaled: Default::default(),
         };
-        let prepared = finish(&image, &oriented, None, "eng".to_owned(), 0);
+        let prepared = finish(
+            &image,
+            &oriented,
+            None,
+            "eng".to_owned(),
+            0,
+            Background::Detected,
+        );
         assert!(prepared.uneven_lighting);
         assert_eq!(prepared.thresholding(), Thresholding::Sauvola);
         let made = &prepared.image.expect("a prepared image").bitmap;
@@ -1549,6 +1992,7 @@ mod tests {
                     script.map(str::to_owned),
                     String::new(),
                     quarter_turns,
+                    Background::Detected,
                 );
                 let expected = prepared_step_by_step(page, quarter_turns, reducible(script));
                 let gray = |prepared: &Prepared| {
@@ -1767,6 +2211,73 @@ mod tests {
             .recognize(&image, None)
             .unwrap()
             .read
+    }
+
+    #[test]
+    fn groups_lines_into_runs_of_one_script_split_midway_between_them() {
+        let lines = [0..10, 20..30, 40..50, 60..70, 80..90];
+        let scripts = vec![
+            None,
+            Some("Arabic".to_owned()),
+            None,
+            Some("Han".to_owned()),
+            Some("Han".to_owned()),
+        ];
+        assert_eq!(
+            runs_of_script(&lines, scripts, 100),
+            [(0..55, "Arabic".to_owned()), (55..100, "Han".to_owned())]
+        );
+        assert!(runs_of_script(&lines, vec![None; 5], 100).is_empty());
+    }
+
+    #[test]
+    fn takes_lines_under_half_the_median_height_for_fragments() {
+        assert_eq!(
+            fragments(&[0..4, 6..40, 42..46, 50..84, 90..122]),
+            [true, false, true, false, false]
+        );
+    }
+
+    #[test]
+    fn reads_each_script_of_a_page_in_several_with_its_model() {
+        let read = recognized("mixed-scan.png");
+        let report = read.report(None);
+        for model in ["ara", "chi_sim", "hin", "heb"] {
+            assert!(report.contains(&format!("\"{model}\"")), "{report}");
+        }
+        assert!(!report.contains("ppocr"), "{report}");
+        let text = read.text().unwrap();
+        for phrase in [
+            "Every evening at dusk the keeper climbed",
+            "كان الحارس يصعد درج البرج",
+            "看守人都会",
+            "हर शाम सूर्यास्त के समय",
+            "בכל ערב עם שקיעת השמש",
+            "Каждый вечер на закате",
+            "έγραφε μια γραμμή στο ημερολόγιο",
+        ] {
+            assert!(text.contains(phrase), "{phrase} is not in {text}");
+        }
+    }
+
+    #[test]
+    fn reads_a_page_on_stained_paper_with_its_background_normalised() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let settings = auto_settings();
+        let bitmap = Bitmap::Rgb(
+            image::open("../quality/corpus/kronen-zeitung-1933.jpg")
+                .unwrap()
+                .to_rgb8(),
+        );
+        let image = Image::of(&bitmap, None, 0, None, Density::per_inch(325.0, 325.0));
+        let read = Recognizer::new(tesseract, &settings)
+            .recognize(&image, None)
+            .unwrap()
+            .read;
+        let report = read.report(None);
+        assert!(report.contains("\"thresholded\":true"), "{report}");
+        let text = read.text().unwrap();
+        assert!(text.contains("Krankenhaus vor Aerzten"), "{text}");
     }
 
     #[test]

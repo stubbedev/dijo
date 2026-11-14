@@ -41,6 +41,7 @@ const MIN_REVERSED_EDGE_PERCENT: usize = 90;
 const MIN_SPECKLE_PERCENT: u64 = 2;
 const INK_PERCENTILE: f64 = 0.005;
 const FAINT_PERCENT: u32 = 72;
+const MIN_STAINED_PERCENT: u64 = 2;
 const WHITE: u8 = 255;
 
 /// An EXIF orientation, 2 to 8, which turns or mirrors the image it is recorded in; 1 needs
@@ -784,17 +785,37 @@ pub(crate) fn despeckle(image: &GrayImage) -> GrayImage {
 /// darkest half percent of its [`analysis`] copy and its paper the 90th percentile.
 pub(crate) fn whiten_faint_marks(analysis: &GrayImage, mut image: GrayImage) -> GrayImage {
     let levels = analysis.as_raw();
-    let histogram = histogram(levels);
-    let count = levels.len() as u64;
-    let ink = percentile(&histogram, count, INK_PERCENTILE);
-    let paper = percentile(&histogram, count, BACKGROUND_PERCENTILE);
-    let faint = (ink as i64 + (paper as i64 - ink as i64) * i64::from(FAINT_PERCENT) / 100) as u32;
+    let faint = faint_level(&histogram(levels), levels.len() as u64);
     for level in image.iter_mut() {
         if u32::from(*level) >= faint {
             *level = WHITE;
         }
     }
     image
+}
+
+/// The grey level from which [`whiten_faint_marks`] makes marks white, of the histogram of the
+/// `count` grey levels of an image's [`analysis`] copy.
+fn faint_level(histogram: &[u64; 256], count: u64) -> u32 {
+    let ink = percentile(histogram, count, INK_PERCENTILE);
+    let paper = percentile(histogram, count, BACKGROUND_PERCENTILE);
+    (ink as i64 + (paper as i64 - ink as i64) * i64::from(FAINT_PERCENT) / 100) as u32
+}
+
+/// Whether the paper of an image may be stained, or show the print on its back, in marks darker
+/// than the faint ones [`whiten_faint_marks`] makes white: whether at least
+/// [`MIN_STAINED_PERCENT`]% of its [`analysis`] copy lies between its Otsu threshold and that
+/// faint level. Tesseract's threshold takes such marks for paper, until whitening the fainter
+/// ones raises it and turns them into ink. Clean scans hold under 2% such pixels, the edges of
+/// their letters; a stained newspaper page 5%.
+pub(crate) fn stained(analysis: &GrayImage) -> bool {
+    let levels = analysis.as_raw();
+    let histogram = histogram(levels);
+    let count = levels.len() as u64;
+    let threshold = otsu_threshold(&histogram) as usize;
+    let faint = faint_level(&histogram, count) as usize;
+    let between: u64 = histogram[threshold.min(faint)..faint].iter().sum();
+    between * 100 >= count * MIN_STAINED_PERCENT
 }
 
 /// The count of each grey level.
@@ -848,6 +869,21 @@ pub(crate) mod tests {
     use image::Luma;
 
     const SHADOWED_PAPER: u8 = 60;
+
+    #[test]
+    fn takes_paper_with_stains_darker_than_faint_marks_for_stained() {
+        let page = |stain: u8| {
+            GrayImage::from_fn(400, 300, |x, y| {
+                Luma([match (y % 30 < 3, x < 200 && y < 150) {
+                    (true, _) => 40,
+                    (false, true) => stain,
+                    (false, false) => 200,
+                }])
+            })
+        };
+        assert!(stained(&analysis(&Bitmap::Gray(page(140)))));
+        assert!(!stained(&analysis(&Bitmap::Gray(page(200)))));
+    }
 
     pub(crate) fn shadowed_page(width: u32, height: u32) -> Bitmap {
         Bitmap::Gray(GrayImage::from_fn(width, height, |x, y| {

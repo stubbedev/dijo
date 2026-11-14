@@ -105,6 +105,23 @@ impl Report {
         }
     }
 
+    /// Notes the models blocks in scripts other than the page's were read with, in their order.
+    pub(crate) fn block_languages(self, models: &[String]) -> Self {
+        if models.is_empty() {
+            return self;
+        }
+        let mut report = self.key("block_languages");
+        report.json.push('[');
+        for (index, model) in models.iter().enumerate() {
+            if index > 0 {
+                report.json.push(',');
+            }
+            report = report.quoted(model);
+        }
+        report.json.push(']');
+        report
+    }
+
     fn key(mut self, name: &str) -> Self {
         if self.json.len() > 1 {
             self.json.push(',');
@@ -114,20 +131,23 @@ impl Report {
     }
 
     fn string(self, name: &str, value: &str) -> Self {
-        let mut report = self.key(name);
-        report.json.push('"');
+        self.key(name).quoted(value)
+    }
+
+    fn quoted(mut self, value: &str) -> Self {
+        self.json.push('"');
         for c in value.chars() {
             match c {
-                '"' => report.json.push_str("\\\""),
-                '\\' => report.json.push_str("\\\\"),
+                '"' => self.json.push_str("\\\""),
+                '\\' => self.json.push_str("\\\\"),
                 c if (c as u32) < 0x20 => {
-                    let _ = write!(report.json, "\\u{:04x}", c as u32);
+                    let _ = write!(self.json, "\\u{:04x}", c as u32);
                 }
-                c => report.json.push(c),
+                c => self.json.push(c),
             }
         }
-        report.json.push('"');
-        report
+        self.json.push('"');
+        self
     }
 
     fn number(self, name: &str, value: i64) -> Self {
@@ -180,6 +200,19 @@ mod tests {
         };
         assert!(report(true).ends_with(",\"thresholded\":false,\"noise\":true}"));
         assert!(!report(false).contains("noise"));
+    }
+
+    #[test]
+    fn notes_the_models_of_blocks_in_other_scripts_only_when_there_were_any() {
+        let report = |models: &[String]| {
+            Report::of("eng")
+                .prepared(true, false, false, false, 0, 0.0, 1.0, false)
+                .block_languages(models)
+                .json()
+        };
+        assert!(report(&["ara".to_owned(), "chi_sim".to_owned()])
+            .ends_with(",\"thresholded\":false,\"block_languages\":[\"ara\",\"chi_sim\"]}"));
+        assert!(!report(&[]).contains("block_languages"));
     }
 
     #[test]
