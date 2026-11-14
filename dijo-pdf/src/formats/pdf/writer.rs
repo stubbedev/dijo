@@ -21,11 +21,12 @@ use super::recording::Recording;
 use super::stripper::{self, Callbacks, WORD_SEPARATOR};
 use super::tagged::{Tagged, MARKED_CONTENT_REJECTIONS};
 use super::xfa::{self, Extracted};
-use super::{jfloat, ImageExtraction, Settings, Unported};
+use super::{ImageExtraction, Settings, Unported};
 use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::formats::thrown::Thrown;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Difference;
+use crate::java::dtoa::java_double_to_string;
 use crate::java::is_blank;
 
 /// How many annotation types and subtypes Tika lists, at most.
@@ -579,7 +580,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
             let share = total_unmapped as f32 / total_glyphs as f32;
             out.set(
                 "pdf:overall-percentage-unmapped-unicode-chars",
-                jfloat::double_to_string(f64::from(share)),
+                java_double_to_string(f64::from(share)),
             );
         }
         out.set(

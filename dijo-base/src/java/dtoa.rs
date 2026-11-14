@@ -39,11 +39,11 @@ fn five_power(exponent: i32) -> u64 {
     5u64.pow(exponent as u32)
 }
 
-/// `FloatingDecimal.getBinaryToASCIIConverter(value)` for a finite value other than zero, its
 /// The decimal logarithm of two as `FloatingDecimal` writes it, a digit short of the double's.
 #[allow(clippy::approx_constant)]
 const LOG10_2_IN_JAVA: f64 = 0.301029995663981;
 
+/// `FloatingDecimal.getBinaryToASCIIConverter(value)` for a finite value other than zero, its
 /// sign ignored.
 pub(crate) fn convert(value: f64) -> Conversion {
     let bits = value.to_bits();
@@ -581,6 +581,14 @@ mod tests {
         assert_eq!(java_double_to_string(1e7), "1.0E7");
         assert_eq!(java_double_to_string(-1.5e-10), "-1.5E-10");
         assert_eq!(java_double_to_string(0.0001), "1.0E-4");
+        assert_eq!(
+            java_double_to_string(f64::from(0.1f32)),
+            "0.10000000149011612"
+        );
+        assert_eq!(java_double_to_string(0.0), "0.0");
+        assert_eq!(java_double_to_string(1.25e-4), "1.25E-4");
+        assert_eq!(java_double_to_string(-12345.5), "-12345.5");
+        assert_eq!(java_double_to_string(100.0), "100.0");
     }
 
     #[test]
@@ -596,5 +604,8 @@ mod tests {
         assert_eq!(java_float_to_string(f32::MAX), "3.4028235E38");
         assert_eq!(java_float_to_string(-0.0), "-0.0");
         assert_eq!(java_float_to_string(f32::NAN), "NaN");
+        assert_eq!(java_float_to_string(1.7), "1.7");
+        assert_eq!(java_float_to_string(1.0), "1.0");
+        assert_eq!(java_float_to_string(0.0), "0.0");
     }
 }

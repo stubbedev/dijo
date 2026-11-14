@@ -12,7 +12,7 @@ use crate::formats::pdf::truetype::{Failure, TrueType};
 use crate::formats::thrown::{Exception, Thrown};
 use crate::formats::{Decline, Footprint, Parser, Prepared};
 use crate::input::{Pages, Paging};
-use crate::java::jfloat::float_to_string;
+use crate::java::dtoa::java_float_to_string;
 use crate::java::time::format_instant;
 
 /// Milliseconds from 1904-01-01, where TrueType counts its dates from, to the Java epoch.
@@ -83,7 +83,7 @@ impl Parser for TrueTypeParser {
             metadata.set("Content-Type", "application/x-font-ttf");
             metadata.set("dcterms:created", international_date(header.created));
             metadata.set("dcterms:modified", international_date(header.modified));
-            metadata.set(DOC_VERSION, float_to_string(header.version));
+            metadata.set(DOC_VERSION, java_float_to_string(header.version));
             for record in &names {
                 let string = record.string.as_deref();
                 match record.name_id {
@@ -172,9 +172,9 @@ impl Parser for AdobeFontMetricParser {
             set_nullable(metadata, "dc:title", metrics.full_name.as_deref());
             metadata.add(
                 "AvgCharacterWidth",
-                float_to_string(metrics.average_character_width()),
+                java_float_to_string(metrics.average_character_width()),
             );
-            metadata.add(DOC_VERSION, float_to_string(metrics.afm_version));
+            metadata.add(DOC_VERSION, java_float_to_string(metrics.afm_version));
             let texts = [
                 (FONT_NAME, &metrics.font_name),
                 ("FontFullName", &metrics.full_name),
@@ -190,7 +190,7 @@ impl Parser for AdobeFontMetricParser {
             }
             metadata.add(
                 "FontUnderlineThickness",
-                float_to_string(metrics.underline_thickness),
+                java_float_to_string(metrics.underline_thickness),
             );
             if comments > usize::from(dated.is_some()) {
                 xhtml.element("h1", "Comments")?;
@@ -273,7 +273,7 @@ mod large {
         });
         assert_eq!(
             metadata["AvgCharacterWidth"],
-            [float_to_string(total / widths)]
+            [java_float_to_string(total / widths)]
         );
         assert_ne!(metadata["AvgCharacterWidth"], ["500.0"]);
         assert_eq!(metadata[FONT_NAME], ["Large"]);

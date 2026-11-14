@@ -7,7 +7,6 @@ use lopdf::Object;
 
 use super::content::parse_literal;
 use super::cos::{class_cast, invalid_filter, name_string, text_string, Pdf};
-use super::jfloat;
 use super::recording::Recording;
 use super::writer::WriteFailure;
 use super::Unported;
@@ -18,6 +17,7 @@ use crate::formats::xmp::{
 };
 use crate::formats::Difference;
 use crate::input::Paging;
+use crate::java::dtoa::java_float_to_string;
 use crate::java::is_blank;
 use crate::java::time::format_instant;
 
@@ -382,7 +382,7 @@ pub(super) fn document(
             None => {}
         }
     }
-    let version = jfloat::float_to_string(version);
+    let version = java_float_to_string(version);
     metadata.set("pdf:pdf-version", version.clone());
     add_format(metadata, format!("application/pdf; version={version}"));
     if let Some(extensions) = pdf.get(catalog, b"Extensions") {
@@ -502,7 +502,7 @@ fn custom(pdf: &Pdf, metadata: &mut Recording, name: &str, value: &Object) {
                 "the custom document information value {name}, a number PDFBox prints as the \
                  document writes it"
             )));
-            let printed = jfloat::float_to_string(*value);
+            let printed = java_float_to_string(*value);
             custom_text(metadata, name, &format!("COSFloat{{{printed}}}"));
         }
     }

@@ -1,7 +1,8 @@
 //! Java's `float` operations where they differ from Rust's: `Float.compare`, which tells -0.0
 //! from 0.0 and takes NaN for equal to itself, `Math.min` and `Math.max`, which return NaN for a
-//! NaN argument, `Math.round`, the shortest decimal `Float.toString` and `Double.toString`
-//! write, and the fixed decimals of `String.format`.
+//! NaN argument, `Math.round`, and the fixed decimals of `String.format`.
+
+use super::dtoa::{java_double_to_string, shortest_digits};
 
 /// `Float.compare(a, b) == 0`.
 pub fn same(a: f32, b: f32) -> bool {
@@ -50,27 +51,17 @@ pub fn round(value: f32) -> i32 {
     (f64::from(value) + 0.5).floor() as i32
 }
 
-/// `Float.toString`.
-pub fn float_to_string(value: f32) -> String {
-    java_decimal(format!("{value:e}"), f64::from(value).abs())
-}
-
-/// `Double.toString`.
-pub fn double_to_string(value: f64) -> String {
-    java_decimal(format!("{value:e}"), value.abs())
-}
-
 /// `String.format(Locale.ROOT, "%.<precision>f", value)` for a `float`: the shortest digits of
 /// the value widened to a `double`, rounded half up.
 pub fn format_fixed(value: f32, precision: usize) -> String {
     let value = f64::from(value);
     if !value.is_finite() {
-        return double_to_string(value);
+        return java_double_to_string(value);
     }
-    let exponential = format!("{value:e}");
-    let (sign, digits, exponent) = parts(&exponential);
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let (digits, exponent) = shortest_digits(value.abs());
     let digits = digits.as_bytes();
-    let integer_digits = exponent + 1 + precision as i32;
+    let integer_digits = exponent + precision as i32;
     let digit = |index: i32| {
         usize::try_from(index)
             .ok()
@@ -108,85 +99,9 @@ pub fn format_fixed(value: f32, precision: usize) -> String {
     format!("{sign}{}.{}", &text[..point], &text[point..])
 }
 
-/// The sign, digits and decimal exponent of what Rust's `{:e}` writes for a finite value.
-fn parts(exponential: &str) -> (&'static str, String, i32) {
-    let (mantissa, exponent) = exponential
-        .split_once('e')
-        .unwrap_or_else(|| unreachable!("`{{:e}}` always writes an exponent"));
-    let exponent: i32 = exponent
-        .parse()
-        .unwrap_or_else(|_| unreachable!("`{{:e}}` writes a decimal exponent"));
-    let (sign, mantissa) = match mantissa.strip_prefix('-') {
-        Some(rest) => ("-", rest),
-        None => ("", mantissa),
-    };
-    (
-        sign,
-        mantissa.chars().filter(char::is_ascii_digit).collect(),
-        exponent,
-    )
-}
-
-/// The shortest digits Rust's `{:e}` gives, written as Java writes a decimal: plainly from
-/// 10⁻³ up to 10⁷, with at least one fractional digit, else in computerized scientific
-/// notation.
-fn java_decimal(exponential: String, magnitude: f64) -> String {
-    match exponential.as_str() {
-        "NaN" => return "NaN".to_owned(),
-        "inf" => return "Infinity".to_owned(),
-        "-inf" => return "-Infinity".to_owned(),
-        _ => {}
-    }
-    let (sign, digits, exponent) = parts(&exponential);
-    if magnitude == 0.0 {
-        return format!("{sign}0.0");
-    }
-    if (1e-3..1e7).contains(&magnitude) {
-        let point = exponent + 1;
-        let (integer, fraction) = if point <= 0 {
-            (
-                "0".to_owned(),
-                format!("{}{digits}", "0".repeat((-point) as usize)),
-            )
-        } else if point as usize >= digits.len() {
-            (
-                format!("{digits}{}", "0".repeat(point as usize - digits.len())),
-                String::new(),
-            )
-        } else {
-            (
-                digits[..point as usize].to_owned(),
-                digits[point as usize..].to_owned(),
-            )
-        };
-        let fraction = if fraction.is_empty() {
-            "0".to_owned()
-        } else {
-            fraction
-        };
-        return format!("{sign}{integer}.{fraction}");
-    }
-    let fraction = if digits.len() > 1 { &digits[1..] } else { "0" };
-    format!("{sign}{}.{fraction}E{exponent}", &digits[..1])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn writes_decimals_as_java_does() {
-        assert_eq!(float_to_string(1.7), "1.7");
-        assert_eq!(float_to_string(1.0), "1.0");
-        assert_eq!(float_to_string(0.0), "0.0");
-        assert_eq!(double_to_string(f64::from(0.1f32)), "0.10000000149011612");
-        assert_eq!(double_to_string(0.0), "0.0");
-        assert_eq!(double_to_string(1e7), "1.0E7");
-        assert_eq!(double_to_string(1.25e-4), "1.25E-4");
-        assert_eq!(double_to_string(0.001), "0.001");
-        assert_eq!(double_to_string(-12345.5), "-12345.5");
-        assert_eq!(double_to_string(100.0), "100.0");
-    }
 
     #[test]
     fn formats_fixed_decimals_as_java_does() {
@@ -199,6 +114,8 @@ mod tests {
         assert_eq!(format_fixed(0.375, 2), "0.38");
         assert_eq!(format_fixed(0.0, 2), "0.00");
         assert_eq!(format_fixed(12.5, 0), "13");
+        assert_eq!(format_fixed(-0.125, 2), "-0.13");
+        assert_eq!(format_fixed(f32::NAN, 2), "NaN");
     }
 
     #[test]

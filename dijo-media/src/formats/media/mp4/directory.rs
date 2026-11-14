@@ -6,8 +6,7 @@ use crate::formats::embedded::EXCEPTION_WARNING;
 use crate::java;
 use crate::java::decimal::Rounding;
 use crate::java::decimal_format::DecimalFormat;
-use crate::java::dtoa::java_double_to_string;
-use crate::java::jfloat::float_to_string;
+use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 use crate::java::time::format_instant;
 
 /// `MAX_ERROR_MESSAGES`: how many distinct directory errors Tika reports.
@@ -257,7 +256,10 @@ fn video_metadata(video: &Video, events: &mut Vec<Event<'_>>) {
         events.push(Event::Set("xmpDM:videoCompressor", compressor.clone()));
     }
     if let Some(frame_rate) = video.frame_rate {
-        events.push(Event::Set("video:frame-rate", float_to_string(frame_rate)));
+        events.push(Event::Set(
+            "video:frame-rate",
+            java_float_to_string(frame_rate),
+        ));
     }
 }
 

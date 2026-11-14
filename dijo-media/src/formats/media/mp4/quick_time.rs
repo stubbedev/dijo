@@ -6,8 +6,7 @@ use super::location;
 use super::reader::u32_at;
 use super::Event;
 use crate::java;
-use crate::java::dtoa::java_double_to_string;
-use crate::java::jfloat::float_to_string;
+use crate::java::dtoa::{java_double_to_string, java_float_to_string};
 
 /// The key whose value Tika also reads as the location.
 const LOCATION_KEY: &str = "com.apple.quicktime.location.ISO6709";
@@ -55,7 +54,9 @@ impl ValueType {
                     u64::from_be_bytes(extended).to_string()
                 })
             }
-            Self::Float32 => Some(float_to_string(f32::from_be_bytes(value.try_into().ok()?))),
+            Self::Float32 => Some(java_float_to_string(f32::from_be_bytes(
+                value.try_into().ok()?,
+            ))),
             Self::Float64 => Some(java_double_to_string(f64::from_be_bytes(
                 value.try_into().ok()?,
             ))),
