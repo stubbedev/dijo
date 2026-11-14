@@ -191,6 +191,17 @@ impl Machine<'_, '_> {
                 };
                 self.push(value)?;
             }
+            Op::Rcheck => {
+                let readable = match self.pop() {
+                    Value::String(_)
+                    | Value::Array(..)
+                    | Value::Dict(_)
+                    | Value::File
+                    | Value::Filter(_) => Value::Bool(true),
+                    _ => Value::Unknown,
+                };
+                self.push(readable)?;
+            }
             Op::Xcheck => {
                 let executable = matches!(
                     self.pop(),

@@ -34,7 +34,7 @@ pub(super) enum BuiltIn {
 
 /// A parsed Type 1 font program.
 #[derive(Debug)]
-pub(super) struct Type1 {
+pub(crate) struct Type1 {
     pub(super) encoding: Option<BuiltIn>,
     pub(super) font_matrix: Vec<f32>,
     pub(super) font_bbox: Vec<f32>,
@@ -1111,7 +1111,25 @@ pub(super) fn read(bytes: &[u8], length1: i32, length2: i32) -> Read {
     }
 }
 
+/// The encrypted part of a Type 1 font program, binary or hexadecimal, as a PostScript program
+/// holds it after `currentfile eexec`: a font with the glyphs of its `CharStrings` and no
+/// encoding, matrix or bounding box, or none where it does not parse.
+pub(crate) fn read_encrypted(encrypted: &[u8]) -> Option<Type1> {
+    let mut font = Type1 {
+        encoding: None,
+        font_matrix: Vec::new(),
+        font_bbox: Vec::new(),
+        charstrings: FastMap::default(),
+    };
+    parse_binary(encrypted, &mut font).ok().map(|()| font)
+}
+
 impl Type1 {
+    /// The names of the glyphs the font program defines.
+    pub(crate) fn glyph_names(&self) -> impl Iterator<Item = &str> {
+        self.charstrings.keys().map(String::as_str)
+    }
+
     /// `hasGlyph`.
     pub(super) fn has_glyph(&self, name: &str) -> bool {
         self.charstrings.contains_key(name)
@@ -1119,7 +1137,7 @@ impl Type1 {
 
     /// `getWidth(name)`: the width the glyph's charstring sets with `hsbw` or `sbw`, the
     /// `.notdef` glyph's for a name the font lacks.
-    pub(super) fn width(&self, name: &str) -> Result<f32, Unported> {
+    pub(crate) fn width(&self, name: &str) -> Result<f32, Unported> {
         let charstring = self
             .charstrings
             .get(name)
@@ -1176,7 +1194,7 @@ fn charstring_width(charstring: &[u8]) -> Result<f32, Unported> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn encrypt(plain: &[u8], key: u32, skip: usize) -> Vec<u8> {
@@ -1199,18 +1217,28 @@ mod tests {
              /FontMatrix [0.001 0 0 0.001 0 0] readonly def\n/FontBBox {{-10 -20 500 700}} \
              readonly def\n/Encoding {encoding} def\ncurrentdict end\ncurrentfile eexec\n"
         );
-        let charstring = encrypt(glyph, CHARSTRING_KEY, 4);
+        (ascii.into_bytes(), encrypted_part(&[("A", glyph)]))
+    }
+
+    /// The encrypted part of a Type 1 font program whose `CharStrings` hold `glyphs`, each a name
+    /// and its charstring before it is encrypted.
+    pub(crate) fn encrypted_part(glyphs: &[(&str, &[u8])]) -> Vec<u8> {
         let mut private = format!(
             "dup /Private 8 dict dup begin\n/RD{{string currentfile exch readstring pop}} \
              executeonly def\n/ND{{noaccess def}} executeonly def\n/NP{{noaccess put}} \
-             executeonly def\n/BlueValues [-20 0] def\n/lenIV 4 def\n2 index /CharStrings 2 \
-             dict dup begin\n/A {} RD ",
-            charstring.len()
+             executeonly def\n/BlueValues [-20 0] def\n/lenIV 4 def\n2 index /CharStrings {} \
+             dict dup begin\n",
+            glyphs.len()
         )
         .into_bytes();
-        private.extend_from_slice(&charstring);
-        private.extend_from_slice(b" ND\nend\nend\nreadonly put\nnoaccess put\n");
-        (ascii.into_bytes(), encrypt(&private, EEXEC_KEY, 4))
+        for (name, glyph) in glyphs {
+            let charstring = encrypt(glyph, CHARSTRING_KEY, 4);
+            private.extend_from_slice(format!("/{name} {} RD ", charstring.len()).as_bytes());
+            private.extend_from_slice(&charstring);
+            private.extend_from_slice(b" ND\n");
+        }
+        private.extend_from_slice(b"end\nend\nreadonly put\nnoaccess put\n");
+        encrypt(&private, EEXEC_KEY, 4)
     }
 
     #[test]

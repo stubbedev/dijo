@@ -15,6 +15,7 @@ use super::layout::{Advance, Layout, PageText, Position, Shown, DEFAULT_EM};
 use super::operators::Op;
 use super::scanner::{Object, Scanner, Token};
 use crate::formats::pdf::afm::Standard14;
+use crate::formats::pdf::type1;
 use crate::formats::xhtml::{within_budget, Stop};
 use crate::hash::FastMap;
 
@@ -137,13 +138,25 @@ enum Key {
 }
 
 /// A dictionary, its entries in the order they were made; a font's glyph procedures carry the
-/// metrics of the resident font they stand for.
+/// widths of its glyphs where they are known.
 #[derive(Debug, Clone, Default)]
 struct Dict {
     slots: Vec<Option<(Key, Value)>>,
     index: FastMap<Key, usize>,
-    metrics: Option<Standard14>,
+    metrics: Option<Metrics>,
 }
+
+/// The widths of a font's glyphs, in its glyph space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Metrics {
+    /// Those of the resident font of the standard 14 it stands for.
+    Standard(Standard14),
+    /// Those the charstrings of a font program the program embeds set.
+    Embedded(WidthsId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WidthsId(usize);
 
 impl Dict {
     fn get(&self, key: Key) -> Option<Value> {
@@ -346,6 +359,8 @@ pub(super) struct Machine<'a, 's> {
     user: DictId,
     system: DictId,
     font_directory: DictId,
+    /// The widths of the glyphs of each font program the program embeds, by their names.
+    widths: Vec<FastMap<NameId, f64>>,
     vectors: FastMap<Vector, ArrayId>,
     resources: FastMap<(NameId, Key), Value>,
     font: Option<DictId>,
@@ -455,6 +470,7 @@ impl<'a, 's> Machine<'a, 's> {
             saves: Vec::new(),
             journal: Vec::new(),
             faults: Vec::new(),
+            widths: Vec::new(),
             marks: PageMarks::default(),
             sink,
         };
@@ -917,15 +933,20 @@ impl<'a, 's> Machine<'a, 's> {
     }
 
     /// `currentfile eexec`: the encrypted part of a Type 1 font program, which defines the font
-    /// whose dictionary its clear part leaves on the stack, is skipped up to the `cleartomark`
-    /// that ends it, and the font defined as it would define it.
+    /// whose dictionary its clear part leaves on the stack, is read up to the `cleartomark`
+    /// that ends it for the names and widths of its glyphs, and the font defined as it would
+    /// define it.
     fn eexec(&mut self) -> Run {
         if !matches!(self.pop(), Value::File | Value::Filter(_)) {
             return Ok(());
         }
-        self.scanner.skip_past(b"cleartomark");
+        let encrypted = self.scanner.skip_past(b"cleartomark");
         if let Value::Dict(font) = self.top() {
             self.pop();
+            if let Some(program) = type1::read_encrypted(encrypted) {
+                let glyphs = self.embedded_glyphs(&program)?;
+                self.dicts[font.0].put(Key::Name(self.known.char_strings), Value::Dict(glyphs));
+            }
             let name = self
                 .dict(font)
                 .get(Key::Name(self.known.font_name))
@@ -933,6 +954,45 @@ impl<'a, 's> Machine<'a, 's> {
             self.define_font(name, Value::Dict(font))?;
         }
         Ok(())
+    }
+
+    /// The `CharStrings` of the embedded font `program`: its glyphs by name, carrying their
+    /// widths.
+    fn embedded_glyphs(&mut self, program: &type1::Type1) -> Run<DictId> {
+        let mut names: Vec<&str> = program.glyph_names().collect();
+        names.sort_unstable();
+        self.charge(names.len())?;
+        let mut widths = FastMap::default();
+        let mut glyphs = Dict::default();
+        for name in names {
+            let id = self.names.intern(name.as_bytes());
+            glyphs.put(Key::Name(id), Value::Null);
+            if let Ok(width) = program.width(name) {
+                widths.insert(id, f64::from(width));
+            }
+        }
+        glyphs.metrics = Some(Metrics::Embedded(WidthsId(self.widths.len())));
+        self.widths.push(widths);
+        self.alloc_dict(glyphs)
+    }
+
+    /// The width of the glyph `name` in a font of `metrics`, in its glyph space.
+    fn glyph_width(&self, metrics: Metrics, name: NameId) -> Option<f64> {
+        match metrics {
+            Metrics::Standard(standard) => {
+                let name = std::str::from_utf8(self.names.text(name)).ok()?;
+                Some(f64::from(standard.metrics().character_width(name)))
+            }
+            Metrics::Embedded(WidthsId(id)) => self.widths[id].get(&name).copied(),
+        }
+    }
+
+    /// The widths of the glyphs of `font`, if it has any.
+    fn metrics(&self, font: &Dict) -> Option<Metrics> {
+        match font.get(Key::Name(self.known.char_strings)) {
+            Some(Value::Dict(glyphs)) => self.dict(glyphs).metrics,
+            _ => None,
+        }
     }
 
     /// `readstring`, `readhexstring` and `readline` of the program's own file.
@@ -1003,7 +1063,7 @@ impl<'a, 's> Machine<'a, 's> {
         let resident = Resident::named(&String::from_utf8_lossy(self.names.text(name)));
         let encoding = self.vector(resident.vector);
         let glyphs = self.alloc_dict(Dict {
-            metrics: resident.metrics,
+            metrics: resident.metrics.map(Metrics::Standard),
             ..Dict::default()
         })?;
         let matrix = self.alloc_array(TYPE_1_FONT_MATRIX.map(Value::Number).to_vec())?;
@@ -1068,33 +1128,32 @@ impl<'a, 's> Machine<'a, 's> {
         let matrix = entry(self.known.font_matrix).and_then(|value| self.matrix(value));
         let scale = matrix.map(|m| m[0].hypot(m[1]));
         let em = self.em(entry(self.known.font_bbox), font_type, matrix);
-        let metrics = match entry(self.known.char_strings) {
-            Some(Value::Dict(glyphs)) => self.dict(glyphs).metrics,
-            _ => None,
-        };
-        let dingbats = metrics == Some(Standard14::ZapfDingbats);
-        let metrics = metrics.map(Standard14::metrics);
+        let metrics = self.metrics(font);
+        let dingbats = metrics == Some(Metrics::Standard(Standard14::ZapfDingbats));
         let mut text = String::with_capacity(bytes.len());
         let mut unmapped = 0u32;
-        let mut width = 0.0f64;
+        let mut width = metrics.map(|_| 0.0f64);
         for &code in bytes {
             let name = match names.get(usize::from(code)) {
-                Some(Value::Name(name, _)) => Some(self.names.text(*name)),
+                Some(Value::Name(name, _)) => Some(*name),
                 _ => None,
             };
-            if !name.is_some_and(|name| fonts::glyph_text(name, dingbats, &mut text)) {
+            let mapped = name
+                .is_some_and(|name| fonts::glyph_text(self.names.text(name), dingbats, &mut text));
+            if !mapped {
                 unmapped += 1;
             }
-            if let (Some(metrics), Some(name)) = (metrics, name) {
-                let name = std::str::from_utf8(name).unwrap_or_default();
-                width += f64::from(metrics.character_width(name));
-            }
+            width = width
+                .zip(metrics.zip(name))
+                .and_then(|(width, (metrics, name))| {
+                    Some(width + self.glyph_width(metrics, name)?)
+                });
         }
         Ok(Decoded {
             text,
             glyphs: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
             unmapped,
-            width: metrics.and(scale).map(|scale| width * scale),
+            width: width.zip(scale).map(|(width, scale)| width * scale),
             em,
         })
     }
@@ -1178,21 +1237,17 @@ impl<'a, 's> Machine<'a, 's> {
             .and_then(|value| self.matrix(value));
         let font_type = font.get(Key::Name(self.known.font_type)).and_then(number);
         let em = self.em(font.get(Key::Name(self.known.font_bbox)), font_type, matrix);
-        let metrics = match font.get(Key::Name(self.known.char_strings)) {
-            Some(Value::Dict(glyphs)) => self.dict(glyphs).metrics,
-            _ => None,
-        };
-        let text_name = self.names.text(name);
+        let metrics = self.metrics(font);
         let mut text = String::new();
         let mapped = fonts::glyph_text(
-            text_name,
-            metrics == Some(Standard14::ZapfDingbats),
+            self.names.text(name),
+            metrics == Some(Metrics::Standard(Standard14::ZapfDingbats)),
             &mut text,
         );
-        let width = metrics.zip(matrix).map(|(metrics, matrix)| {
-            let name = std::str::from_utf8(text_name).unwrap_or_default();
-            f64::from(metrics.metrics().character_width(name)) * matrix[0].hypot(matrix[1])
-        });
+        let width = metrics
+            .and_then(|metrics| self.glyph_width(metrics, name))
+            .zip(matrix)
+            .map(|(width, matrix)| width * matrix[0].hypot(matrix[1]));
         self.tick(1)?;
         self.layout.show(Shown {
             text: &text,

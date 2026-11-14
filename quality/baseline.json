@@ -1743,11 +1743,11 @@
     "reading_order": 1.0
   },
   "prose.ps": {
-    "character_error_rate": 1.0,
-    "token_error_rate": 1.0,
-    "recall": 0.0,
-    "spurious": 0.0,
-    "reading_order": 0.0
+    "character_error_rate": 0.0017006802721088435,
+    "token_error_rate": 0.003278688524590164,
+    "recall": 1.0,
+    "spurious": 0.0032679738562091504,
+    "reading_order": 1.0
   },
   "prose.rpm": {
     "character_error_rate": 0.027210884353741496,

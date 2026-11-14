@@ -83,6 +83,61 @@ fn reads_the_encoding_of_an_embedded_type_1_font() {
     assert_eq!(texts(program), [vec!["Light".to_owned()]]);
 }
 
+/// The procedures of dvips's `tex.pro` that show text, its `texps.pro` as it is, and a font it
+/// embeds, re-encoded as dvips re-encodes Latin Modern fonts.
+#[test]
+fn reads_dvips_output_through_its_embedded_fonts() {
+    let hsbw = |width: u8| [139, 248, width, 13];
+    let encrypted = crate::formats::pdf::type1::tests::encrypted_part(&[
+        (".notdef", &[139, 139, 13]),
+        ("T", &hsbw(236)),
+        ("h", &hsbw(136)),
+        ("e", &hsbw(136)),
+        ("fi", &hsbw(136)),
+        ("l", &hsbw(136)),
+        ("d", &hsbw(136)),
+        ("g", &hsbw(136)),
+        ("r", &hsbw(136)),
+    ]);
+    let mut program = b"/TeXDict 300 dict def TeXDict begin/N{def}def/B{bind def}N/S{exch}N\n\
+        /X{S N}B/A{dup}B/Resolution 600 N/VResolution 600 N/p{show}N/a{moveto}B/delta 0 N\n\
+        /tail{A/delta X 0 rmoveto}B/M{S p delta add tail}B/b{S p tail}B/g{0 M}B\n\
+        /w{0 rmoveto}B/n{p -2 w}B/y{3 2 roll p a}B end\n\
+        TeXDict begin/rf{findfont dup length 1 add dict begin{1 index/FID ne 2\n\
+        index/UniqueID ne and{def}{pop pop}ifelse}forall[1 index 0 6 -1 roll\n\
+        exec 0 exch 5 -1 roll VResolution Resolution div mul neg 0 0]FontType 0\n\
+        ne{/Metrics exch def dict begin Encoding{exch dup type/integertype ne{\n\
+        pop pop 1 sub dup 0 le{pop}{[}ifelse}{FontMatrix 0 get div Metrics 0 get\n\
+        div def}ifelse}forall Metrics/Metrics currentdict end def}{{1 index type\n\
+        /nametype eq{exit}if exch pop}loop}ifelse[2 index currentdict end\n\
+        definefont 3 -1 roll makefont/setfont cvx]cvx def}def\n\
+        /ReEncodeFont{CharStrings rcheck{/Encoding false def dup[\n\
+        exch{dup CharStrings exch known not{pop/.notdef/Encoding true def}if}\n\
+        forall Encoding{]exch pop}{cleartomark}ifelse}if/Encoding exch def}def\n\
+        end\n\
+        FontDirectory/Ledger known{/Ledger findfont dup/UniqueID known{dup\n\
+        /UniqueID get 0 eq exch/FontType get 1 eq and}{pop false}ifelse\n\
+        {save true}{false}ifelse}{false}ifelse\n\
+        11 dict begin /FontName /Ledger def /FontType 1 def\n\
+        /FontMatrix [0.001 0 0 0.001 0 0] readonly def /Encoding StandardEncoding def\n\
+        currentdict end currentfile eexec\n"
+        .to_vec();
+    program.extend_from_slice(&encrypted);
+    program.extend_from_slice(
+        b"\n0000000000000000000000000000000000000000000000000000000000000000\n\
+        cleartomark\n{restore}if\n\
+        /enc [/T/h/e/fi/l/d/g/r/i] def\n\
+        TeXDict begin /Fa 1[42 46 23 46 46 46 46 60 {enc ReEncodeFont} 8 83.022 /Ledger rf\n\
+        end\n\
+        TeXDict begin 100 100 a Fa(\\000\\001\\002)27 b(\\004\\002\\005)n(\\006\\002\\007)g\n\
+        (\\003\\004\\004\\002\\005\\010)100 200 y(\\000)p 150 200 a(\\001\\002)p showpage end",
+    );
+    let pages = pages(&program);
+    assert_eq!(pages[0].faults, []);
+    assert_eq!(pages[0].text.paragraphs, ["The ledger filled\nThe"]);
+    assert_eq!(pages[0].text.unmapped, 1);
+}
+
 #[test]
 fn ends_unshown_pages_at_their_structuring_marks() {
     let program = b"%!PS-Adobe-3.0\n/Courier findfont 10 scalefont setfont\n\

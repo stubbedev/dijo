@@ -236,10 +236,16 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// Skips past the next `marker`, or to the end where there is none.
-    pub(super) fn skip_past(&mut self, marker: &[u8]) {
-        self.at = memchr::memmem::find(&self.bytes[self.at..], marker)
-            .map_or(self.bytes.len(), |offset| self.at + offset + marker.len());
+    /// Skips past the next `marker`, or to the end where there is none, and gives what is skipped
+    /// before it.
+    pub(super) fn skip_past(&mut self, marker: &[u8]) -> &'a [u8] {
+        let start = self.at;
+        let (end, at) = memchr::memmem::find(&self.bytes[start..], marker)
+            .map_or((self.bytes.len(), self.bytes.len()), |offset| {
+                (start + offset, start + offset + marker.len())
+            });
+        self.at = at;
+        &self.bytes[start..end]
     }
 
     /// A literal string after its `(`: balanced parentheses kept, escapes resolved, and every

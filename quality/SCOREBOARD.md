@@ -310,7 +310,7 @@
 | prose.fb2 | e-book | 0.005 | 0.003 | 1.000 | 0.003 | 1.000 |
 | prose.mobi | e-book | 0.023 | 0.020 | 1.000 | 0.019 | 1.000 |
 | prose.dvi | niche-formats | 0.002 | 0.003 | 1.000 | 0.003 | 1.000 |
-| prose.ps | niche-formats | 1.000 | 1.000 | 0.000 | 0.000 | 0.000 |
+| prose.ps | niche-formats | 0.002 | 0.003 | 1.000 | 0.003 | 1.000 |
 | prose.svg | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.abw | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | prose.sla | niche-formats | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

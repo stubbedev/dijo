@@ -38,7 +38,7 @@ mod stripper;
 mod structure;
 mod tagged;
 pub(crate) mod truetype;
-mod type1;
+pub(crate) mod type1;
 mod writer;
 mod xfa;
 mod xref;
