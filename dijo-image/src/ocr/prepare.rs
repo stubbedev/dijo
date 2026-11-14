@@ -280,8 +280,18 @@ pub(crate) fn scale_factor(image: &Bitmap, max_pixels: u64, reduce: bool) -> f64
     wanted.min(allowed).max(1.0)
 }
 
-pub(crate) fn ink_runs(image: &GrayImage) -> Vec<Range<usize>> {
-    runs_of_ink(image, ink_threshold(image))
+/// How many pixels of each row of an image are ink.
+pub(crate) fn ink_per_row(image: &GrayImage) -> Vec<usize> {
+    let threshold = ink_threshold(image);
+    image
+        .as_raw()
+        .chunks_exact(image.width() as usize)
+        .map(|row| {
+            row.iter()
+                .filter(|&&level| u32::from(level) < threshold)
+                .count()
+        })
+        .collect()
 }
 
 /// The grey level below which a pixel is ink.
@@ -308,21 +318,32 @@ fn inked_columns(
 
 /// The runs of at least [`MIN_INK_RUN_PIXELS`] rows each holding a pixel darker than `threshold`.
 fn runs_of_ink(image: &GrayImage, threshold: u32) -> Vec<Range<usize>> {
-    let inked: Vec<bool> = image
-        .as_raw()
-        .chunks_exact(image.width() as usize)
-        .map(|row| row.iter().any(|&level| u32::from(level) < threshold))
-        .collect();
+    runs_of_inked_rows(
+        image
+            .as_raw()
+            .chunks_exact(image.width() as usize)
+            .map(|row| row.iter().any(|&level| u32::from(level) < threshold)),
+    )
+}
+
+/// The runs of at least [`MIN_INK_RUN_PIXELS`] rows each holding ink, of an image's rows told
+/// inked or not from the top.
+pub(crate) fn runs_of_inked_rows(inked: impl IntoIterator<Item = bool>) -> Vec<Range<usize>> {
     let mut runs = Vec::new();
     let mut start = 0;
-    for y in 0..=inked.len() {
-        if y < inked.len() && inked[y] {
+    let mut rows = 0;
+    for (y, inked) in inked.into_iter().enumerate() {
+        rows = y + 1;
+        if inked {
             continue;
         }
         if y - start >= MIN_INK_RUN_PIXELS {
             runs.push(start..y);
         }
         start = y + 1;
+    }
+    if rows - start >= MIN_INK_RUN_PIXELS {
+        runs.push(start..rows);
     }
     runs
 }

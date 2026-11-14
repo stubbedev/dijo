@@ -71,7 +71,8 @@ const MIN_CURL_DEGREES: f64 = 1.0;
 /// Scripts tesseract's detection takes for others (Armenian for upside-down Latin, Georgian for
 /// Malayalam, Hebrew for Thai, and Hebrew, Han, Japanese, Devanagari or none for Korean, whose
 /// Hangul it tells apart only at some sizes), tried in turn when no reading of an image with
-/// plenty of text is confident.
+/// plenty of text is confident: each on the image's [`sample_strip`] first, and on the whole image
+/// only when the strip reads more confidently than the best reading so far.
 const OVERLOOKED_SCRIPTS: [&str; 4] = ["Armenian", "Georgian", "Hebrew", "Korean"];
 /// Scripts detection reports for pages in another script, which is read first in its place:
 /// Georgian pages are reported as Malayalam. The reported script is then the first of the
@@ -79,6 +80,12 @@ const OVERLOOKED_SCRIPTS: [&str; 4] = ["Armenian", "Georgian", "Hebrew", "Korean
 const REPORTED_FOR: [(&str, &str); 1] = [("Malayalam", "Georgian")];
 const MIN_WORDS_TO_RETRY: usize = 20;
 const LANGUAGE_STRIP_LINES: usize = 6;
+/// The fifths of a page's height, about its middle, that its [`sample_strip`] takes when its
+/// lines run together.
+const SAMPLE_FIFTHS: Range<usize> = 2..3;
+/// The share of a page's height within which each edge of its [`sample_strip`] moves to the row
+/// with the least ink, to cut between lines rather than through them.
+const SAMPLE_EDGE_SHARE: usize = 20;
 /// Pages are segmented without tesseract's own orientation and script detection (mode 3, where
 /// Tika's default is 1): an image is turned upright before it is read, and detection runs only
 /// when a first reading needs it.
@@ -420,7 +427,7 @@ impl Prepared {
 
 /// An image prepared to read, at its pixels to the inch, with what is found in those pixels once:
 /// their encoding as a PNG, what orientation and script detection finds in them, the layouts
-/// tesseract finds in them, and the text lines PP-OCRv5 finds in them.
+/// tesseract finds in them, the text lines PP-OCRv5 finds in them, and its [`sample_strip`].
 #[derive(Debug)]
 struct Readable {
     bitmap: Bitmap,
@@ -429,6 +436,7 @@ struct Readable {
     detection: OnceLock<Detection>,
     layouts: Layouts,
     lines: OnceLock<Lines>,
+    sample: OnceLock<Option<Range<usize>>>,
 }
 
 impl Readable {
@@ -440,6 +448,7 @@ impl Readable {
             detection: OnceLock::new(),
             layouts: Layouts::default(),
             lines: OnceLock::new(),
+            sample: OnceLock::new(),
         }
     }
 }
@@ -736,29 +745,55 @@ impl<'t> Recognizer<'t> {
     }
 
     fn language_of_strip(&self, first: &Prepared) -> Result<Option<OcrLanguage>, OcrError> {
-        let Some(made) = first.image.as_deref() else {
+        let Some(reading) = self.read_strip(first, |_, image| {
+            language_strip(&prepare::ink_per_row(image))
+        })?
+        else {
             return Ok(None);
         };
-        let Bitmap::Gray(prepared) = &made.bitmap else {
-            return Ok(None);
-        };
-        let Some(rows) = language_strip(prepared) else {
-            return Ok(None);
-        };
-        let width = prepared.width() as usize;
-        let strip = Pixels::Gray {
-            data: &prepared.as_raw()[rows.start * width..rows.end * width],
-            width: prepared.width(),
-            height: rows.len() as u32,
-        };
-        let read = Attempt::read(
-            first.clone(),
-            self.read_pixels(strip, made.density, None, first)?,
-        );
+        let read = Attempt::read(first.clone(), reading);
         match read.in_a_language() {
             true => self.model_of_detected_language(&read),
             false => Ok(None),
         }
+    }
+
+    /// Reads the rows `strip` cuts from an image as it was prepared, when it is prepared into
+    /// grey levels and `strip` cuts some.
+    fn read_strip(
+        &self,
+        prepared: &Prepared,
+        strip: impl FnOnce(&Readable, &GrayImage) -> Option<Range<usize>>,
+    ) -> Result<Option<Reading>, OcrError> {
+        let Some(made) = prepared.image.as_deref() else {
+            return Ok(None);
+        };
+        let Bitmap::Gray(image) = &made.bitmap else {
+            return Ok(None);
+        };
+        let Some(rows) = strip(made, image) else {
+            return Ok(None);
+        };
+        let width = image.width() as usize;
+        let pixels = Pixels::Gray {
+            data: &image.as_raw()[rows.start * width..rows.end * width],
+            width: image.width(),
+            height: rows.len() as u32,
+        };
+        self.read_pixels(pixels, made.density, None, prepared)
+            .map(Some)
+    }
+
+    /// Whether an image prepared to read in an overlooked script may read more confidently whole
+    /// than the best reading so far: whether its [`sample_strip`] reads more confidently than that
+    /// reading, or it has none.
+    fn may_read_better(&self, prepared: &Prepared, best: &Attempt) -> Result<bool, OcrError> {
+        let sample = self.read_strip(prepared, |made, image| {
+            made.sample
+                .get_or_init(|| sample_strip(&prepare::ink_per_row(image)))
+                .clone()
+        })?;
+        Ok(sample.is_none_or(|sample| sample.confidence > best.confidence()))
     }
 
     fn model_of_detected_language(&self, read: &Attempt) -> Result<Option<OcrLanguage>, OcrError> {
@@ -894,6 +929,7 @@ impl<'t> Recognizer<'t> {
     }
 
     /// Reads an image in the given scripts in turn, until one reads it confidently, passing over
+    /// each script whose [`sample_strip`] reads less confidently than the best reading so far and
     /// each reading whose letters are mostly in another script: the best reading, whose script
     /// the rest of the extraction then assumes.
     fn read_overlooked(
@@ -904,7 +940,8 @@ impl<'t> Recognizer<'t> {
         oriented: &Oriented,
     ) -> Result<Attempt, OcrError> {
         let installed = self.tesseract.languages()?;
-        let mut overlooked = best.clone();
+        let mut prepared = best.prepared.clone();
+        let mut overlooked = best;
         for script in scripts {
             let Some(model) = installed_language(&installed, script) else {
                 continue;
@@ -912,17 +949,13 @@ impl<'t> Recognizer<'t> {
             if overlooked.confident() {
                 continue;
             }
-            let retried = prepare_again(
-                &best.prepared,
-                image,
-                oriented,
-                Some(script.clone()),
-                model,
-                0,
-            );
-            let reading = self.read(image, &retried)?;
+            prepared = prepare_again(&prepared, image, oriented, Some(script.clone()), model, 0);
+            if !self.may_read_better(&prepared, &overlooked)? {
+                continue;
+            }
+            let reading = self.read(image, &prepared)?;
             if written_in(&reading.text, script) {
-                overlooked = overlooked.or(Attempt::read(retried, reading));
+                overlooked = overlooked.or(Attempt::read(prepared.clone(), reading));
             }
         }
         Ok(overlooked)
@@ -1163,14 +1196,50 @@ fn overlooked(reported: Option<&str>, tried: &[&str]) -> Vec<String> {
     scripts
 }
 
-fn language_strip(image: &GrayImage) -> Option<Range<usize>> {
-    let lines = prepare::ink_runs(image);
+/// The rows about the middle of a page holding [`LANGUAGE_STRIP_LINES`] of its lines, cut midway
+/// between lines, of the ink in each of its rows: none when it has fewer lines, or the strip
+/// would be over half the page.
+fn language_strip(ink: &[usize]) -> Option<Range<usize>> {
+    strip_of_lines(&inked_lines(ink), ink.len())
+}
+
+/// The rows of a page read in an overlooked script before all of it is, of the ink in each of its
+/// rows: its [`language_strip`]; or, when its lines run together into a run of ink over half its
+/// height, as a frame, a tear or text set in columns down the page makes them, the
+/// [`SAMPLE_FIFTHS`] of its height, each edge moved to the row with the least ink near it. None
+/// when it has too few lines to cut a strip of, as a page that costs little to read whole.
+fn sample_strip(ink: &[usize]) -> Option<Range<usize>> {
+    let height = ink.len();
+    let lines = inked_lines(ink);
+    if let Some(strip) = strip_of_lines(&lines, height) {
+        return Some(strip);
+    }
+    if !lines.iter().any(|line| 2 * line.len() > height) {
+        return None;
+    }
+    let slack = height / SAMPLE_EDGE_SHARE;
+    let lightest_near = |at: usize| {
+        (at.saturating_sub(slack)..=(at + slack).min(height - 1))
+            .min_by_key(|&row| (ink[row], row.abs_diff(at)))
+            .unwrap_or(at)
+    };
+    let strip = lightest_near(height * SAMPLE_FIFTHS.start / 5)
+        ..lightest_near(height * SAMPLE_FIFTHS.end / 5);
+    (!strip.is_empty()).then_some(strip)
+}
+
+/// The lines of a page, of the ink in each of its rows: its runs of inked rows.
+fn inked_lines(ink: &[usize]) -> Vec<Range<usize>> {
+    prepare::runs_of_inked_rows(ink.iter().map(|&pixels| pixels > 0))
+}
+
+/// The [`language_strip`] of a page `height` rows high with these lines.
+fn strip_of_lines(lines: &[Range<usize>], height: usize) -> Option<Range<usize>> {
     if lines.len() < LANGUAGE_STRIP_LINES {
         return None;
     }
     let first = (lines.len() - LANGUAGE_STRIP_LINES) / 2;
     let last = first + LANGUAGE_STRIP_LINES - 1;
-    let height = image.height() as usize;
     let top = match first.checked_sub(1) {
         Some(above) => lines[above].end.midpoint(lines[first].start),
         None => 0,
@@ -1551,22 +1620,49 @@ mod tests {
         page
     }
 
+    fn ink(page: &GrayImage) -> Vec<usize> {
+        prepare::ink_per_row(page)
+    }
+
     #[test]
     fn cuts_a_strip_of_lines_about_the_middle_between_lines() {
         let page = lines(1000, (0..20).map(|line| 100 + line * 20));
-        assert_eq!(language_strip(&page), Some(235..355));
+        assert_eq!(language_strip(&ink(&page)), Some(235..355));
     }
 
     #[test]
     fn cuts_no_strip_of_a_page_of_few_lines_or_of_most_of_it() {
         assert_eq!(
-            language_strip(&lines(1000, (0..5).map(|line| 100 + line * 20))),
+            language_strip(&ink(&lines(1000, (0..5).map(|line| 100 + line * 20)))),
             None
         );
         assert_eq!(
-            language_strip(&lines(400, (0..8).map(|line| 20 + line * 45))),
+            language_strip(&ink(&lines(400, (0..8).map(|line| 20 + line * 45)))),
             None
         );
+    }
+
+    #[test]
+    fn samples_a_page_of_separate_lines_by_its_language_strip() {
+        let page = lines(1000, (0..20).map(|line| 100 + line * 20));
+        assert_eq!(sample_strip(&ink(&page)), Some(235..355));
+    }
+
+    #[test]
+    fn samples_the_middle_of_a_framed_page_between_its_lines() {
+        let mut page = lines(1000, (0..20).map(|line| 100 + line * 20));
+        for y in 0..1000 {
+            page.put_pixel(5, y, image::Luma([0]));
+        }
+        let ink = ink(&page);
+        assert_eq!(language_strip(&ink), None);
+        assert_eq!(sample_strip(&ink), Some(399..600));
+    }
+
+    #[test]
+    fn samples_no_strip_of_a_page_of_few_lines() {
+        let page = lines(1000, (0..5).map(|line| 100 + line * 20));
+        assert_eq!(sample_strip(&ink(&page)), None);
     }
 
     fn auto_settings() -> OcrSettings {
