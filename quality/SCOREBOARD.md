@@ -302,7 +302,7 @@
 | slides.ppt | slides | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | slides.pdf | slides | 0.032 | 0.000 | 1.000 | 0.000 | 1.000 |
 | inventory.csv | spreadsheets | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| inventory.ods | spreadsheets | 0.058 | 0.058 | 1.000 | 0.055 | 1.000 |
+| inventory.ods | spreadsheets | 0.006 | 0.007 | 1.000 | 0.007 | 1.000 |
 | inventory.xls | spreadsheets | 0.019 | 0.014 | 1.000 | 0.014 | 1.000 |
 | inventory.parquet | spreadsheets | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | letters.eml | email | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |

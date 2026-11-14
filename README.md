@@ -149,6 +149,8 @@ Where the answers differ from tika-server's:
 - An empty upload is a document without text, answered 200, where tika-server answers 422.
 - Each e-mail message's body, attached messages and mbox entries included, starts with its subject as a heading;
   Tika keeps the subject only in the metadata and the `<title>`, so its batch text shows only the outermost one's.
+- An OpenDocument spreadsheet writes only the page styles its sheets are printed with, and their header and footer
+  fields without the placeholder text LibreOffice stores (`???`, `00/00/0000`); Tika writes every page style.
 - `/mime-types/{type}/{subtype}` has no description, acronym or links, which dijo's media types do not carry.
 - The presets, the `/config` and `/form` uploads, the XMP endpoints, `/translate`, `/pipes` and `/async` are not served.
 

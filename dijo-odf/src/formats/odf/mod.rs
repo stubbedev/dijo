@@ -3,7 +3,9 @@
 //! the `mimetype` entry names, and the text of every `content.xml` and `styles.xml` in the
 //! archive, embedded objects' included, in the order of its central directory, with the
 //! pictures, object thumbnails and base64 binary data it embeds parsed as embedded documents.
-//! An encrypted document fails, as Tika fails it, before anything of it is written.
+//! An encrypted document fails, as Tika fails it, before anything of it is written. The table
+//! styles of a spreadsheet's `content.xml` are read ahead, as far as its body, for the writing
+//! of its `styles.xml` to tell the master pages its sheets are printed with.
 
 mod body;
 mod flat;
@@ -15,6 +17,7 @@ use std::borrow::Cow;
 use std::io::{self, Write};
 
 use crate::compress::zip::file::ZipEntry;
+use crate::compress::zip::Decoded;
 use crate::config::ParserConfigs;
 use crate::formats::crypt;
 use crate::formats::embedded::{self, Wrapping};
@@ -26,6 +29,7 @@ use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages, Spool};
 use crate::java::CommonsBase64;
 use crate::mime::{self, Origin};
+use body::{MasterPages, SheetPages};
 
 const TIKA_NAME: &str = "org.apache.tika.parser.odf.OpenDocumentParser";
 pub(crate) const OFFICE_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:office:1.0";
@@ -77,6 +81,10 @@ const NEW_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:";
 const META_NAME: &str = "meta.xml";
 const MIMETYPE_NAME: &str = "mimetype";
 const MANIFEST_NAME: &str = "META-INF/manifest.xml";
+const CONTENT_NAME: &str = "content.xml";
+const STYLES_NAME: &str = "styles.xml";
+/// The bytes of a `content.xml` first decoded to find its body in, doubled until it is found.
+const CONTENT_STYLES_WINDOW: usize = 64 * 1024;
 
 /// The media types Tika parses with its `OpenDocumentParser`: those it names, and the StarOffice
 /// Writer template, which Tika's registry makes a kind of StarOffice Writer file.
@@ -249,6 +257,32 @@ impl<'a> Archive<'a> {
             .collect()
     }
 
+    /// The master pages the table styles of the document's `content.xml` print its sheets
+    /// with, as far as its body, or `None` where that body is no spreadsheet or cannot be read.
+    fn sheet_pages(&self) -> Option<SheetPages> {
+        let zip = self.package.zip();
+        let entry = &self
+            .entries
+            .iter()
+            .find(|entry| entry.name() == CONTENT_NAME)?
+            .entry;
+        let mut window = CONTENT_STYLES_WINDOW;
+        loop {
+            let (head, whole) = match zip.read_head(entry, u64::try_from(window).ok()?)? {
+                Decoded::Complete(head) | Decoded::Truncated(head) => (head, true),
+                Decoded::Oversized(head) => (head, false),
+            };
+            let mut styles = ContentStyles::default();
+            let parsed = xml::parse_sax(&head, CONTENT_NAME, &mut styles);
+            match (styles.spreadsheet, parsed) {
+                (Some(spreadsheet), _) => return spreadsheet.then_some(styles.pages),
+                (None, Ok(())) => return None,
+                (None, Err(_)) if whole || head.len() < window => return None,
+                (None, Err(_)) => window = window.checked_mul(2)?,
+            }
+        }
+    }
+
     /// Reads the data of each entry `handleZipFile` reads, in its order, one at a time, for
     /// `each` to handle, failing where that reading throws.
     fn read_each(
@@ -264,6 +298,47 @@ impl<'a> Archive<'a> {
                 .map_err(|unread| unread.failure(entry.name(), Opened::Tagged, TIKA_NAME))?;
             each(entry, &input)?;
         }
+        Ok(())
+    }
+}
+
+/// The table styles of a `content.xml` up to its body, and whether that body is a spreadsheet,
+/// once its first element is read; the parse stops there.
+#[derive(Default)]
+struct ContentStyles {
+    pages: SheetPages,
+    in_body: bool,
+    spreadsheet: Option<bool>,
+}
+
+impl SaxHandler for ContentStyles {
+    fn start_element(
+        &mut self,
+        namespace: &str,
+        local_name: &str,
+        attributes: &[Attribute],
+    ) -> Result<(), Failure> {
+        let namespace = normalized_namespace(namespace);
+        if self.in_body {
+            self.spreadsheet = Some(namespace == OFFICE_NS && local_name == "spreadsheet");
+            return Err(Failure::Malformed(
+                "the body's first element read".to_owned(),
+            ));
+        }
+        if namespace == OFFICE_NS && local_name == "body" {
+            self.in_body = true;
+        } else {
+            let attributes = normalized_attributes(attributes);
+            self.pages.define(&namespace, local_name, &attributes);
+        }
+        Ok(())
+    }
+
+    fn end_element(&mut self, _namespace: &str, _local_name: &str) -> Result<(), Failure> {
+        Ok(())
+    }
+
+    fn characters(&mut self, _text: &str) -> Result<(), Failure> {
         Ok(())
     }
 }
@@ -479,11 +554,22 @@ impl Parser for OpenDocumentParser {
 
 /// Writes the document in `archive` as `OpenDocumentParser.handleZipFile` does.
 fn write(archive: Archive, configs: &ParserConfigs, xhtml: &mut Xhtml) -> Result<(), Failure> {
+    let sheet_pages = archive.sheet_pages();
     archive.read_each(|entry, input| {
         read_metadata(entry.kind, input, xhtml.metadata_mut())?;
         match entry.kind {
             EntryKind::Body => {
-                let mut body = body::Body::new(xhtml, configs.office.includes_deleted_content());
+                let master_pages = match &sheet_pages {
+                    Some(pages) if entry.name() == STYLES_NAME => {
+                        MasterPages::Sheets(pages.clone())
+                    }
+                    _ => MasterPages::All,
+                };
+                let mut body = body::Body::new(
+                    xhtml,
+                    configs.office.includes_deleted_content(),
+                    master_pages,
+                );
                 xml::parse_part(input, entry.name(), &mut body)
             }
             EntryKind::Embedded => {

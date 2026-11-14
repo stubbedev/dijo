@@ -5,7 +5,9 @@
 //! its styles, through the handlers of the archived format. As in an archive, where they are
 //! parts of their own, the body does not see the common styles. Settings and scripts are left
 //! out, and macros are not extracted, as Tika's default leaves them. Base64 binary data, in the
-//! styles as in the body, is parsed as embedded documents, as it is in an archive.
+//! styles as in the body, is parsed as embedded documents, as it is in an archive. A
+//! spreadsheet's master pages are written as an archived spreadsheet's are: those its table
+//! styles print its sheets with, their fields without text.
 //!
 //! Tika's `FlatOpenDocumentParser` reads `office:meta` and `office:body` alone, so styles, master
 //! pages, headers and footers are lost, and routes them by local name in any namespace. It never
@@ -15,7 +17,7 @@
 
 use crate::config::ParserConfigs;
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::odf::body::{Body, DefinedStyles};
+use crate::formats::odf::body::{Body, DefinedStyles, MasterPages};
 use crate::formats::odf::meta::{attribute_value, merge_subjects, MetaHandlers};
 use crate::formats::odf::OFFICE_NS;
 use crate::formats::xhtml::Xhtml;
@@ -25,6 +27,8 @@ use crate::input::Pages;
 
 const WHAT: &str = "The flat OpenDocument XML";
 const DOCUMENT: &str = "document";
+
+const FLAT_SPREADSHEET: &str = "application/vnd.oasis.opendocument.flat.spreadsheet";
 
 /// The flat media types, by the media type a document's `office:mimetype` names.
 const FLAT_TYPES: [(&str, &str); 3] = [
@@ -38,7 +42,7 @@ const FLAT_TYPES: [(&str, &str); 3] = [
     ),
     (
         "application/vnd.oasis.opendocument.spreadsheet",
-        "application/vnd.oasis.opendocument.flat.spreadsheet",
+        FLAT_SPREADSHEET,
     ),
 ];
 
@@ -174,6 +178,9 @@ impl SaxHandler for Flat<'_, '_> {
         match self.sections.start(namespace, local_name) {
             Start::Document => {
                 self.detected = flat_type(attributes);
+                if self.detected == Some(FLAT_SPREADSHEET) {
+                    self.body.read_sheets();
+                }
                 let metadata = self.body.metadata_mut();
                 attribute_value(metadata, "odf:version", attributes, OFFICE_NS, "version");
             }
@@ -247,7 +254,7 @@ impl Parser for FlatOpenDocumentParser {
             "application/vnd.oasis.opendocument.tika.flat.document",
             "application/vnd.oasis.opendocument.flat.text",
             "application/vnd.oasis.opendocument.flat.presentation",
-            "application/vnd.oasis.opendocument.flat.spreadsheet",
+            FLAT_SPREADSHEET,
         ]
     }
 
@@ -285,7 +292,11 @@ fn write(
 ) -> Result<(), Failure> {
     let mut flat = Flat {
         sections: Sections::new(),
-        body: Body::new(xhtml, configs.office.includes_deleted_content()),
+        body: Body::new(
+            xhtml,
+            configs.office.includes_deleted_content(),
+            MasterPages::All,
+        ),
         meta: MetaHandlers::new(),
         detected: None,
         before_common_styles: DefinedStyles::default(),
@@ -326,7 +337,7 @@ mod tests {
             &["<p class=\"notes\"><div />", "<p>Fyret ved havet</p>"],
         ),
     ];
-    const NAMESPACES: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0""#;
+    const NAMESPACES: &str = r#"xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0""#;
     const TEXT: &str = "application/vnd.oasis.opendocument.text";
 
     /// A flat document whose `office:document` names `mimetype` and holds `sections`.
@@ -406,6 +417,56 @@ mod tests {
             flat_metadata["Content-Type"],
             ["application/vnd.oasis.opendocument.flat.text"]
         );
+    }
+
+    /// A spreadsheet's master pages are written where a table style prints its sheets with
+    /// them, all of them where a table style names none, and their fields without the
+    /// placeholder text Calc stores, flat and archived alike, the styles before the content.
+    #[test]
+    fn a_spreadsheet_writes_the_master_pages_its_sheets_are_printed_with() {
+        const SPREADSHEET: &str = "application/vnd.oasis.opendocument.spreadsheet";
+        let master = r#"<office:master-styles><style:master-page style:name="Default"><style:header><text:p><text:sheet-name>???</text:sheet-name></text:p></style:header><style:footer><text:p>Page <text:page-number>1</text:page-number></text:p></style:footer></style:master-page><style:master-page style:name="Report"><style:header><text:p><text:title>???</text:title> <text:date>00/00/0000</text:date></text:p></style:header><style:footer><text:p>Report footer</text:p></style:footer></style:master-page></office:master-styles>"#;
+        let body = r#"<office:body><office:spreadsheet><table:table table:name="inventory" table:style-name="ta1"><table:table-row><table:table-cell><text:p>Lamp wicks <text:date>2026-11-14</text:date></text:p></table:table-cell></table:table-row></table:table></office:spreadsheet></office:body>"#;
+        let part = |root: &str, children: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><office:{root} {NAMESPACES} office:version="1.3">{children}</office:{root}>"#
+            )
+        };
+        let read = |table_style: &str| {
+            let automatic =
+                format!("<office:automatic-styles>{table_style}</office:automatic-styles>");
+            let (flat_xml, _) = extract(&flat(SPREADSHEET, &format!("{automatic}{master}{body}")));
+            let (archived_xml, _) = extract(&document(
+                SPREADSHEET,
+                &[
+                    ("styles.xml", &part("document-styles", master)),
+                    (
+                        "content.xml",
+                        &part("document-content", &format!("{automatic}{body}")),
+                    ),
+                    MANIFEST,
+                ],
+            ));
+            let body = |xml: &str| xml[xml.find("<body>").unwrap()..].to_owned();
+            assert_eq!(body(&flat_xml), body(&archived_xml));
+            body(&flat_xml)
+        };
+
+        let printed = read(
+            r#"<style:style style:name="ta1" style:family="table" style:master-page-name="Default"/>"#,
+        );
+        assert!(
+            printed.starts_with("<body><p />\n<p>Page </p>\n<table>"),
+            "{printed}"
+        );
+        assert!(printed.contains("Lamp wicks 2026-11-14"), "{printed}");
+        for left_out in ["???", "00/00/0000", "Report footer"] {
+            assert!(!printed.contains(left_out), "{left_out} in {printed}");
+        }
+
+        let unnamed = read(r#"<style:style style:name="ta1" style:family="table"/>"#);
+        assert!(unnamed.contains("<p>Report footer</p>"), "{unnamed}");
+        assert!(!unnamed.contains("???"), "{unnamed}");
     }
 
     /// Only the OpenDocument office namespace routes a section, where Tika takes any

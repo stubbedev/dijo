@@ -8,9 +8,11 @@
 //! Unlike Tika's handler, headings and notes end as blocks, `text:s` writes as many spaces as
 //! its `text:c` counts, malformed font weights and outline levels are ignored rather than
 //! failing the document, and the attributes of OpenOffice.org 1 documents are read in their
-//! OpenDocument namespaces, as their elements are (#90).
+//! OpenDocument namespaces, as their elements are (#90). A spreadsheet's master pages are written
+//! only where its table styles print a sheet with them, and their fields without the
+//! placeholder text Calc stores in them, where Tika writes every master page with that text.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
@@ -33,6 +35,17 @@ const PRESENTATION_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:presentatio
 const DRAW_NS: &str = "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0";
 const XLINK_NS: &str = "http://www.w3.org/1999/xlink";
 const SPACE: &str = " ";
+/// The fields Calc puts in the headers and footers of a master page, which it stores with
+/// placeholder text: `???` for the sheet's name and the title, `00/00/0000` for the date.
+const SHEET_PAGE_FIELDS: [&str; 7] = [
+    "sheet-name",
+    "title",
+    "date",
+    "time",
+    "file-name",
+    "page-number",
+    "page-count",
+];
 /// Spaces to write a `text:s` from, in pieces.
 const SPACES: &str = "                                                                ";
 const TAB: &str = "\t";
@@ -108,11 +121,57 @@ enum ListTag {
     Styled(ListStyleId),
 }
 
+/// The master pages a spreadsheet's table styles print its sheets with.
+#[derive(Debug, Clone, Default)]
+pub(super) struct SheetPages {
+    named: HashSet<String>,
+    /// Whether a table style names no master page, which leaves its sheets' unknown.
+    unnamed: bool,
+}
+
+impl SheetPages {
+    /// Notes the master page of a table style, should the element start one.
+    pub(super) fn define(&mut self, namespace: &str, local_name: &str, attributes: &[Attribute]) {
+        if namespace != STYLE_NS
+            || local_name != "style"
+            || attribute(attributes, STYLE_NS, "family") != Some("table")
+        {
+            return;
+        }
+        match attribute(attributes, STYLE_NS, "master-page-name") {
+            Some(name) => {
+                self.named.insert(name.to_owned());
+            }
+            None => self.unnamed = true,
+        }
+    }
+
+    /// Whether a sheet may be printed with the master page `name`: every one may where the
+    /// table styles leave a sheet's unknown.
+    fn prints_with(&self, name: Option<&str>) -> bool {
+        self.unnamed || self.named.is_empty() || name.is_some_and(|name| self.named.contains(name))
+    }
+}
+
+/// Which master pages of a part are written, and how.
+#[derive(Debug)]
+pub(super) enum MasterPages {
+    /// Every one, its fields with the text they store, as Tika writes them.
+    All,
+    /// A spreadsheet's: those its sheets are printed with, as the table styles named so far
+    /// tell, their fields without text.
+    Sheets(SheetPages),
+}
+
 /// The state of Tika's `OpenDocumentBodyHandler` over one XML part, which also keeps the
 /// elements it has open, as the `XHTMLBalancingHandler` behind it in a flat document does.
 pub(super) struct Body<'a, 'x> {
     xhtml: &'a mut Xhtml<'x>,
     include_deleted_content: bool,
+    master_pages: MasterPages,
+    in_master_page: bool,
+    /// The depth of the element whose content [`MasterPages`] leaves out, if one is open.
+    left_out_at: Option<usize>,
     open: Vec<&'static str>,
     text_nodes: Vec<bool>,
     completely_filtered: usize,
@@ -139,10 +198,17 @@ pub(super) struct Body<'a, 'x> {
 }
 
 impl<'a, 'x> Body<'a, 'x> {
-    pub(super) fn new(xhtml: &'a mut Xhtml<'x>, include_deleted_content: bool) -> Self {
+    pub(super) fn new(
+        xhtml: &'a mut Xhtml<'x>,
+        include_deleted_content: bool,
+        master_pages: MasterPages,
+    ) -> Self {
         Self {
             xhtml,
             include_deleted_content,
+            master_pages,
+            in_master_page: false,
+            left_out_at: None,
             open: Vec::new(),
             text_nodes: Vec::new(),
             completely_filtered: 0,
@@ -165,6 +231,23 @@ impl<'a, 'x> Body<'a, 'x> {
             anchor_depth: 0,
             binary_data: None,
         }
+    }
+
+    /// Writes the master pages of a spreadsheet from here on.
+    pub(super) fn read_sheets(&mut self) {
+        self.master_pages = MasterPages::Sheets(SheetPages::default());
+    }
+
+    /// Whether [`MasterPages`] leaves out the content of the element starting.
+    fn leaves_out(&mut self, namespace: &str, local_name: &str, attributes: &[Attribute]) -> bool {
+        let MasterPages::Sheets(pages) = &mut self.master_pages else {
+            return false;
+        };
+        pages.define(namespace, local_name, attributes);
+        if namespace == STYLE_NS && local_name == "master-page" {
+            return !pages.prints_with(attribute(attributes, STYLE_NS, "name"));
+        }
+        self.in_master_page && namespace == TEXT_NS && SHEET_PAGE_FIELDS.contains(&local_name)
     }
 
     /// Whether it is inside a `binary-data` element, whose text it takes whatever the section.
@@ -578,6 +661,13 @@ impl SaxHandler for Body<'_, '_> {
         if self.needs_complete_filtering(namespace, local_name) {
             self.completely_filtered += 1;
         }
+        if self.left_out_at.is_none() && self.leaves_out(namespace, local_name, attributes) {
+            self.left_out_at = Some(self.text_nodes.len());
+            self.completely_filtered += 1;
+        }
+        if namespace == STYLE_NS && local_name == "master-page" {
+            self.in_master_page = true;
+        }
         if self.completely_filtered != 0 {
             return Ok(());
         }
@@ -677,6 +767,13 @@ impl SaxHandler for Body<'_, '_> {
         }
         if self.needs_complete_filtering(namespace, local_name) {
             self.completely_filtered -= 1;
+        }
+        if self.left_out_at == Some(self.text_nodes.len()) {
+            self.left_out_at = None;
+            self.completely_filtered -= 1;
+        }
+        if namespace == STYLE_NS && local_name == "master-page" {
+            self.in_master_page = false;
         }
         self.text_nodes.pop();
         Ok(())

@@ -71,8 +71,11 @@ and the CDC.
     `article-atenprimaria-2026.pdf` 0.468 against 0.195, `cdc-mmwr-prep-2024.pdf` 0.314 against 0.228.
   - Some scripts stay weak: the Ukrainian page of 1861 with printed stress accents recalls 24.6% of words, the
     Tamil page of 1921 58.3%.
-  - Kreuzberg's CER is lower on `table.xlsx` (0.044 against 0.080) and `inventory.ods` (0.012 against 0.058).
+  - `table.xlsx` (0.080 against Kreuzberg's 0.044) keeps the sheet name and the `Page` left from LibreOffice's
+    default footer, as Tika does; `inventory.ods` reads at 0.006 against 0.012 (#387).
 - **Tika and JVM quirks are fixed on purpose.**
+  - A spreadsheet's page styles are written only where a sheet is printed with them, and their header and footer
+    fields without the placeholder text Calc stores (`???`, `00/00/0000`) (#387).
   - Output follows document order, not Java hash-map order.
   - Malformed text decodes as WHATWG specifies (0.2.2).
   - No result depends on the machine's time zone, and numbers do not wrap like Java's `int` and `long` (#193).

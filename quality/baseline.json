@@ -861,10 +861,10 @@
     "reading_order": 1.0
   },
   "inventory.ods": {
-    "character_error_rate": 0.05845771144278607,
-    "token_error_rate": 0.057971014492753624,
+    "character_error_rate": 0.006218905472636816,
+    "token_error_rate": 0.007246376811594203,
     "recall": 1.0,
-    "spurious": 0.0547945205479452,
+    "spurious": 0.007194244604316547,
     "reading_order": 1.0
   },
   "inventory.parquet": {
