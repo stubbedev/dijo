@@ -112,6 +112,8 @@ pub struct Detection {
     pub confidence: f32,
     /// How the detection went, as Tika traces it.
     pub trace: Trace,
+    /// The charset of [`undecodable_declaration`], which the detection finds on its way.
+    pub undecodable_declaration: Option<Charset>,
 }
 
 /// What each detector that reported anything reported first, in the order they ran, and how
@@ -218,9 +220,11 @@ fn detect_declared(
     declarations: Declarations,
 ) -> Detection {
     let declared = |charset| vec![Candidate::new(charset, 1.0, Kind::Declarative)];
+    let html_declared = html::detect(input);
+    let content_type_declared = content_type.and_then(content_type_charset);
     let probe = probe::probe(input, probe::CONTENT_TARGET, probe::RAW_CAP);
     let mut reports = Vec::with_capacity(4);
-    if let Some(charset) = html::detect(input).filter(|&charset| declarations.keeps(charset)) {
+    if let Some(charset) = html_declared.filter(|&charset| declarations.keeps(charset)) {
         reports.push(Report {
             detector: Detector::Html,
             candidates: declared(charset),
@@ -236,8 +240,7 @@ fn detect_declared(
             candidates: declared(charset),
         });
     }
-    let metadata_charset = content_type
-        .and_then(content_type_charset)
+    let metadata_charset = content_type_declared
         .or_else(|| hint.and_then(content_type_charset))
         .filter(|&charset| declarations.keeps(charset));
     if let Some(charset) = metadata_charset {
@@ -279,6 +282,7 @@ fn detect_declared(
                 .collect(),
             arbitration,
         },
+        undecodable_declaration: first_undecodable(html_declared, content_type_declared),
     }
 }
 
@@ -286,13 +290,19 @@ fn detect_declared(
 /// does not decode, such as an IBM EBCDIC double-byte one, which leaves what Tika makes of the
 /// input unknown. Every charset the other detectors name decodes.
 pub fn undecodable_declaration(input: &[u8], content_type: Option<&str>) -> Option<Charset> {
-    [
+    first_undecodable(
         html::detect(input),
         content_type.and_then(content_type_charset),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|&charset| !decodes(charset))
+    )
+}
+
+/// The first of the charsets an HTML page and a content type declare that the port does not
+/// decode.
+fn first_undecodable(html: Option<Charset>, content_type: Option<Charset>) -> Option<Charset> {
+    [html, content_type]
+        .into_iter()
+        .flatten()
+        .find(|&charset| !decodes(charset))
 }
 
 /// The Unicode charset a byte order mark starts the input with.
@@ -387,6 +397,12 @@ pub mod tests {
             undecodable_declaration(page, None).map(Charset::name),
             Some("x-IBM930")
         );
+        assert_eq!(
+            detect_decodable(page, None)
+                .undecodable_declaration
+                .map(Charset::name),
+            Some("x-IBM930")
+        );
         assert!(detect_decodable(page, None).decode_as.decodes());
         let text = b"plain text";
         let declared = Some("text/plain; charset=x-IBM933");
@@ -394,9 +410,16 @@ pub mod tests {
             undecodable_declaration(text, declared).map(Charset::name),
             Some("x-IBM933")
         );
+        assert_eq!(
+            detect_decodable(text, declared)
+                .undecodable_declaration
+                .map(Charset::name),
+            Some("x-IBM933")
+        );
         assert!(detect_decodable(text, declared).decode_as.decodes());
         let korean = b"\x1b$)C\x0e\x30\x21\x0f plain text";
         assert_eq!(undecodable_declaration(korean, None), None);
+        assert_eq!(detect_decodable(korean, None).undecodable_declaration, None);
         assert_eq!(detect_decodable(korean, None), detect(korean, None));
     }
 

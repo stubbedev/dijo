@@ -10,12 +10,12 @@
 //! (z9). The arithmetic follows Tika's, float for float, so that scores match Tika's own;
 //! `tests/fixtures/junk/junk-reference.tsv` holds Tika's scores to check against.
 
-use std::collections::HashMap;
+use std::borrow::Cow;
 use std::io::Read;
 use std::sync::LazyLock;
 
 use flate2::read::GzDecoder;
-use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::{is_nfkc_quick, IsNormalized, UnicodeNormalization};
 use unicode_script::Script;
 
 use super::blocks;
@@ -30,6 +30,7 @@ const TOKEN_END: u32 = 0x11_0001;
 const CASE_FOLD_PENALTY: f64 = 0.25;
 const QUANT_LEVELS_16: f32 = 65535.0;
 const QUANT_LEVELS_8: f32 = 255.0;
+const SCRIPT_SLOTS: usize = 1 << u8::BITS;
 
 /// The detector with Tika's bundled model.
 pub static DETECTOR: LazyLock<JunkDetector> = LazyLock::new(|| {
@@ -81,6 +82,8 @@ struct BigramTables {
     backoff_alpha: f32,
     codepoints: Vec<i32>,
     keys: Vec<i32>,
+    /// The slots of the keys of the bigrams each code point starts, at its index.
+    rows: Vec<(u32, u32)>,
     values: Vec<u8>,
     bigram_min: f32,
     bigram_max: f32,
@@ -98,7 +101,11 @@ impl BigramTables {
 
     fn bigram(&self, a: usize, b: usize) -> Option<f32> {
         let key = ((a as i32) << 16) | (b as i32 & 0xFFFF);
-        let slot = self.keys.binary_search(&key).ok()?;
+        let (start, end) = self.rows[a];
+        let slot = start as usize
+            + self.keys[start as usize..end as usize]
+                .binary_search(&key)
+                .ok()?;
         Some(dequantize(
             self.values[slot],
             self.bigram_min,
@@ -117,11 +124,10 @@ impl BigramTables {
         }
     }
 
-    /// The log-probability of the bigram (a, b): its own, or for an uppercase pair the better of
-    /// its own and its lowercase twin's less a small penalty, or else the unigrams' backoff.
-    fn score_pair(&self, a: u32, b: u32) -> f64 {
-        let index_a = self.index(a);
-        let index_b = self.index(b);
+    /// The log-probability of the bigram (a, b), whose [`BigramTables::index`]es are `index_a`
+    /// and `index_b`: its own, or for an uppercase pair the better of its own and its lowercase
+    /// twin's less a small penalty, or else the unigrams' backoff.
+    fn score_pair(&self, a: u32, index_a: Option<usize>, b: u32, index_b: Option<usize>) -> f64 {
         let direct = match (index_a, index_b) {
             (Some(ia), Some(ib)) => self.bigram(ia, ib).map(f64::from),
             _ => None,
@@ -149,20 +155,35 @@ impl BigramTables {
     }
 }
 
+/// The slot of a script in a table indexed by script.
+fn slot(script: Script) -> usize {
+    usize::from(script as u8)
+}
+
 /// The model class a letter's run is scored with: the pooled pseudo-scripts, or a script, with
 /// the Japanese kana scored as Han.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Class {
     Common,
     Script(Script),
 }
 
 impl Class {
-    fn of(c: char) -> Self {
-        match unicode::script(c) {
+    /// The class of a letter of the script `script`.
+    fn of(script: Script) -> Self {
+        match script {
             script if unicode::is_pseudo_script(script) => Class::Common,
             Script::Hiragana | Script::Katakana => Class::Script(Script::Han),
             script => Class::Script(script),
+        }
+    }
+
+    /// The slot of the class in a table indexed by script: the pooled pseudo-scripts take
+    /// COMMON's, which no other class takes.
+    fn slot(self) -> usize {
+        match self {
+            Class::Common => slot(Script::Common),
+            Class::Script(script) => slot(script),
         }
     }
 }
@@ -170,10 +191,12 @@ impl Class {
 /// Tika's junk detection model.
 #[derive(Debug)]
 pub struct JunkDetector {
-    scripts: HashMap<Class, BigramTables>,
+    /// Each class's bigram model, at the [`Class::slot`].
+    scripts: Vec<Option<BigramTables>>,
     blocks: TransitionTable,
     script_transitions: TransitionTable,
-    script_buckets: HashMap<Script, usize>,
+    /// Each script's bucket of the script transitions, at its [`slot`].
+    script_buckets: Vec<usize>,
     script_bucket_count: usize,
     control: Calibration,
     letter_mark: Calibration,
@@ -189,14 +212,27 @@ impl JunkDetector {
         if text.is_empty() {
             return None;
         }
-        let text: String = text.nfkc().collect();
+        let text = nfkc(text);
         let chars: Vec<char> = text.chars().collect();
+        let char_scripts: Vec<Script> = chars.iter().map(|&c| unicode::script(c)).collect();
+        let scripted: Vec<Script> = char_scripts
+            .iter()
+            .copied()
+            .filter(|&script| !unicode::is_pseudo_script(script))
+            .collect();
         let mut buckets: Vec<(Class, f64, u64)> = Vec::new();
-        for_each_script_bigram(&chars, |class, a, b| {
-            let Some(tables) = self.scripts.get(&class) else {
+        let mut last: Option<(Class, u32, Option<usize>)> = None;
+        for_each_script_bigram(&chars, &char_scripts, |class, a, b| {
+            let Some(tables) = &self.scripts[class.slot()] else {
                 return;
             };
-            let lp = tables.score_pair(a, b);
+            let index_a = match last {
+                Some((last_class, last_b, index)) if last_class == class && last_b == a => index,
+                _ => tables.index(a),
+            };
+            let index_b = tables.index(b);
+            last = Some((class, b, index_b));
+            let lp = tables.score_pair(a, index_a, b, index_b);
             match buckets.iter_mut().find(|(bucket, _, _)| *bucket == class) {
                 Some((_, sum, count)) => {
                     *sum += lp;
@@ -208,7 +244,10 @@ impl JunkDetector {
         let mut weighted = 0f64;
         let mut z1_count = 0u64;
         for (class, sum, count) in &buckets {
-            let calibration = self.scripts[class].calibration;
+            let calibration = self.scripts[class.slot()]
+                .as_ref()
+                .expect("a class with bigrams has a model")
+                .calibration;
             let mean = sum / *count as f64;
             let z = (mean - f64::from(calibration.mu)) / f64::from(calibration.sigma);
             weighted += z * *count as f64;
@@ -221,24 +260,18 @@ impl JunkDetector {
         );
         let z3 = control_z(text.as_bytes(), self.control);
         let z4 = self.script_transitions.z(
-            chars.iter().filter_map(|&c| {
-                let script = unicode::script(c);
-                (!unicode::is_pseudo_script(script)).then(|| {
-                    self.script_buckets
-                        .get(&script)
-                        .copied()
-                        .unwrap_or(self.script_bucket_count - 1)
-                })
-            }),
+            scripted
+                .iter()
+                .map(|&script| self.script_buckets[slot(script)]),
             self.script_bucket_count,
         );
         let z5 = letter_adjacent_to_mark_ratio(&chars).map_or(0.0, |raw| {
             (raw as f32 - self.letter_mark.mu) / self.letter_mark.sigma
         });
         let z6 = (self.replacement.mu - replacement_ratio(&chars) as f32) / self.replacement.sigma;
-        let z7 = script_density(&chars).map_or(0.0, |density| density as f32);
-        let z8 = 1.0 - script_fragmentation(&chars) as f32;
-        let z9 = (self.alternation.mu - script_alternation_ratio(&chars) as f32)
+        let z7 = script_density(&chars, &char_scripts).map_or(0.0, |density| density as f32);
+        let z8 = 1.0 - script_fragmentation(&scripted) as f32;
+        let z9 = (self.alternation.mu - script_alternation_ratio(&scripted) as f32)
             / self.alternation.sigma;
 
         if z1_count == 0 {
@@ -286,11 +319,14 @@ impl JunkDetector {
             ));
         }
         let bucket_count = usize::from(reader.u8()?);
-        let mut script_buckets = HashMap::with_capacity(bucket_count);
+        let other_bucket = bucket_count
+            .checked_sub(1)
+            .ok_or("no script transition buckets")?;
+        let mut script_buckets = vec![other_bucket; SCRIPT_SLOTS];
         for bucket in 0..bucket_count {
             let name = reader.name()?;
             if let Some(script) = unicode::java_script(&name) {
-                script_buckets.insert(script, bucket);
+                script_buckets[slot(script)] = bucket;
             }
         }
         let script_transitions = reader.transitions(bucket_count * bucket_count)?;
@@ -306,7 +342,8 @@ impl JunkDetector {
         let weights = (0..=feature_count)
             .map(|_| reader.f32())
             .collect::<Result<Vec<_>, _>>()?;
-        let mut scripts = HashMap::with_capacity(script_count);
+        let mut scripts: Vec<Option<BigramTables>> =
+            std::iter::repeat_with(|| None).take(SCRIPT_SLOTS).collect();
         for _ in 0..script_count {
             let name = reader.name()?;
             let calibration = reader.calibration()?;
@@ -317,7 +354,7 @@ impl JunkDetector {
                 unicode::java_script(&name).map(Class::Script)
             };
             if let Some(class) = class {
-                scripts.insert(class, tables);
+                scripts[class.slot()] = Some(tables);
             }
         }
         if reader.at != bytes.len() {
@@ -341,14 +378,18 @@ impl JunkDetector {
 /// Hands each scored bigram of a text to `sink` with the class whose model scores it, as Tika's
 /// `forEachScriptBigram`: letters form runs of one class, each opened by a start token and
 /// closed by an end token; whitespace, NUL and decoding anomalies end a run; any other
-/// non-letter inside a run joins it.
-fn for_each_script_bigram(chars: &[char], mut sink: impl FnMut(Class, u32, u32)) {
+/// non-letter inside a run joins it. `scripts` holds the script of each of the `chars`.
+fn for_each_script_bigram(
+    chars: &[char],
+    scripts: &[Script],
+    mut sink: impl FnMut(Class, u32, u32),
+) {
     let mut run: Option<Class> = None;
     let mut previous = 0u32;
-    for &c in chars {
+    for (&c, &script) in chars.iter().zip(scripts) {
         let cp = u32::from(c);
         if unicode::is_letter(c) {
-            let class = Class::of(c);
+            let class = Class::of(script);
             if run == Some(class) {
                 sink(class, previous, cp);
             } else {
@@ -370,6 +411,14 @@ fn for_each_script_bigram(chars: &[char], mut sink: impl FnMut(Class, u32, u32))
     }
     if let Some(open) = run {
         sink(open, previous, TOKEN_END);
+    }
+}
+
+/// The NFKC normalization of `text`, borrowed when the quick check proves it normalized.
+fn nfkc(text: &str) -> Cow<'_, str> {
+    match is_nfkc_quick(text.chars()) {
+        IsNormalized::Yes => Cow::Borrowed(text),
+        IsNormalized::No | IsNormalized::Maybe => Cow::Owned(text.nfkc().collect()),
     }
 }
 
@@ -444,32 +493,28 @@ fn replacement_ratio(chars: &[char]) -> f64 {
     }
 }
 
-/// The scripts of a text's code points, without the pseudo-scripts.
-fn scripts(chars: &[char]) -> impl Iterator<Item = Script> + '_ {
-    chars
-        .iter()
-        .map(|&c| unicode::script(c))
-        .filter(|&script| !unicode::is_pseudo_script(script))
-}
-
-fn script_density(chars: &[char]) -> Option<f64> {
-    let counted = chars.iter().filter(|&&c| c != '\u{FFFD}');
+/// The share of a text's code points, U+FFFD aside, that are in a script; `scripts` holds the
+/// script of each of the `chars`.
+fn script_density(chars: &[char], scripts: &[Script]) -> Option<f64> {
+    let counted = chars.iter().zip(scripts).filter(|&(&c, _)| c != '\u{FFFD}');
     let total = counted.clone().count();
     if total == 0 {
         return None;
     }
     let scripted = counted
-        .filter(|&&c| !unicode::is_pseudo_script(unicode::script(c)))
+        .filter(|&(_, &script)| !unicode::is_pseudo_script(script))
         .count();
     Some(scripted as f64 / total as f64)
 }
 
-fn script_fragmentation(chars: &[char]) -> f64 {
+/// One less the share of the longest single-script stretch of `scripted`, a text's scripts
+/// without the pseudo-scripts.
+fn script_fragmentation(scripted: &[Script]) -> f64 {
     let mut total = 0u32;
     let mut longest = 0u32;
     let mut current = 0u32;
     let mut current_script = None;
-    for script in scripts(chars) {
+    for &script in scripted {
         total += 1;
         if current_script == Some(script) {
             current += 1;
@@ -487,11 +532,12 @@ fn script_fragmentation(chars: &[char]) -> f64 {
 }
 
 /// Script transitions between neighbouring scripted code points, against the number expected if
-/// the scripts were shuffled: high when another script is scattered in singletons.
-fn script_alternation_ratio(chars: &[char]) -> f64 {
+/// the scripts were shuffled: high when another script is scattered in singletons. `scripted`
+/// holds a text's scripts without the pseudo-scripts.
+fn script_alternation_ratio(scripted: &[Script]) -> f64 {
     let mut counts: Vec<(Script, u32)> = Vec::new();
     let mut total = 0u32;
-    for script in scripts(chars) {
+    for &script in scripted {
         match counts.iter_mut().find(|(seen, _)| *seen == script) {
             Some((_, count)) => *count += 1,
             None => counts.push((script, 1)),
@@ -512,8 +558,7 @@ fn script_alternation_ratio(chars: &[char]) -> f64 {
     if expected <= 0.0 {
         return 0.0;
     }
-    let transitions = scripts(chars)
-        .collect::<Vec<_>>()
+    let transitions = scripted
         .windows(2)
         .filter(|pair| pair[0] != pair[1])
         .count();
@@ -625,6 +670,21 @@ impl Reader<'_> {
                 keys.push(next as i32);
             }
         }
+        if codepoint_count > 1 << 16 {
+            return Err(format!(
+                "{codepoint_count} bigram code points, more than a key holds"
+            ));
+        }
+        let mut rows = vec![(0u32, 0u32); codepoint_count];
+        for (slot, &key) in (0u32..).zip(&keys) {
+            let row = rows
+                .get_mut((key as u32 >> 16) as usize)
+                .ok_or_else(|| format!("bigram key {key:#x} of no code point"))?;
+            if row.1 == 0 {
+                row.0 = slot;
+            }
+            row.1 = slot + 1;
+        }
         let values = self.take(slots)?.to_vec();
         let unigram_min = self.f32()?;
         let unigram_max = self.f32()?;
@@ -634,6 +694,7 @@ impl Reader<'_> {
             backoff_alpha,
             codepoints,
             keys,
+            rows,
             values,
             bigram_min,
             bigram_max,

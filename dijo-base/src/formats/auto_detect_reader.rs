@@ -11,7 +11,7 @@ use std::ops::Range;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::Difference;
 use crate::input::{Pages, Paging};
-use crate::text::charset::{self, Detection, Pieces};
+use crate::text::charset::{self, Charset, Detection, Pieces};
 
 /// The input decoded at a time into a piece of text, so that a large input is never held as text
 /// whole.
@@ -60,14 +60,24 @@ impl AutoDetectReader {
     /// `AutoDetectReader`: a declaration names a charset the native decoders do not decode,
     /// which the reader passes over where Tika's detection weighs it.
     pub fn difference(input: &[u8], content_type: Option<&str>) -> Option<Difference> {
-        charset::undecodable_declaration(input, content_type).map(|charset| {
-            Difference::new(format!(
-                "a declaration names the charset {}, which the native decoders do not decode, \
-                 so the text is read as if it named none",
-                charset.name()
-            ))
-        })
+        charset::undecodable_declaration(input, content_type).map(undecodable)
     }
+
+    /// The [`AutoDetectReader::difference`] of the input and content type `detection` was
+    /// detected of, which the detection found on its way.
+    pub fn detected_difference(detection: &Detection) -> Option<Difference> {
+        detection.undecodable_declaration.map(undecodable)
+    }
+}
+
+/// How reading differs from Tika's `AutoDetectReader` when a declaration names `charset`, which
+/// the native decoders do not decode.
+fn undecodable(charset: Charset) -> Difference {
+    Difference::new(format!(
+        "a declaration names the charset {}, which the native decoders do not decode, so the \
+         text is read as if it named none",
+        charset.name()
+    ))
 }
 
 /// The text of an `AutoDetectReader`, a piece at a time, without its byte order mark.
@@ -277,6 +287,28 @@ mod tests {
             read(b"\xEF\xBB\xBF\xEF\xBB\xBFplain text"),
             "\u{FEFF}plain text"
         );
+    }
+
+    #[test]
+    fn finds_the_difference_its_detection_found() {
+        let cases: [(&[u8], Option<&str>); 4] = [
+            (b"<meta charset=\"x-IBM930\"> plain text", None),
+            (b"plain text", Some("text/plain; charset=x-IBM933")),
+            (
+                b"<meta charset=\"x-IBM930\">",
+                Some("text/html; charset=x-IBM933"),
+            ),
+            (b"<meta charset=\"UTF-8\"> plain text", Some("text/html")),
+        ];
+        for (input, content_type) in cases {
+            let detection = charset::detect_decodable(input, content_type);
+            assert_eq!(
+                AutoDetectReader::detected_difference(&detection),
+                AutoDetectReader::difference(input, content_type),
+                "{content_type:?}"
+            );
+        }
+        assert!(AutoDetectReader::difference(b"plain text", None).is_none());
     }
 
     /// A declared `UTF-16` drops its byte order mark once, keeping a U+FEFF after it, which

@@ -116,7 +116,7 @@ impl Parser for JSoupParser {
     ) -> Result<Prepared<'a>, Decline<'a>> {
         let previous = metadata.get("Content-Type").map(str::to_owned);
         let document = read(input, pages, previous.as_deref());
-        prepared(document, input, previous, Base::of(metadata))
+        prepared(document, previous, Base::of(metadata))
     }
 }
 
@@ -128,7 +128,7 @@ pub fn prepare(
 ) -> Result<Prepared<'static>, Decline<'static>> {
     let previous = metadata.get("Content-Type").map(str::to_owned);
     let document = read(input, Pages::IN_MEMORY, previous.as_deref()).into_owned();
-    prepared(document, input, previous, Base::of(metadata))
+    prepared(document, previous, Base::of(metadata))
 }
 
 /// What [`JSoupParser`] prepares of `input`, which it holds as it is, spooled or mapped, so
@@ -139,8 +139,8 @@ pub fn prepare_input(
     metadata: &TikaMetadata,
 ) -> Result<Prepared<'static>, Decline<'static>> {
     let previous = metadata.get("Content-Type").map(str::to_owned);
-    let document = read_from(Bytes::Held(input.clone(), 0), previous.as_deref(), SIZES);
-    prepared(document, &input, previous, Base::of(metadata))
+    let document = read_from(Bytes::Held(input, 0), previous.as_deref(), SIZES);
+    prepared(document, previous, Base::of(metadata))
 }
 
 /// What [`inspect`] finds of a document that [`Inspection::prepare`] needs to prepare it as
@@ -157,7 +157,7 @@ pub struct Inspection {
 pub fn inspect(input: &[u8], metadata: &TikaMetadata) -> (Inspection, Option<Difference>) {
     let previous = metadata.get("Content-Type").map(str::to_owned);
     let detection = charset::detect_decodable(input, previous.as_deref());
-    let difference = AutoDetectReader::difference(input, previous.as_deref())
+    let difference = AutoDetectReader::detected_difference(&detection)
         .or_else(|| read_otherwise(input, detection.decode_as, SIZES));
     let inspection = Inspection {
         detection,
@@ -183,15 +183,14 @@ impl Inspection {
     }
 }
 
-/// What the parser prepares of `document`, read from `input` when the metadata's
-/// `Content-Type` was `previous`, with links resolved against `base`.
-fn prepared<'a>(
-    document: Document<'a>,
-    input: &[u8],
+/// What the parser prepares of `document`, read when the metadata's `Content-Type` was
+/// `previous`, with links resolved against `base`.
+fn prepared(
+    document: Document<'_>,
     previous: Option<String>,
     base: Base,
-) -> Result<Prepared<'a>, Decline<'a>> {
-    let difference = AutoDetectReader::difference(input, previous.as_deref())
+) -> Result<Prepared<'_>, Decline<'_>> {
+    let difference = AutoDetectReader::detected_difference(&document.detection)
         .or_else(|| document.difference.clone());
     unless_different(
         Box::new(move |xhtml| write(document, previous.as_deref(), base, xhtml)),
@@ -569,7 +568,7 @@ mod tests {
         given.set("Content-Type", content_type);
         let previous = Some(content_type.to_owned());
         let document = read_by(input, Pages::IN_MEMORY, previous.as_deref(), sizes);
-        let reading = noted(prepared(document, input, previous, Base::of(&given))).unwrap();
+        let reading = noted(prepared(document, previous, Base::of(&given))).unwrap();
         events_of(reading, given)
     }
 

@@ -7,8 +7,6 @@
 //! cased letters; and a declaration wins outright when the statistics had nothing confident to
 //! say.
 
-use std::collections::HashMap;
-
 use super::jdk::Charset;
 use super::mojibuster::{cased_high_letters, high_bytes, superset, WINDOWS_1252};
 use super::strip::strip_tags;
@@ -113,7 +111,7 @@ pub(super) fn arbitrate(reports: &[Report], probe: &[u8]) -> Arbitration {
     }
     let bytes = &probe[bom_length(probe)..];
     let mut candidates: Vec<(Charset, String)> = Vec::new();
-    let mut cleaned_by_raw: HashMap<String, String> = HashMap::new();
+    let mut cleaned_by_raw: Vec<(String, String)> = Vec::new();
     for charset in band(reports, &unique) {
         let Some(raw) = superset(charset).decode(bytes) else {
             continue;
@@ -121,10 +119,14 @@ pub(super) fn arbitrate(reports: &[Report], probe: &[u8]) -> Arbitration {
         if raw.is_empty() {
             continue;
         }
-        let cleaned = cleaned_by_raw
-            .entry(raw)
-            .or_insert_with_key(|raw| clean(raw))
-            .clone();
+        let cleaned = match cleaned_by_raw.iter().find(|(seen, _)| *seen == raw) {
+            Some((_, cleaned)) => cleaned.clone(),
+            None => {
+                let cleaned = clean(&raw);
+                cleaned_by_raw.push((raw, cleaned.clone()));
+                cleaned
+            }
+        };
         if !cleaned.is_empty() {
             candidates.push((charset, cleaned));
         }
@@ -144,14 +146,14 @@ pub(super) fn arbitrate(reports: &[Report], probe: &[u8]) -> Arbitration {
         return Arbitration::IdenticalDecodings;
     }
 
-    let mut scores_by_text: HashMap<&str, f64> = HashMap::new();
+    let mut scores_by_text: Vec<(&str, f64)> = Vec::with_capacity(candidates.len());
     let mut scores: Vec<(Charset, f64)> = Vec::with_capacity(candidates.len());
     let mut champion = None;
     let mut champion_score = f64::NEG_INFINITY;
     for (charset, text) in &candidates {
-        let score = *scores_by_text
-            .entry(text)
-            .or_insert_with(|| DETECTOR.score(text).map_or(f64::NEG_INFINITY, f64::from));
+        let score = memoized(&mut scores_by_text, text, |text| {
+            DETECTOR.score(text).map_or(f64::NEG_INFINITY, f64::from)
+        });
         scores.push((*charset, score));
         if score > champion_score {
             champion_score = score;
@@ -163,9 +165,9 @@ pub(super) fn arbitrate(reports: &[Report], probe: &[u8]) -> Arbitration {
     if is_cjk(champion) {
         let mut best_cjk = f64::NEG_INFINITY;
         let mut best_other = f64::NEG_INFINITY;
-        let mut diffs_by_text: HashMap<&str, f64> = HashMap::new();
+        let mut diffs_by_text: Vec<(&str, f64)> = Vec::with_capacity(candidates.len());
         for (charset, text) in &candidates {
-            let diff = *diffs_by_text.entry(text).or_insert_with(|| {
+            let diff = memoized(&mut diffs_by_text, text, |text| {
                 let letters: String = text
                     .chars()
                     .filter(|&c| u32::from(c) >= 0x80 && unicode::is_letter(c))
@@ -194,6 +196,17 @@ pub(super) fn arbitrate(reports: &[Report], probe: &[u8]) -> Arbitration {
         }
     }
     Arbitration::Selected(champion)
+}
+
+/// The score of `text` in `memo`, which holds the scores of the few texts already scored, or
+/// else `score`'s, remembered.
+fn memoized<'a>(memo: &mut Vec<(&'a str, f64)>, text: &'a str, score: impl Fn(&str) -> f64) -> f64 {
+    if let Some(&(_, known)) = memo.iter().find(|(seen, _)| *seen == text) {
+        return known;
+    }
+    let computed = score(text);
+    memo.push((text, computed));
+    computed
 }
 
 fn unique_charsets(reports: &[Report]) -> Vec<Charset> {
