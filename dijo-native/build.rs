@@ -11,7 +11,15 @@ const OCR_TESSERACT_LIBRARY_STEM: &str = "dijo_tesseract";
 const OCR_HEIF_DECODER_STEM: &str = "heif-png";
 const OCR_MODELS: &str = "tessdata";
 const OCR_MODEL_EXTENSION: &str = "traineddata";
-const OCR_RECOGNIZERS: &str = "ppocr";
+const PPOCR: &str = "ppocr";
+const PPOCR_MODEL_EXTENSION: &str = "onnx";
+const PPOCR_CONFIGURATION_EXTENSION: &str = "yml";
+/// The name a PP-OCR model's graph gives the external data its weights are, which rten requires
+/// to be a bare file name ending in `.data`.
+const PPOCR_WEIGHTS: &str = "weights.data";
+/// The alignment of each tensor of a PP-OCR model's embedded weights, and of the weights
+/// themselves: a cache line, beyond what any element type rten reads needs.
+const TENSOR_ALIGNMENT: usize = 64;
 const OCR_LICENSES: &str = "licenses";
 const STATIC_LICENSES_VARIABLE: &str = "DIJO_STATIC_LICENSES";
 const STATIC_LIBS_VARIABLE: &str = "DIJO_STATIC_LIBS";
@@ -75,13 +83,16 @@ fn link_static_libraries() {
 
 /// The OCR bundle `ci/ocr-bundle.sh` assembles, which `DIJO_OCR_BUNDLE` names: tesseract as
 /// a library of the C API native readings call unless the static executable links it, heif-png
-/// on the platforms that need it, the language data, the PP-OCR models pages tesseract reads
-/// poorly are read again with, and the licenses of what they hold, each compressed.
+/// on the platforms that need it and the language data, each compressed to be unpacked; the
+/// PP-OCR models pages tesseract reads poorly are read again with, embedded as they are to be
+/// used where they lie; and the licenses of what they hold.
 struct OcrBundle {
     /// How the built program runs the bundled tesseract.
     tesseract: Tesseract,
     /// Each file by its path below the unpacked libraries, and where its compressed copy is.
     files: Vec<(String, PathBuf)>,
+    /// The PP-OCR models and their configurations.
+    ppocr: PpOcrBundle,
     /// The embedded heif-png's file name, if one is embedded.
     heif_decoder: Option<String>,
     /// The licenses of the bundle, as one text.
@@ -119,13 +130,13 @@ fn ocr_bundle(out_dir: &Path, platform: Platform, tesseract: Tesseract) -> OcrBu
         )
     }));
     println!("cargo:rerun-if-changed={}", dir.display());
-    let models = bundled_models(&dir, OCR_MODELS, Some(OCR_MODEL_EXTENSION));
-    let recognizers = bundled_models(&dir, OCR_RECOGNIZERS, None);
+    let models = bundled_models(&dir, OCR_MODELS, OCR_MODEL_EXTENSION);
     let compressed_dir = out_dir.join("ocr");
     remove_dir_if_exists(&compressed_dir);
     create_dir(&compressed_dir.join(OCR_MODELS));
+    let ppocr = ppocr_bundle(&dir.join(PPOCR), &out_dir.join(PPOCR));
     let mut hasher = DefaultHasher::new();
-    let mut files = Vec::with_capacity(models.len() + recognizers.len() + 2);
+    let mut files = Vec::with_capacity(models.len() + 2);
     let heif_decoder = (tesseract != Tesseract::Linked && platform.heif_decoder_bundled())
         .then(|| platform.executable(OCR_HEIF_DECODER_STEM));
     let named = tesseract
@@ -137,8 +148,7 @@ fn ocr_bundle(out_dir: &Path, platform: Platform, tesseract: Tesseract) -> OcrBu
             let path = dir.join(&name);
             (name, path)
         })
-        .chain(models)
-        .chain(recognizers);
+        .chain(models);
     for (name, path) in named {
         let content = read_file(&path);
         hasher.write(name.as_bytes());
@@ -155,10 +165,237 @@ fn ocr_bundle(out_dir: &Path, platform: Platform, tesseract: Tesseract) -> OcrBu
     OcrBundle {
         tesseract,
         files,
+        ppocr,
         heif_decoder,
         licenses,
         fingerprint: format!("{:016x}", hasher.finish()),
     }
+}
+
+/// The PP-OCR models of the bundle, each as its graph and its weights apart, and the
+/// configurations their labels are read from.
+struct PpOcrBundle {
+    /// Each model by its file's stem, with where its graph and its weights were written.
+    models: Vec<(String, PathBuf, PathBuf)>,
+    /// Each configuration by its file's stem, with where it is.
+    configurations: Vec<(String, PathBuf)>,
+}
+
+/// Splits each model in `dir` into its graph, which names its weights as the external data
+/// `PPOCR_WEIGHTS`, and those weights, each tensor at a multiple of `TENSOR_ALIGNMENT`, both
+/// written to `out_dir`, so that rten uses the embedded weights where they lie rather than copying
+/// each out of the graph.
+fn ppocr_bundle(dir: &Path, out_dir: &Path) -> PpOcrBundle {
+    remove_dir_if_exists(out_dir);
+    create_dir(out_dir);
+    let mut bundle = PpOcrBundle {
+        models: Vec::new(),
+        configurations: Vec::new(),
+    };
+    for path in list_dir(dir) {
+        let stem = path
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .unwrap_or_else(|| panic!("PP-OCR file {} has no UTF-8 name", path.display()))
+            .to_owned();
+        match path.extension().and_then(OsStr::to_str) {
+            Some(PPOCR_MODEL_EXTENSION) => {
+                let (graph, weights) = split_weights(&read_file(&path))
+                    .unwrap_or_else(|e| panic!("{} is no ONNX model: {e}", path.display()));
+                let graph_path = out_dir.join(format!("{stem}.{PPOCR_MODEL_EXTENSION}"));
+                let weights_path = out_dir.join(format!("{stem}.{PPOCR_WEIGHTS}"));
+                write_file(&graph_path, &graph);
+                write_file(&weights_path, &weights);
+                bundle.models.push((stem, graph_path, weights_path));
+            }
+            Some(PPOCR_CONFIGURATION_EXTENSION) => bundle.configurations.push((stem, path)),
+            _ => panic!(
+                "{OCR_BUNDLE_VARIABLE} holds {}, which is neither a PP-OCR model (.{PPOCR_MODEL_EXTENSION}) nor \
+                 its configuration (.{PPOCR_CONFIGURATION_EXTENSION})",
+                path.display()
+            ),
+        }
+    }
+    if bundle.models.is_empty() {
+        panic!(
+            "{OCR_BUNDLE_VARIABLE} names {}, which holds no {PPOCR}/*.{PPOCR_MODEL_EXTENSION}",
+            dir.display()
+        );
+    }
+    bundle
+}
+
+/// The fields of the ONNX messages a model's weights are moved out of (onnx/onnx.proto).
+const MODEL_GRAPH: u64 = 7;
+const GRAPH_INITIALIZER: u64 = 5;
+const TENSOR_RAW_DATA: u64 = 9;
+const TENSOR_EXTERNAL_DATA: u64 = 13;
+const TENSOR_DATA_LOCATION: u64 = 14;
+const ENTRY_KEY: u64 = 1;
+const ENTRY_VALUE: u64 = 2;
+const DATA_LOCATION_EXTERNAL: u64 = 1;
+const WIRE_VARINT: u64 = 0;
+const WIRE_FIXED64: u64 = 1;
+const WIRE_LENGTH_DELIMITED: u64 = 2;
+const WIRE_FIXED32: u64 = 5;
+
+/// An ONNX model with the `raw_data` of each of its graph's initializers moved into one external
+/// data file, each at a multiple of `TENSOR_ALIGNMENT`: the model, referring to `PPOCR_WEIGHTS`
+/// at those offsets, and that file.
+fn split_weights(model: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let mut weights = Vec::new();
+    let mut graph = Vec::with_capacity(model.len() / 8);
+    let mut graphs = 0;
+    for field in fields(model) {
+        let field = field?;
+        match (field.number, field.payload) {
+            (MODEL_GRAPH, Payload::Bytes(payload)) => {
+                graphs += 1;
+                let rewritten = without_weights(payload, &mut weights)?;
+                write_bytes_field(&mut graph, MODEL_GRAPH, &rewritten);
+            }
+            _ => graph.extend_from_slice(field.encoded),
+        }
+    }
+    if graphs != 1 {
+        return Err(format!("it holds {graphs} graphs, not one"));
+    }
+    Ok((graph, weights))
+}
+
+/// A graph with the `raw_data` of each initializer appended to `weights`.
+fn without_weights(graph: &[u8], weights: &mut Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut rewritten = Vec::with_capacity(graph.len() / 8);
+    for field in fields(graph) {
+        let field = field?;
+        match (field.number, field.payload) {
+            (GRAPH_INITIALIZER, Payload::Bytes(tensor)) => {
+                let tensor = externalized(tensor, weights)?;
+                write_bytes_field(&mut rewritten, GRAPH_INITIALIZER, &tensor);
+            }
+            _ => rewritten.extend_from_slice(field.encoded),
+        }
+    }
+    Ok(rewritten)
+}
+
+/// A tensor whose `raw_data` is appended to `weights`, at the next multiple of
+/// `TENSOR_ALIGNMENT`, and referred to there as external data; a tensor without `raw_data` as it
+/// is.
+fn externalized(tensor: &[u8], weights: &mut Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut kept = Vec::with_capacity(tensor.len().min(256));
+    let mut raw_data = None;
+    for field in fields(tensor) {
+        let field = field?;
+        match (field.number, field.payload) {
+            (TENSOR_RAW_DATA, Payload::Bytes(data)) if raw_data.is_none() => raw_data = Some(data),
+            (TENSOR_RAW_DATA, _) => return Err("a tensor holds raw_data twice".to_owned()),
+            (TENSOR_EXTERNAL_DATA | TENSOR_DATA_LOCATION, _) => {
+                return Err("a tensor already lies in external data".to_owned())
+            }
+            _ => kept.extend_from_slice(field.encoded),
+        }
+    }
+    let Some(data) = raw_data else {
+        return Ok(tensor.to_vec());
+    };
+    weights.resize(weights.len().next_multiple_of(TENSOR_ALIGNMENT), 0);
+    let offset = weights.len();
+    weights.extend_from_slice(data);
+    for (key, value) in [
+        ("location", PPOCR_WEIGHTS.to_owned()),
+        ("offset", offset.to_string()),
+        ("length", data.len().to_string()),
+    ] {
+        let mut entry = Vec::with_capacity(key.len() + value.len() + 4);
+        write_bytes_field(&mut entry, ENTRY_KEY, key.as_bytes());
+        write_bytes_field(&mut entry, ENTRY_VALUE, value.as_bytes());
+        write_bytes_field(&mut kept, TENSOR_EXTERNAL_DATA, &entry);
+    }
+    write_varint(&mut kept, TENSOR_DATA_LOCATION << 3 | WIRE_VARINT);
+    write_varint(&mut kept, DATA_LOCATION_EXTERNAL);
+    Ok(kept)
+}
+
+/// A field of a Protocol Buffers message.
+struct Field<'a> {
+    number: u64,
+    payload: Payload<'a>,
+    /// The whole field as it is encoded, its key included.
+    encoded: &'a [u8],
+}
+
+#[derive(Clone, Copy)]
+enum Payload<'a> {
+    Bytes(&'a [u8]),
+    Scalar,
+}
+
+/// The fields of a Protocol Buffers message, in order.
+fn fields(message: &[u8]) -> impl Iterator<Item = Result<Field<'_>, String>> {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        (at < message.len()).then(|| {
+            let start = at;
+            let key = read_varint(message, &mut at)?;
+            let payload = match key & 7 {
+                WIRE_VARINT => read_varint(message, &mut at).map(|_| Payload::Scalar)?,
+                WIRE_FIXED64 => skip(message, &mut at, 8).map(|_| Payload::Scalar)?,
+                WIRE_FIXED32 => skip(message, &mut at, 4).map(|_| Payload::Scalar)?,
+                WIRE_LENGTH_DELIMITED => {
+                    let length = usize::try_from(read_varint(message, &mut at)?)
+                        .map_err(|_| format!("the field at byte {start} is too long"))?;
+                    Payload::Bytes(skip(message, &mut at, length)?)
+                }
+                wire => return Err(format!("the field at byte {start} has wire type {wire}")),
+            };
+            Ok(Field {
+                number: key >> 3,
+                payload,
+                encoded: &message[start..at],
+            })
+        })
+    })
+}
+
+fn skip<'a>(message: &'a [u8], at: &mut usize, length: usize) -> Result<&'a [u8], String> {
+    let end = at
+        .checked_add(length)
+        .filter(|&end| end <= message.len())
+        .ok_or_else(|| format!("a field at byte {at} runs past the message's end"))?;
+    let bytes = &message[*at..end];
+    *at = end;
+    Ok(bytes)
+}
+
+fn read_varint(message: &[u8], at: &mut usize) -> Result<u64, String> {
+    let start = *at;
+    let mut value = 0u64;
+    for shift in (0..64).step_by(7) {
+        let byte = *message
+            .get(*at)
+            .ok_or_else(|| format!("the varint at byte {start} runs past the message's end"))?;
+        *at += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err(format!("the varint at byte {start} is longer than 64 bits"))
+}
+
+fn write_varint(out: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        out.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn write_bytes_field(out: &mut Vec<u8>, number: u64, bytes: &[u8]) {
+    write_varint(out, number << 3 | WIRE_LENGTH_DELIMITED);
+    write_varint(out, bytes.len() as u64);
+    out.extend_from_slice(bytes);
 }
 
 /// The licenses of the native libraries the static build links beyond tesseract's, which
@@ -265,22 +502,21 @@ fn read_file(path: &Path) -> Vec<u8> {
     fs::read(path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
-fn bundled_models(bundle: &Path, kind: &str, extension: Option<&str>) -> Vec<(String, PathBuf)> {
+fn bundled_models(bundle: &Path, kind: &str, extension: &str) -> Vec<(String, PathBuf)> {
     let models = models_under(&bundle.join(kind), kind, extension);
     if models.is_empty() {
         panic!(
-            "{OCR_BUNDLE_VARIABLE} names {}, which holds no {kind}/**/*.{}",
-            bundle.display(),
-            extension.unwrap_or("*")
+            "{OCR_BUNDLE_VARIABLE} names {}, which holds no {kind}/**/*.{extension}",
+            bundle.display()
         );
     }
     models
 }
 
-/// The files under `dir` with `extension`, or all of them, in subdirectories too (tesseract's
+/// The files under `dir` with `extension`, in subdirectories too (tesseract's
 /// script models are in `script/`), each named by its path below `prefix` with `/` separators, in
 /// sorted order.
-fn models_under(dir: &Path, prefix: &str, extension: Option<&str>) -> Vec<(String, PathBuf)> {
+fn models_under(dir: &Path, prefix: &str, extension: &str) -> Vec<(String, PathBuf)> {
     let mut models = Vec::new();
     for path in list_dir(dir) {
         let file = path
@@ -290,8 +526,7 @@ fn models_under(dir: &Path, prefix: &str, extension: Option<&str>) -> Vec<(Strin
         let name = format!("{prefix}/{file}");
         if path.is_dir() {
             models.extend(models_under(&path, &name, extension));
-        } else if extension.is_none_or(|extension| path.extension() == Some(OsStr::new(extension)))
-        {
+        } else if path.extension() == Some(OsStr::new(extension)) {
             models.push((name, path));
         }
     }
@@ -323,6 +558,10 @@ fn remove_dir_if_exists(dir: &Path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => panic!("Failed to remove {}: {e}", dir.display()),
     }
+}
+
+fn write_file(path: &Path, content: &[u8]) {
+    fs::write(path, content).unwrap_or_else(|e| panic!("Failed to write {}: {e}", path.display()));
 }
 
 fn compress_bytes(content: &[u8], to: &Path) {
@@ -358,8 +597,8 @@ fn write_ocr_module(out_dir: &Path, ocr: &OcrBundle) {
 }
 
 /// The items of the generated module that describe the OCR bundle: the tesseract library it
-/// carries, unless tesseract is linked in, its heif-png, its language data, its PP-OCR models and
-/// its licenses.
+/// carries, unless tesseract is linked in, its heif-png, its language data, its PP-OCR models,
+/// each model's weights in a static of their own aligned to `TENSOR_ALIGNMENT`, and its licenses.
 fn ocr_items(ocr: &OcrBundle) -> String {
     let ocr_entries: String = ocr
         .files
@@ -376,13 +615,50 @@ fn ocr_items(ocr: &OcrBundle) -> String {
         .as_ref()
         .map(|decoder| format!("pub const OCR_HEIF_DECODER: &str = {decoder:?};\n"))
         .unwrap_or_default();
+    let ppocr = &ocr.ppocr;
+    let weights: String = ppocr
+        .models
+        .iter()
+        .enumerate()
+        .map(|(index, (_, _, weights))| {
+            format!(
+                "static PPOCR_WEIGHTS_{index}: &Aligned<[u8]> = \
+                 &Aligned {{ alignment: [], bytes: *include_bytes!({weights:?}) }};\n"
+            )
+        })
+        .collect();
+    let models: String = ppocr
+        .models
+        .iter()
+        .enumerate()
+        .map(|(index, (name, graph, _))| {
+            format!(
+                "    ({name:?}, PpOcrModel {{ graph: include_bytes!({graph:?}), \
+                 weights: &PPOCR_WEIGHTS_{index}.bytes }}),\n"
+            )
+        })
+        .collect();
+    let configurations: String = ppocr
+        .configurations
+        .iter()
+        .map(|(name, path)| format!("    ({name:?}, include_str!({path:?})),\n"))
+        .collect();
     format!(
         "{library}{heif_decoder}\
          pub const OCR_MODELS: &str = {OCR_MODELS:?};\n\
-         pub const OCR_RECOGNIZERS: &str = {OCR_RECOGNIZERS:?};\n\
          pub static OCR_FILES: [(&str, &[u8]); {}] = [\n{ocr_entries}];\n\
+         pub const PPOCR_WEIGHTS: &str = {PPOCR_WEIGHTS:?};\n\
+         #[repr(C, align({TENSOR_ALIGNMENT}))]\n\
+         struct Alignment;\n\
+         #[repr(C)]\n\
+         struct Aligned<Bytes: ?Sized> {{ alignment: [Alignment; 0], bytes: Bytes }}\n\
+         {weights}\
+         static PPOCR_MODELS: [(&str, PpOcrModel); {}] = [\n{models}];\n\
+         static PPOCR_CONFIGURATIONS: [(&str, &str); {}] = [\n{configurations}];\n\
          pub const OCR_LICENSES: &str = include_str!({:?});\n",
         ocr.files.len(),
+        ppocr.models.len(),
+        ppocr.configurations.len(),
         ocr.licenses
     )
 }

@@ -832,7 +832,7 @@ impl<'t> Recognizer<'t> {
         if !lines.vertical() {
             return Ok(best);
         }
-        let reading = ppocr()?.read(&made.bitmap.gray(), LineModel::VERTICAL, lines, &[])?;
+        let reading = ppocr().read(&made.bitmap.gray(), LineModel::VERTICAL, lines, &[])?;
         let script = vertical_script(&reading.text);
         let vertical = Attempt {
             prepared: best
@@ -853,7 +853,7 @@ impl<'t> Recognizer<'t> {
         if let Some(lines) = made.lines.get() {
             return Ok(lines);
         }
-        let lines = ppocr()?.lines(&made.bitmap.gray())?;
+        let lines = ppocr().lines(&made.bitmap.gray())?;
         Ok(made.lines.get_or_init(|| lines))
     }
 
@@ -1003,7 +1003,7 @@ impl<'t> Recognizer<'t> {
             return Ok(read);
         }
         let lines = self.lines(made)?;
-        let reread = ppocr()?.read(&made.bitmap.gray(), model, lines, &reading.blocks)?;
+        let reread = ppocr().read(&made.bitmap.gray(), model, lines, &reading.blocks)?;
         let again = Attempt {
             prepared: read.prepared.clone(),
             reading: Some(Reading {
@@ -1025,7 +1025,7 @@ impl<'t> Recognizer<'t> {
         }
         let unwarped = Prepared {
             image: Some(Arc::new(Readable::of(
-                Bitmap::Gray(ppocr()?.unwarped(&made.bitmap.gray())?),
+                Bitmap::Gray(ppocr().unwarped(&made.bitmap.gray())?),
                 made.density,
             ))),
             unwarped: true,

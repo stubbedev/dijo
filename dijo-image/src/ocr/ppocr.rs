@@ -1,9 +1,8 @@
 use std::cmp::Reverse;
-use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use image::GrayImage;
-use rten::Model;
+use rten::{Model, ModelOptions};
 use rten_tensor::prelude::*;
 use rten_tensor::NdTensor;
 
@@ -11,8 +10,8 @@ use super::prepare::resized;
 use super::tesseract::{Area, OcrError, Reading};
 use crate::{bundle, memory};
 
-const DETECTOR: &str = "det.onnx";
-const UNWARPER: &str = "uvdoc.onnx";
+const DETECTOR: &str = "det";
+const UNWARPER: &str = "uvdoc";
 const UNWARPING_BYTES_PER_PIXEL: u64 = 48;
 const RECOGNIZERS: [&str; 3] = ["latin", "devanagari", "cjk"];
 const RECOGNIZER_OF_SCRIPT: [(&str, &str); 4] = [
@@ -41,7 +40,6 @@ const CHARACTERS_KEY: &str = "  character_dict:";
 const CHARACTER_ITEM: &str = "  - ";
 
 pub(crate) struct PpOcr {
-    dir: PathBuf,
     detector: OnceLock<Result<Model, OcrError>>,
     unwarper: OnceLock<Result<Model, OcrError>>,
     recognizers: [OnceLock<Result<LineReader, OcrError>>; RECOGNIZERS.len()],
@@ -108,26 +106,15 @@ impl LineModel {
     pub(crate) fn name(self) -> &'static str {
         RECOGNIZERS[self.0]
     }
-
-    fn file(self) -> String {
-        format!("{}.onnx", self.name())
-    }
-
-    fn configuration(self) -> String {
-        format!("{}.yml", self.name())
-    }
 }
 
-pub(crate) fn ppocr() -> Result<&'static PpOcr, OcrError> {
-    static PPOCR: OnceLock<Result<PpOcr, OcrError>> = OnceLock::new();
-    PPOCR
-        .get_or_init(|| {
-            bundle::bundled_recognizers()
-                .map(PpOcr::new)
-                .map_err(|reason| OcrError::Unavailable { reason })
-        })
-        .as_ref()
-        .map_err(Clone::clone)
+pub(crate) fn ppocr() -> &'static PpOcr {
+    static PPOCR: PpOcr = PpOcr {
+        detector: OnceLock::new(),
+        unwarper: OnceLock::new(),
+        recognizers: [const { OnceLock::new() }; RECOGNIZERS.len()],
+    };
+    &PPOCR
 }
 
 fn failed(model: &str, reason: impl ToString) -> OcrError {
@@ -137,15 +124,21 @@ fn failed(model: &str, reason: impl ToString) -> OcrError {
     }
 }
 
-fn load(path: &Path) -> Result<Model, OcrError> {
-    let name = path.display().to_string();
+/// The embedded model of this name, its weights used where the program holds them.
+fn load(name: &str) -> Result<Model, OcrError> {
+    let model = bundle::ppocr_model(name)
+        .ok_or_else(|| failed(name, "the build embedded no such model"))?;
     std::thread::scope(|scope| {
         scope
-            .spawn(|| Model::load_file(path))
+            .spawn(|| {
+                ModelOptions::with_all_ops()
+                    .external_data_static(bundle::PPOCR_WEIGHTS, model.weights)
+                    .load_static_slice(model.graph)
+            })
             .join()
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     })
-    .map_err(|error| failed(&name, error))
+    .map_err(|error| failed(name, error))
 }
 
 #[cfg(test)]
@@ -155,18 +148,9 @@ thread_local! {
 }
 
 impl PpOcr {
-    fn new(dir: PathBuf) -> Self {
-        Self {
-            dir,
-            detector: OnceLock::new(),
-            unwarper: OnceLock::new(),
-            recognizers: Default::default(),
-        }
-    }
-
     fn unwarper(&self) -> Result<&Model, OcrError> {
         self.unwarper
-            .get_or_init(|| load(&self.dir.join(UNWARPER)))
+            .get_or_init(|| load(UNWARPER))
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -219,7 +203,7 @@ impl PpOcr {
 
     fn detector(&self) -> Result<&Model, OcrError> {
         self.detector
-            .get_or_init(|| load(&self.dir.join(DETECTOR)))
+            .get_or_init(|| load(DETECTOR))
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -227,11 +211,11 @@ impl PpOcr {
     fn line_reader(&self, model: LineModel) -> Result<&LineReader, OcrError> {
         self.recognizers[model.0]
             .get_or_init(|| {
-                let configuration = self.dir.join(model.configuration());
-                let model = load(&self.dir.join(model.file()))?;
-                let name = configuration.display().to_string();
-                let text = std::fs::read_to_string(&configuration).map_err(|e| failed(&name, e))?;
-                let labels = labels(&text).map_err(|reason| failed(&name, reason))?;
+                let name = model.name();
+                let configuration = bundle::ppocr_configuration(name)
+                    .ok_or_else(|| failed(name, "the build embedded no configuration of it"))?;
+                let labels = labels(configuration).map_err(|reason| failed(name, reason))?;
+                let model = load(name)?;
                 Ok(LineReader { model, labels })
             })
             .as_ref()
@@ -340,17 +324,17 @@ impl LineReader {
             data.extend_from_slice(&channel);
         }
         let tensor = NdTensor::from_data([1, 3, LINE_HEIGHT as usize, input_width], data);
-        let name = model.file();
+        let name = model.name();
         let output = self
             .model
             .run_one(tensor.into(), None)
-            .map_err(|error| failed(&name, error))?;
+            .map_err(|error| failed(name, error))?;
         let probabilities: NdTensor<f32, 3> =
-            output.try_into().map_err(|error| failed(&name, error))?;
+            output.try_into().map_err(|error| failed(name, error))?;
         let [_, steps, classes] = probabilities.shape();
         if classes != self.labels.len() {
             return Err(failed(
-                &name,
+                name,
                 format!(
                     "it scores {classes} classes for {} labels",
                     self.labels.len()
@@ -642,6 +626,18 @@ mod tests {
             top,
             right,
             bottom,
+        }
+    }
+
+    #[test]
+    fn loads_every_embedded_model_with_its_weights_apart_from_its_graph() {
+        for name in [DETECTOR, UNWARPER].into_iter().chain(RECOGNIZERS) {
+            load(name).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let graph = bundle::ppocr_model(name).expect("an embedded model").graph;
+            assert!(
+                Model::load_static_slice(graph).is_err(),
+                "{name} holds its weights in its graph"
+            );
         }
     }
 

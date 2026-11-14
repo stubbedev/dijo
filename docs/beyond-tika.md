@@ -191,9 +191,11 @@ What an extraction holds is bounded by its parser, not by its input, and every b
     model, and an engine idle for 5 minutes is freed. Before this, a soak run created 96 engines in four minutes,
     and an idle server held 1.5 GB of them (8b83d9f5).
 - **Models.** Tesseract's models come in the OCR bundle, which is unpacked once into a cache directory
-  (`dijo-native/src/lib.rs`) and then mapped (see `mmap-models` below). PP-OCR models are read into memory by rten's
-  `Model::load_file`, lazily, once per process (`OnceLock`), and shared by every thread. Unlike tesseract's, each
-  process holds its own copy.
+  (`dijo-native/src/lib.rs`) and then mapped (see `mmap-models` below). The PP-OCR and UVDoc models are embedded
+  uncompressed, their weights split from the ONNX graph and aligned per tensor at build time
+  (`dijo-native/build.rs`), and rten reads the weights where the program holds them, so every process shares one
+  copy through the page cache and nothing is unpacked. An idle OCR worker of `serve --isolation process` holds
+  about 73 MB less private memory (Private_Dirty from ~170 to ~97 MB), for a binary 6.7 MB larger.
 - **Tesseract patches and build** (`ci/tesseract-patches/`, rationale in `ci/tesseract.nix`):
 
   | Patch or build change | Effect |

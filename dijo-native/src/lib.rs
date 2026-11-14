@@ -1,5 +1,6 @@
-//! The files the build embedded in the program, the OCR bundle (`DIJO_OCR_BUNDLE`), unpacked
-//! once into a cache directory named after them.
+//! The files the build embedded in the program, the OCR bundle (`DIJO_OCR_BUNDLE`): those native
+//! code reads from files unpacked once into a cache directory named after them, the PP-OCR models
+//! used where they lie in the program.
 
 use std::env;
 use std::fs;
@@ -122,8 +123,30 @@ pub fn bundled_tessdata() -> Result<PathBuf, String> {
     Ok(unpacked()?.join(OCR_MODELS))
 }
 
-pub fn bundled_recognizers() -> Result<PathBuf, String> {
-    Ok(unpacked()?.join(OCR_RECOGNIZERS))
+/// A PP-OCR model the build embedded uncompressed: its ONNX graph, which names its weights as the
+/// external data [`PPOCR_WEIGHTS`], and those weights, aligned for each tensor to be read where it
+/// lies. The program's file maps them, so every process running it shares one copy of them in
+/// the page cache and none reads them before it runs the model.
+#[derive(Debug)]
+pub struct PpOcrModel {
+    pub graph: &'static [u8],
+    pub weights: &'static [u8],
+}
+
+/// The PP-OCR model the build embedded from the bundle's `ppocr/<name>.onnx`.
+pub fn ppocr_model(name: &str) -> Option<&'static PpOcrModel> {
+    PPOCR_MODELS
+        .iter()
+        .find(|(embedded, _)| *embedded == name)
+        .map(|(_, model)| model)
+}
+
+/// The configuration the build embedded from the bundle's `ppocr/<name>.yml`.
+pub fn ppocr_configuration(name: &str) -> Option<&'static str> {
+    PPOCR_CONFIGURATIONS
+        .iter()
+        .find(|(embedded, _)| *embedded == name)
+        .map(|(_, configuration)| *configuration)
 }
 
 /// The tesseract library the build bundled, unpacked.
