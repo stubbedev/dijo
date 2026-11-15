@@ -182,9 +182,9 @@
   0.2.14).
 * Charset detection looks up its model by script and scans a declaration once (#378); a CHM page's charset is detected
   once (#370): CHM files take about a third less CPU.
-* The XML reader takes 14% fewer instructions on spreadsheets; the executable's relocations are packed, so every run
-  starts in about 4.5 million fewer instructions; scripts overlooked on an unconfident page are tried on a strip
-  first (#380). Every format group of the benchmark takes fewer instructions than in 0.2.14.
+* The XML reader takes 14% fewer instructions on spreadsheets; builds in the development shell, against glibc 2.44,
+  pack the executable's relocations, so every run starts in about 4.5 million fewer instructions; scripts overlooked
+  on an unconfident page are tried on a strip first (#380). Every format group of the benchmark takes fewer instructions than in 0.2.14.
 
 # 0.2.14 (2026-10-28)
 

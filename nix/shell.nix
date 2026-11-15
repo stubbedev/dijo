@@ -44,7 +44,8 @@
         }
         // lib.optionalAttrs isLinux {
           "CARGO_TARGET_${hostTarget}_LINKER" = lib.getExe pkgs.clang;
-          "CARGO_TARGET_${hostTarget}_RUSTFLAGS" = "-C link-arg=-fuse-ld=mold";
+          "CARGO_TARGET_${hostTarget}_RUSTFLAGS" =
+            "-C link-arg=-fuse-ld=mold -C link-arg=-Wl,-z,pack-relative-relocs";
         };
 
         # cargo looks up subcommands (cargo clippy, cargo fmt, ...) in $CARGO_HOME/bin before $PATH
