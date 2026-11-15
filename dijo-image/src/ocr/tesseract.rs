@@ -174,6 +174,7 @@ c_api! {
     mean_text_conf = TessBaseAPIMeanTextConf(*mut BaseApi) -> c_int;
     is_valid_word = TessBaseAPIIsValidWord(*mut BaseApi, *const c_char) -> c_int;
     clear = TessBaseAPIClear(*mut BaseApi);
+    clear_persistent_cache = TessBaseAPIClearPersistentCache(*mut BaseApi);
     detect_orientation_script = TessBaseAPIDetectOrientationScript(
         *mut BaseApi, *mut c_int, *mut c_float, *mut *const c_char, *mut c_float) -> c_int;
     create_monitor = TessMonitorCreate() -> *mut Monitor;
@@ -518,6 +519,14 @@ impl<E> IdleEngines<E> {
         (self.engines.len() > self.capacity).then(|| self.engines.remove(0).engine)
     }
 
+    /// The idle engines for `model`, no longer kept.
+    fn forget(&mut self, model: &str) -> Vec<E> {
+        self.engines
+            .extract_if(.., |idle| idle.model == model)
+            .map(|idle| idle.engine)
+            .collect()
+    }
+
     fn drain(&mut self) -> impl Iterator<Item = E> + '_ {
         self.engines.drain(..).map(|idle| idle.engine)
     }
@@ -830,6 +839,26 @@ impl Tesseract {
         }
     }
 
+    /// Frees the idle engines for models no reading is expected to read with again, the
+    /// dictionaries tesseract keeps for every engine that no engine reads with any longer, which
+    /// hold the mapped models they were loaded from, and returns the memory they took to the
+    /// system.
+    pub(crate) fn forget<'m>(&self, models: impl IntoIterator<Item = &'m str>) {
+        let forgotten: Vec<Engine> = {
+            let mut idle = self.idle();
+            models
+                .into_iter()
+                .flat_map(|model| idle.forget(model))
+                .collect()
+        };
+        if forgotten.is_empty() {
+            return;
+        }
+        forgotten.into_iter().for_each(|engine| self.delete(engine));
+        unsafe { (self.api.clear_persistent_cache)(std::ptr::null_mut()) };
+        return_freed_memory();
+    }
+
     fn idle(&self) -> std::sync::MutexGuard<'_, IdleEngines<Engine>> {
         self.idle.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -899,6 +928,22 @@ impl Drop for Tesseract {
         engines.into_iter().for_each(|engine| self.delete(engine));
     }
 }
+
+/// Returns the memory freed and not yet given back to the system: glibc keeps what a thread frees
+/// in that thread's arena, where the threads PP-OCR runs on, which allocate from arenas of their
+/// own, never reuse it.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn return_freed_memory() {
+    extern "C" {
+        fn malloc_trim(pad: usize) -> c_int;
+    }
+    unsafe { malloc_trim(0) };
+}
+
+/// Returns the memory freed and not yet given back to the system, which allocators other than
+/// glibc's give back as they free it.
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn return_freed_memory() {}
 
 /// The variables an engine for a model is set up with. The orientation and script model's engine
 /// only detects, so it never learns, and keeps no adapted class for each of the unichars of every
@@ -1277,6 +1322,18 @@ mod tests {
         assert_eq!(idle.release("deu", 2, start + IDLE / 2), None);
         assert_eq!(idle.take("fra", start + IDLE), (None, vec![1]));
         assert_eq!(idle.take("deu", start + IDLE), (Some(2), Vec::new()));
+    }
+
+    #[test]
+    fn forgets_every_idle_engine_of_a_model_and_keeps_the_others() {
+        let now = Instant::now();
+        let mut idle = IdleEngines::new(4);
+        for (model, engine) in [("kor", 1), ("eng", 2), ("kor", 3)] {
+            assert_eq!(idle.release(model, engine, now), None);
+        }
+        assert_eq!(idle.forget("kor"), [1, 3]);
+        assert_eq!(idle.forget("kor"), Vec::<i32>::new());
+        assert_eq!(idle.drain().collect::<Vec<_>>(), [2]);
     }
 
     #[test]

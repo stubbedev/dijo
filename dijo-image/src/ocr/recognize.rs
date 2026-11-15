@@ -1048,7 +1048,8 @@ impl<'t> Recognizer<'t> {
     /// Reads an image in the given scripts in turn, until one reads it confidently, passing over
     /// each script whose [`sample_strip`] reads less confidently than the best reading so far and
     /// each reading whose letters are mostly in another script: the best reading, whose script
-    /// the rest of the extraction then assumes.
+    /// the rest of the extraction then assumes. The engines of the scripts tried whose reading
+    /// was not kept are freed, so that what they hold is not held while the page is read on.
     fn read_overlooked(
         &self,
         best: Attempt,
@@ -1059,6 +1060,7 @@ impl<'t> Recognizer<'t> {
         let installed = self.tesseract.languages()?;
         let mut prepared = best.prepared.clone();
         let mut overlooked = best;
+        let mut tried = Vec::with_capacity(scripts.len());
         for script in scripts {
             let Some(model) = installed_language(&installed, script) else {
                 continue;
@@ -1066,6 +1068,7 @@ impl<'t> Recognizer<'t> {
             if overlooked.confident() {
                 continue;
             }
+            tried.push(model.clone());
             prepared = prepare_again(&prepared, image, oriented, Some(script.clone()), model, 0);
             if !self.may_read_better(&prepared, &overlooked)? {
                 continue;
@@ -1075,6 +1078,12 @@ impl<'t> Recognizer<'t> {
                 overlooked = overlooked.or(Attempt::read(prepared.clone(), reading));
             }
         }
+        self.tesseract.forget(
+            tried
+                .iter()
+                .map(String::as_str)
+                .filter(|model| *model != overlooked.prepared.model),
+        );
         Ok(overlooked)
     }
 

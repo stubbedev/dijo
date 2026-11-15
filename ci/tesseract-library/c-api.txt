@@ -27,6 +27,7 @@ TessDeleteText
 TessBaseAPIMeanTextConf
 TessBaseAPIIsValidWord
 TessBaseAPIClear
+TessBaseAPIClearPersistentCache
 TessBaseAPIDetectOrientationScript
 TessMonitorCreate
 TessMonitorDelete
