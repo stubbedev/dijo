@@ -1,6 +1,6 @@
 # Conformance with Apache Tika
 
-Every test document of Apache Tika's parser modules, extracted natively and with the same Tika version on the JVM, OCR off on both sides. A file works when the native text and title match Tika's text with an F1 score of at least 0.95 over their tokens, or when one of our own parsers reads its format on purpose differently (subtitles, notebooks, FictionBook, Apple Mail, iWork 2013+). 1051 of 1094 files work or are empty on both sides.
+Every test document of Apache Tika's parser modules, extracted natively and with the same Tika version on the JVM, OCR off on both sides. A file works when the native text and title match Tika's text with an F1 score of at least 0.95 over their tokens, or when one of our own parsers reads its format on purpose differently (subtitles, notebooks, FictionBook, Apple Mail, iWork 2013+). 1032 of 1094 files work or are empty on both sides.
 
 | Media type | Files | Work | Differ | Fail | Files that differ or fail (F1) |
 |---|---|---|---|---|---|
@@ -18,7 +18,7 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/java-archive | 3 | 3 | 0 | 0 |  |
 | application/java-vm | 2 | 2 | 0 | 0 |  |
 | application/marc | 1 | 1 | 0 | 0 |  |
-| application/mbox | 7 | 7 | 0 | 0 |  |
+| application/mbox | 7 | 4 | 3 | 0 | headers.mbox (0.80), testEmailWithPNGAtt.eml (0.86), testMBOX_lengthy_x-headers.mbox (0.86) |
 | application/msword | 41 | 41 | 0 | 0 |  |
 | application/onenote | 16 | 8 | 8 | 0 | test-tika-4303-Chinese-notes.one (0.35), testOneNote.one (0.68), testOneNote1.one (0.51), testOneNote2.one (0.30), testOneNote2016.one (0.76), testOneNote3.one (0.25), testOneNote4.one (0.24), testOneNoteEmbeddedWordDoc.one (0.68) |
 | application/onix-message+xml | 2 | 2 | 0 | 0 |  |
@@ -83,12 +83,12 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | application/vnd.ms-xpsdocument | 6 | 6 | 0 | 0 |  |
 | application/vnd.oasis.opendocument.base | 1 | 1 | 0 | 0 |  |
 | application/vnd.oasis.opendocument.flat.presentation | 1 | 1 | 0 | 0 |  |
-| application/vnd.oasis.opendocument.flat.spreadsheet | 2 | 1 | 1 | 0 | testFODS_embeddedChart.fods (0.75) |
+| application/vnd.oasis.opendocument.flat.spreadsheet | 2 | 2 | 0 | 0 |  |
 | application/vnd.oasis.opendocument.flat.text | 1 | 1 | 0 | 0 |  |
 | application/vnd.oasis.opendocument.formula | 1 | 1 | 0 | 0 |  |
 | application/vnd.oasis.opendocument.graphics | 1 | 1 | 0 | 0 |  |
 | application/vnd.oasis.opendocument.presentation | 4 | 4 | 0 | 0 |  |
-| application/vnd.oasis.opendocument.spreadsheet | 4 | 4 | 0 | 0 |  |
+| application/vnd.oasis.opendocument.spreadsheet | 4 | 2 | 2 | 0 | testFooter.ods (0.82), testODSMacro.ods (0.22) |
 | application/vnd.oasis.opendocument.text | 15 | 14 | 1 | 0 | testOpenOffice2.odt (0.67) |
 | application/vnd.openofficeorg.autotext | 1 | 1 | 0 | 0 |  |
 | application/vnd.openofficeorg.extension | 1 | 1 | 0 | 0 |  |
@@ -245,13 +245,13 @@ Every test document of Apache Tika's parser modules, extracted natively and with
 | image/x-raw-pentax | 2 | 0 | 2 | 0 | testPEF.pef (0.67), testPEF.pef (0.67) |
 | image/x-raw-sony | 2 | 0 | 2 | 0 | testARW.arw (0.67), testARW.arw (0.67) |
 | message/news | 1 | 1 | 0 | 0 |  |
-| message/rfc822 | 26 | 25 | 1 | 0 | testRFC822_encrypted_zip (0.95) |
+| message/rfc822 | 26 | 11 | 15 | 0 | test-incremental-updates.eml (0.92), testThunderbirdEml.eml (0.77), testGroupWiseEml.eml (0.80), testRFC822-ARC (0.70), testRFC822-limitedheaders (0.91), testRFC822-mixed-simple (0.94), testRFC822-txt-body (0.94), testRFC822_base64 (0.82), testRFC822_date_utf8 (0.86), testRFC822_dkim.eml (0.90), testRFC822_eml (0.67), testRFC822_encrypted_zip (0.86), testRFC822_i18nheaders (0.76), testRFC822_quoted (0.91), testEML_embedded_xhtml_and_img.eml (0.90) |
 | message/x-emlx | 3 | 3 | 0 | 0 |  |
 | model/e57 | 1 | 1 | 0 | 0 |  |
 | model/vnd.dwf | 1 | 1 | 0 | 0 |  |
 | model/x.stl-ascii | 1 | 1 | 0 | 0 |  |
 | model/x.stl-binary | 1 | 1 | 0 | 0 |  |
-| multipart/related | 2 | 2 | 0 | 0 |  |
+| multipart/related | 2 | 1 | 1 | 0 | testUserDefinedCharset.mhtml (0.67) |
 | text/calendar | 2 | 2 | 0 | 0 |  |
 | text/css | 1 | 1 | 0 | 0 |  |
 | text/csv | 1 | 1 | 0 | 0 |  |

@@ -21,6 +21,13 @@
   slowed: the OCR documents of the quality corpus read in 42 s where 0.2.16 took 61 s, twelve at a time. A reading
   with a memory limit stays on one thread.
 
+### Fixed
+
+* An SVG image's root `<desc>` is written as a paragraph of its text as well as its `dc:description`, so an image
+  whose description is all the words it has no longer reads as empty.
+* A soft hyphen at the start of a line no longer lets normalised text keep a blank line more than it allows, so
+  normalising text twice changes nothing again.
+
 # 0.2.16 (2026-11-15)
 
 ### Fixed

@@ -102,15 +102,12 @@ fn files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Compares a native record, whose title counts as text since Tika's text output includes
-/// the title, with Tika's text. A title the text already starts with, as an e-mail message's
-/// subject heading its body, is counted once.
+/// the title ahead of the body, with Tika's text.
 fn compare(record: &serde_json::Value, tika: &str) -> Comparison {
-    let text = record["text"].as_str().unwrap_or_default();
-    let title = record["metadata"]["title"].as_str().unwrap_or_default();
-    let mut native = tokens(text);
-    if !text.trim_start().starts_with(title.trim()) {
-        native.extend(tokens(title));
-    }
+    let mut native = tokens(record["text"].as_str().unwrap_or_default());
+    native.extend(tokens(
+        record["metadata"]["title"].as_str().unwrap_or_default(),
+    ));
     let tika = tokens(tika);
     let total = native.len() + tika.len();
     let similarity = if total == 0 {
