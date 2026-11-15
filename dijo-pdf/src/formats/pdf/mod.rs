@@ -1024,6 +1024,22 @@ mod tests {
         assert!(text.contains("Alpha beta gamma Delta epsilon"), "{text}");
     }
 
+    /// A dash drawn as typesetters draw one from hyphens: each hyphen, 333 units wide in
+    /// Helvetica, drawn 200 units before the one before it ends.
+    #[test]
+    fn reads_a_dash_drawn_from_overlapping_hyphens_as_one_in_reading_order() {
+        let content = "BT /F1 10 Tf 1 0 0 1 72 700 Tm [(pages 17-)200(-)200(-20, not 1--2)] TJ ET";
+        let input = document(&page_objects(content), b"", &[]);
+        let text = native_text(&input);
+        assert!(text.contains("pages 17-20, not 1--2"), "{text}");
+        let (xml, _) = crate::Extractor::new()
+            .set_xml_output(true)
+            .set_pdf_config(PdfParserConfig::new().set_reading_order(false))
+            .extract_bytes_to_string(&input)
+            .unwrap();
+        assert!(xml.contains("pages 17---20, not 1--2"), "{xml}");
+    }
+
     #[test]
     fn arranges_a_tagged_page_the_tree_does_not_describe() {
         let mut objects = page_objects(COLUMNS_RIGHT_FIRST);

@@ -254,7 +254,7 @@ impl<'p, 'r> DocumentWriter<'p, 'r> {
         }
         Self {
             pdf,
-            engine: Engine::new(labels, !settings.reading_order),
+            engine: Engine::new(labels, settings.reading_order),
             page: PageWriter {
                 pdf,
                 out,

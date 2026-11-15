@@ -63,7 +63,8 @@ parser_config! {
         /// Whether an untagged PDF page is read in reading order: columns left to right (right to
         /// left on a page of right-to-left text), a title before the columns it spans, a block
         /// above the blocks below it, rather than in the order its content stream draws the
-        /// text. Not a Tika setting: unless set, pages are read in reading order.
+        /// text, and a dash drawn as overlapping hyphens read as one. Not a Tika setting: unless
+        /// set, pages are read in reading order.
         set_reading_order(reading_order: bool),
 
         /// If true, extract the literal inline embedded OBXImages. Beware: some PDF documents of

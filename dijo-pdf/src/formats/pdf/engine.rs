@@ -132,11 +132,13 @@ pub(super) struct Engine {
     /// Whether glyphs are labelled with their marked content, as Tika's tagged writer does
     /// when the document has a usable structure tree.
     labels: bool,
-    /// Whether a page's glyphs are divided into articles by its thread beads, as PDFBox divides
-    /// them, rather than kept together for the reading order to arrange: PDFBox places a glyph
-    /// in a bead by its origin alone, so the first letter of each line of a column whose bead
-    /// starts a hair right of the text lands in an article of its own.
-    by_beads: bool,
+    /// Whether pages are read in reading order. A page's glyphs are then kept together for the
+    /// reading order to arrange rather than divided into articles by its thread beads, as PDFBox
+    /// divides them: PDFBox places a glyph in a bead by its origin alone, so the first letter of
+    /// each line of a column whose bead starts a hair right of the text lands in an article of
+    /// its own. And a dash drawn over the dash before it, as a long dash is drawn from
+    /// overlapping hyphens, is read as one with it, where PDFBox keeps each.
+    reading_order: bool,
     pub(super) damaged_font: bool,
     pub(super) non_embedded_font: bool,
 }
@@ -183,13 +185,13 @@ struct Run<'p, 'e> {
 }
 
 impl Engine {
-    pub(super) fn new(labels: bool, by_beads: bool) -> Self {
+    pub(super) fn new(labels: bool, reading_order: bool) -> Self {
         Self {
             fonts: Fonts::default(),
             default_font: None,
             unshared: 0,
             labels,
-            by_beads,
+            reading_order,
             damaged_font: false,
             non_embedded_font: false,
         }
@@ -201,10 +203,10 @@ impl Engine {
         let crop = page.crop_box(pdf);
         let translate = (!jfloat::same(crop[0], 0.0) || !jfloat::same(crop[1], 0.0))
             .then(|| Matrix::translation(-crop[0], -crop[1]));
-        let beads = if self.by_beads {
-            beads(pdf, page)
-        } else {
+        let beads = if self.reading_order {
             Vec::new()
+        } else {
+            beads(pdf, page)
         };
         let mut run = Run {
             engine: self,
@@ -995,7 +997,8 @@ impl<'p> Run<'p, '_> {
         self.place_text_position(text);
     }
 
-    /// Places a glyph in its article, merging diacritics into the glyph they sit on.
+    /// Places a glyph in its article, merging diacritics into the glyph they sit on and, when the
+    /// page is read in reading order, a dash into the same dash it overlaps.
     fn place_text_position(&mut self, mut text: TextPosition) {
         let x = text.x();
         let y = text.y();
@@ -1022,6 +1025,7 @@ impl<'p> Run<'p, '_> {
                 None => found = Some(0),
             }
         }
+        let reading_order = self.engine.reading_order;
         let articles = &mut self.content.articles;
         let index = if self.beads.is_empty() {
             0
@@ -1036,7 +1040,9 @@ impl<'p> Run<'p, '_> {
         match list.last_mut() {
             None => list.push(text),
             Some(previous) => {
-                if text.is_diacritic() && previous.contains(&text) {
+                if reading_order && previous.is_overlapped_by_dash(&text) {
+                    previous.extend_over(&text);
+                } else if text.is_diacritic() && previous.contains(&text) {
                     previous.merge_diacritic(&text);
                 } else if previous.is_diacritic() && text.contains(previous) {
                     let previous = list.pop().unwrap_or_else(|| unreachable!());

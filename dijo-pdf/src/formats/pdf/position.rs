@@ -346,6 +346,30 @@ impl TextPosition {
         true
     }
 
+    /// Whether `other` is this dash drawn again further along its line before this one ends, as
+    /// a longer dash is drawn from overlapping hyphens.
+    pub(super) fn is_overlapped_by_dash(&self, other: &TextPosition) -> bool {
+        if !is_dash(&self.unicode) || other.unicode != self.unicode {
+            return false;
+        }
+        let start = self.x_dir_adj();
+        let other_start = other.x_dir_adj();
+        other.direction == self.direction
+            && other.font_size_pt == self.font_size_pt
+            && other.y_dir_adj() == self.y_dir_adj()
+            && other_start > start
+            && other_start < start + self.width_dir_adj()
+    }
+
+    /// The glyph stretched to end where `other`, which overlaps it, ends.
+    pub(super) fn extend_over(&mut self, other: &TextPosition) {
+        let width = self.width();
+        self.end_x = other.end_x;
+        self.end_y = other.end_y;
+        let individual = self.individual_widths()[0];
+        self.widths = Widths::One(individual + self.width() - width);
+    }
+
     /// `mergeDiacritic`: the diacritic joined to the character it sits on.
     pub(super) fn merge_diacritic(&mut self, diacritic: &TextPosition) {
         if diacritic.utf16_len() > 1 {
@@ -409,6 +433,19 @@ impl TextPosition {
     pub(super) fn set_unicode(&mut self, unicode: GlyphText) {
         self.unicode = unicode;
     }
+}
+
+fn is_dash(text: &str) -> bool {
+    matches!(
+        text,
+        "-" | "\u{2010}"
+            | "\u{2011}"
+            | "\u{2012}"
+            | "\u{2013}"
+            | "\u{2014}"
+            | "\u{2015}"
+            | "\u{2212}"
+    )
 }
 
 /// Whether a character's bidirectional class is R or AL, as `Character.getDirectionality`
