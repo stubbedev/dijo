@@ -70,7 +70,7 @@
     "reading_order": 1.0
   },
   "arbeiter-zeitung-1895.jpg": {
-    "character_error_rate": 0.044141740392267,
+    "character_error_rate": 0.04395450077236343,
     "token_error_rate": 0.11815466312645204,
     "recall": 0.9064055758380352,
     "spurious": 0.10634816753926701,
@@ -84,7 +84,7 @@
     "reading_order": 0.0
   },
   "armenian-dussap-1959-p29.png": {
-    "character_error_rate": 0.10331125827814569,
+    "character_error_rate": 0.10264900662251655,
     "token_error_rate": 0.36363636363636365,
     "recall": 0.6442687747035574,
     "spurious": 0.35826771653543305,
@@ -112,21 +112,21 @@
     "reading_order": 1.0
   },
   "article-atenprimaria-2026.pdf": {
-    "character_error_rate": 0.1584033613445378,
+    "character_error_rate": 0.14857142857142858,
     "token_error_rate": 0.17146017699115043,
     "recall": 0.9994469026548672,
     "spurious": 0.007688083470620538,
     "reading_order": 0.9473684210526315
   },
   "article-biollett-2016.pdf": {
-    "character_error_rate": 0.024087740877408774,
-    "token_error_rate": 0.03689806128830519,
-    "recall": 0.9934333958724203,
-    "spurious": 0.024861878453038673,
+    "character_error_rate": 0.023882738827388273,
+    "token_error_rate": 0.03627267041901188,
+    "recall": 0.9937460913070669,
+    "spurious": 0.024255449800429842,
     "reading_order": 0.9104477611940298
   },
   "article-bmcresnotes-2020.pdf": {
-    "character_error_rate": 0.07648041581585298,
+    "character_error_rate": 0.07643400779654724,
     "token_error_rate": 0.07786259541984733,
     "recall": 0.9984732824427481,
     "spurious": 0.005776831863788386,
@@ -273,7 +273,7 @@
     "reading_order": 1.0
   },
   "cdc-mmwr-prep-2024.pdf": {
-    "character_error_rate": 0.24582777036048065,
+    "character_error_rate": 0.24545226969292389,
     "token_error_rate": 0.29404404404404405,
     "recall": 1.0,
     "spurious": 0.0,
@@ -476,10 +476,10 @@
     "reading_order": 1.0
   },
   "english-macaulay-minutes-1862.pdf": {
-    "character_error_rate": 0.026898444647758462,
-    "token_error_rate": 0.10947368421052632,
-    "recall": 0.9515789473684211,
-    "spurious": 0.10317460317460317,
+    "character_error_rate": 0.024702653247941447,
+    "token_error_rate": 0.08526315789473685,
+    "recall": 0.9631578947368421,
+    "spurious": 0.08132530120481928,
     "reading_order": 1.0
   },
   "estonian-cp1257.txt": {
@@ -742,10 +742,10 @@
     "reading_order": 0.5
   },
   "hindi-diksita-1895-02.jpg": {
-    "character_error_rate": 0.23102866779089376,
-    "token_error_rate": 0.5,
-    "recall": 0.5543478260869565,
-    "spurious": 0.43333333333333335,
+    "character_error_rate": 0.22765598650927488,
+    "token_error_rate": 0.4782608695652174,
+    "recall": 0.5652173913043478,
+    "spurious": 0.4157303370786517,
     "reading_order": 0.5
   },
   "hindi-scan.png": {
@@ -994,25 +994,25 @@
     "reading_order": 1.0
   },
   "korean-scan-150dpi.png": {
-    "character_error_rate": 0.5198019801980198,
-    "token_error_rate": 0.5283018867924528,
-    "recall": 0.49056603773584906,
-    "spurious": 0.13333333333333333,
-    "reading_order": 0.0
+    "character_error_rate": 0.009900990099009901,
+    "token_error_rate": 0.03773584905660377,
+    "recall": 0.9622641509433962,
+    "spurious": 0.03773584905660377,
+    "reading_order": 0.5
   },
   "korean-scan-fax.png": {
-    "character_error_rate": 0.29207920792079206,
-    "token_error_rate": 0.6415094339622641,
-    "recall": 0.4716981132075472,
-    "spurious": 0.5689655172413793,
+    "character_error_rate": 0.20297029702970298,
+    "token_error_rate": 0.49056603773584906,
+    "recall": 0.5283018867924528,
+    "spurious": 0.48148148148148145,
     "reading_order": 0.5
   },
   "korean-scan.png": {
-    "character_error_rate": 0.5297029702970297,
-    "token_error_rate": 0.7358490566037735,
-    "recall": 0.5094339622641509,
-    "spurious": 0.4,
-    "reading_order": 0.0
+    "character_error_rate": 0.0049504950495049506,
+    "token_error_rate": 0.018867924528301886,
+    "recall": 0.9811320754716981,
+    "spurious": 0.018867924528301886,
+    "reading_order": 0.5
   },
   "korean.docx": {
     "character_error_rate": 0.0,
@@ -1029,7 +1029,7 @@
     "reading_order": 1.0
   },
   "kronen-zeitung-1933.jpg": {
-    "character_error_rate": 0.1069880537054657,
+    "character_error_rate": 0.10677661486415055,
     "token_error_rate": 0.2821380243572395,
     "recall": 0.7665764546684709,
     "spurious": 0.24966887417218542,
@@ -1218,21 +1218,21 @@
     "reading_order": 1.0
   },
   "more-epigrammata-1520.jpg": {
-    "character_error_rate": 0.045454545454545456,
-    "token_error_rate": 0.256,
-    "recall": 0.824,
-    "spurious": 0.23703703703703705,
-    "reading_order": 0.0
+    "character_error_rate": 0.04312354312354312,
+    "token_error_rate": 0.24,
+    "recall": 0.832,
+    "spurious": 0.22388059701492538,
+    "reading_order": 0.5
   },
   "neue-freie-presse-1873.tif": {
-    "character_error_rate": 0.09240005220341932,
+    "character_error_rate": 0.09222604080567277,
     "token_error_rate": 0.2431039709002728,
     "recall": 0.8102455289481661,
     "spurious": 0.21010638297872342,
     "reading_order": 0.21739130434782608
   },
   "neue-freie-presse-1895.tif": {
-    "character_error_rate": 0.16132899469087172,
+    "character_error_rate": 0.16055831477992807,
     "token_error_rate": 0.2756756756756757,
     "recall": 0.8415362731152205,
     "spurious": 0.16980072972214427,
@@ -2135,6 +2135,13 @@
     "reading_order": 1.0
   },
   "swedish.pdf": {
+    "character_error_rate": 0.0,
+    "token_error_rate": 0.0,
+    "recall": 1.0,
+    "spurious": 0.0,
+    "reading_order": 1.0
+  },
+  "table-scan.png": {
     "character_error_rate": 0.0,
     "token_error_rate": 0.0,
     "recall": 1.0,
