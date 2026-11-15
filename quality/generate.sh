@@ -181,6 +181,8 @@ magick "$work/scan-300.png" -colorspace Gray -depth 8 "$corpus/prose-scan-300dpi
 magick "$work/scan-150.png" -colorspace Gray -depth 8 "$corpus/prose-scan-150dpi.png"
 pdftoppm -r 150 -f 1 -l 1 -png -singlefile "$corpus/korean.pdf" "$work/korean-scan-150"
 magick "$work/korean-scan-150.png" -colorspace Gray -depth 8 "$corpus/korean-scan-150dpi.png"
+pdftoppm -r 300 -f 1 -l 1 -png -singlefile "$corpus/table.pdf" "$work/table-scan"
+magick "$work/table-scan.png" -colorspace Gray -depth 8 "$corpus/table-scan.png"
 magick "$work/scan-300.png" -colorspace Gray -background white -rotate 2.5 -depth 8 "$corpus/prose-scan-skewed.png"
 magick "$work/scan-300.png" -colorspace Gray -rotate 90 -depth 8 "$corpus/prose-scan-rotated.png"
 magick "$work/scan-300.png" -colorspace Gray -rotate 180 -depth 8 "$corpus/prose-scan-upside-down.png"

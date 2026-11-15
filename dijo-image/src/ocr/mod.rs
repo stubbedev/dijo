@@ -20,6 +20,7 @@ mod render;
 mod report;
 mod script;
 mod slots;
+mod table;
 mod tesseract;
 mod text;
 

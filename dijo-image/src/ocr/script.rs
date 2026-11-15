@@ -6,11 +6,14 @@ use std::collections::BTreeSet;
 
 use unicode_script::Script;
 
+use super::tesseract::MODEL_SEPARATOR;
 use crate::unicode::{is_letter, script};
 
 /// The model read with when a script has none installed.
 const DEFAULT_LANGUAGE: &str = "eng";
 const SCRIPT_MODEL_PREFIX: &str = "script/";
+/// The names tesseract's detection gives a page of Hangul, and tesseract's script model of it.
+const HANGUL_SCRIPTS: [&str; 2] = ["Korean", "Hangul"];
 pub(crate) const BLACKLETTER_SCRIPT: &str = "Fraktur";
 
 /// The most common language of each script tesseract's detection reports. Detection names a
@@ -213,6 +216,17 @@ pub(crate) fn is_script_model(model: &str) -> bool {
     model.starts_with(SCRIPT_MODEL_PREFIX)
 }
 
+/// Whether a language, its models joined by `+` as `-l` joins them, is read with a model of
+/// Hangul: the script model of Hangul or the model of Korean.
+pub(crate) fn reads_hangul(language: &str) -> bool {
+    language.split(MODEL_SEPARATOR).any(|model| {
+        HANGUL_SCRIPTS.iter().any(|script| {
+            model.strip_prefix(SCRIPT_MODEL_PREFIX) == Some(*script)
+                || LANGUAGE_BY_SCRIPT.contains(&(*script, model))
+        })
+    })
+}
+
 /// The installed model for a script: the script model, then the script's most common language,
 /// or none when neither is installed.
 pub(crate) fn installed_language(installed: &BTreeSet<String>, script: &str) -> Option<String> {
@@ -295,6 +309,15 @@ mod tests {
 
     fn installed(models: &[&str]) -> BTreeSet<String> {
         models.iter().map(|model| (*model).to_owned()).collect()
+    }
+
+    #[test]
+    fn tells_the_models_of_hangul() {
+        assert!(reads_hangul("kor"));
+        assert!(reads_hangul("eng+kor"));
+        assert!(reads_hangul("script/Hangul"));
+        assert!(!reads_hangul("jpn"));
+        assert!(!reads_hangul("script/Latin"));
     }
 
     #[test]

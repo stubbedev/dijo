@@ -900,6 +900,8 @@ quality	swedish.docx	file	application/vnd.openxmlformats-officedocument.wordproc
 quality	swedish.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=6156	zip:detector-zip-file-opened=true
 quality	swedish.pdf	file	application/pdf	tk:content-type-magic-detected=application/pdf
 quality	swedish.pdf	bytes	application/pdf	tk:content-type-magic-detected=application/pdf
+quality	table-scan.png	file	image/png	tk:content-type-magic-detected=image/png
+quality	table-scan.png	bytes	image/png	tk:content-type-magic-detected=image/png
 quality	table.docx	file	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/vnd.openxmlformats-officedocument.wordprocessingml.document	zip:detector-zip-file-opened=true
 quality	table.docx	bytes	application/vnd.openxmlformats-officedocument.wordprocessingml.document	tk:content-type-magic-detected=application/x-tika-ooxml	Content-Length=10646	zip:detector-zip-file-opened=true
 quality	table.html	file	application/xhtml+xml	tk:content-type-magic-detected=application/xhtml+xml

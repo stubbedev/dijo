@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::bitmap::Density;
+use super::table;
 use crate::memory;
 
 /// How long an engine may sit unused before it is freed with the model it loaded.
@@ -29,7 +30,7 @@ const OSD_MODEL: &str = "osd";
 /// `OEM_DEFAULT`: the engine a model's data has.
 const OEM_DEFAULT: c_int = 3;
 /// What joins the models of a language read with more than one, as `-l eng+deu` does.
-const MODEL_SEPARATOR: char = '+';
+pub(crate) const MODEL_SEPARATOR: char = '+';
 /// The extension of a model's file.
 const MODEL_EXTENSION: &str = ".traineddata";
 /// `PSM_OSD_ONLY`.
@@ -38,6 +39,12 @@ const OSD_ONLY: c_int = 0;
 const BLOCK: c_int = 0;
 /// `RIL_PARA`: paragraphs, as a result iterator steps through them.
 const PARAGRAPH: c_int = 1;
+/// `RIL_TEXTLINE`: lines of text, as a result iterator steps through them.
+const LINE: c_int = 2;
+/// `RIL_WORD`: words, as a result iterator steps through them.
+const WORD: c_int = 3;
+/// `PT_TABLE`: a block layout analysis found words aligned in columns in.
+const TABLE_BLOCK: c_int = 6;
 /// `PT_FLOWING_IMAGE` to `PT_VERT_LINE`: the blocks `GetUTF8Text` leaves out, images and lines.
 const IMAGE_AND_LINE_BLOCKS: std::ops::RangeInclusive<c_int> = 9..=13;
 /// `L_SEVERITY_NONE`: Leptonica reports nothing.
@@ -420,6 +427,13 @@ impl fmt::Display for OcrError {
 /// language alike.
 #[derive(Default)]
 pub(crate) struct Layouts(Mutex<Vec<Layout>>);
+
+impl Layouts {
+    /// Frees the layouts found, for an image no reading will recognize in them again.
+    pub(crate) fn forget(&self) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+}
 
 impl fmt::Debug for Layouts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1026,16 +1040,25 @@ unsafe fn block_area(api: &Api, page: *const PageIterator) -> Area {
 }
 
 /// The blocks of text an engine read, in its order, each with the text of its paragraphs as
-/// `GetUTF8Text` joins them: images, lines and empty paragraphs left out. None when it read
-/// nothing it can walk through.
+/// `GetUTF8Text` joins them, or as a table when layout analysis found one in it and its words fall
+/// into columns: images, lines and empty paragraphs left out. None when it read nothing it can
+/// walk through. Only the words of tables are walked through one by one.
 unsafe fn blocks_of(api: &Api, handle: *mut BaseApi) -> Option<Vec<Block>> {
     let results = NonNull::new((api.result_iterator)(handle))?;
     let page = (api.page_iterator)(results.as_ptr());
     let mut blocks: Vec<Block> = Vec::new();
+    let mut rows: Vec<Vec<table::Word>> = Vec::new();
     let mut new_block = true;
     loop {
-        new_block |= (api.at_beginning_of)(page, BLOCK) != 0;
-        let text = match IMAGE_AND_LINE_BLOCKS.contains(&(api.block_type)(page)) {
+        if (api.at_beginning_of)(page, BLOCK) != 0 {
+            tabulate(blocks.last_mut(), &mut rows);
+            new_block = true;
+        }
+        let kind = (api.block_type)(page);
+        let in_table = kind == TABLE_BLOCK;
+        let text = match IMAGE_AND_LINE_BLOCKS.contains(&kind)
+            || (api.at_beginning_of)(page, PARAGRAPH) == 0
+        {
             true => std::ptr::null_mut(),
             false => (api.iterated_text)(results.as_ptr(), PARAGRAPH),
         };
@@ -1052,12 +1075,43 @@ unsafe fn blocks_of(api: &Api, handle: *mut BaseApi) -> Option<Vec<Block>> {
             new_block = false;
             (api.delete_text)(text);
         }
-        if (api.next)(page, PARAGRAPH) == 0 {
+        if in_table && !new_block {
+            if (api.at_beginning_of)(page, LINE) != 0 {
+                rows.push(Vec::new());
+            }
+            if let Some(row) = rows.last_mut() {
+                row.push(word_of(api, page));
+            }
+        }
+        if (api.next)(page, if in_table { WORD } else { PARAGRAPH }) == 0 {
             break;
         }
     }
+    tabulate(blocks.last_mut(), &mut rows);
     (api.delete_result_iterator)(results.as_ptr());
     Some(blocks)
+}
+
+/// Writes the block read last as a table when the rows of words read in it fall into columns,
+/// and forgets them.
+fn tabulate(block: Option<&mut Block>, rows: &mut Vec<Vec<table::Word>>) {
+    if let Some(block) = block.filter(|_| !rows.is_empty()) {
+        if let Some(text) = table::tabulated(&block.text, rows) {
+            block.text = text;
+        }
+    }
+    rows.clear();
+}
+
+/// The word a page iterator is at.
+unsafe fn word_of(api: &Api, page: *const PageIterator) -> table::Word {
+    let (mut left, mut top, mut right, mut bottom) = (0, 0, 0, 0);
+    (api.bounding_box)(page, WORD, &mut left, &mut top, &mut right, &mut bottom);
+    table::Word {
+        left,
+        right,
+        height: bottom - top,
+    }
 }
 
 /// The order to read blocks in: tesseract's, but for a block that starts higher than another
@@ -1325,6 +1379,34 @@ mod tests {
                 "{block:?} in {read:?}"
             );
         }
+    }
+
+    /// A table found on a scan reads as born-digital tables are written (#376).
+    #[test]
+    fn reads_a_table_a_row_a_line_its_cells_separated_by_tabs() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let image = std::fs::read("../quality/corpus/table-scan.png").unwrap();
+        let pixels = Pixels::Encoded {
+            data: Cow::Borrowed(&image),
+            width: 2550,
+            height: 3300,
+        };
+        let read = tesseract
+            .read(
+                pixels,
+                None,
+                None,
+                "eng",
+                PageSegMode(3),
+                Thresholding::Otsu,
+                None,
+            )
+            .unwrap();
+        assert!(
+            read.text
+                .contains("Year\tShips\tWind\tLamp lit\n1921\t412\tsouth-west\t17:05\n"),
+            "{read:?}"
+        );
     }
 
     /// Readings of one image with models whose engines are set alike and whose languages read in

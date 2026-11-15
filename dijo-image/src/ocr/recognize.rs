@@ -39,8 +39,8 @@ use super::ppocr::{ppocr, LineModel, Lines};
 use super::prepare::{self, Orientation};
 use super::report::Report;
 use super::script::{
-    holds, installed_language, is_script_model, kin, language, language_model, tagged_language,
-    vertical_script, written_in, BLACKLETTER_SCRIPT,
+    holds, installed_language, is_script_model, kin, language, language_model, reads_hangul,
+    tagged_language, vertical_script, written_in, BLACKLETTER_SCRIPT,
 };
 use super::slots;
 use super::tesseract::{
@@ -114,6 +114,11 @@ const SAMPLE_EDGE_SHARE: usize = 20;
 /// Tika's default is 1): an image is turned upright before it is read, and detection runs only
 /// when a first reading needs it.
 const SEGMENTATION: PageSegMode = PageSegMode(3);
+/// Pages kept as read with a model of Hangul are read again as a single column of text lines
+/// (mode 4): tesseract's column finding takes each stroke of a Hangul syllable for a blob of its
+/// own, grades the runs of them it cannot chain into text lines as neither text nor image, and
+/// drops them with the parts of lines and whole paragraphs they hold (#379).
+const HANGUL_SEGMENTATION: PageSegMode = PageSegMode(4);
 /// `TesseractOCRConfig`'s defaults: the language, the time a run may take, and the largest image
 /// file it reads.
 const DEFAULT_LANGUAGE: &str = "eng";
@@ -715,7 +720,7 @@ impl<'t> Recognizer<'t> {
             }
             false => (best, None),
         };
-        let best = best.without_noise();
+        let best = self.in_one_column_if_hangul(best, image)?.without_noise();
         let language = match best.noise {
             true => None,
             false => detected.or_else(|| best.language()),
@@ -1432,6 +1437,34 @@ impl<'t> Recognizer<'t> {
         Ok(source.detection.get_or_init(|| detected).clone())
     }
 
+    /// Reads a page whose reading kept is tesseract's with a model of Hangul again as a single
+    /// column of text lines, with the [`HANGUL_SEGMENTATION`], in its place. Readings are compared
+    /// segmented alike, by column finding, which reads a page of Hangul as confidently over the
+    /// words it keeps as over all of them: a page of vertical Japanese reads more confidently as
+    /// a single column of Hangul than column finding reads it in Japanese.
+    fn in_one_column_if_hangul(
+        &self,
+        read: Attempt,
+        image: &Image<'_>,
+    ) -> Result<Attempt, OcrError> {
+        if read.recognizer.is_some()
+            || read.reading.is_none()
+            || !reads_hangul(&read.prepared.model)
+        {
+            return Ok(read);
+        }
+        let source = source_of(image, &read.prepared);
+        source.layouts.forget();
+        let reading = self.read_segmented(
+            source.pixels,
+            source.density,
+            None,
+            &read.prepared,
+            HANGUL_SEGMENTATION,
+        )?;
+        Ok(Attempt::read(read.prepared, reading))
+    }
+
     fn read(&self, image: &Image<'_>, prepared: &Prepared) -> Result<Reading, OcrError> {
         let source = source_of(image, prepared);
         self.read_pixels(
@@ -1449,12 +1482,23 @@ impl<'t> Recognizer<'t> {
         layouts: Option<&Layouts>,
         prepared: &Prepared,
     ) -> Result<Reading, OcrError> {
+        self.read_segmented(pixels, density, layouts, prepared, SEGMENTATION)
+    }
+
+    fn read_segmented(
+        &self,
+        pixels: Pixels<'_>,
+        density: Option<Density>,
+        layouts: Option<&Layouts>,
+        prepared: &Prepared,
+        segmentation: PageSegMode,
+    ) -> Result<Reading, OcrError> {
         let reading = self.tesseract.read(
             pixels,
             density,
             layouts,
             &prepared.model,
-            SEGMENTATION,
+            segmentation,
             prepared.thresholding(),
             self.settings.timeout,
         )?;
@@ -2445,6 +2489,24 @@ mod tests {
         for name in ["korean-scan-150dpi.png", "korean-scan-fax.png"] {
             let report = recognized(name).report(None);
             assert!(report.contains(r#""language":"kor""#), "{name}: {report}");
+        }
+    }
+
+    /// Column finding drops the parts of lines and the paragraphs of Hangul it cannot chain into
+    /// text lines, the last paragraph of this page among them (#379).
+    #[test]
+    fn reads_every_line_of_a_korean_page() {
+        for name in ["korean-scan.png", "korean-scan-150dpi.png"] {
+            let read = recognized(name);
+            let text = read.text().unwrap();
+            assert!(
+                text.contains("커다란 렌즈를 돌리는 태엽을 감고 일지에"),
+                "{name}: {text}"
+            );
+            assert!(
+                text.contains("배들 사이의 긴 공백은 북쪽 항구가 얼어붙은 겨울을 나타냈다."),
+                "{name}: {text}"
+            );
         }
     }
 
