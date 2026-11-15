@@ -233,7 +233,11 @@ impl BufferPool {
 
         // No suitable buffer was found. Fall back to the global allocator, but
         // release the mutex before we do.
+        let too_small: Vec<Buffer> = buffers
+            .extract_if(.., |buffer| buffer.layout_match::<T>())
+            .collect();
         std::mem::drop(buffers);
+        std::mem::drop(too_small);
 
         Vec::with_capacity(capacity)
     }
@@ -533,6 +537,24 @@ mod tests {
         assert_eq!(vec.len(), 0);
         assert_eq!(pool.alloc_count(), 2);
         assert_eq!(pool.hit_count(), 1);
+    }
+
+    #[test]
+    fn test_pool_alloc_miss_releases_smaller_buffers() {
+        let pool = BufferPool::new().with_min_size(0);
+        pool.add(Vec::<f32>::with_capacity(64));
+        pool.add(Vec::<f32>::with_capacity(32));
+        pool.add(Vec::<u8>::with_capacity(512));
+
+        let vec = pool.alloc::<f32>(128);
+        assert_eq!(vec.capacity(), 128);
+        assert_eq!(pool.hit_count(), 0);
+        assert_eq!(pool.len(), 1);
+
+        let bytes = pool.alloc::<u8>(512);
+        assert_eq!(bytes.capacity(), 512);
+        assert_eq!(pool.hit_count(), 1);
+        assert!(pool.is_empty());
     }
 
     #[test]
