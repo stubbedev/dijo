@@ -244,6 +244,24 @@ pub struct Recognized {
     pub language: Option<OcrLanguage>,
 }
 
+/// An image read in the language detected in it: the best reading, the language, and the
+/// image's reading in blackletter when it was read so on the way and that reading was not kept.
+struct InDetectedLanguage {
+    read: Attempt,
+    language: Option<OcrLanguage>,
+    blackletter: Option<Attempt>,
+}
+
+impl InDetectedLanguage {
+    fn kept(read: Attempt, language: Option<OcrLanguage>) -> Self {
+        Self {
+            read,
+            language,
+            blackletter: None,
+        }
+    }
+}
+
 /// A way an image was prepared and what tesseract read in it that way.
 #[derive(Debug, Clone)]
 pub struct Attempt {
@@ -714,11 +732,15 @@ impl<'t> Recognizer<'t> {
             true => optimistic,
             false => self.read_vertical(self.read_detected(optimistic, image, &oriented)?)?,
         };
-        let (best, detected) = match auto {
+        let InDetectedLanguage {
+            read: best,
+            language: detected,
+            blackletter,
+        } = match auto {
             true => {
                 self.read_in_detected_language(best, unconfident_seeded.as_ref(), image, &oriented)?
             }
-            false => (best, None),
+            false => InDetectedLanguage::kept(best, None),
         };
         let best = self.in_one_column_if_hangul(best, image)?.without_noise();
         let language = match best.noise {
@@ -730,12 +752,7 @@ impl<'t> Recognizer<'t> {
             .map_or(&best.prepared.model, |language| &language.model)
             .clone();
         let best = self.in_scripts_of_blocks(best)?;
-        let read_with_f = best.text().map(str::to_owned);
-        let best = self.with_long_s(best, &dictionary)?;
-        let best = match best.text() == read_with_f.as_deref() {
-            true => best,
-            false => self.in_blackletter(best, image, &dictionary)?,
-        };
+        let best = self.in_blackletter(best, image, &dictionary, blackletter)?;
         let best = self.read_again(best, image, &dictionary)?;
         Ok(Recognized {
             read: best,
@@ -1013,25 +1030,48 @@ impl<'t> Recognizer<'t> {
     /// Reads an image again with the installed model of the language detected with confidence
     /// in its best reading so far, in the script it was read in, unless it was read with that
     /// model: the more confident reading, and that script and model, when such a model is
-    /// installed.
+    /// installed. A page whose best reading shows the long s of blackletter, by that language's
+    /// dictionary, is first read in blackletter, as [`Recognizer::blackletter_reading`] reads it,
+    /// and that reading is kept in place of reading the page again when it reads more lexically
+    /// than the best reading with the long s restored; else it is handed on, for
+    /// [`Recognizer::in_blackletter`] to weigh without reading the page in blackletter again.
     fn read_in_detected_language(
         &self,
         best: Attempt,
         read_before: Option<&Attempt>,
         image: &Image<'_>,
         oriented: &Oriented,
-    ) -> Result<(Attempt, Option<OcrLanguage>), OcrError> {
+    ) -> Result<InDetectedLanguage, OcrError> {
         let Some(language) = self.model_of_detected_language(&best)? else {
-            return Ok((best, None));
+            return Ok(InDetectedLanguage::kept(best, None));
         };
         if language.model == best.prepared.model {
-            return Ok((best, Some(language)));
+            return Ok(InDetectedLanguage::kept(best, Some(language)));
         }
         if let Some(read_before) = read_before.filter(|read_before| {
             read_before.prepared.model == language.model
                 && read_before.prepared.quarter_turns == best.prepared.quarter_turns
         }) {
-            return Ok((best.or(read_before.clone()), Some(language)));
+            return Ok(InDetectedLanguage::kept(
+                best.or(read_before.clone()),
+                Some(language),
+            ));
+        }
+        let restored = self.with_long_s(best.clone(), &language.model)?;
+        let blackletter = match restored.text() == best.text() {
+            true => None,
+            false => self.blackletter_reading(&best, image)?,
+        };
+        if let Some(blackletter) = blackletter.as_ref() {
+            let kept = self.tesseract.with_dictionary(&language.model, |is_word| {
+                reads_more_lexically(&restored, blackletter, is_word)
+            })?;
+            if kept {
+                return Ok(InDetectedLanguage::kept(
+                    blackletter.clone(),
+                    Some(language),
+                ));
+            }
         }
         let retried = prepare_again(
             &best.prepared,
@@ -1042,7 +1082,11 @@ impl<'t> Recognizer<'t> {
             best.prepared.quarter_turns,
         );
         let reading = self.read(image, &retried)?;
-        Ok((best.or(Attempt::read(retried, reading)), Some(language)))
+        Ok(InDetectedLanguage {
+            read: best.or(Attempt::read(retried, reading)),
+            language: Some(language),
+            blackletter,
+        })
     }
 
     /// Reads an image in the given scripts in turn, until one reads it confidently, passing over
@@ -1310,33 +1354,62 @@ impl<'t> Recognizer<'t> {
         Ok(attempt)
     }
 
+    /// The best reading with the long s restored by the dictionary of `dictionary`, or, when that
+    /// restores some, its reading in blackletter if that reads more lexically: `blackletter`, when
+    /// the page was read so before, else as [`Recognizer::blackletter_reading`] reads it. A reading
+    /// with the blackletter model, which reads the long s itself, is kept as it is.
     fn in_blackletter(
         &self,
-        modern: Attempt,
+        best: Attempt,
         image: &Image<'_>,
         dictionary: &str,
+        blackletter: Option<Attempt>,
     ) -> Result<Attempt, OcrError> {
-        if !self.settings.auto() {
+        if self.blackletter_model()?.as_deref() == Some(best.prepared.model.as_str()) {
+            return Ok(best);
+        }
+        let read_with_f = best.text().map(str::to_owned);
+        let modern = self.with_long_s(best, dictionary)?;
+        if modern.text() == read_with_f.as_deref() {
             return Ok(modern);
         }
+        let blackletter = match blackletter {
+            Some(blackletter) => blackletter,
+            None => match self.blackletter_reading(&modern, image)? {
+                Some(blackletter) => blackletter,
+                None => return Ok(modern),
+            },
+        };
+        self.tesseract.with_dictionary(dictionary, |is_word| {
+            more_lexical(modern, blackletter, is_word)
+        })
+    }
+
+    /// The reading of a page with the blackletter model, with the automatic language, when one is
+    /// installed, the page was read with another and detection finds blackletter on it.
+    fn blackletter_reading(
+        &self,
+        modern: &Attempt,
+        image: &Image<'_>,
+    ) -> Result<Option<Attempt>, OcrError> {
+        if !self.settings.auto() {
+            return Ok(None);
+        }
         let Some(model) = self.blackletter_model()? else {
-            return Ok(modern);
+            return Ok(None);
         };
         if model == modern.prepared.model {
-            return Ok(modern);
+            return Ok(None);
         }
         let detected = self.detect(image, &modern.prepared)?;
         if detected.script.as_deref() != Some(BLACKLETTER_SCRIPT) {
-            return Ok(modern);
+            return Ok(None);
         }
         let prepared = modern
             .prepared
             .read_in(modern.prepared.script.clone(), model);
         let reading = self.read(image, &prepared)?;
-        let blackletter = Attempt::read(prepared, reading);
-        self.tesseract.with_dictionary(dictionary, |is_word| {
-            more_lexical(modern, blackletter, is_word)
-        })
+        Ok(Some(Attempt::read(prepared, reading)))
     }
 
     fn read_again(
@@ -1697,11 +1770,20 @@ fn source_of<'a>(image: &'a Image<'a>, prepared: &'a Prepared) -> Source<'a> {
 }
 
 fn more_lexical(read: Attempt, replacement: Attempt, is_word: &dyn Fn(&str) -> bool) -> Attempt {
-    let lexicality_of = |attempt: &Attempt| lexicality(attempt.text().unwrap_or_default(), is_word);
-    match lexicality_of(&replacement) > lexicality_of(&read) {
+    match reads_more_lexically(&read, &replacement, is_word) {
         true => replacement,
         false => read,
     }
+}
+
+/// Whether `replacement` reads more lexically than `read`, by the dictionary `is_word` asks.
+fn reads_more_lexically(
+    read: &Attempt,
+    replacement: &Attempt,
+    is_word: &dyn Fn(&str) -> bool,
+) -> bool {
+    let lexicality_of = |attempt: &Attempt| lexicality(attempt.text().unwrap_or_default(), is_word);
+    lexicality_of(replacement) > lexicality_of(read)
 }
 
 /// The scripts to try when no reading is confident: the one detection reported, when another
@@ -2570,6 +2652,40 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_blackletter_page_in_blackletter_without_reading_it_in_its_language_first() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let settings = auto_settings();
+        let Bitmap::Gray(page) = scan("neue-freie-presse-1873.tif") else {
+            panic!("a grey page");
+        };
+        let (width, height) = page.dimensions();
+        let column = image::imageops::crop_imm(
+            &page,
+            width * 3 / 10,
+            height * 7 / 20,
+            width * 2 / 5,
+            height * 3 / 10,
+        )
+        .to_image();
+        let bitmap = Bitmap::Gray(column);
+        let image = Image::of(&bitmap, None, 0, None, Density::per_inch(300.0, 300.0));
+        super::super::tesseract::READINGS.with(|readings| readings.borrow_mut().clear());
+        let Recognized { read, language } = Recognizer::new(tesseract, &settings)
+            .recognize(&image, None)
+            .unwrap();
+        let readings = super::super::tesseract::READINGS.with(|readings| readings.take());
+        assert_eq!(read.prepared.model, "deu_latf");
+        assert_eq!(
+            language.map(|language| language.model).as_deref(),
+            Some("deu")
+        );
+        assert!(readings.contains(&"deu_latf".to_owned()), "{readings:?}");
+        assert!(!readings.contains(&"deu".to_owned()), "{readings:?}");
+        let text = read.text().unwrap();
+        assert!(text.contains("Assicurazioni"), "{text}");
+    }
+
+    #[test]
     fn detects_a_page_read_again_in_blackletter_once_for_the_detection_it_was_read_after() {
         let tesseract = crate::ocr::tesseract().unwrap();
         let settings = auto_settings();
@@ -2595,7 +2711,7 @@ mod tests {
         assert!(blackletter.is_some_and(|model| model != best.prepared.model));
         let dictionary = best.prepared.model.clone();
         recognizer
-            .in_blackletter(best, &image, &dictionary)
+            .in_blackletter(best, &image, &dictionary, None)
             .unwrap();
         assert_eq!(detections(), before + 1);
     }

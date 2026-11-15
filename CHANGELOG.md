@@ -7,6 +7,12 @@
   same: OCR takes 18% to 25% less CPU per page, the 1873 *Neue Freie Presse* page 10.6 s where it took 13.7 s. The
   table entries are loaded in adjacent pairs, not gathered, since processors with the Downfall microcode
   mitigation gather slowly.
+* A page in blackletter is read with the Fraktur model before it is read again with the model of its language, when
+  its first reading shows the long s and detection finds blackletter, and that reading is kept without the second
+  when it reads more lexically, as it always did in the end: the blackletter newspapers of the quality corpus are
+  read three times instead of four, the 1873 *Neue Freie Presse* page in 18.8 s where 0.2.16 took 31.3 s, with the
+  same text. A reading with the Fraktur model, which reads the long s itself, no longer has it restored by the
+  dictionary.
 
 # 0.2.16 (2026-11-15)
 

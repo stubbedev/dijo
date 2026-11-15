@@ -335,6 +335,9 @@ pub(crate) struct Reading {
 thread_local! {
     /// The orientation and script detections run on this thread.
     pub(crate) static DETECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The models of the readings made on this thread, in their order.
+    pub(crate) static READINGS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// What orientation and script detection found in an image.
@@ -619,6 +622,8 @@ impl Tesseract {
         thresholding: Thresholding,
         timeout: Option<Duration>,
     ) -> Result<Reading, OcrError> {
+        #[cfg(test)]
+        READINGS.with(|readings| readings.borrow_mut().push(model.to_owned()));
         let _reserved = image.reserve()?;
         let engine = self.take(model)?;
         let result = self.recognize(
