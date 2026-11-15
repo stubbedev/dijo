@@ -281,12 +281,12 @@ impl Model {
         self.ns2_bs_indx[1] = 2;
         self.ns2_bs_indx[2..11].fill(4);
         self.ns2_bs_indx[11..].fill(6);
-        for i in 0..3 {
-            self.ns2_indx[i] = i as i32;
+        for (i, index) in self.ns2_indx[..3].iter_mut().enumerate() {
+            *index = i as i32;
         }
         let (mut m, mut k, mut step) = (3, 1, 1);
-        for i in 3..256 {
-            self.ns2_indx[i] = m;
+        for index in &mut self.ns2_indx[3..256] {
+            *index = m;
             k -= 1;
             if k == 0 {
                 step += 1;

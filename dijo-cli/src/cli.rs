@@ -462,7 +462,7 @@ pub fn processors_per_process(jobs: NonZeroUsize, jobs_per_process: usize) -> No
 }
 
 fn share(processors: NonZeroUsize, jobs: NonZeroUsize, jobs_per_process: usize) -> NonZeroUsize {
-    NonZeroUsize::new(processors.get() * jobs_per_process / jobs.get()).unwrap_or(NonZeroUsize::MIN)
+    NonZeroUsize::new(processors.get() * jobs_per_process / jobs).unwrap_or(NonZeroUsize::MIN)
 }
 
 fn thread_workers() -> NonZeroUsize {

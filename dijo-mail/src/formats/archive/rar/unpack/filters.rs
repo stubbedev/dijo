@@ -113,9 +113,9 @@ impl Unpack<'_> {
         if first_byte & 0x10 != 0 {
             let init_mask = input.getbits()? >> 9;
             input.addbits(7);
-            for i in 0..7 {
+            for (i, register) in prg.init_r[..7].iter_mut().enumerate() {
                 if init_mask & (1 << i) != 0 {
-                    prg.init_r[i] = vm::read_data(input)?;
+                    *register = vm::read_data(input)?;
                 }
             }
         }
