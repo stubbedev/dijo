@@ -1,0 +1,187 @@
+diff --git a/src/lstm/functions.cpp b/src/lstm/functions.cpp
+index 4640d10..8d7fccf 100644
+--- a/src/lstm/functions.cpp
++++ b/src/lstm/functions.cpp
+@@ -1,5 +1,24 @@
+ // Generated code with lookup tables (see generate_lut.py)
+ #include "functions.h"
++
++#include <type_traits>
++
++#if defined(FAST_FLOAT) && \
++    (defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86))
++#  define TESS_ACTIVATIONS_AVX2
++#  include <immintrin.h>
++#  include "simddetect.h"
++#  if defined(__GNUC__)
++#    define TESS_TARGET_AVX2 __attribute__((target("avx2")))
++#  else
++#    define TESS_TARGET_AVX2
++#  endif
++#endif
++#if defined(FAST_FLOAT) && defined(__aarch64__)
++#  define TESS_ACTIVATIONS_NEON
++#  include <arm_neon.h>
++#endif
++
+ namespace tesseract {
+ const TFloat TanhTable[] = {
+     0.0,
+@@ -8197,4 +8216,137 @@ const TFloat LogisticTable[] = {
+     0.999999886582214,
+     0.9999998870243879,
+ };
++
++namespace {
++
++enum class Activation { kTanh, kLogistic };
++
++template <Activation kind>
++using ActivationFunc = std::conditional_t<kind == Activation::kTanh, GFunc, FFunc>;
++
++template <Activation kind>
++void ActivateScalar(const TFloat *in, const TFloat *scale, int n, TFloat *out) {
++  ActivationFunc<kind> f;
++  if (scale == nullptr) {
++    for (int i = 0; i < n; ++i) {
++      out[i] = f(in[i]);
++    }
++    return;
++  }
++  for (int i = 0; i < n; ++i) {
++    out[i] = f(in[i]) * scale[i];
++  }
++}
++
++#if defined(TESS_ACTIVATIONS_AVX2)
++template <Activation kind>
++TESS_TARGET_AVX2 void ActivateAVX2(const float *in, const float *scale, int n, float *out) {
++  const float *table = kind == Activation::kTanh ? TanhTable : LogisticTable;
++  const __m256 sign = _mm256_set1_ps(-0.0f);
++  const __m256 factor = _mm256_set1_ps(kScaleFactor);
++  const __m256 last_index = _mm256_set1_ps(kTableSize - 2);
++  const __m256 saturated = _mm256_set1_ps(kTableSize - 1);
++  const __m256 one = _mm256_set1_ps(1.0f);
++  int i = 0;
++  for (; i + 8 <= n; i += 8) {
++    const __m256 x = _mm256_loadu_ps(in + i);
++    const __m256 scaled = _mm256_mul_ps(_mm256_andnot_ps(sign, x), factor);
++    const __m256i index = _mm256_cvttps_epi32(_mm256_min_ps(scaled, last_index));
++    alignas(32) int indices[8];
++    _mm256_store_si256(reinterpret_cast<__m256i *>(indices), index);
++    const auto pairs = [&](int a, int b) {
++      const __m128d low = _mm_load_sd(reinterpret_cast<const double *>(table + indices[a]));
++      return _mm_loadh_pd(low, reinterpret_cast<const double *>(table + indices[b]));
++    };
++    const __m256 even = _mm256_castpd_ps(_mm256_set_m128d(pairs(4, 5), pairs(0, 1)));
++    const __m256 odd = _mm256_castpd_ps(_mm256_set_m128d(pairs(6, 7), pairs(2, 3)));
++    const __m256 i0 = _mm256_shuffle_ps(even, odd, _MM_SHUFFLE(2, 0, 2, 0));
++    const __m256 i1 = _mm256_shuffle_ps(even, odd, _MM_SHUFFLE(3, 1, 3, 1));
++    const __m256 fraction = _mm256_sub_ps(scaled, _mm256_cvtepi32_ps(index));
++    __m256 value = _mm256_add_ps(i0, _mm256_mul_ps(_mm256_sub_ps(i1, i0), fraction));
++    value = _mm256_blendv_ps(value, one, _mm256_cmp_ps(scaled, saturated, _CMP_GE_OQ));
++    const __m256 mirrored =
++        kind == Activation::kTanh ? _mm256_xor_ps(value, sign) : _mm256_sub_ps(one, value);
++    value = _mm256_blendv_ps(value, mirrored, _mm256_cmp_ps(x, _mm256_setzero_ps(), _CMP_LT_OQ));
++    if (scale != nullptr) {
++      value = _mm256_mul_ps(value, _mm256_loadu_ps(scale + i));
++    }
++    _mm256_storeu_ps(out + i, value);
++  }
++  ActivateScalar<kind>(in + i, scale == nullptr ? nullptr : scale + i, n - i, out + i);
++}
++#endif
++
++#if defined(TESS_ACTIVATIONS_NEON)
++template <Activation kind>
++void ActivateNEON(const float *in, const float *scale, int n, float *out) {
++  const float *table = kind == Activation::kTanh ? TanhTable : LogisticTable;
++  const float32x4_t factor = vdupq_n_f32(kScaleFactor);
++  const float32x4_t last_index = vdupq_n_f32(kTableSize - 2);
++  const float32x4_t saturated = vdupq_n_f32(kTableSize - 1);
++  const float32x4_t one = vdupq_n_f32(1.0f);
++  const float32x4_t zero = vdupq_n_f32(0.0f);
++  int i = 0;
++  for (; i + 4 <= n; i += 4) {
++    const float32x4_t x = vld1q_f32(in + i);
++    const float32x4_t scaled = vmulq_f32(vabsq_f32(x), factor);
++    const int32x4_t index = vcvtq_s32_f32(vminq_f32(scaled, last_index));
++    int32_t indices[4];
++    vst1q_s32(indices, index);
++    const float32x4_t low = vcombine_f32(vld1_f32(table + indices[0]), vld1_f32(table + indices[1]));
++    const float32x4_t high = vcombine_f32(vld1_f32(table + indices[2]), vld1_f32(table + indices[3]));
++    const float32x4_t i0 = vuzp1q_f32(low, high);
++    const float32x4_t i1 = vuzp2q_f32(low, high);
++    const float32x4_t fraction = vsubq_f32(scaled, vcvtq_f32_s32(index));
++    float32x4_t value = vfmaq_f32(i0, vsubq_f32(i1, i0), fraction);
++    value = vbslq_f32(vcgeq_f32(scaled, saturated), one, value);
++    const float32x4_t mirrored =
++        kind == Activation::kTanh ? vnegq_f32(value) : vsubq_f32(one, value);
++    value = vbslq_f32(vcltq_f32(x, zero), mirrored, value);
++    if (scale != nullptr) {
++      value = vmulq_f32(value, vld1q_f32(scale + i));
++    }
++    vst1q_f32(out + i, value);
++  }
++  ActivateScalar<kind>(in + i, scale == nullptr ? nullptr : scale + i, n - i, out + i);
++}
++#endif
++
++template <Activation kind>
++void Activate(const TFloat *in, const TFloat *scale, int n, TFloat *out) {
++#if defined(TESS_ACTIVATIONS_AVX2)
++  if (SIMDDetect::IsAVX2Available()) {
++    ActivateAVX2<kind>(in, scale, n, out);
++    return;
++  }
++#endif
++#if defined(TESS_ACTIVATIONS_NEON)
++  ActivateNEON<kind>(in, scale, n, out);
++#else
++  ActivateScalar<kind>(in, scale, n, out);
++#endif
++}
++
++} // namespace
++
++template <>
++void FuncInplace<GFunc>(int n, TFloat *inout) {
++  Activate<Activation::kTanh>(inout, nullptr, n, inout);
++}
++
++template <>
++void FuncInplace<HFunc>(int n, TFloat *inout) {
++  Activate<Activation::kTanh>(inout, nullptr, n, inout);
++}
++
++template <>
++void FuncInplace<FFunc>(int n, TFloat *inout) {
++  Activate<Activation::kLogistic>(inout, nullptr, n, inout);
++}
++
++template <>
++void FuncMultiply<HFunc>(const TFloat *u, const TFloat *v, int n, TFloat *out) {
++  Activate<Activation::kTanh>(u, v, n, out);
++}
++
+ } // namespace tesseract.
+diff --git a/src/lstm/functions.h b/src/lstm/functions.h
+index 1e71b2f..8d6bcc7 100644
+--- a/src/lstm/functions.h
++++ b/src/lstm/functions.h
+@@ -177,6 +177,15 @@ inline void FuncMultiply(const TFloat *u, const TFloat *v, int n, TFloat *out) {
+   }
+ }
+ // Applies the Softmax function in-place to inout, of size n.
++template <>
++void FuncInplace<GFunc>(int n, TFloat *inout);
++template <>
++void FuncInplace<HFunc>(int n, TFloat *inout);
++template <>
++void FuncInplace<FFunc>(int n, TFloat *inout);
++template <>
++void FuncMultiply<HFunc>(const TFloat *u, const TFloat *v, int n, TFloat *out);
++
+ template <typename T>
+ inline void SoftmaxInPlace(int n, T *inout) {
+   if (n <= 0) {
