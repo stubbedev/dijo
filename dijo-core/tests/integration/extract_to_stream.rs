@@ -220,7 +220,7 @@ fn test_a_timeout_ends_a_slow_stream() {
     let started = std::time::Instant::now();
     let (mut stream, _) = Extractor::new()
         .set_ocr_config(TesseractOcrConfig::new().set_language("ara"))
-        .set_timeout(std::time::Duration::from_millis(300))
+        .set_timeout(std::time::Duration::from_millis(20))
         .extract_file("../test_files/documents/ara-ocr.png")
         .unwrap();
     let error = stream.read_to_end(&mut Vec::new()).unwrap_err();
