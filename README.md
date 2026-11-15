@@ -20,7 +20,7 @@ Extract text and metadata from documents. One native binary, no JVM.
   6 ms and 17 MiB, against 3.3 s and 213 MiB (`hyperfine` on `test_files/documents/2022_Q3_AAPL.pdf` and
   `ooxml/sorvino.docx`). Files of any size stream through bounded memory.
 - **More accurate text**: on the 333 ground-truth documents of `quality/` compared with Tika, Docling and Kreuzberg,
-  dijo recalls 96.4% of the words, Tika 76.0%; on its 122 scanned pages, 92.9% against 48.6%
+  dijo recalls 98.1% of the words, Tika 76.0%; on its 122 scanned pages, 94.8% against 48.6%
   ([comparison](quality/COMPARISON.md), [how](docs/beyond-tika.md)).
 
 ## Install

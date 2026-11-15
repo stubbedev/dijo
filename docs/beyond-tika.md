@@ -14,11 +14,10 @@ and the CDC.
 
 ## Accuracy
 
-- **Overall.** Over the 333 compared documents dijo recalls 96.4% of words and Tika 76.0%. Mean CER is 0.035
-  against 0.252, and mean spurious text 0.029 against 0.197 (`quality/COMPARISON.md`). On the 240 documents compared
-  before the corpus grew, recall is 99.7% against 84.7%; the 41 real documents and the new document classes are
-  harder for every extractor.
-- **Real scans.** Over the 122 OCR rows dijo's mean CER is 0.051 and recall 92.9%, Tika's 0.412 and 48.6%. Tika
+- **Overall.** Over the 333 compared documents dijo recalls 98.1% of words and Tika 76.0%. Mean CER is 0.017
+  against 0.252, and mean spurious text 0.023 against 0.197 (`quality/COMPARISON.md`). Docling recalls 65.3% and
+  Kreuzberg 67.0%.
+- **Real scans.** Over the 122 OCR rows dijo's mean CER is 0.031 and recall 94.8%, Tika's 0.412 and 48.6%. Tika
   reads with English only, so it recalls nothing of the Greek, Bengali, Hebrew, Chinese and Ukrainian book pages,
   which dijo reads at CER 0.037, 0.083, 0.067, 0.168 and 0.192. A scanned financial table set in old-style figures
   (`unlv-table-9521-052.tif`) has CER 0.188 against Tika's 0.649, and Fraktur newspapers of 1864 and 1873 0.025 and
@@ -31,11 +30,13 @@ and the CDC.
   `prose-columns-reversed.pdf` has CER 0.000 against Tika's 0.745.
 - **Normalisation for indexing.** Hyphenated words are joined across lines, ligatures expanded, text put in NFC,
   invisible characters dropped. `hyphenated.pdf` has a token error rate of 0.006 against Tika's 0.290. Running
-  headers and footers are learnt across every window of pages, left and right pages apart (#201, #213).
+  headers and footers are learnt across every window of pages, left and right pages apart (#201, #213). A hyphen
+  before a capital or a digit is kept, and URLs broken after a slash are joined. The targets of a PDF's link
+  annotations, which are not text on the page, are left out (#385).
 - **Complex scripts in PDFs.** CER on `thai.pdf` is 0.007 (Tika 0.958), `hindi.pdf` 0.000 (Tika 0.832) and
-  `arabic.pdf` 0.178 (Tika 0.838).
-- **Legacy encodings.** On `japanese-shift_jis.txt` dijo's CER is 0.000 and Tika's 1.008. Of the 52
-  legacy-encoding rows, all score 0.000 except `romanian-iso-8859-16.txt` at 0.032 (`SCOREBOARD.md`).
+  `arabic.pdf` 0.000 (Tika 0.838).
+- **Legacy encodings.** On `japanese-shift_jis.txt` dijo's CER is 0.000 and Tika's 1.008. All 52
+  legacy-encoding rows score 0.000 (`SCOREBOARD.md`).
 - **Language detection.** dijo starts from the logits of Tika 4's CharSoup and adds two things: a -2 prior for 41
   regional and constructed languages, and a logistic regression over hashed words and character 1- to 5-grams for
   each group of close national languages (db5fe871). On single sentences it is right 86.7% of the time, against
@@ -52,23 +53,28 @@ and the CDC.
   - The image resolution passed to tesseract, so columns stay apart (#209).
 - **Old print.**
   - Blackletter: a page that shows the long-s signature is read again with `deu_latf`. Two 1895 Fraktur pages fall
-    from CER 0.118 to 0.057 and from 0.213 to 0.162 (#225).
+    from CER 0.118 to 0.044 and from 0.213 to 0.161 (#225).
   - The long s that tesseract reads as f is restored from the page's language dictionary (#210).
 - **Scripts.** CJK and Thai scans are read without a space between every character (#205), and Hebrew is no longer
-  taken for Thai (#204).
+  taken for Thai (#204). A Korean page that detection misnames is read with the Korean model, and a Hangul page as
+  one column of lines: `korean-scan.png` has CER 0.005 against Tika's 0.832, and its 150 dpi copy 0.010 against
+  0.861 (#364, #379).
+- **Pages in several scripts.** Each script of a page is read with its own model: `mixed-scan.png`, with paragraphs
+  in seven scripts, recalls 97.1% of words against Tika's 26.6% (#388).
+- **Stained paper** is read with its background normalised when a strip of it reads clearly better so:
+  `kronen-zeitung-1933.jpg`, a colour sports page mixing Fraktur, roman type and results tables, has CER 0.107
+  against Kreuzberg's 0.300 and Tika's 0.487 (#386).
+- **Scanned tables** come out as tab-separated cells: `table-scan.png` has CER 0.000 (#376).
 - **Noise is dropped.** A low-confidence reading that is mostly digits and marks, or in no language, is dropped and
   flagged `"noise":true` (#194).
 - **Image formats.** On the quality corpus Tika returns no text for the WebP, HEIC, AVIF, PBM, DjVu, JB2, PSD, PCX and
   TGA scans, and dijo reads each of them with CER 0.000 (`COMPARISON.md`).
 - **Where dijo is behind** (`quality/COMPARISON.md`):
-  - `mixed-scan.png`, one scanned page with paragraphs in seven scripts, recalls 28.8% of words: OCR reads a page
-    in one script (#388). Its text-layer PDF, `mixed.pdf`, now reads at recall 100% (#384), against Docling's 83.5%,
-    Kreuzberg's 88.1% and Tika's 26.6%.
-  - `kronen-zeitung-1933.jpg`, a colour sports page mixing Fraktur, roman type and results tables, has CER 0.834
-    against Kreuzberg's 0.300 and Tika's 0.487.
-  - On the four real two-column PDFs dijo recalls 92.4% to 100% of words, but its CER (0.089 to 0.468) is higher
-    than Docling's on three of them: `article-biollett-2016.pdf` 0.226 against 0.068,
-    `article-atenprimaria-2026.pdf` 0.468 against 0.195, `cdc-mmwr-prep-2024.pdf` 0.314 against 0.228.
+  - Of the four real two-column PDFs dijo has the lowest CER on three (`article-biollett-2016.pdf` 0.024 against
+    Docling's 0.068, `article-bmcresnotes-2020.pdf` 0.076 against 0.171, `article-atenprimaria-2026.pdf` 0.149
+    against Kreuzberg's 0.161), but not on `cdc-mmwr-prep-2024.pdf`: 0.245 against Kreuzberg's 0.202 and Docling's
+    0.228.
+  - `korean-scan-fax.png`, the same Korean page at fax quality, has CER 0.203 and recalls 52.8% of words.
   - Some scripts stay weak: the Ukrainian page of 1861 with printed stress accents recalls 24.6% of words, the
     Tamil page of 1921 58.3%.
   - `table.xlsx` (0.080 against Kreuzberg's 0.044) keeps the sheet name and the `Page` left from LibreOffice's
@@ -91,7 +97,7 @@ dijo takes models and techniques from PaddleOCR / PP-OCRv5 (PaddlePaddle, Apache
   nothing extra (5af5d649, #207).
   - CER effect (README): *Epigrammata* 1520 from 16.0% to 4.5%, *Quixote* 1605 from 12.0% to 5.8%, *Zoologia
     Danica* 1779 from 10.3% to 5.7%, and two 1895 Devanagari pages from 33.1% to 14.6% and from 52.8% to 21.4%.
-    The current scoreboard has the second Devanagari page at 0.234.
+    The current scoreboard has the second Devanagari page at 0.228.
   - Raising the gate to 95 made clean modern scans worse, so it stays at 90.
 - **DBNet text detection** (PP-OCRv5_mobile_det).
   - Input is scaled to a long side of 960 on a stride of 32 and normalised with ImageNet's mean and deviation.
