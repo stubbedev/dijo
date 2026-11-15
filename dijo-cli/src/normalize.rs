@@ -288,7 +288,9 @@ impl Normalizer {
 
     fn collapse(&mut self, character: char, out: &mut Vec<u8>) {
         let after_carriage_return = std::mem::take(&mut self.after_carriage_return);
-        if character == SOFT_HYPHEN && self.pending_space && self.steps.contains(Step::SoftHyphens)
+        if character == SOFT_HYPHEN
+            && (self.pending_space || self.newlines > 0)
+            && self.steps.contains(Step::SoftHyphens)
         {
             return;
         }
@@ -769,6 +771,13 @@ mod tests {
 
     fn only(step: Step) -> Steps {
         Steps(step.bit())
+    }
+
+    #[test]
+    fn a_soft_hyphen_starting_a_line_keeps_no_blank_line_more() {
+        let once = normalize(Steps::ALL, "\u{b}\u{ad}\u{b}\u{b}\u{b}\u{b}\u{b}\u{b}");
+        assert_eq!(once, "\n\n");
+        assert_eq!(normalize(Steps::ALL, &once), once);
     }
 
     #[test]
