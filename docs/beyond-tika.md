@@ -161,6 +161,15 @@ dijo takes models and techniques from PaddleOCR / PP-OCRv5 (PaddlePaddle, Apache
     its lines are small (#199): old print takes a third less CPU.
   - The first image's language is detected from a strip of six lines, about a fifth less CPU on Latin scans (#218).
   - `invert_threshold=0` cuts 3.4% of OCR CPU on the corpus, and up to 27% on vertical Japanese (#331).
+  - A page whose first reading shows the long s, and that detection finds in blackletter, is read with the Fraktur
+    model before the model of its language, and not with the latter when the Fraktur reading is more lexical. The
+    four blackletter newspapers of the corpus, a quarter of its OCR time, are read three times instead of four with
+    the same text (d4bd5081).
+- **OCR on free processors.** A page's words are recognised on up to four threads when processors are free, each
+  extra thread with a recogniser of its own that is freed when the page is read, and the reading is bit for bit
+  the single-threaded one. With the vectorised activations below and the blackletter order above, the 1873
+  *Neue Freie Presse* page reads in 8.1 s against 28.7 s in 0.2.16, and the 126 OCR documents of the corpus read
+  in 42 s against 61 s twelve at a time, so busy processes are not slowed (0b8f34a3).
 
 ## Streaming and memory
 
@@ -243,8 +252,10 @@ What an extraction holds is bounded by its parser, not by its input, and every b
   | `rows-restart-in-place` | Iterators return to the start of a row from where they entered it instead of walking the page from its start. A page of thousands of tiny words reads in seconds instead of hanging (#316) |
   | `takes-empty-pages-as-read` | An empty layout is not analysed again for every confidence query (#359) |
   | `inline-stridemap` | 10–13% faster per page. `-O3` adds about 5% |
+  | `lstm-activates-in-vectors` | The LSTM's tanh and logistic table lookups run 8 values at a time with AVX2 and 4 with NEON, with the scalar code's arithmetic step for step, so every reading is bit for bit the same (checked over every finite float on x86, and on sampled ones for GCC and Clang on aarch64). 18–25% less CPU per page. The table pairs are loaded rather than gathered, since gathers are slow under the Downfall microcode mitigation (7adee900) |
+  | `lstm-reads-words-in-parallel` | `lstm_threads` recognises a page's words on several threads before pass 1, each helper with its own recogniser whose words carry the engine's unicharset; readings with 1, 4 and 8 threads are identical, and ThreadSanitizer reports nothing. A single scan reads in about half the time for 1–5% more CPU (0b8f34a3) |
   | `lstm-copies-in-place`, Pix word images, skipped fixed-pitch test | Up to a quarter fewer instructions per page, same text (#217, #219, #223) |
-  | No OpenMP | One page per thread instead. An OpenMP team cost 2.6× the CPU for a 1.2× faster single page (#62) |
+  | No OpenMP | An OpenMP team cost 2.6× the CPU for a 1.2× faster single page (#62). Free processors recognise a page's words instead (`lstm-reads-words-in-parallel`) |
 
 - **Processes.** A CLI batch of more than two parallel jobs runs in worker processes of two jobs each
   (`JOBS_PER_PROCESS`, `dijo-cli/src/batch.rs`). A worker that dies costs only its jobs, which run again one at a
@@ -299,6 +310,12 @@ Tika reads none of these, or only their summary information or raw lines; dijo r
   the 35 lines of a *Quixote* page took 3.99 s batched against 2.55 s one at a time on onnxruntime, and 4.17 s
   against 2.29 s on tract. At these widths each call is already compute-bound. rten on exact widths matches
   onnxruntime.
+- **Batching tesseract's LSTM across lines, or running its recogniser in rten.** On the 1873 *Neue Freie Presse*
+  page the int8 products take about 4.2 of 11.5 s of CPU. Its largest layer, 384×481 in `deu_latf`, runs at about
+  41 GMAC/s per call, near the throughput of tesseract's AVX2 kernel, so sharing each weight load among four lines
+  would save about a quarter of its instructions, some 5% of the page, and batching the small column LSTM and
+  convolution about as much again. That would take an LSTM stepping several lines in lockstep and batched kernels
+  for every SIMD path, each proven bit-exact; an rten port would need custom int8 operators for every layer as well.
 - **Full-resolution DBNet detection.** Mean CER 3.83% against 3.80%, for about four times the detector's memory
   (5bc7432d).
 - **More PP-OCR recognisers, and tesseract `jpn_vert`.** None improved any row (5af5d649, bbb4ace7).
