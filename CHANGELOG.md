@@ -1,3 +1,11 @@
+# 0.2.16 (2026-11-15)
+
+### Fixed
+
+* The x86_64 Linux release binary of 0.2.15 required glibc 2.36, as its relocations were packed; the release
+  binaries run on glibc 2.35 again, and only builds in the development shell pack them. 0.2.15 was published as
+  container images only.
+
 # 0.2.15 (2026-11-15)
 
 ### Added
