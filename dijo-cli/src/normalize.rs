@@ -337,6 +337,10 @@ struct Dehyphenator {
     drop_soft_hyphens: bool,
     token: String,
     held: Held,
+    /// Whether the next character, when a hyphen, stays as it stands: it ends the word starting
+    /// the line after a URL left broken, and joining it to the line after would make that line
+    /// the URL's continuation only once joined.
+    hyphen_stays: bool,
     words: HashSet<String>,
     compounds: HashSet<String>,
     prefixes: HashMap<String, u8>,
@@ -386,6 +390,7 @@ impl Dehyphenator {
             drop_soft_hyphens,
             token: String::new(),
             held: Held::Nothing,
+            hyphen_stays: false,
             words: HashSet::new(),
             compounds: HashSet::new(),
             prefixes: HashMap::new(),
@@ -394,6 +399,10 @@ impl Dehyphenator {
 
     fn push(&mut self, character: char, out: &mut Vec<u8>) {
         if !matches!(self.held, Held::Nothing) && self.takes_into_held(character, out) {
+            return;
+        }
+        if std::mem::take(&mut self.hyphen_stays) && is_any_hyphen(character) {
+            self.pass_line_end(LineEnd::Hyphen(hyphen_of(character)), out);
             return;
         }
         if is_line_break(character) && ends_broken_url(&self.token) {
@@ -491,6 +500,9 @@ impl Dehyphenator {
             Release::AsIs => {
                 self.pass_line_end(end, out);
                 text.chars().for_each(|held| self.pass(held, out));
+                self.hyphen_stays = matches!(end, LineEnd::Url)
+                    && !word.is_empty()
+                    && next.is_some_and(is_any_hyphen);
             }
             Release::Join => {}
             Release::KeepHyphen => self.pass_line_end(end, out),
@@ -695,6 +707,17 @@ fn is_hyphen(character: char) -> bool {
     matches!(character, '-' | '\u{2010}')
 }
 
+fn is_any_hyphen(character: char) -> bool {
+    is_hyphen(character) || character == SOFT_HYPHEN
+}
+
+fn hyphen_of(character: char) -> Hyphen {
+    match character {
+        SOFT_HYPHEN => Hyphen::Soft,
+        hard => Hyphen::Hard(hard),
+    }
+}
+
 fn push_char(character: char, out: &mut Vec<u8>) {
     let mut buffer = [0; 4];
     out.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
@@ -771,6 +794,19 @@ mod tests {
 
     fn only(step: Step) -> Steps {
         Steps(step.bit())
+    }
+
+    #[test]
+    fn a_hyphen_ending_the_line_after_a_url_left_broken_stays() {
+        for text in [
+            "a://.\nx-\nb/c",
+            "a://.\nx\u{ad}\nb/c",
+            "a://.\nx\u{ad}-\nb/c",
+        ] {
+            let once = normalize(Steps::ALL, text);
+            assert_eq!(normalize(Steps::ALL, &once), once, "{text:?}");
+        }
+        assert_eq!(normalize(Steps::ALL, "a://.\nx-\nb/c"), "a://.\nx-\nb/c");
     }
 
     #[test]
