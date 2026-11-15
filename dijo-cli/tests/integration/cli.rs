@@ -1855,7 +1855,8 @@ fn svg_images_are_read_for_the_text_they_show() {
     );
     assert_eq!(
         objects[0]["text"],
-        "Beware the reef\nEvery evening at dusk\nthe keeper climbed the tower.\n\
+        "A chart of the harbour approaches, drawn for the keeper.\n\
+         Beware the reef\nEvery evening at dusk\nthe keeper climbed the tower.\n\
          Along the coast, the harbour master\u{2019}s boats\nH2O and E = mc2\nTide tables\n\
          Fyret lyser om natten\nThe light shines at night\nHarbour wall\n\
          Lamp oil: 40 litres\nWick trimmed\nLens polished\n"

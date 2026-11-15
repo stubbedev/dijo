@@ -10,7 +10,8 @@
 //! paragraph to each of its blocks. Text inside `<defs>` and `<symbol>` is read once where it is
 //! written, whatever `<use>` shows it; every child of a `<switch>` is read, whatever its
 //! `systemLanguage`. The `<title>` and `<desc>` of the root element are its `dc:title` and
-//! `dc:description`, and a nested one, outside a text element, a paragraph of its own; inside a
+//! `dc:description`, the description a paragraph of the text as well, since it may be all the
+//! words an image has; a nested one, outside a text element, is a paragraph of its own; inside a
 //! text element, they are tooltips and left out. The Dublin Core of the RDF in `<metadata>`, as
 //! Inkscape writes it, is metadata, each property read whole, so that the `dc:title` of the
 //! agent of `dc:creator` is the creator's name. Style sheets, scripts, path data and the other
@@ -560,8 +561,15 @@ impl SaxHandler for Reading<'_, '_> {
             Close::Label(label) => {
                 let value = collapse_whitespace(&self.label);
                 self.label.clear();
+                if value.is_empty() {
+                    return Ok(());
+                }
+                if label == Label::Description {
+                    self.paragraph.write(self.xhtml, &value)?;
+                    self.paragraph.end(self.xhtml)?;
+                }
                 let metadata = self.xhtml.metadata_mut();
-                if !value.is_empty() && !metadata.values(label.key()).contains(&value) {
+                if !metadata.values(label.key()).contains(&value) {
                     metadata.add(label.key(), value);
                 }
             }
@@ -678,7 +686,10 @@ mod tests {
             )
             .as_bytes(),
         );
-        assert_eq!(body, "<p>Wall</p>\n<p>Stone</p>\n<p>Reef</p>\n");
+        assert_eq!(
+            body,
+            "<p>Of the coast</p>\n<p>Wall</p>\n<p>Stone</p>\n<p>Reef</p>\n"
+        );
         assert_eq!(metadata["dc:title"], ["The chart"]);
         assert_eq!(metadata["dc:description"], ["Of the coast"]);
         assert_eq!(metadata["dc:creator"], ["Anna\n Berg"]);
