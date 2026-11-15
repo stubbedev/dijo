@@ -210,6 +210,11 @@ pub struct Shared(*const Budget);
 unsafe impl Send for Shared {}
 unsafe impl Sync for Shared {}
 
+/// Whether this thread's allocations are charged to a budget.
+pub fn budgeted() -> bool {
+    !current().is_null()
+}
+
 /// This thread's budget, to charge other threads' allocations to, if it has one.
 pub fn share() -> Option<Shared> {
     let budget = current();

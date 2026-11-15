@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::bitmap::Density;
+use super::slots;
 use super::table;
 use crate::memory;
 
@@ -27,6 +28,15 @@ use crate::memory;
 const IDLE: Duration = Duration::from_secs(5 * 60);
 /// The model orientation and script detection runs with.
 const OSD_MODEL: &str = "osd";
+
+/// The most threads that help a reading recognise the words of its page, beside the thread it
+/// runs on: past four, the layout analysis tesseract runs alone takes most of the time left, and
+/// each thread more costs more processor time than it saves.
+const MAX_HELPERS: usize = 3;
+
+/// The threads a reading with each number of helpers recognises its words on, as tesseract's
+/// `lstm_threads` takes them.
+const THREADS: [&CStr; MAX_HELPERS + 1] = [c"1", c"2", c"3", c"4"];
 /// `OEM_DEFAULT`: the engine a model's data has.
 const OEM_DEFAULT: c_int = 3;
 /// What joins the models of a language read with more than one, as `-l eng+deu` does.
@@ -626,6 +636,7 @@ impl Tesseract {
         READINGS.with(|readings| readings.borrow_mut().push(model.to_owned()));
         let _reserved = image.reserve()?;
         let engine = self.take(model)?;
+        let helpers = slots::helpers(MAX_HELPERS);
         let result = self.recognize(
             &engine,
             image,
@@ -635,7 +646,9 @@ impl Tesseract {
             segmentation,
             thresholding,
             timeout,
+            helpers.count(),
         );
+        drop(helpers);
         self.release(model, engine);
         result
     }
@@ -651,6 +664,7 @@ impl Tesseract {
         segmentation: PageSegMode,
         thresholding: Thresholding,
         timeout: Option<Duration>,
+        helpers: usize,
     ) -> Result<Reading, OcrError> {
         let api = &self.api;
         let handle = engine.0.as_ptr();
@@ -665,6 +679,7 @@ impl Tesseract {
                 c"thresholding_method".as_ptr(),
                 thresholding.value().as_ptr(),
             );
+            (api.set_variable)(handle, c"lstm_threads".as_ptr(), THREADS[helpers].as_ptr());
             (api.set_page_seg_mode)(handle, c_int::from(segmentation.0));
             if !image.set_on(api, handle, density) {
                 return Err(failed());
@@ -1441,6 +1456,47 @@ mod tests {
                 "{block:?} in {read:?}"
             );
         }
+    }
+
+    #[test]
+    fn reads_alike_with_threads_helping_and_without() {
+        let tesseract = crate::ocr::tesseract().unwrap();
+        let image = std::fs::read("../quality/corpus/innsbrucker-nachrichten-1864.tif").unwrap();
+        let read = |helpers| {
+            let pixels = Pixels::Encoded {
+                data: Cow::Borrowed(&image),
+                width: 1536,
+                height: 2275,
+            };
+            let engine = tesseract.take("deu_latf").unwrap();
+            let read = tesseract.recognize(
+                &engine,
+                pixels,
+                None,
+                None,
+                "deu_latf",
+                PageSegMode(3),
+                Thresholding::Otsu,
+                None,
+                helpers,
+            );
+            tesseract.release("deu_latf", engine);
+            read.unwrap()
+        };
+        let engine = tesseract.take("deu_latf").unwrap();
+        let known = unsafe {
+            (tesseract.api.set_variable)(
+                engine.0.as_ptr(),
+                c"lstm_threads".as_ptr(),
+                THREADS[1].as_ptr(),
+            )
+        };
+        tesseract.release("deu_latf", engine);
+        assert_ne!(known, 0, "the bundled tesseract has no lstm_threads");
+        let alone = read(0);
+        assert!(alone.text.contains("Gemahlin Katharina"), "{alone:?}");
+        assert_eq!(read(MAX_HELPERS), alone);
+        assert_eq!(read(0), alone);
     }
 
     /// A table found on a scan reads as born-digital tables are written (#376).

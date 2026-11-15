@@ -13,6 +13,13 @@
   read three times instead of four, the 1873 *Neue Freie Presse* page in 18.8 s where 0.2.16 took 31.3 s, with the
   same text. A reading with the Fraktur model, which reads the long s itself, no longer has it restored by the
   dictionary.
+* Tesseract recognises the words of a page on up to four threads when processors are free, each extra thread with
+  a recogniser of its own loaded from the mapped model and freed when the page is read, and every reading is bit
+  for bit the one a single thread makes: a single scan reads in about half the time, the 1873 *Neue Freie Presse*
+  page in 8.1 s where 0.2.16 took 28.7 s with the two changes above, and the 1895 *Arbeiter-Zeitung* in 6.6 s where
+  it took 24.5 s. Only processors no other reading holds are taken, so reading many documents at once is not
+  slowed: the OCR documents of the quality corpus read in 42 s where 0.2.16 took 61 s, twelve at a time. A reading
+  with a memory limit stays on one thread.
 
 # 0.2.16 (2026-11-15)
 

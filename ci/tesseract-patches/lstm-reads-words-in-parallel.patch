@@ -1,0 +1,291 @@
+diff --git a/src/ccmain/control.cpp b/src/ccmain/control.cpp
+index 4132007..ecdcd6a 100644
+--- a/src/ccmain/control.cpp
++++ b/src/ccmain/control.cpp
+@@ -221,7 +221,7 @@ bool Tesseract::RecogAllWordsPassN(int pass_n, ETEXT_DESC *monitor, PAGE_RES_IT
+         TBOX box = pr_it->word()->word->bounding_box();
+         (*monitor->progress_callback2)(monitor, box.left(), box.right(), box.top(), box.bottom());
+       }
+-      if (monitor->deadline_exceeded() ||
++      if ((monitor->deadline_exceeded() && !word->lstm_read) ||
+           (monitor->cancel != nullptr && (*monitor->cancel)(monitor->cancel_this, words->size()))) {
+         // Timeout. Fake out the rest of the words.
+         for (; w < words->size(); ++w) {
+@@ -332,6 +332,7 @@ bool Tesseract::recog_all_words(PAGE_RES *page_res, ETEXT_DESC *monitor,
+       PrerecAllWordsPar(words);
+     }
+ #endif // ndef DISABLED_LEGACY_ENGINE
++    PrereadLSTMWords(words, monitor);
+ 
+     stats_.word_count = words.size();
+ 
+@@ -1396,7 +1397,13 @@ void Tesseract::classify_word_pass1(const WordData &word_data, WERD_RES **in_wor
+   if (tessedit_ocr_engine_mode == OEM_LSTM_ONLY ||
+       tessedit_ocr_engine_mode == OEM_TESSERACT_LSTM_COMBINED) {
+ #endif // def DISABLED_LEGACY_ENGINE
+-    if (!(*in_word)->odd_size || tessedit_ocr_engine_mode == OEM_LSTM_ONLY) {
++    if (word_data.lstm_read) {
++      out_words->move(&word_data.lstm_words);
++      word_data.lstm_read = false;
++      if (!out_words->empty()) {
++        return;
++      }
++    } else if (!(*in_word)->odd_size || tessedit_ocr_engine_mode == OEM_LSTM_ONLY) {
+       LSTMRecognizeWord(*block, row, *in_word, out_words);
+       if (!out_words->empty()) {
+         return; // Successful lstm recognition.
+diff --git a/src/ccmain/linerec.cpp b/src/ccmain/linerec.cpp
+index 8153413..494720e 100644
+--- a/src/ccmain/linerec.cpp
++++ b/src/ccmain/linerec.cpp
+@@ -22,9 +22,17 @@
+ #include "lstmrecognizer.h"
+ #include "pageres.h"
+ #include "recodebeam.h"
++#include "tessdatamanager.h"
+ #include "tprintf.h"
+ 
++#include <tesseract/ocrclass.h>
++
+ #include <algorithm>
++#include <atomic>
++#include <memory>
++#include <mutex>
++#include <thread>
++#include <vector>
+ 
+ namespace tesseract {
+ 
+@@ -228,44 +236,51 @@ ImageData *Tesseract::GetRectImage(const TBOX &box, const BLOCK &block, int padd
+ // Analogous to classify_word_pass1, but can handle a group of words as well.
+ void Tesseract::LSTMRecognizeWord(const BLOCK &block, ROW *row, WERD_RES *word,
+                                   PointerVector<WERD_RES> *words) {
+-  TBOX word_box = word->word->bounding_box();
+-  // Get the word image - no frills.
++  TBOX word_box;
++  ImageData *im_data = LSTMWordImage(block, row, *word, &word_box);
++  if (im_data == nullptr) {
++    return;
++  }
++  LSTMRecognizeWordImage(*lstm_recognizer_, *im_data, word_box, words);
++  delete im_data;
++}
++
++ImageData *Tesseract::LSTMWordImage(const BLOCK &block, ROW *row, const WERD_RES &word,
++                                    TBOX *word_box) const {
++  *word_box = word.word->bounding_box();
+   if (tessedit_pageseg_mode == PSM_SINGLE_WORD || tessedit_pageseg_mode == PSM_RAW_LINE) {
+-    // In single word mode, use the whole image without any other row/word
+-    // interpretation.
+-    word_box = TBOX(0, 0, ImageWidth(), ImageHeight());
++    *word_box = TBOX(0, 0, ImageWidth(), ImageHeight());
+   } else {
+-    float baseline = row->base_line((word_box.left() + word_box.right()) / 2);
+-    if (baseline + row->descenders() < word_box.bottom()) {
+-      word_box.set_bottom(baseline + row->descenders());
++    float baseline = row->base_line((word_box->left() + word_box->right()) / 2);
++    if (baseline + row->descenders() < word_box->bottom()) {
++      word_box->set_bottom(baseline + row->descenders());
+     }
+-    if (baseline + row->x_height() + row->ascenders() > word_box.top()) {
+-      word_box.set_top(baseline + row->x_height() + row->ascenders());
++    if (baseline + row->x_height() + row->ascenders() > word_box->top()) {
++      word_box->set_top(baseline + row->x_height() + row->ascenders());
+     }
+   }
+-  ImageData *im_data = GetRectImage(word_box, block, kImagePadding, &word_box);
+-  if (im_data == nullptr) {
+-    return;
+-  }
++  return GetRectImage(*word_box, block, kImagePadding, word_box);
++}
+ 
++void Tesseract::LSTMRecognizeWordImage(LSTMRecognizer &recognizer, const ImageData &im_data,
++                                       const TBOX &word_box, PointerVector<WERD_RES> *words) {
+   bool do_invert = tessedit_do_invert;
+   float threshold = do_invert ? double(invert_threshold) : 0.0f;
+-  lstm_recognizer_->RecognizeLine(*im_data, threshold, classify_debug_level > 0,
+-                                  kWorstDictCertainty / kCertaintyScale, word_box, words,
+-                                  lstm_choice_mode, lstm_choice_iterations);
+-  delete im_data;
+-  SearchWords(words);
++  recognizer.RecognizeLine(im_data, threshold, classify_debug_level > 0,
++                           kWorstDictCertainty / kCertaintyScale, word_box, words,
++                           lstm_choice_mode, lstm_choice_iterations);
++  SearchWords(recognizer, words);
+ }
+ 
+ // Apply segmentation search to the given set of words, within the constraints
+ // of the existing ratings matrix. If there is already a best_choice on a word
+ // leaves it untouched and just sets the done/accepted etc flags.
+-void Tesseract::SearchWords(PointerVector<WERD_RES> *words) {
++void Tesseract::SearchWords(const LSTMRecognizer &recognizer, PointerVector<WERD_RES> *words) {
+   // Run the segmentation search on the network outputs and make a BoxWord
+   // for each of the output words.
+   // If we drop a word as junk, then there is always a space in front of the
+   // next.
+-  const Dict *stopper_dict = lstm_recognizer_->GetDict();
++  const Dict *stopper_dict = recognizer.GetDict();
+   if (stopper_dict == nullptr) {
+     stopper_dict = &getDict();
+   }
+@@ -302,4 +317,57 @@ void Tesseract::SearchWords(PointerVector<WERD_RES> *words) {
+   }
+ }
+ 
++void Tesseract::PrereadLSTMWords(const std::vector<WordData> &words, ETEXT_DESC *monitor) {
++  if (lstm_threads <= 1 || lstm_recognizer_ == nullptr ||
++      tessedit_ocr_engine_mode != OEM_LSTM_ONLY || !sub_langs_.empty() || words.size() < 2) {
++    return;
++  }
++  const size_t threads = std::min(static_cast<size_t>(lstm_threads), words.size());
++  std::atomic<size_t> next{0};
++  std::mutex cropping;
++  const auto read = [&](LSTMRecognizer &recognizer) {
++    for (size_t w = next++; w < words.size(); w = next++) {
++      if (monitor != nullptr && monitor->deadline_exceeded()) {
++        return;
++      }
++      const WordData &word = words[w];
++      if (word.word->done || word.lang_words.size() != 1) {
++        continue;
++      }
++      TBOX word_box;
++      std::unique_ptr<ImageData> im_data;
++      {
++        std::lock_guard<std::mutex> lock(cropping);
++        im_data.reset(LSTMWordImage(*word.block, word.row, *word.lang_words[0], &word_box));
++      }
++      if (im_data != nullptr) {
++        LSTMRecognizeWordImage(recognizer, *im_data, word_box, &word.lstm_words);
++      }
++      word.lstm_read = true;
++    }
++  };
++  const auto help = [&]() {
++    LSTMRecognizer helper(language_data_path_prefix.c_str());
++    TessdataManager mgr;
++    if (!mgr.Init((language_data_path_prefix + kTrainedDataSuffix).c_str()) ||
++        !helper.Load(this->params(), lstm_use_matrix ? lang : "", &mgr)) {
++      return;
++    }
++    helper.GetUnicharset().set_black_and_whitelist(tessedit_char_blacklist.c_str(),
++                                                   tessedit_char_whitelist.c_str(),
++                                                   tessedit_char_unblacklist.c_str());
++    helper.SetWordsUnicharset(&lstm_recognizer_->GetUnicharset());
++    read(helper);
++  };
++  std::vector<std::thread> helpers;
++  helpers.reserve(threads - 1);
++  for (size_t t = 1; t < threads; ++t) {
++    helpers.emplace_back(help);
++  }
++  read(*lstm_recognizer_);
++  for (auto &helper : helpers) {
++    helper.join();
++  }
++}
++
+ } // namespace tesseract.
+diff --git a/src/ccmain/tesseractclass.cpp b/src/ccmain/tesseractclass.cpp
+index ce896a8..5939057 100644
+--- a/src/ccmain/tesseractclass.cpp
++++ b/src/ccmain/tesseractclass.cpp
+@@ -439,6 +439,10 @@ Tesseract::Tesseract()
+                  "lstm_choice_mode. Note that lstm_choice_mode must be set to a "
+                  "value greater than 0 to produce results.",
+                  this->params())
++    , INT_MEMBER(lstm_threads, 1,
++                 "Threads that read the words of a page with the LSTM, the "
++                 "calling one among them.",
++                 this->params())
+     , double_MEMBER(lstm_rating_coefficient, 5,
+                     "Sets the rating coefficient for the lstm choices. The smaller the "
+                     "coefficient, the better are the ratings for each choice and less "
+diff --git a/src/ccmain/tesseractclass.h b/src/ccmain/tesseractclass.h
+index af010e3..d422417 100644
+--- a/src/ccmain/tesseractclass.h
++++ b/src/ccmain/tesseractclass.h
+@@ -162,6 +162,8 @@ struct WordData {
+   BLOCK *block;
+   WordData *prev_word;
+   PointerVector<WERD_RES> lang_words;
++  mutable PointerVector<WERD_RES> lstm_words;
++  mutable bool lstm_read = false;
+ };
+ 
+ // Definition of a Tesseract WordRecognizer. The WordData provides the context
+@@ -364,10 +366,15 @@ public:
+   // Analogous to classify_word_pass1, but can handle a group of words as well.
+   void LSTMRecognizeWord(const BLOCK &block, ROW *row, WERD_RES *word,
+                          PointerVector<WERD_RES> *words);
++  ImageData *LSTMWordImage(const BLOCK &block, ROW *row, const WERD_RES &word,
++                           TBOX *word_box) const;
++  void LSTMRecognizeWordImage(LSTMRecognizer &recognizer, const ImageData &im_data,
++                              const TBOX &word_box, PointerVector<WERD_RES> *words);
+   // Apply segmentation search to the given set of words, within the constraints
+   // of the existing ratings matrix. If there is already a best_choice on a word
+   // leaves it untouched and just sets the done/accepted etc flags.
+-  void SearchWords(PointerVector<WERD_RES> *words);
++  void SearchWords(const LSTMRecognizer &recognizer, PointerVector<WERD_RES> *words);
++  void PrereadLSTMWords(const std::vector<WordData> &words, ETEXT_DESC *monitor);
+ 
+   //// control.h /////////////////////////////////////////////////////////
+   bool ProcessTargetWord(const TBOX &word_box, const TBOX &target_word_box, const char *word_config,
+@@ -960,6 +967,7 @@ public:
+   STRING_VAR_H(page_separator);
+   INT_VAR_H(lstm_choice_mode);
+   INT_VAR_H(lstm_choice_iterations);
++  INT_VAR_H(lstm_threads);
+   double_VAR_H(lstm_rating_coefficient);
+   BOOL_VAR_H(pageseg_apply_music_mask);
+ 
+diff --git a/src/lstm/lstmrecognizer.cpp b/src/lstm/lstmrecognizer.cpp
+index f8e6350..93051a6 100644
+--- a/src/lstm/lstmrecognizer.cpp
++++ b/src/lstm/lstmrecognizer.cpp
+@@ -259,15 +259,17 @@ void LSTMRecognizer::RecognizeLine(const ImageData &image_data,
+     search_ = new RecodeBeamSearch(recoder_, null_char_, SimpleTextOutput(), dict_);
+   }
+   search_->excludedUnichars.clear();
+-  search_->Decode(outputs, kDictRatio, kCertOffset, worst_dict_cert, &GetUnicharset(),
++  const UNICHARSET *unicharset =
++      words_unicharset_ != nullptr ? words_unicharset_ : &GetUnicharset();
++  search_->Decode(outputs, kDictRatio, kCertOffset, worst_dict_cert, unicharset,
+                   lstm_choice_mode);
+-  search_->ExtractBestPathAsWords(line_box, scale_factor, debug, &GetUnicharset(), words);
++  search_->ExtractBestPathAsWords(line_box, scale_factor, debug, unicharset, words);
+   if (lstm_choice_mode) {
+-    search_->extractSymbolChoices(&GetUnicharset());
++    search_->extractSymbolChoices(unicharset);
+     for (int i = 0; i < lstm_choice_amount; ++i) {
+       search_->DecodeSecondaryBeams(outputs, kDictRatio, kCertOffset, worst_dict_cert,
+-                                    &GetUnicharset());
+-      search_->extractSymbolChoices(&GetUnicharset());
++                                    unicharset);
++      search_->extractSymbolChoices(unicharset);
+     }
+     search_->segmentTimestepsByCharacters();
+     unsigned char_it = 0;
+diff --git a/src/lstm/lstmrecognizer.h b/src/lstm/lstmrecognizer.h
+index 4234cf3..5b18551 100644
+--- a/src/lstm/lstmrecognizer.h
++++ b/src/lstm/lstmrecognizer.h
+@@ -192,6 +192,9 @@ public:
+   UNICHARSET &GetUnicharset() {
+     return ccutil_.unicharset;
+   }
++  void SetWordsUnicharset(const UNICHARSET *unicharset) {
++    words_unicharset_ = unicharset;
++  }
+   // Provides access to the UnicharCompress that this classifier works with.
+   const UnicharCompress &GetRecoder() const {
+     return recoder_;
+@@ -360,6 +363,7 @@ protected:
+   Dict *dict_;
+   // Beam search held between uses to optimize memory allocation/use.
+   RecodeBeamSearch *search_;
++  const UNICHARSET *words_unicharset_ = nullptr;
+ 
+   // == Debugging parameters.==
+   // Recognition debug display window.
