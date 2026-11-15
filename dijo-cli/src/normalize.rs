@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use clap::ValueEnum;
@@ -10,6 +11,7 @@ const MAX_CONSECUTIVE_NEWLINES: u8 = 2;
 const MAX_WORD_CHARS: usize = 64;
 const MAX_REMEMBERED_WORDS: usize = 1 << 16;
 const MIN_PREFIX_CONTINUATIONS: u8 = 2;
+const SOFT_HYPHEN: char = '\u{ad}';
 
 /// One normalisation step applied to extracted text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -29,11 +31,13 @@ pub enum Step {
     /// page numbers) out of the page text: into the page's header and footer in pages output,
     /// away in text and json output.
     Headers,
-    /// Join a word hyphenated across a line break, dropping the hyphen unless the text before
-    /// shows the word is a hyphenated compound.
+    /// Join a word hyphenated across a line break, dropping the hyphen when it was a soft one or
+    /// when neither the halves nor the text before show the word is a hyphenated compound, and
+    /// join a URL broken after a slash or dot.
     Hyphenation,
     /// Read an untagged PDF page in reading order (columns, then by position) rather than in
-    /// the order its content stream draws the text.
+    /// the order its content stream draws the text, and a dash a PDF draws from overlapping
+    /// hyphens as one.
     ReadingOrder,
     /// Leave out the bookmarks (outline) Tika appends to a PDF's text, which repeat its
     /// headings.
@@ -108,7 +112,7 @@ impl Normalizer {
             after_carriage_return: false,
             hyphenation: steps
                 .contains(Step::Hyphenation)
-                .then(Dehyphenator::default),
+                .then(|| Dehyphenator::new(steps.contains(Step::SoftHyphens))),
         }
     }
 
@@ -216,23 +220,50 @@ impl Normalizer {
 
     fn alters(&self, character: char) -> bool {
         (self.steps.contains(Step::Invisible) && is_invisible(character))
-            || (self.steps.contains(Step::SoftHyphens) && character == '\u{ad}')
+            || (character == SOFT_HYPHEN
+                && self.steps.contains(Step::SoftHyphens)
+                && !self.drops_soft_hyphens_inside_lines())
             || (self.steps.contains(Step::Ligatures) && ligature(character).is_some())
     }
 
-    /// How much of the held text no later character can compose with.
+    /// How much of the held text no later character can compose with, short of soft hyphens at
+    /// its end while the next character still has to tell whether they end a line.
     fn stable_prefix_len(&self) -> usize {
-        if !self.steps.contains(Step::Unicode) || self.held.len() > MAX_HELD_BYTES {
+        if self.held.len() > MAX_HELD_BYTES {
             return self.held.len();
         }
-        self.held
-            .char_indices()
-            .rev()
-            .find(|&(_, character)| is_stable_starter(character))
-            .map_or(0, |(index, _)| index)
+        let drops_soft_hyphens = self.drops_soft_hyphens_inside_lines();
+        let stable = if !self.steps.contains(Step::Unicode) {
+            self.held.len()
+        } else {
+            self.held
+                .char_indices()
+                .rev()
+                .find(|&(_, character)| {
+                    is_stable_starter(character)
+                        && !(drops_soft_hyphens && character == SOFT_HYPHEN)
+                })
+                .map_or(0, |(index, _)| index)
+        };
+        if drops_soft_hyphens {
+            self.held[..stable].trim_end_matches(SOFT_HYPHEN).len()
+        } else {
+            stable
+        }
+    }
+
+    /// Whether soft hyphens are dropped before the text is composed, all but those ending a
+    /// line, which the dehyphenation joins with the line break.
+    fn drops_soft_hyphens_inside_lines(&self) -> bool {
+        self.steps.contains(Step::SoftHyphens) && self.hyphenation.is_some()
     }
 
     fn release(&mut self, text: &str, out: &mut Vec<u8>) {
+        let text = if self.drops_soft_hyphens_inside_lines() {
+            without_soft_hyphens_inside_lines(text)
+        } else {
+            Cow::Borrowed(text)
+        };
         if self.steps.contains(Step::Unicode) && is_nfc_quick(text.chars()) != IsNormalized::Yes {
             text.nfc().for_each(|character| self.emit(character, out));
         } else {
@@ -257,6 +288,10 @@ impl Normalizer {
 
     fn collapse(&mut self, character: char, out: &mut Vec<u8>) {
         let after_carriage_return = std::mem::take(&mut self.after_carriage_return);
+        if character == SOFT_HYPHEN && self.pending_space && self.steps.contains(Step::SoftHyphens)
+        {
+            return;
+        }
         if is_line_break(character) {
             if character == '\n' && after_carriage_return {
                 return;
@@ -279,15 +314,25 @@ impl Normalizer {
     }
 }
 
-/// Joins words hyphenated across a line break. It holds back a hyphen that ends a line, and the
-/// word that starts the next, until that word ends. Whether the hyphen stays is decided from the
-/// text before: it stays when the word already holds a hyphen (`state-of-the-` / `art`), or when
-/// the joined word did not occur but the hyphenated compound did, or both halves did as words of
-/// their own (`south` and `west`, where hyphenation leaves fragments such as `extrac`), or the
-/// part before the hyphen began hyphenated compounds with more than one other word, as articles
-/// and prefixes do (Maltese `tal-membri`, `tal-familja`, then `tal-` / `ħajja`).
-#[derive(Default)]
+/// Joins words hyphenated across a line break, and URLs broken across one. It holds back a
+/// hyphen that ends a line after a letter or digit, a soft hyphen, or a slash or dot that ends a
+/// line inside a URL, with what starts the next line, until it can tell what they join:
+/// - a soft hyphen only marks where a word was broken, so it goes with the line break;
+/// - a URL broken after a slash, or after a dot in its host where the next line goes on with
+///   the rest of the host and a path (`https://www.` / `unaids.org/`), goes on where the next
+///   line starts;
+/// - a hyphen with a digit on either side (`1990-` / `1995`), or before a word that does not go
+///   on in the case of the letter before it (`Sub-` / `Saharan`), cannot have split a syllable,
+///   so it stays and only the line break goes;
+/// - a word that goes on in that case (`extrac-` / `tion`, `AQUAEX-` / `CEL`) is joined, and
+///   the hyphen stays only where the text before shows a hyphenated compound: when the word
+///   already holds a hyphen (`state-of-the-` / `art`), or the joined word did not occur but the
+///   hyphenated compound did, or both halves did as words of their own (`south` and `west`,
+///   where hyphenation leaves fragments such as `extrac`), or the part before the hyphen began
+///   hyphenated compounds with more than one other word, as articles and prefixes do (Maltese
+///   `tal-membri`, `tal-familja`, then `tal-` / `ħajja`).
 struct Dehyphenator {
+    drop_soft_hyphens: bool,
     token: String,
     held: Held,
     words: HashSet<String>,
@@ -299,109 +344,247 @@ struct Dehyphenator {
 enum Held {
     #[default]
     Nothing,
-    /// A hyphen right after a letter.
-    Hyphen(char),
-    /// A hyphen, the line break after it, and the spaces and letters of the next line so far.
+    /// A hyphen right after a letter or digit, or a soft hyphen.
+    Hyphen(Hyphen),
+    /// What ended a line, the line break after it, and the spaces and the start of the next line
+    /// so far.
     Break {
-        hyphen: char,
+        end: LineEnd,
         text: String,
         word: String,
     },
 }
 
+#[derive(Clone, Copy)]
+enum Hyphen {
+    Hard(char),
+    Soft,
+}
+
+#[derive(Clone, Copy)]
+enum LineEnd {
+    Hyphen(Hyphen),
+    /// A slash or dot ending a URL.
+    Url,
+}
+
+/// What becomes of a held line end and the start of the next line.
+enum Release {
+    /// Both stay as they stand.
+    AsIs,
+    /// The line end and the line break go; the next line goes on where the line ended.
+    Join,
+    /// The hyphen stays and the line break goes.
+    KeepHyphen,
+}
+
 impl Dehyphenator {
-    fn push(&mut self, character: char, out: &mut Vec<u8>) {
-        match &mut self.held {
-            Held::Nothing => {}
-            Held::Hyphen(hyphen) => {
-                let hyphen = *hyphen;
-                if is_line_break(character) {
-                    self.held = Held::Break {
-                        hyphen,
-                        text: character.to_string(),
-                        word: String::new(),
-                    };
-                    return;
-                }
-                self.held = Held::Nothing;
-                self.pass(hyphen, out);
-            }
-            Held::Break { hyphen, text, word } => {
-                if character.is_alphabetic()
-                    && (!word.is_empty() || character.is_lowercase())
-                    && word.chars().count() < MAX_WORD_CHARS
-                {
-                    word.push(character);
-                    return;
-                }
-                if word.is_empty() && is_space(character) {
-                    text.push(character);
-                    return;
-                }
-                let hyphen = *hyphen;
-                let text = std::mem::take(text);
-                let word = std::mem::take(word);
-                self.held = Held::Nothing;
-                self.release_break(hyphen, &text, &word, !character.is_alphabetic(), out);
-            }
+    fn new(drop_soft_hyphens: bool) -> Self {
+        Self {
+            drop_soft_hyphens,
+            token: String::new(),
+            held: Held::Nothing,
+            words: HashSet::new(),
+            compounds: HashSet::new(),
+            prefixes: HashMap::new(),
         }
-        if is_hyphen(character) && self.token.chars().last().is_some_and(char::is_alphabetic) {
-            self.held = Held::Hyphen(character);
+    }
+
+    fn push(&mut self, character: char, out: &mut Vec<u8>) {
+        if !matches!(self.held, Held::Nothing) && self.takes_into_held(character, out) {
+            return;
+        }
+        if is_line_break(character) && ends_broken_url(&self.token) {
+            self.held = Held::Break {
+                end: LineEnd::Url,
+                text: character.to_string(),
+                word: String::new(),
+            };
+            return;
+        }
+        if character == SOFT_HYPHEN {
+            self.held = Held::Hyphen(Hyphen::Soft);
+            return;
+        }
+        if is_hyphen(character) && self.token.chars().last().is_some_and(char::is_alphanumeric) {
+            self.held = Held::Hyphen(Hyphen::Hard(character));
             return;
         }
         self.pass(character, out);
     }
 
+    /// Takes `character` into what is held, or else releases what is held before it; whether it
+    /// took it.
+    fn takes_into_held(&mut self, character: char, out: &mut Vec<u8>) -> bool {
+        match std::mem::take(&mut self.held) {
+            Held::Nothing => false,
+            Held::Hyphen(hyphen) => {
+                if is_line_break(character) {
+                    self.held = Held::Break {
+                        end: LineEnd::Hyphen(hyphen),
+                        text: character.to_string(),
+                        word: String::new(),
+                    };
+                    return true;
+                }
+                self.pass_line_end(LineEnd::Hyphen(hyphen), out);
+                false
+            }
+            Held::Break {
+                end,
+                mut text,
+                mut word,
+            } => {
+                if word.is_empty() && continues_break(end, &text, character) {
+                    text.push(character);
+                    self.held = Held::Break { end, text, word };
+                    return true;
+                }
+                if self.continues_word(end, &word, character) {
+                    word.push(character);
+                    self.held = Held::Break { end, text, word };
+                    return true;
+                }
+                self.release_break(end, &text, &word, Some(character), out);
+                false
+            }
+        }
+    }
+
     fn finish(&mut self, out: &mut Vec<u8>) {
         match std::mem::take(&mut self.held) {
             Held::Nothing => {}
-            Held::Hyphen(hyphen) => self.pass(hyphen, out),
-            Held::Break { hyphen, text, word } => {
-                self.release_break(hyphen, &text, &word, true, out)
-            }
+            Held::Hyphen(hyphen) => self.pass_line_end(LineEnd::Hyphen(hyphen), out),
+            Held::Break { end, text, word } => self.release_break(end, &text, &word, None, out),
         }
         self.end_token();
     }
 
-    /// Writes a hyphen held with the line break after it and the spaces and `word` of the next
-    /// line in `text`: the word joined to the one before where it starts in lower case and
-    /// `ended` by what follows it, else all as it stands.
+    /// Whether `character` is more of `word`, the start of the line after `end` that decides
+    /// what `end` joins: the letters after a hyphen that follows a letter, the letters, digits
+    /// and dots after a URL's slash or dot.
+    fn continues_word(&self, end: LineEnd, word: &str, character: char) -> bool {
+        let part = match end {
+            LineEnd::Hyphen(Hyphen::Soft) => false,
+            LineEnd::Hyphen(Hyphen::Hard(_)) => {
+                character.is_alphabetic()
+                    && self.token.chars().last().is_some_and(char::is_alphabetic)
+            }
+            LineEnd::Url => character.is_alphanumeric() || (!word.is_empty() && character == '.'),
+        };
+        part && word.chars().count() < MAX_WORD_CHARS
+    }
+
+    /// Writes the line end `end` held with the line break and spaces after it in `text` and the
+    /// start of the next line in `word`, ended by `next`, or by the end of the text.
     fn release_break(
         &mut self,
-        hyphen: char,
+        end: LineEnd,
         text: &str,
         word: &str,
-        ended: bool,
+        next: Option<char>,
         out: &mut Vec<u8>,
     ) {
-        if ended && word.chars().next().is_some_and(char::is_lowercase) {
-            self.join(hyphen, word, out);
-        } else {
-            self.pass(hyphen, out);
-            text.chars()
-                .chain(word.chars())
-                .for_each(|held| self.pass(held, out));
+        match self.release(end, word, next) {
+            Release::AsIs => {
+                self.pass_line_end(end, out);
+                text.chars().for_each(|held| self.pass(held, out));
+            }
+            Release::Join => {}
+            Release::KeepHyphen => self.pass_line_end(end, out),
+        }
+        word.chars().for_each(|held| self.pass(held, out));
+    }
+
+    /// What becomes of `end`: it stays as it stands where what starts the next line could
+    /// compose with what it would be joined to, since the text was composed before it was joined.
+    fn release(&self, end: LineEnd, word: &str, next: Option<char>) -> Release {
+        if word
+            .chars()
+            .next()
+            .or(next)
+            .is_some_and(|first| !is_stable_starter(first))
+        {
+            return Release::AsIs;
+        }
+        self.decide(end, word, next)
+    }
+
+    fn decide(&self, end: LineEnd, word: &str, next: Option<char>) -> Release {
+        let Some(next) = next else {
+            return match end {
+                LineEnd::Hyphen(Hyphen::Hard(_)) if !word.is_empty() => self.joined_word(word),
+                _ => Release::AsIs,
+            };
+        };
+        match end {
+            LineEnd::Hyphen(Hyphen::Soft) => Release::Join,
+            LineEnd::Url => {
+                let goes_on = if self.token.ends_with('/') {
+                    !word.is_empty()
+                } else {
+                    !url_has_path(&self.token)
+                        && word.chars().next().is_some_and(char::is_lowercase)
+                        && next == '/'
+                };
+                if goes_on {
+                    Release::Join
+                } else {
+                    Release::AsIs
+                }
+            }
+            LineEnd::Hyphen(Hyphen::Hard(_)) if word.is_empty() => {
+                if next.is_alphanumeric() {
+                    Release::KeepHyphen
+                } else {
+                    Release::AsIs
+                }
+            }
+            LineEnd::Hyphen(Hyphen::Hard(_)) if next.is_alphabetic() => Release::AsIs,
+            LineEnd::Hyphen(Hyphen::Hard(_)) => self.joined_word(word),
         }
     }
 
-    /// Joins the word before the line break with `next`, the word after it.
-    fn join(&mut self, hyphen: char, next: &str, out: &mut Vec<u8>) {
+    /// How a word hyphenated after a letter joins `next`, the letters starting the next line:
+    /// as one word where `next` goes on in the case of the letter before the hyphen and the text
+    /// before shows no hyphenated compound, else keeping the hyphen.
+    fn joined_word(&self, next: &str) -> Release {
+        let before = self
+            .token
+            .chars()
+            .last()
+            .expect("a hyphen held after a letter");
+        let goes_on = next.chars().all(char::is_lowercase)
+            || next.chars().all(|letter| same_case(letter, before));
+        if goes_on && !self.is_compound(next) {
+            Release::Join
+        } else {
+            Release::KeepHyphen
+        }
+    }
+
+    /// Whether the word before the line break and `next`, the word after it, make a hyphenated
+    /// compound by what the text before shows.
+    fn is_compound(&self, next: &str) -> bool {
         let before = last_word(&self.token).to_lowercase();
-        let next_lowercase = next.to_lowercase();
-        let compound = self.token.contains(is_hyphen)
-            || (!self.words.contains(&format!("{before}{next_lowercase}"))
-                && (self
-                    .compounds
-                    .contains(&format!("{before}-{next_lowercase}"))
+        let next = next.to_lowercase();
+        self.token.contains(is_hyphen)
+            || (!self.words.contains(&format!("{before}{next}"))
+                && (self.compounds.contains(&format!("{before}-{next}"))
                     || self
                         .prefixes
                         .get(&before)
                         .is_some_and(|&continuations| continuations >= MIN_PREFIX_CONTINUATIONS)
-                    || (self.words.contains(&before) && self.words.contains(&next_lowercase))));
-        if compound {
-            self.pass(hyphen, out);
+                    || (self.words.contains(&before) && self.words.contains(&next))))
+    }
+
+    /// Writes the hyphen of `end`; a soft hyphen only where soft hyphens are kept.
+    fn pass_line_end(&mut self, end: LineEnd, out: &mut Vec<u8>) {
+        match end {
+            LineEnd::Hyphen(Hyphen::Hard(hyphen)) => self.pass(hyphen, out),
+            LineEnd::Hyphen(Hyphen::Soft) if !self.drop_soft_hyphens => self.pass(SOFT_HYPHEN, out),
+            LineEnd::Hyphen(Hyphen::Soft) | LineEnd::Url => {}
         }
-        next.chars().for_each(|character| self.pass(character, out));
     }
 
     fn pass(&mut self, character: char, out: &mut Vec<u8>) {
@@ -464,6 +647,46 @@ fn last_word(token: &str) -> &str {
         .find(|&(_, character)| !character.is_alphabetic())
         .map_or(0, |(index, character)| index + character.len_utf8());
     &token[start..]
+}
+
+/// Whether `character` is more of `text`, the line break after `end` so far: spaces, and for a
+/// soft hyphen further line breaks.
+fn continues_break(end: LineEnd, text: &str, character: char) -> bool {
+    let space = match end {
+        LineEnd::Hyphen(Hyphen::Soft) => character.is_whitespace(),
+        LineEnd::Hyphen(Hyphen::Hard(_)) | LineEnd::Url => is_space(character),
+    };
+    space && text.len() < MAX_WORD_CHARS
+}
+
+/// `text` without the soft hyphens that do not end a line.
+fn without_soft_hyphens_inside_lines(text: &str) -> Cow<'_, str> {
+    if !text.contains(SOFT_HYPHEN) {
+        return Cow::Borrowed(text);
+    }
+    let mut kept = String::with_capacity(text.len());
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character != SOFT_HYPHEN || characters.peek().copied().is_some_and(is_line_break) {
+            kept.push(character);
+        }
+    }
+    Cow::Owned(kept)
+}
+
+/// Whether `token` is a URL ending in a slash or dot, where it may go on on the next line.
+fn ends_broken_url(token: &str) -> bool {
+    token.ends_with(['/', '.']) && (token.contains("://") || token.starts_with("www."))
+}
+
+/// Whether the URL `token` has a path after its host, so that a dot ending it can end a sentence.
+fn url_has_path(token: &str) -> bool {
+    let host = token.split_once("://").map_or(token, |(_, rest)| rest);
+    host.contains('/')
+}
+
+fn same_case(letter: char, other: char) -> bool {
+    letter.is_uppercase() == other.is_uppercase() && letter.is_lowercase() == other.is_lowercase()
 }
 
 fn is_hyphen(character: char) -> bool {
@@ -641,12 +864,82 @@ mod tests {
     }
 
     #[test]
+    fn a_hyphen_that_cannot_split_a_syllable_stays_and_the_line_break_goes() {
+        let join = |text| normalize(only(Step::Hyphenation), text);
+        assert_eq!(join("anti-\nSemitic"), "anti-Semitic");
+        assert_eq!(join("test of Morisky-\n  Green"), "test of Morisky-Green");
+        assert_eq!(
+            join("the Trivers-\nWillard theory"),
+            "the Trivers-Willard theory"
+        );
+        assert_eq!(join("1990-\n1995"), "1990-1995");
+        assert_eq!(join("COVID-\n19"), "COVID-19");
+        assert_eq!(join("j.1469-\n185X"), "j.1469-185X");
+        assert_eq!(join("HIV-\nPositive"), "HIV-Positive");
+    }
+
+    #[test]
+    fn a_word_in_capitals_is_joined_as_one_in_lower_case_is() {
+        let join = |text| normalize(only(Step::Hyphenation), text);
+        assert_eq!(
+            join("funded by AQUAEX-\nCEL 0114"),
+            "funded by AQUAEXCEL 0114"
+        );
+        assert_eq!(
+            join("SOUTH and WEST: the SOUTH-\nWEST"),
+            "SOUTH and WEST: the SOUTH-WEST"
+        );
+    }
+
+    #[test]
+    fn soft_hyphens_ending_a_line_join_the_word() {
+        let join = |text| {
+            normalize(
+                Steps(Step::Hyphenation.bit() | Step::SoftHyphens.bit()),
+                text,
+            )
+        };
+        assert_eq!(join("expe\u{ad}\n\nrience"), "experience");
+        assert_eq!(join("pro\u{ad}\n  cures"), "procures");
+        assert_eq!(join("extrac\u{ad}tion"), "extraction");
+        let keep = |text| normalize(only(Step::Hyphenation), text);
+        assert_eq!(
+            keep("pro\u{ad}\ncures extrac\u{ad}tion"),
+            "procures extrac\u{ad}tion"
+        );
+    }
+
+    #[test]
+    fn urls_broken_after_a_slash_or_dot_are_joined() {
+        let join = |text| normalize(only(Step::Hyphenation), text);
+        assert_eq!(
+            join("2022. https://www.cdc.gov/hiv/pdf/risk/\nprep/cdc-hiv-prep-guidelines-2021.pdf"),
+            "2022. https://www.cdc.gov/hiv/pdf/risk/prep/cdc-hiv-prep-guidelines-2021.pdf"
+        );
+        assert_eq!(
+            join("https://www.\nunaids.org/en and https://www.state.\ngov/wp-content"),
+            "https://www.unaids.org/en and https://www.state.gov/wp-content"
+        );
+        assert_eq!(
+            join("https://doi.org/10.1007/\ns10461-021-03262-4"),
+            "https://doi.org/10.1007/s10461-021-03262-4"
+        );
+        assert_eq!(
+            join("https://example.org/uploads/PEPFAR-MER-Indicator-Reference-\nGuide-2.4.pdf"),
+            "https://example.org/uploads/PEPFAR-MER-Indicator-Reference-Guide-2.4.pdf"
+        );
+    }
+
+    #[test]
     fn other_hyphens_at_line_ends_stay() {
         let join = |text| normalize(only(Step::Hyphenation), text);
         for text in [
-            "anti-\nSemitic",
-            "1990-\n1995",
             "word -\nnext",
+            "sup-\n'ported",
+            "https://example.org\nnext",
+            "see https://example.org/a.\nThe next",
+            "https://doi.org/10.1093/eurjcn/zvac063.\n4. Next",
+            "at https://example.org.\nnext. Then",
             "end-\n\nnext paragraph",
             "list:\n- item",
             "trailing-",
