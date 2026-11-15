@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -230,6 +231,23 @@ const MODEL_GRAPH: u64 = 7;
 const GRAPH_INITIALIZER: u64 = 5;
 const TENSOR_RAW_DATA: u64 = 9;
 const TENSOR_EXTERNAL_DATA: u64 = 13;
+const GRAPH_NODE: u64 = 1;
+const GRAPH_OUTPUT: u64 = 12;
+const GRAPH_VALUE_INFO: u64 = 13;
+const NODE_INPUT: u64 = 1;
+const NODE_OUTPUT: u64 = 2;
+const NODE_OP_TYPE: u64 = 4;
+const NODE_ATTRIBUTE: u64 = 5;
+const NODE_DOMAIN: u64 = 7;
+const ATTRIBUTE_NAME: u64 = 1;
+const ATTRIBUTE_FLOAT: u64 = 2;
+const VALUE_INFO_NAME: u64 = 1;
+const TENSOR_DIMS: u64 = 1;
+const TENSOR_DATA_TYPE: u64 = 2;
+const TENSOR_NAME: u64 = 8;
+const DATA_TYPE_FLOAT: u64 = 1;
+/// The `epsilon` of a `BatchNormalization` that sets none (onnx/defs/nn/defs.cc).
+const BATCH_NORMALIZATION_EPSILON: f32 = 1e-5;
 const TENSOR_DATA_LOCATION: u64 = 14;
 const ENTRY_KEY: u64 = 1;
 const ENTRY_VALUE: u64 = 2;
@@ -251,7 +269,8 @@ fn split_weights(model: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
         match (field.number, field.payload) {
             (MODEL_GRAPH, Payload::Bytes(payload)) => {
                 graphs += 1;
-                let rewritten = without_weights(payload, &mut weights)?;
+                let folded = with_batch_norms_folded(payload)?;
+                let rewritten = without_weights(&folded, &mut weights)?;
                 write_bytes_field(&mut graph, MODEL_GRAPH, &rewritten);
             }
             _ => graph.extend_from_slice(field.encoded),
@@ -317,6 +336,462 @@ fn externalized(tensor: &[u8], weights: &mut Vec<u8>) -> Result<Vec<u8>, String>
     Ok(kept)
 }
 
+/// A graph with each `BatchNormalization` of the output of a `Conv`, directly, through
+/// `Identity` nodes or through an `Add` of a per-channel bias, folded into that `Conv`'s
+/// weights and bias, computed as rten's `ConvAddFusion` and `ConvBatchNormFusion` compute them
+/// when they load it: rten then has nothing to fold, so that the weights it uses are the embedded
+/// ones where they lie rather than copies of them. A batch normalization folds only when every
+/// value between it and the `Conv` and every constant it and the `Conv` read is used by nothing
+/// else, so that what the fold removes is unused; any other is left to rten.
+fn with_batch_norms_folded(graph: &[u8]) -> Result<Vec<u8>, String> {
+    let mut nodes = Vec::new();
+    let mut tensors = HashMap::new();
+    let mut outputs = Vec::new();
+    for field in fields(graph) {
+        let field = field?;
+        match (field.number, field.payload) {
+            (GRAPH_NODE, Payload::Bytes(node)) => nodes.push(Node::of(node)?),
+            (GRAPH_INITIALIZER, Payload::Bytes(tensor)) => {
+                if let Some(float) = FloatTensor::of(tensor)? {
+                    tensors.insert(tensor_name(tensor)?, float);
+                }
+            }
+            (GRAPH_OUTPUT, Payload::Bytes(value)) => outputs.push(value_name(value)?),
+            _ => {}
+        }
+    }
+    let topology = Topology::of(&nodes, &tensors, &outputs);
+    let folds: Vec<Fold> = (0..nodes.len())
+        .filter_map(|index| topology.fold(index))
+        .collect();
+    if folds.is_empty() {
+        return Ok(graph.to_vec());
+    }
+    let removed_nodes: HashSet<usize> = folds.iter().flat_map(|fold| fold.nodes.clone()).collect();
+    let removed_values: HashSet<&str> = folds.iter().flat_map(|fold| fold.values.clone()).collect();
+    let removed_tensors: HashSet<&str> =
+        folds.iter().flat_map(|fold| fold.tensors.clone()).collect();
+    let rewired: HashMap<usize, &Fold> = folds.iter().map(|fold| (fold.conv, fold)).collect();
+    let replaced: HashMap<&str, &[f32]> = folds
+        .iter()
+        .flat_map(|fold| {
+            [
+                (fold.weight, fold.weights.as_slice()),
+                (fold.bias, fold.biases.as_slice()),
+            ]
+        })
+        .collect();
+    let mut folded = Vec::with_capacity(graph.len());
+    let mut node_index = 0;
+    for field in fields(graph) {
+        let field = field?;
+        match (field.number, field.payload) {
+            (GRAPH_NODE, _) => {
+                let index = node_index;
+                node_index += 1;
+                if removed_nodes.contains(&index) {
+                    continue;
+                }
+                match rewired.get(&index) {
+                    Some(fold) => write_bytes_field(
+                        &mut folded,
+                        GRAPH_NODE,
+                        &nodes[index]
+                            .rewired(&[fold.input, fold.weight, fold.bias], &[fold.output])?,
+                    ),
+                    None => folded.extend_from_slice(field.encoded),
+                }
+            }
+            (GRAPH_INITIALIZER, Payload::Bytes(tensor)) => {
+                let name = tensor_name(tensor)?;
+                if removed_tensors.contains(name) {
+                    continue;
+                }
+                match replaced.get(name) {
+                    Some(values) => write_bytes_field(
+                        &mut folded,
+                        GRAPH_INITIALIZER,
+                        &with_raw_data(tensor, values)?,
+                    ),
+                    None => folded.extend_from_slice(field.encoded),
+                }
+            }
+            (GRAPH_VALUE_INFO, Payload::Bytes(value))
+                if removed_values.contains(value_name(value)?) => {}
+            _ => folded.extend_from_slice(field.encoded),
+        }
+    }
+    Ok(folded)
+}
+
+/// A node of an ONNX graph, as folding batch normalizations reads it.
+struct Node<'a> {
+    encoded: &'a [u8],
+    op_type: &'a str,
+    domain: &'a str,
+    inputs: Vec<&'a str>,
+    outputs: Vec<&'a str>,
+    epsilon: Option<f32>,
+}
+
+impl<'a> Node<'a> {
+    fn of(encoded: &'a [u8]) -> Result<Self, String> {
+        let mut node = Node {
+            encoded,
+            op_type: "",
+            domain: "",
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            epsilon: None,
+        };
+        for field in fields(encoded) {
+            let field = field?;
+            let Payload::Bytes(bytes) = field.payload else {
+                continue;
+            };
+            match field.number {
+                NODE_INPUT => node.inputs.push(utf8(bytes)?),
+                NODE_OUTPUT => node.outputs.push(utf8(bytes)?),
+                NODE_OP_TYPE => node.op_type = utf8(bytes)?,
+                NODE_DOMAIN => node.domain = utf8(bytes)?,
+                NODE_ATTRIBUTE => {
+                    if let Some(epsilon) = epsilon_of(bytes)? {
+                        node.epsilon = Some(epsilon);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(node)
+    }
+
+    /// Whether the node is the operator of the default ONNX domain named `op_type`.
+    fn is(&self, op_type: &str) -> bool {
+        self.op_type == op_type && matches!(self.domain, "" | "ai.onnx")
+    }
+
+    /// The node reading `inputs` and writing `outputs` instead of its own.
+    fn rewired(&self, inputs: &[&str], outputs: &[&str]) -> Result<Vec<u8>, String> {
+        let mut rewired = Vec::with_capacity(self.encoded.len() + 64);
+        for input in inputs {
+            write_bytes_field(&mut rewired, NODE_INPUT, input.as_bytes());
+        }
+        for output in outputs {
+            write_bytes_field(&mut rewired, NODE_OUTPUT, output.as_bytes());
+        }
+        for field in fields(self.encoded) {
+            let field = field?;
+            if !matches!(field.number, NODE_INPUT | NODE_OUTPUT) {
+                rewired.extend_from_slice(field.encoded);
+            }
+        }
+        Ok(rewired)
+    }
+}
+
+/// The value of an `epsilon` attribute of a node, or none for any other attribute.
+fn epsilon_of(attribute: &[u8]) -> Result<Option<f32>, String> {
+    let mut name = None;
+    let mut value = None;
+    for field in fields(attribute) {
+        let field = field?;
+        match (field.number, field.payload) {
+            (ATTRIBUTE_NAME, Payload::Bytes(bytes)) => name = Some(bytes),
+            (ATTRIBUTE_FLOAT, Payload::Fixed32(bits)) => value = Some(f32::from_bits(bits)),
+            _ => {}
+        }
+    }
+    Ok(value.filter(|_| name == Some(b"epsilon".as_slice())))
+}
+
+/// An initializer of 32-bit floats held as `raw_data`.
+struct FloatTensor {
+    dims: Vec<usize>,
+    values: Vec<f32>,
+}
+
+impl FloatTensor {
+    /// The tensor, unless it holds no 32-bit floats or holds them other than as `raw_data`.
+    fn of(tensor: &[u8]) -> Result<Option<Self>, String> {
+        let mut dims = Vec::new();
+        let mut data_type = None;
+        let mut raw_data = None;
+        for field in fields(tensor) {
+            let field = field?;
+            match (field.number, field.payload) {
+                (TENSOR_DIMS, Payload::Varint(dim)) => dims.push(
+                    usize::try_from(dim).map_err(|_| format!("a tensor has dimension {dim}"))?,
+                ),
+                (TENSOR_DIMS, Payload::Bytes(packed)) => {
+                    let mut at = 0;
+                    while at < packed.len() {
+                        let dim = read_varint(packed, &mut at)?;
+                        dims.push(
+                            usize::try_from(dim)
+                                .map_err(|_| format!("a tensor has dimension {dim}"))?,
+                        );
+                    }
+                }
+                (TENSOR_DATA_TYPE, Payload::Varint(kind)) => data_type = Some(kind),
+                (TENSOR_RAW_DATA, Payload::Bytes(data)) => raw_data = Some(data),
+                _ => {}
+            }
+        }
+        let (Some(DATA_TYPE_FLOAT), Some(data)) = (data_type, raw_data) else {
+            return Ok(None);
+        };
+        let elements: usize = dims.iter().product();
+        if data.len() != elements * size_of::<f32>() {
+            return Err(format!(
+                "a tensor of dimensions {dims:?} holds {} bytes of floats",
+                data.len()
+            ));
+        }
+        let (floats, _) = data.as_chunks::<{ size_of::<f32>() }>();
+        let values = floats
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
+            .collect();
+        Ok(Some(FloatTensor { dims, values }))
+    }
+
+    /// The values of a tensor of `length` values in one dimension.
+    fn vector(&self, length: usize) -> Option<&[f32]> {
+        (self.dims == [length]).then_some(self.values.as_slice())
+    }
+}
+
+/// A tensor with `values` as its `raw_data` instead of its own.
+fn with_raw_data(tensor: &[u8], values: &[f32]) -> Result<Vec<u8>, String> {
+    let mut rewritten = Vec::with_capacity(tensor.len());
+    for field in fields(tensor) {
+        let field = field?;
+        if field.number != TENSOR_RAW_DATA {
+            rewritten.extend_from_slice(field.encoded);
+        }
+    }
+    let data: Vec<u8> = values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect();
+    write_bytes_field(&mut rewritten, TENSOR_RAW_DATA, &data);
+    Ok(rewritten)
+}
+
+fn tensor_name(tensor: &[u8]) -> Result<&str, String> {
+    named(tensor, TENSOR_NAME).map_err(|e| format!("an initializer {e}"))
+}
+
+fn value_name(value: &[u8]) -> Result<&str, String> {
+    named(value, VALUE_INFO_NAME).map_err(|e| format!("a value {e}"))
+}
+
+/// The string field `number` of a message, which names it.
+fn named(message: &[u8], number: u64) -> Result<&str, String> {
+    for field in fields(message) {
+        let field = field?;
+        if let (true, Payload::Bytes(name)) = (field.number == number, field.payload) {
+            return utf8(name);
+        }
+    }
+    Err("has no name".to_owned())
+}
+
+fn utf8(bytes: &[u8]) -> Result<&str, String> {
+    std::str::from_utf8(bytes).map_err(|e| format!("a string is not UTF-8: {e}"))
+}
+
+/// How the nodes of a graph connect: what produces each value and how often it is used.
+struct Topology<'g, 'a> {
+    nodes: &'g [Node<'a>],
+    tensors: &'g HashMap<&'a str, FloatTensor>,
+    producers: HashMap<&'a str, usize>,
+    uses: HashMap<&'a str, usize>,
+}
+
+/// A batch normalization folded into a `Conv`: the `Conv` rewired to read `input`, `weight` and
+/// `bias` and write `output`, the values `weight` and `bias` take, and the nodes, values and
+/// initializers the fold leaves unused.
+struct Fold<'a> {
+    conv: usize,
+    input: &'a str,
+    weight: &'a str,
+    bias: &'a str,
+    output: &'a str,
+    weights: Vec<f32>,
+    biases: Vec<f32>,
+    nodes: Vec<usize>,
+    values: Vec<&'a str>,
+    tensors: Vec<&'a str>,
+}
+
+impl<'g, 'a> Topology<'g, 'a> {
+    fn of(
+        nodes: &'g [Node<'a>],
+        tensors: &'g HashMap<&'a str, FloatTensor>,
+        outputs: &[&'a str],
+    ) -> Self {
+        let producers = nodes
+            .iter()
+            .enumerate()
+            .flat_map(|(index, node)| node.outputs.iter().map(move |output| (*output, index)))
+            .collect();
+        let mut uses = HashMap::new();
+        for value in nodes.iter().flat_map(|node| &node.inputs).chain(outputs) {
+            *uses.entry(*value).or_insert(0) += 1;
+        }
+        Topology {
+            nodes,
+            tensors,
+            producers,
+            uses,
+        }
+    }
+
+    fn used_once(&self, value: &str) -> bool {
+        self.uses.get(value) == Some(&1)
+    }
+
+    /// The initializer of 32-bit floats named `value`, if nothing but one input reads it.
+    fn constant(&self, value: &str) -> Option<&'g FloatTensor> {
+        self.tensors.get(value).filter(|_| self.used_once(value))
+    }
+
+    /// The node that produces `value`, through any `Identity` nodes, each value on the way used
+    /// once, added to `fold`'s values with those `Identity` nodes to its nodes.
+    fn source(&self, mut value: &'a str, fold: &mut Fold<'a>) -> Option<usize> {
+        loop {
+            if !self.used_once(value) {
+                return None;
+            }
+            let index = *self.producers.get(value)?;
+            fold.values.push(value);
+            let node = &self.nodes[index];
+            if !node.is("Identity") {
+                return Some(index);
+            }
+            let [input] = node.inputs[..] else {
+                return None;
+            };
+            fold.nodes.push(index);
+            value = input;
+        }
+    }
+
+    /// The fold of the node at `index` into the `Conv` before it, if it is a batch normalization
+    /// that folds.
+    fn fold(&self, index: usize) -> Option<Fold<'a>> {
+        let normalization = &self.nodes[index];
+        if !normalization.is("BatchNormalization") {
+            return None;
+        }
+        let [normalized, scale, shift, mean, variance] = normalization.inputs[..] else {
+            return None;
+        };
+        let [output] = normalization.outputs[..] else {
+            return None;
+        };
+        let mut fold = Fold {
+            conv: 0,
+            input: "",
+            weight: "",
+            bias: shift,
+            output,
+            weights: Vec::new(),
+            biases: Vec::new(),
+            nodes: vec![index],
+            values: Vec::new(),
+            tensors: vec![scale, mean, variance],
+        };
+        let source = self.source(normalized, &mut fold)?;
+        let (conv, conv_bias) = match &self.nodes[source] {
+            node if node.is("Conv") => match node.inputs[..] {
+                [_, _] | [_, _, ""] => (source, None),
+                [_, _, bias] => {
+                    fold.tensors.push(bias);
+                    (source, Some(bias))
+                }
+                _ => return None,
+            },
+            node if node.is("Add") => {
+                let [left, right] = node.inputs[..] else {
+                    return None;
+                };
+                let (convolved, bias) = match self.tensors.contains_key(right) {
+                    true => (left, right),
+                    false => (right, left),
+                };
+                fold.nodes.push(source);
+                let conv = self.source(convolved, &mut fold)?;
+                if !self.nodes[conv].is("Conv")
+                    || !matches!(self.nodes[conv].inputs[..], [_, _] | [_, _, ""])
+                {
+                    return None;
+                }
+                fold.tensors.push(bias);
+                (conv, Some(bias))
+            }
+            _ => return None,
+        };
+        let [input, weight, ..] = self.nodes[conv].inputs[..] else {
+            return None;
+        };
+        let weights = self.constant(weight)?;
+        let (&channels, kernel) = weights.dims.split_first()?;
+        let per_channel: usize = kernel.iter().product();
+        if per_channel == 0 {
+            return None;
+        }
+        let [scale, shift, mean, variance] =
+            [scale, shift, mean, variance].map(|value| self.constant(value)?.vector(channels));
+        let (scale, shift, mean, variance) = (scale?, shift?, mean?, variance?);
+        let conv_bias = match conv_bias {
+            None => None,
+            Some(bias) => {
+                let bias = self.constant(bias)?;
+                let per_channel = match self.nodes[source].is("Add") {
+                    true => {
+                        bias.dims.len() == weights.dims.len()
+                            && channel_count(&bias.dims) == Some(channels)
+                    }
+                    false => bias.dims == [channels],
+                };
+                if !per_channel {
+                    return None;
+                }
+                Some(bias.values.as_slice())
+            }
+        };
+        let epsilon = normalization.epsilon.unwrap_or(BATCH_NORMALIZATION_EPSILON);
+        let mut folded = weights.values.clone();
+        let mut biases = Vec::with_capacity(channels);
+        for (channel, channel_weights) in folded.chunks_mut(per_channel).enumerate() {
+            let alpha = scale[channel] / (variance[channel] + epsilon).sqrt();
+            for weight in channel_weights {
+                *weight *= alpha;
+            }
+            let bias = conv_bias.map_or(0., |bias| bias[channel]);
+            biases.push((bias - mean[channel]) * alpha + shift[channel]);
+        }
+        fold.conv = conv;
+        fold.input = input;
+        fold.weight = weight;
+        fold.weights = folded;
+        fold.biases = biases;
+        Some(fold)
+    }
+}
+
+/// The channels of a shape `[1, channels, 1, …]`.
+fn channel_count(dims: &[usize]) -> Option<usize> {
+    (dims.len() >= 2
+        && dims
+            .iter()
+            .enumerate()
+            .all(|(axis, &size)| axis == 1 || size == 1))
+    .then(|| dims[1])
+}
+
 /// A field of a Protocol Buffers message.
 struct Field<'a> {
     number: u64,
@@ -328,7 +803,9 @@ struct Field<'a> {
 #[derive(Clone, Copy)]
 enum Payload<'a> {
     Bytes(&'a [u8]),
-    Scalar,
+    Varint(u64),
+    Fixed32(u32),
+    Fixed64,
 }
 
 /// The fields of a Protocol Buffers message, in order.
@@ -339,9 +816,11 @@ fn fields(message: &[u8]) -> impl Iterator<Item = Result<Field<'_>, String>> {
             let start = at;
             let key = read_varint(message, &mut at)?;
             let payload = match key & 7 {
-                WIRE_VARINT => read_varint(message, &mut at).map(|_| Payload::Scalar)?,
-                WIRE_FIXED64 => skip(message, &mut at, 8).map(|_| Payload::Scalar)?,
-                WIRE_FIXED32 => skip(message, &mut at, 4).map(|_| Payload::Scalar)?,
+                WIRE_VARINT => Payload::Varint(read_varint(message, &mut at)?),
+                WIRE_FIXED64 => skip(message, &mut at, 8).map(|_| Payload::Fixed64)?,
+                WIRE_FIXED32 => skip(message, &mut at, 4).map(|bytes| {
+                    Payload::Fixed32(u32::from_le_bytes(bytes.try_into().expect("four bytes")))
+                })?,
                 WIRE_LENGTH_DELIMITED => {
                     let length = usize::try_from(read_varint(message, &mut at)?)
                         .map_err(|_| format!("the field at byte {start} is too long"))?;
