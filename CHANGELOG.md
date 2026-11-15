@@ -1,4 +1,4 @@
-# Unreleased
+# 0.2.17 (2026-11-15)
 
 ### Performance
 
@@ -25,8 +25,9 @@
 
 * An SVG image's root `<desc>` is written as a paragraph of its text as well as its `dc:description`, so an image
   whose description is all the words it has no longer reads as empty.
-* A soft hyphen at the start of a line no longer lets normalised text keep a blank line more than it allows, so
-  normalising text twice changes nothing again.
+* Normalising text twice changes nothing again: a soft hyphen at the start of a line no longer lets a blank line more
+  through, and a hyphen ending the word that starts the line after a URL left broken stays, where joining it made
+  that line the URL's continuation on a second pass.
 
 # 0.2.16 (2026-11-15)
 
