@@ -143,6 +143,49 @@
   them; the text of each run in the code page its modifiers give. The description, keywords, author and creation and
   revision times of the document's data are metadata. A Word Pro 96 document is not read.
 
+### Changed
+
+* OCR reads stained paper with its background normalised when a strip of it reads clearly better so (#386: the 1933
+  Kronen-Zeitung page from 83% to 11% character errors), each script of a page in several with its own model (#388:
+  a page in seven scripts from 29% to 97% of its words), Korean pages detection misnames with the Korean model and
+  Hangul pages as one column of lines (#364, #379: Korean scans from 53% to 0.5% character errors), PP-OCR's unsure
+  characters by the page language's word list (#371), PP-OCR lines that run aslant along their slant (#374), and
+  tables tesseract finds on scans as tab-separated cells (#376).
+* Text, JSON, Markdown, pages and elements output leave out the targets of a PDF's link annotations, which are not
+  text on the page (`--no-normalize links` keeps them); two-column PDFs are read in reading order beside rotated
+  running heads and figure labels, and a dash drawn as overlapping hyphens reads as one (#385).
+* Dehyphenation keeps a hyphen before a capital or a digit, joins words in capitals, words ending a line in a soft
+  hyphen and URLs broken after a slash (#385).
+* Each e-mail message, attached message and mbox entry starts with its subject as a heading (#383).
+* An OpenDocument spreadsheet writes only the page styles its sheets are printed with, without LibreOffice's
+  placeholder text (#387).
+* `pdf:ocr-page-count` counts the pages Tika 4.1 would OCR, including those dijo OCRs itself (#363).
+
+### Fixed
+
+* A PDF whose letters LibreOffice draws dot first, as Arabic, read as one-letter words and was replaced by OCR (#384).
+* Romanian in ISO-8859-16 decoded with cedilla s and t, as Tika's junk filter turned it into ISO-8859-2.
+* LZX in CHM and CAB files is decoded by dijo's own port of libmspack's decoder (#361): a call to offset 0 is
+  translated as the specification says, and hostile repeated offsets fail cleanly instead of panicking.
+* Scribus 1.7 documents (#381) and the PostScript dvips writes (#382) read as empty; DVI files lost what LaTeX sets in
+  TS1 fonts (#390).
+* A page tesseract reads in its Japanese script counted as in no language (#360); a PP-OCR line outside every block
+  went to the end of the page (#358); a page with no text blocks had its layout analysed three times (#359).
+* SQLite's CVE-2026-119375 (RUSTSEC-2026-0459): rusqlite 0.42.
+
+### Performance
+
+* PP-OCR runs on rten 0.28 (#323), with its models embedded so every process shares one copy (an idle OCR worker
+  holds about 73 MB less), a stride-1 depthwise convolution path, a buffer pool that frees what cannot fit, and
+  BatchNorm folded into the weights at build time: PP-OCR pages take up to 15% fewer instructions than in 0.2.14,
+  and an unconfident page frees the engines of the scripts it did not keep (1895 Devanagari peaks at 258 MB, 281 MB in
+  0.2.14).
+* Charset detection looks up its model by script and scans a declaration once (#378); a CHM page's charset is detected
+  once (#370): CHM files take about a third less CPU.
+* The XML reader takes 14% fewer instructions on spreadsheets; the executable's relocations are packed, so every run
+  starts in about 4.5 million fewer instructions; scripts overlooked on an unconfident page are tried on a strip
+  first (#380). Every format group of the benchmark takes fewer instructions than in 0.2.14.
+
 # 0.2.14 (2026-10-28)
 
 ### Added
