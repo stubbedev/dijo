@@ -945,10 +945,10 @@
     "reading_order": 1.0
   },
   "japanese-ndl-1910s.jpg": {
-    "character_error_rate": 0.2345679012345679,
-    "token_error_rate": 0.15466666666666667,
-    "recall": 0.852,
-    "spurious": 0.07525325615050651,
+    "character_error_rate": 0.23333333333333334,
+    "token_error_rate": 0.15333333333333332,
+    "recall": 0.8533333333333334,
+    "spurious": 0.07514450867052024,
     "reading_order": 0.5
   },
   "japanese-ndl-1920s.jpg": {
@@ -1785,10 +1785,10 @@
     "reading_order": 1.0
   },
   "quixote-1605.pdf": {
-    "character_error_rate": 0.05696894022163259,
+    "character_error_rate": 0.05728109879818948,
     "token_error_rate": 0.20431893687707642,
     "recall": 0.8222591362126246,
-    "spurious": 0.1770573566084788,
+    "spurious": 0.1777408637873754,
     "reading_order": 0.6
   },
   "report-scan-skewed.tif": {
@@ -2345,7 +2345,7 @@
     "reading_order": 0.8
   },
   "zoologia-danica-1779.png": {
-    "character_error_rate": 0.05571565802113353,
+    "character_error_rate": 0.056676272814601344,
     "token_error_rate": 0.09271523178807947,
     "recall": 0.9470198675496688,
     "spurious": 0.08917197452229299,

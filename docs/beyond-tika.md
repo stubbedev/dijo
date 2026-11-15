@@ -122,18 +122,15 @@ dijo takes models and techniques from PaddleOCR / PP-OCRv5 (PaddlePaddle, Apache
 - **Reproducible ONNX conversion.**
   - `ci/convert-ppocr.sh` converts PaddlePaddle's official weights with paddle2onnx 2.1.0 at opset 14. UVDoc uses
     opset 16, because its GridSample needs it.
-  - The recognisers' MatMul weights (CTC head and SVTR neck) are then quantised to int8 per channel; their Conv
-    layers, the detector and UVDoc stay float, since quantising those broke the CJK, Devanagari and curled-page
-    readings. The bundle shrinks from 67.6 to 58.6 MB with instructions and peak RSS unchanged and no row's CER
-    moving by more than 0.002 (#377).
   - The conversion reproduces the models bit for bit, and `ci/ppocr.tsv` pins each model by SHA-256.
   - Ready-made conversions were rejected. RapidOCR's Latin model has 502 of the 836 characters and no long s; others
     use a BatchNormalization attribute rten refuses (5af5d649).
 - **In-process pure-Rust runtime.** The models run on rten (now 0.28, f922a5a8), so no native library or Python
   joins the build. How they are loaded and charged to memory is under "Streaming and memory".
 - **Evaluated from PaddleOCR's papers list** (each had to hold accuracy, time per page and RSS): rotated line crops
-  as in PP-OCR v1 (#374), table structure on scans from a model-free baseline (#376) and int8 recognisers (#377)
-  landed. PP-OCRv6's small recogniser reads early print worse (Quixote 0.057 to 0.098, spaces and long s dropped)
+  as in PP-OCR v1 (#374) and table structure on scans from a model-free baseline (#376) landed. Int8 recognisers
+  (#377) shrank the bundle by 9 MB but made OCR text depend on the processor, as rten's int8 kernels differ between
+  x86 and ARM, so the models stay float. PP-OCRv6's small recogniser reads early print worse (Quixote 0.057 to 0.098, spaces and long s dropped)
   and its tiny models cost accuracy (#373); the Korean recogniser makes the fax page worse once tesseract reads
   Korean pages whole (#372); PP-DocLayout-S regions read in tesseract's order raised mean OCR CER from 0.030 to
   0.077 (#375). Server, large-layout, formula and vision-language models were rejected for size or speed;

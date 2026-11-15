@@ -228,11 +228,11 @@
 | thai-scan.png | ocr | 0.028 | 0.018 | 0.986 | 0.014 | 0.667 |
 | hindi-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
 | hebrew-scan.png | ocr | 0.000 | 0.000 | 1.000 | 0.000 | 1.000 |
-| quixote-1605.pdf | ocr | 0.057 | 0.204 | 0.822 | 0.177 | 0.600 |
+| quixote-1605.pdf | ocr | 0.057 | 0.204 | 0.822 | 0.178 | 0.600 |
 | arbeiter-zeitung-1895.jpg | ocr | 0.044 | 0.118 | 0.906 | 0.106 | 0.640 |
 | neue-freie-presse-1895.tif | ocr | 0.161 | 0.276 | 0.842 | 0.170 | 0.262 |
 | more-epigrammata-1520.jpg | ocr | 0.043 | 0.240 | 0.832 | 0.224 | 0.500 |
-| zoologia-danica-1779.png | ocr | 0.056 | 0.093 | 0.947 | 0.089 | 1.000 |
+| zoologia-danica-1779.png | ocr | 0.057 | 0.093 | 0.947 | 0.089 | 1.000 |
 | unlv-8087-054.tif | ocr | 0.018 | 0.016 | 0.993 | 0.016 | 0.889 |
 | unlv-8071-093.tif | ocr | 0.034 | 0.041 | 0.982 | 0.015 | 0.643 |
 | betrayed-armenia-1910-p46.tif | ocr | 0.031 | 0.033 | 0.985 | 0.021 | 1.000 |
@@ -241,7 +241,7 @@
 | hindi-diksita-1895-02.jpg | ocr | 0.228 | 0.478 | 0.565 | 0.416 | 0.500 |
 | arabic-wikipedia-dolphin-scan.png | ocr | 0.073 | 0.180 | 0.861 | 0.131 | 0.600 |
 | arabic-wikipedia-village-scan.png | ocr | 0.365 | 0.822 | 0.887 | 0.452 | 0.000 |
-| japanese-ndl-1910s.jpg | ocr | 0.235 | 0.155 | 0.852 | 0.075 | 0.500 |
+| japanese-ndl-1910s.jpg | ocr | 0.233 | 0.153 | 0.853 | 0.075 | 0.500 |
 | japanese-ndl-1920s.jpg | ocr | 0.136 | 0.091 | 0.912 | 0.087 | 0.500 |
 | russian-vaska-1901.jpg | ocr | 0.030 | 0.143 | 0.882 | 0.139 | 0.400 |
 | armenian-dussap-1959-p28.png | ocr | 0.089 | 0.375 | 0.642 | 0.367 | 0.000 |
