@@ -177,7 +177,8 @@
 
 * PP-OCR runs on rten 0.28 (#323), with its models embedded so every process shares one copy (an idle OCR worker
   holds about 73 MB less), a stride-1 depthwise convolution path, a buffer pool that frees what cannot fit, and
-  BatchNorm folded into the weights at build time: PP-OCR pages take up to 15% fewer instructions than in 0.2.14,
+  BatchNorm folded into the weights at build time, and the recognisers' MatMul weights in int8 (#377: the OCR bundle
+  67.6 MB to 58.6 MB): PP-OCR pages take up to 15% fewer instructions than in 0.2.14,
   and an unconfident page frees the engines of the scripts it did not keep (1895 Devanagari peaks at 258 MB, 281 MB in
   0.2.14).
 * Charset detection looks up its model by script and scans a declaration once (#378); a CHM page's charset is detected
