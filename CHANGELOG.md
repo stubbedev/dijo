@@ -1,3 +1,11 @@
+# 0.2.18 (2026-11-17)
+
+### Changed
+
+* PDF images are decoded with hayro-jbig2 0.4 and hayro-ccitt 0.5, which read more damaged JBIG2 and CCITT fax data
+  instead of failing, and PDFs are parsed with lopdf 0.47; 7z and xz archives are read with sevenz-rust2 0.25 and
+  lzma-rust2 0.25.
+
 # 0.2.17 (2026-11-15)
 
 ### Performance
