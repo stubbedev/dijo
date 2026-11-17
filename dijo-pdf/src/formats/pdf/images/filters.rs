@@ -123,7 +123,7 @@ fn ccitt(
             };
             (EncodingMode::Group3_1D, end_of_line)
         }
-        k if k > 0 => (EncodingMode::Group3_2D { k: k as u32 }, false),
+        1.. => (EncodingMode::Group3_2D, false),
         _ => (EncodingMode::Group4, false),
     };
     let settings = DecodeSettings {
@@ -133,13 +133,13 @@ fn ccitt(
         end_of_line,
         rows_are_byte_aligned: byte_aligned && !end_of_line,
         encoding,
-        invert_black: false,
+        strict: false,
     };
     let mut bitmap = Bitmap {
         rows: vec![0u8; size as usize],
         stride: stride as usize,
+        columns: columns as usize,
         row: 0,
-        column: 0,
     };
     let mut context = DecoderContext::new(settings);
     hayro_ccitt::decode(data, &mut bitmap, &mut context)
@@ -173,26 +173,19 @@ fn starts_with_end_of_line(data: &[u8]) -> bool {
     false
 }
 
-/// The rows of a CCITT image as the decoder pushes its runs: a bit set for each black pixel.
+/// The rows of a CCITT image as the decoder pushes them: a bit set for each black pixel.
 struct Bitmap {
     rows: Vec<u8>,
     stride: usize,
+    columns: usize,
     row: usize,
-    column: usize,
 }
 
-impl Decoder for Bitmap {
-    fn push_pixels(&mut self, white: bool, count: u32) {
-        let start = self.column;
-        self.column += count as usize;
-        let end = self.column.min(self.stride * 8);
-        if white || start >= end {
+impl Bitmap {
+    fn fill_black(bytes: &mut [u8], start: usize, end: usize) {
+        if start >= end {
             return;
         }
-        let row = self.row * self.stride;
-        let Some(bytes) = self.rows.get_mut(row..row + self.stride) else {
-            return;
-        };
         let (first, last) = (start / 8, (end - 1) / 8);
         let head = 0xFFu8 >> (start % 8);
         let tail = 0xFFu8 << (7 - (end - 1) % 8);
@@ -204,10 +197,19 @@ impl Decoder for Bitmap {
             bytes[last] |= tail;
         }
     }
+}
 
-    fn next_line(&mut self) {
+impl Decoder for Bitmap {
+    fn push_row(&mut self, changes: &[u32]) {
+        let row = self.row * self.stride;
         self.row += 1;
-        self.column = 0;
+        let Some(bytes) = self.rows.get_mut(row..row + self.stride) else {
+            return;
+        };
+        for run in changes.chunks(2) {
+            let end = run.get(1).map_or(self.columns, |&end| end as usize);
+            Self::fill_black(bytes, run[0] as usize, end.min(self.columns));
+        }
     }
 }
 
@@ -239,7 +241,7 @@ fn jbig2(pdf: &Pdf, data: &[u8], params: Option<&Dictionary>) -> Result<Vec<u8>,
         }
         _ => data,
     };
-    hayro_jbig2::Image::new_embedded(segments, None)
+    hayro_jbig2::Page::new_embedded(segments, None, &hayro_jbig2::DecodeSettings::default())
         .ok()
         .and_then(|image| jbig2_raster(&image))
         .ok_or_else(|| thrown_io("Could not read JBIG2 image".to_owned()))
@@ -247,7 +249,7 @@ fn jbig2(pdf: &Pdf, data: &[u8], params: Option<&Dictionary>) -> Result<Vec<u8>,
 
 /// The raster of `image` as Java's binary image holds it: rows of 1-bit samples, white 1, each
 /// padded to a byte; none for an image it cannot decode, or more bytes than a Java array holds.
-fn jbig2_raster(image: &hayro_jbig2::Image) -> Option<Vec<u8>> {
+fn jbig2_raster(image: &hayro_jbig2::Page) -> Option<Vec<u8>> {
     let stride = usize::try_from(image.width().div_ceil(8)).ok()?;
     let length = stride.checked_mul(usize::try_from(image.height()).ok()?)?;
     if i32::try_from(length).is_err() {
@@ -314,39 +316,37 @@ mod tests {
 
     #[test]
     fn sets_the_bits_of_black_runs_as_one_bit_at_a_time_does() {
-        let runs: Vec<(bool, u32)> = (0..400u32)
-            .map(|i| (i % 3 == 0, (i * 7 + i / 5) % 23))
-            .collect();
         for columns in [1usize, 7, 8, 9, 16, 33, 64, 100] {
             let stride = columns.div_ceil(8);
             let rows = 4;
             let mut bitmap = Bitmap {
                 rows: vec![0; stride * rows],
                 stride,
+                columns,
                 row: 0,
-                column: 0,
             };
             let mut expected = vec![0u8; stride * rows];
-            let (mut row, mut column) = (0, 0);
-            for (i, &(white, count)) in runs.iter().enumerate() {
-                if i % 11 == 10 {
-                    bitmap.next_line();
-                    (row, column) = (row + 1, 0);
-                    continue;
-                }
-                bitmap.push_pixels(white, count);
-                let start = column;
-                column += count as usize;
-                if white {
-                    continue;
-                }
-                for pixel in start..column.min(stride * 8) {
+            for row in 0..rows + 2 {
+                let changes: Vec<u32> = (0..columns as u32)
+                    .filter(|&column| (column * 7 + row as u32 * 3).is_multiple_of(5))
+                    .collect();
+                bitmap.push_row(&changes);
+                for pixel in 0..columns {
+                    let black = changes
+                        .iter()
+                        .filter(|&&change| change as usize <= pixel)
+                        .count()
+                        % 2
+                        == 1;
+                    if !black {
+                        continue;
+                    }
                     if let Some(byte) = expected.get_mut(row * stride + pixel / 8) {
                         *byte |= 0x80 >> (pixel % 8);
                     }
                 }
             }
-            assert!(row > rows);
+            assert!(expected.iter().any(|&byte| byte != 0), "{columns} columns");
             assert_eq!(bitmap.rows, expected, "{columns} columns");
         }
     }
@@ -362,7 +362,9 @@ mod tests {
             let fields: Vec<&str> = line.split('\t').collect();
             assert!(path.ends_with(fields[0]), "{path}: {line}");
             let file = std::fs::read(path).unwrap();
-            let image = hayro_jbig2::Image::new(&file).unwrap();
+            let jbig2 =
+                hayro_jbig2::File::new(&file, &hayro_jbig2::DecodeSettings::default()).unwrap();
+            let image = jbig2.page(0).unwrap();
             let raster = jbig2_raster(&image).unwrap();
             let found = [
                 image.width().to_string(),

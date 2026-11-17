@@ -329,8 +329,9 @@ fn unknown_length(data: &[u8], start: u64) -> Option<u64> {
 /// The image of a JBIG2 file's first page, black on white, or why it cannot be decoded.
 pub(crate) fn decode(data: &[u8]) -> Result<GrayImage, String> {
     let page = Jbig2File::read(data)?.first_page_stream(data)?;
-    let image = hayro_jbig2::Image::new_embedded(&page, None)
-        .map_err(|e| format!("cannot read the JBIG2: {e}"))?;
+    let image =
+        hayro_jbig2::Page::new_embedded(&page, None, &hayro_jbig2::DecodeSettings::default())
+            .map_err(|e| format!("cannot read the JBIG2: {e}"))?;
     super::decode::decodable(image.width(), image.height())?;
     let mut gray = Gray {
         pixels: Vec::with_capacity(image.width() as usize * image.height() as usize),
