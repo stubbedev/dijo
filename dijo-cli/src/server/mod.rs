@@ -501,6 +501,9 @@ async fn tika(
             let response = error(404, &format!("No such preset: {name}"));
             return rejected(request, state, response).await;
         }
+        tika::Endpoint::UnknownHandler(unknown) => {
+            return rejected(request, state, error(400, &unknown.to_string())).await;
+        }
         tika::Endpoint::Multipart(multipart) => {
             return tika_multipart(multipart, request, state).await
         }

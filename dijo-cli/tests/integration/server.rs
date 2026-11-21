@@ -704,6 +704,29 @@ fn tika_config_endpoints_refuse_what_they_cannot_honour() {
     assert_eq!(not_multipart.status, 415);
 }
 
+/// A content handler Tika does not know is refused with tika-server's 400 and message, on
+/// every route that names one (#396).
+#[test]
+fn an_unknown_content_handler_is_refused_as_tika_server_refuses_it() {
+    let server = Server::start(&[]);
+    let message = "Unrecognized handler type 'txet'. Valid types: text, txt, html, xml, body, \
+                   markdown, md, ignore";
+    for target in ["/rmeta/txet", "/tika/json/txet", "/unpack/all/txet"] {
+        let refused = put_file(&server, target, &[], "simple.odt");
+        assert_eq!(refused.status, 400, "{target}");
+        assert_eq!(refused.json()["error"], message, "{target}");
+    }
+    let refused = post_form(
+        &server,
+        "/rmeta/config/txet",
+        &[],
+        &[file_part("simple.odt", "application/vnd.oasis.opendocument.text")],
+    );
+    assert_eq!(refused.status, 400);
+    assert_eq!(refused.json()["error"], message);
+    assert_eq!(put_file(&server, "/rmeta/TXT", &[], "simple.odt").status, 200);
+}
+
 /// The `/form` and `/config` uploads answer as the `PUT` endpoints they mirror.
 #[test]
 fn tika_multipart_uploads_answer_as_their_put_endpoints() {

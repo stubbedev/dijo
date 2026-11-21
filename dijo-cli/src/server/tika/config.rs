@@ -55,7 +55,7 @@ fn handler(settings: &Map<String, Value>) -> Result<Handler, String> {
         .ok_or_else(|| format!("{HANDLER_FACTORY} names no {HANDLER_TYPE}"))?
         .as_str()
         .ok_or_else(|| format!("The {HANDLER_TYPE} of {HANDLER_FACTORY} is not a string"))?;
-    Handler::named(name).ok_or_else(|| format!("No such content handler type {name:?}"))
+    Handler::named(name).map_err(|unknown| unknown.to_string())
 }
 
 /// The tesseract languages `settings` name; the rest of tesseract's settings tune its OCR,

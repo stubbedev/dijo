@@ -56,16 +56,13 @@ pub enum Handler {
 impl Handler {
     /// The handler a name means to Tika, in any case, as in tika-server's
     /// `/tika/json/{handler}` and `/rmeta/{handler}` and a configuration's handler type.
-    pub fn named(name: &str) -> Option<Self> {
-        match name.to_ascii_lowercase().as_str() {
-            "text" | "txt" => Some(Handler::Text),
-            "body" => Some(Handler::Body),
-            "html" => Some(Handler::Html),
-            "xml" => Some(Handler::Xml),
-            "md" | "markdown" => Some(Handler::Markdown),
-            "ignore" => Some(Handler::Ignore),
-            _ => None,
-        }
+    pub fn named(name: &str) -> Result<Self, UnknownHandler> {
+        let lowercase = name.to_ascii_lowercase();
+        HANDLER_NAMES
+            .iter()
+            .find(|(known, _)| *known == lowercase)
+            .map(|&(_, handler)| handler)
+            .ok_or_else(|| UnknownHandler(name.to_string()))
     }
 
     /// The format the content is extracted in; plain text, unwritten, for [`Handler::Ignore`].
@@ -86,6 +83,36 @@ impl Handler {
             Handler::Markdown => "MARKDOWN",
             Handler::Ignore => "IGNORE",
         }
+    }
+}
+
+/// The names Tika's `BasicContentHandlerFactory.parseHandlerType` knows, in its order.
+const HANDLER_NAMES: [(&str, Handler); 8] = [
+    ("text", Handler::Text),
+    ("txt", Handler::Text),
+    ("html", Handler::Html),
+    ("xml", Handler::Xml),
+    ("body", Handler::Body),
+    ("markdown", Handler::Markdown),
+    ("md", Handler::Markdown),
+    ("ignore", Handler::Ignore),
+];
+
+/// A content handler name Tika does not know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownHandler(pub String);
+
+impl std::fmt::Display for UnknownHandler {
+    /// The message of the exception `parseHandlerType` throws.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Unrecognized handler type '{}'. Valid types: ", self.0)?;
+        for (index, (name, _)) in HANDLER_NAMES.iter().enumerate() {
+            if index > 0 {
+                f.write_str(", ")?;
+            }
+            f.write_str(name)?;
+        }
+        Ok(())
     }
 }
 

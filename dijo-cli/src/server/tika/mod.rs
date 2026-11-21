@@ -17,7 +17,7 @@ use crate::server::upload::Parts;
 use config::RequestConfig;
 use keys::Keys;
 use listings::Listing;
-use output::{FieldForm, Handler, MetaForm, Output, Unpacked};
+use output::{FieldForm, Handler, MetaForm, Output, UnknownHandler, Unpacked};
 
 pub const PASSWORD_HEADER: &str = "password";
 const OCR_LANGUAGE_HEADER: &str = "x-tika-ocrlanguage";
@@ -58,6 +58,8 @@ pub enum Endpoint {
     Preset(String),
     /// Answered from the parts of a `multipart/form-data` upload.
     Multipart(Multipart),
+    /// A path naming a content handler Tika does not know, which tika-server refuses with 400.
+    UnknownHandler(UnknownHandler),
 }
 
 /// A `multipart/form-data` endpoint: which parts it reads, and what it answers from them.
@@ -123,6 +125,7 @@ impl Endpoint {
             Endpoint::Upload(Output::Language) => "tika_language",
             Endpoint::Status => "tika_status",
             Endpoint::Preset(_) => "tika_preset",
+            Endpoint::UnknownHandler(_) => "tika_unknown_handler",
             Endpoint::Multipart(multipart) => match multipart.target {
                 Target::Content(_) => "tika",
                 Target::Json(_) => "tika_json",
@@ -137,14 +140,20 @@ impl Endpoint {
 /// The tika-server endpoint a request is for; None for a method and path tika-server does not
 /// serve, or that dijo does not.
 pub fn route(method: &Method, path: &str) -> Option<Endpoint> {
+    routed(method, path).unwrap_or_else(|unknown| Some(Endpoint::UnknownHandler(unknown)))
+}
+
+/// [`route`], or the content handler a path names that Tika does not know.
+fn routed(method: &Method, path: &str) -> Result<Option<Endpoint>, UnknownHandler> {
     let segments: Vec<&str> = path
         .trim_start_matches('/')
         .trim_end_matches('/')
         .split('/')
         .collect();
-    let upload = |output| Some(Endpoint::Upload(output));
-    let multipart = |parts, target| Some(Endpoint::Multipart(Multipart { parts, target }));
-    let named = |name: &str| Some(Choice::Named(Handler::named(name)?));
+    let upload = |output| Ok(Some(Endpoint::Upload(output)));
+    let multipart = |parts, target| Ok(Some(Endpoint::Multipart(Multipart { parts, target })));
+    let named = |name: &str| Handler::named(name).map(Choice::Named);
+    let found = |endpoint| Ok(Some(endpoint));
     if method == Method::GET {
         let listing = match segments.as_slice() {
             [""] => Listing::Welcome,
@@ -155,10 +164,10 @@ pub fn route(method: &Method, path: &str) -> Option<Endpoint> {
             ["detectors"] => Listing::Detectors,
             ["mime-types"] => Listing::MimeTypes,
             ["mime-types", kind, subtype] => Listing::MimeType(format!("{kind}/{subtype}")),
-            ["status"] => return Some(Endpoint::Status),
-            _ => return None,
+            ["status"] => return found(Endpoint::Status),
+            _ => return Ok(None),
         };
-        return Some(Endpoint::Listing(listing));
+        return found(Endpoint::Listing(listing));
     }
     if method == Method::POST {
         use Parts::{Config, Form};
@@ -186,35 +195,35 @@ pub fn route(method: &Method, path: &str) -> Option<Endpoint> {
             ["unpack", "all", handler] | ["unpack", "all", "config", handler] => {
                 multipart(Config, Target::UnpackAll(named(handler)?))
             }
-            _ => None,
+            _ => Ok(None),
         };
     }
     if method != Method::PUT {
-        return None;
+        return Ok(None);
     }
     match segments.as_slice() {
-        ["tika"] => Some(Endpoint::Negotiated),
-        ["tika", "text"] => Some(Endpoint::Content(Handler::Text)),
-        ["tika", "html"] => Some(Endpoint::Content(Handler::Html)),
-        ["tika", "xml"] => Some(Endpoint::Content(Handler::Xml)),
-        ["tika", "md"] => Some(Endpoint::Content(Handler::Markdown)),
+        ["tika"] => found(Endpoint::Negotiated),
+        ["tika", "text"] => found(Endpoint::Content(Handler::Text)),
+        ["tika", "html"] => found(Endpoint::Content(Handler::Html)),
+        ["tika", "xml"] => found(Endpoint::Content(Handler::Xml)),
+        ["tika", "md"] => found(Endpoint::Content(Handler::Markdown)),
         ["tika", "json"] => upload(Output::Json(Handler::Markdown, Keys::Tika4)),
         ["tika", "json", handler] => upload(Output::Json(Handler::named(handler)?, Keys::Tika4)),
         ["tika", "preset", name, ..] | ["rmeta" | "unpack", "preset", name, ..] => {
-            Some(Endpoint::Preset(name.to_string()))
+            found(Endpoint::Preset(name.to_string()))
         }
         ["rmeta"] => upload(Output::Rmeta(Handler::Markdown)),
         ["rmeta", handler] => upload(Output::Rmeta(Handler::named(handler)?)),
-        ["meta"] => Some(Endpoint::Meta),
-        ["meta", field] => Some(Endpoint::MetaField(field.to_string())),
+        ["meta"] => found(Endpoint::Meta),
+        ["meta", field] => found(Endpoint::MetaField(field.to_string())),
         ["detect"] | ["detect", "stream"] => upload(Output::Detect),
         ["language"] | ["language", "stream" | "string"] => upload(Output::Language),
         ["unpack"] => upload(Output::Unpack(Unpacked::Embedded)),
         ["unpack", "all"] => upload(Output::Unpack(Unpacked::All(None))),
-        ["unpack", "all", handler] => upload(Output::Unpack(Unpacked::All(Some(Handler::named(
-            handler,
-        )?)))),
-        _ => None,
+        ["unpack", "all", handler] => {
+            upload(Output::Unpack(Unpacked::All(Some(Handler::named(handler)?))))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -455,7 +464,10 @@ mod tests {
             put("/rmeta/text"),
             Some(Endpoint::Upload(Output::Rmeta(Handler::Text)))
         );
-        assert_eq!(put("/rmeta/bogus"), None);
+        assert_eq!(
+            put("/rmeta/bogus"),
+            Some(Endpoint::UnknownHandler(UnknownHandler("bogus".to_string())))
+        );
         assert_eq!(
             put("/meta/Content-Type"),
             Some(Endpoint::MetaField("Content-Type".to_string()))
@@ -550,7 +562,10 @@ mod tests {
                 Target::UnpackAll(Choice::Named(Handler::Markdown))
             ))
         );
-        assert_eq!(post("/rmeta/config/bogus"), None);
+        assert_eq!(
+            route(&Method::POST, "/rmeta/config/bogus"),
+            Some(Endpoint::UnknownHandler(UnknownHandler("bogus".to_string())))
+        );
     }
 
     #[test]
