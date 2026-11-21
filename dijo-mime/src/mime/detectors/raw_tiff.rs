@@ -371,10 +371,7 @@ mod tests {
     fn tells_an_epson_raw_by_its_make_and_not_its_compression() {
         let make = (TAG_MAKE, 2, 12, 8 + 2 + 2 * 12 + 4);
         let cfa = (TAG_PHOTOMETRIC_INTERPRETATION, 3, 1, 32803);
-        assert_eq!(
-            detect(&tiff(&[make, cfa], b"SEIKO EPSON\0")),
-            Some(EPSON)
-        );
+        assert_eq!(detect(&tiff(&[make, cfa], b"SEIKO EPSON\0")), Some(EPSON));
         assert_eq!(detect(&tiff(&[(TAG_COMPRESSION, 3, 1, 32769)], &[])), None);
     }
 

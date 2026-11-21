@@ -720,11 +720,17 @@ fn an_unknown_content_handler_is_refused_as_tika_server_refuses_it() {
         &server,
         "/rmeta/config/txet",
         &[],
-        &[file_part("simple.odt", "application/vnd.oasis.opendocument.text")],
+        &[file_part(
+            "simple.odt",
+            "application/vnd.oasis.opendocument.text",
+        )],
     );
     assert_eq!(refused.status, 400);
     assert_eq!(refused.json()["error"], message);
-    assert_eq!(put_file(&server, "/rmeta/TXT", &[], "simple.odt").status, 200);
+    assert_eq!(
+        put_file(&server, "/rmeta/TXT", &[], "simple.odt").status,
+        200
+    );
 }
 
 /// The `/form` and `/config` uploads answer as the `PUT` endpoints they mirror.
@@ -921,7 +927,11 @@ fn a_dead_worker_process_is_answered_as_a_dead_forked_parser() {
 fn an_upload_named_embedded_is_unpacked() {
     let server = Server::start(&[]);
     let named = [("X-Dijo-Filename", "embedded")];
-    let separate = server.post_file("/extract?format=json&embedded=separate", &named, "nested.zip");
+    let separate = server.post_file(
+        "/extract?format=json&embedded=separate",
+        &named,
+        "nested.zip",
+    );
     assert_eq!(separate.status, 200, "{}", separate.text());
     assert_eq!(separate.text().lines().count(), 8);
     let disposition = [("Content-Disposition", "attachment; filename=\"embedded\"")];

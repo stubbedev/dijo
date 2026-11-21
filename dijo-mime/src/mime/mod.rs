@@ -12,7 +12,7 @@
 //! wins.
 //!
 //! The answers match Tika's own, which `tests/fixtures/mime/mime-reference.tsv` holds for every
-//! document of the reference corpora.
+//! document of the reference corpora, as `just mime-reference` records them.
 
 mod archive;
 mod detected;

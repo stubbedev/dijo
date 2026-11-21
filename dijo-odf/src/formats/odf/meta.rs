@@ -13,8 +13,8 @@ use std::borrow::Cow;
 
 use crate::formats::element_metadata::{set_unless_equal, ElementMetadata, Values, DUBLIN_CORE_NS};
 use crate::formats::metadata::TikaMetadata;
-use crate::formats::tika_dates;
 use crate::formats::odf::{normalized_attributes, normalized_namespace, META_NS, OFFICE_NS};
+use crate::formats::tika_dates;
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
 use crate::input::Input;

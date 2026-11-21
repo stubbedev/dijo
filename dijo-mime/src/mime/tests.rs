@@ -134,8 +134,8 @@ fn the_reference_covers_the_repository_corpora() {
             assert_eq!(
                 referenced,
                 files(&root),
-                "{corpus} ({variant}) changed: record Tika's answer for each added document in \
-                 tests/fixtures/mime/mime-reference.tsv"
+                "{corpus} ({variant}) changed: re-record tests/fixtures/mime/mime-reference.tsv \
+                 with `just mime-reference`"
             );
         }
     }

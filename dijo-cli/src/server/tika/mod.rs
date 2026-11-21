@@ -220,9 +220,9 @@ fn routed(method: &Method, path: &str) -> Result<Option<Endpoint>, UnknownHandle
         ["language"] | ["language", "stream" | "string"] => upload(Output::Language),
         ["unpack"] => upload(Output::Unpack(Unpacked::Embedded)),
         ["unpack", "all"] => upload(Output::Unpack(Unpacked::All(None))),
-        ["unpack", "all", handler] => {
-            upload(Output::Unpack(Unpacked::All(Some(Handler::named(handler)?))))
-        }
+        ["unpack", "all", handler] => upload(Output::Unpack(Unpacked::All(Some(Handler::named(
+            handler,
+        )?)))),
         _ => Ok(None),
     }
 }
@@ -466,7 +466,9 @@ mod tests {
         );
         assert_eq!(
             put("/rmeta/bogus"),
-            Some(Endpoint::UnknownHandler(UnknownHandler("bogus".to_string())))
+            Some(Endpoint::UnknownHandler(UnknownHandler(
+                "bogus".to_string()
+            )))
         );
         assert_eq!(
             put("/meta/Content-Type"),
@@ -564,7 +566,9 @@ mod tests {
         );
         assert_eq!(
             route(&Method::POST, "/rmeta/config/bogus"),
-            Some(Endpoint::UnknownHandler(UnknownHandler("bogus".to_string())))
+            Some(Endpoint::UnknownHandler(UnknownHandler(
+                "bogus".to_string()
+            )))
         );
     }
 
