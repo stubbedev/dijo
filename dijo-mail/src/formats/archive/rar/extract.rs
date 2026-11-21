@@ -1,13 +1,15 @@
-//! junrar's `Archive.extractFile` and `doExtractFile`, as Tika's parser calls them for each
-//! file of an archive in turn: an entry of a solid archive continues the unpacker's state from
-//! the one before it.
+//! junrar 8.1.2's `Archive.extractFile` and `doExtractFile`, as Tika's parser calls them for each
+//! file of an archive in turn through `getInputStream`: an entry of a solid archive continues
+//! the unpacker's state from the one before it.
 //!
-//! An entry is extracted whole and checked against its CRC, or not at all: where junrar's
-//! stream ends early, with whatever it wrote before, the port gives why the entry is unread.
-//! junrar extracts each entry on a thread of its own into a pipe of 32 KiB, so where Tika's
+//! An entry is extracted whole and checked against its CRC, or its extraction fails: junrar's
+//! stream then throws on the read that reaches the entry's declared size or its end, which Tika's
+//! parser takes as the end of the entry and records. What reaches the entry's parse before that
+//! depends on how the reads of the parse and the writes of junrar's extraction thread into its
+//! pipe of 32 KiB interleave; a parse reading it in one go gets nothing, and the port gives every
+//! failed entry empty (#122). junrar extracts each entry on a thread of its own, so where Tika's
 //! parse of a larger entry stops reading before its end, the next entry of a solid stream is
-//! decoded from the state the failed thread left; the port decodes every entry to its end
-//! (#122).
+//! decoded from the state the stopped thread left; the port decodes every entry to its end.
 
 use super::headers::{FileHeader, Format, Headers};
 use super::unpack::{Method, Sum, Thrown, Unpack};
@@ -19,16 +21,24 @@ const STORED: u8 = 0x30;
 /// What extracting an entry gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Extracted {
-    /// The entry's data, empty where junrar refuses it before it writes anything, as it
-    /// refuses a broken header or an encrypted entry, which it has no password for.
+    /// The entry's data, extracted whole and checked.
     Data(Input<'static>),
-    /// Why the entry's data cannot be given.
+    /// junrar's extraction fails, as it does on a broken header, an encrypted entry, which it
+    /// has no password for, a checksum that does not match, data that continues in another
+    /// volume and data its unpacker throws on.
+    Failed,
+    /// Why the port does not give the entry's data, which junrar gives.
     Unread(String),
 }
 
 impl From<Thrown> for Extracted {
-    fn from(Thrown(exception): Thrown) -> Self {
-        Extracted::Unread(format!("unpacking it fails with {exception}"))
+    fn from(thrown: Thrown) -> Self {
+        match thrown {
+            Thrown::Java(_) => Extracted::Failed,
+            Thrown::Unread(reason) => {
+                Extracted::Unread(format!("unpacking it fails with {reason}"))
+            }
+        }
     }
 }
 
@@ -93,21 +103,19 @@ impl Extraction {
         }
     }
 
-    /// `doExtractFile`: the file's data unpacked and checked against its checksum.
+    /// `doExtractFile`: the file's data unpacked and checked against its checksum, refused for a
+    /// broken header or an encrypted entry. An entry of no data is extracted too, which its
+    /// checksum may fail.
     fn extract_file(&mut self, unpack: &mut Unpack, header: &FileHeader) -> Extracted {
-        if header.full_unpack_size <= 0 || header.broken || header.is_encrypted() {
-            return Extracted::Data(Input::Borrowed(&[]));
+        if header.broken || header.is_encrypted() {
+            return Extracted::Failed;
         }
         let Ok(start) = u64::try_from(header.data_start()) else {
-            return Extracted::Data(Input::Borrowed(&[]));
+            return Extracted::Failed;
         };
         let solid = self.solid(header);
         if header.is_split() {
-            return Extracted::Unread(
-                "its data continues from or in another volume of the archive, which the \
-                 document does not hold"
-                    .to_owned(),
-            );
+            return Extracted::Failed;
         }
         unpack.start_entry(
             start,
@@ -118,23 +126,20 @@ impl Extraction {
         let unpacked = if header.unp_method == STORED {
             unpack.unstore(header.full_unpack_size)
         } else {
-            let version = self.unpack_version(header);
-            let Some(method) = Method::of(version) else {
-                return Extracted::Unread(format!(
-                    "it is compressed for RAR version {version}, which no RAR unpacker reads"
-                ));
-            };
             if !solid {
                 unpack.init();
             }
             unpack.set_dest_size(header.full_unpack_size);
-            unpack.do_unpack(method, solid)
+            match Method::of(self.unpack_version(header)) {
+                Some(method) => unpack.do_unpack(method, solid),
+                None => Ok(()),
+            }
         };
         if let Err(thrown) = unpacked {
             return thrown.into();
         }
         if unpack.crc() != header.file_crc {
-            return Extracted::Unread("its unpacked data does not match its CRC".to_owned());
+            return Extracted::Failed;
         }
         match unpack.take_data() {
             Ok(data) => Extracted::Data(data),

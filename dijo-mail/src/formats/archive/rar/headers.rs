@@ -1,4 +1,4 @@
-//! The headers of a RAR archive as junrar 8.1.1's `Archive` reads them when Tika's
+//! The headers of a RAR archive as junrar 8.1.2's `Archive` reads them when Tika's
 //! `RarParser` opens it: the marker found, at the start or past a self-extractor's code, then
 //! `readHeaders3`'s walk over the blocks of a RAR 1.5 to 4 archive, which skips a block it
 //! cannot parse and keeps the headers it has read where it stops, and the RAR 3 `FileHeader`
@@ -78,6 +78,8 @@ pub(super) struct FileHeader {
     pub(super) unp_version: i32,
     pub(super) unp_method: u8,
     pub(super) name: Name,
+    /// `getFileName()`: the name with its separators as the format writes them.
+    pub(super) file_name: String,
     /// `getMTime()`, `getCTime()` and `getATime()` in milliseconds since the epoch, their DOS
     /// times read as wall-clock times in UTC, none where a DOS time is out of range.
     pub(super) modified_millis: Option<i64>,
@@ -245,9 +247,9 @@ fn parse_file_header14(position: usize, fixed: &[u8], name: &[u8]) -> Result<Fil
     let decoded = crate::text::charset::Charset::named("IBM437")
         .decode(name)
         .expect("IBM437 decodes every byte");
-    let name = match checked_name(&utf16(&decoded)) {
-        Ok(Name::Decoded(name)) => Name::Decoded(name.replace('\\', "/")),
-        Ok(differs) => differs,
+    let (name, file_name) = match checked_name(&utf16(&decoded)) {
+        Ok(Name::Decoded(name)) => (Name::Decoded(name.replace('\\', "/")), name),
+        Ok(Name::Differs(name, what)) => (Name::Differs(name.clone(), what), name),
         Err(()) => return Err(corrupt(&format!("Invalid filename: {decoded}"))),
     };
     Ok(FileHeader {
@@ -260,6 +262,7 @@ fn parse_file_header14(position: usize, fixed: &[u8], name: &[u8]) -> Result<Fil
         unp_version: if fixed[18] == 2 { 13 } else { 10 },
         unp_method: METHOD_BASE.wrapping_add(fixed[20]),
         name,
+        file_name,
         modified_millis: dos_millis(int_at(12) as i32),
         created_millis: None,
         accessed_millis: None,
@@ -636,13 +639,13 @@ fn parse_file_header(
     }
     let name_bytes = &body[position..position + name_size];
     position += name_size;
-    let name = if file {
+    let (name, file_name) = if file {
         match checked_name(&file_name(flags, name_bytes)?)? {
-            Name::Decoded(name) => Name::Decoded(name.replace('\\', "/")),
-            unported => unported,
+            Name::Decoded(name) => (Name::Decoded(name.replace('\\', "/")), name),
+            Name::Differs(name, what) => (Name::Differs(name.clone(), what), name),
         }
     } else {
-        Name::Decoded(String::new())
+        (Name::Decoded(String::new()), String::new())
     };
     if block.header_type == 0x7a {
         let mut data_size = i64::from(block.header_size) - NEWLHD_SIZE - name_size as i64;
@@ -700,6 +703,7 @@ fn parse_file_header(
         unp_version,
         unp_method,
         name,
+        file_name,
         modified_millis,
         created_millis,
         accessed_millis,

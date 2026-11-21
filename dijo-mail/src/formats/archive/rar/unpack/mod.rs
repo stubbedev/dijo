@@ -1,4 +1,4 @@
-//! junrar 8.1.1's unpackers of RAR 1.5 to 4 data (`Unpack15`, `Unpack20` and `Unpack`): one
+//! junrar 8.1.2's unpackers of RAR 1.5 to 4 data (`Unpack15`, `Unpack20` and `Unpack`): one
 //! state carried from entry to entry of an archive, as junrar's one `Unpack` carries it, so a
 //! solid archive continues its window, tables and model. A stored entry is copied out and
 //! leaves that state alone, as unrar copies it, where junrar runs the unpacker of its version
@@ -24,12 +24,18 @@ use io::{DataIo, Input};
 use ppm::Model;
 use vm::{Filter, Vm, VM_FIXEDGLOBALSIZE, VM_GLOBALMEMADDR, VM_GLOBALMEMSIZE};
 
-/// A Java exception junrar's extraction throws, which ends the entry's stream.
+/// What ends an entry's extraction before its end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Thrown(pub(super) &'static str);
+pub(super) enum Thrown {
+    /// A Java exception junrar's extraction throws.
+    Java(&'static str),
+    /// What the port does not decode, which junrar would.
+    Unread(&'static str),
+}
 
-const OUT_OF_BOUNDS: Thrown = Thrown("an ArrayIndexOutOfBoundsException");
-const NULL: Thrown = Thrown("a NullPointerException, an unpacker state junrar has not made yet");
+const OUT_OF_BOUNDS: Thrown = Thrown::Java("an ArrayIndexOutOfBoundsException");
+const NULL: Thrown =
+    Thrown::Java("a NullPointerException, an unpacker state junrar has not made yet");
 
 const MAX_WIN_SIZE: i32 = 0x40_0000;
 const MAX_WIN_MASK: i32 = MAX_WIN_SIZE - 1;

@@ -327,4 +327,4 @@ impl Unpack<'_> {
     }
 }
 
-const NEGATIVE_SIZE: Thrown = Thrown("a NegativeArraySizeException");
+const NEGATIVE_SIZE: Thrown = Thrown::Java("a NegativeArraySizeException");

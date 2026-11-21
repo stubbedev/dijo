@@ -7,7 +7,7 @@ use super::super::Thrown;
 const TOP: i64 = 1 << 24;
 const BOT: i64 = 1 << 15;
 const MASK: i64 = 0xFFFF_FFFF;
-const DIVIDED_BY_ZERO: Thrown = Thrown("an ArithmeticException, a division by zero");
+const DIVIDED_BY_ZERO: Thrown = Thrown::Java("an ArithmeticException, a division by zero");
 
 #[derive(Default)]
 pub(super) struct RangeCoder {

@@ -52,41 +52,36 @@ fn stored<'a>(name: &'a [u8], flags: u16, data: &'a [u8]) -> Stored<'a> {
     Stored { name, flags, data }
 }
 
-/// The documents of an entry the port cannot give whole, which Tika gives empty: the
-/// port records why instead (#122).
-const UNREAD: [(&str, &str); 3] = [
-    ("corrupt-data.rar", "does not match its CRC"),
-    ("method36.rar", "RAR version 36"),
-    ("volume.part1.rar", "another volume"),
+/// Tika's test documents with an entry whose extraction fails, by its name: the data does not
+/// match its CRC, is compressed for RAR version 36, and continues in another volume.
+const FAILED: [(&str, &str); 3] = [
+    ("corrupt-data.rar", "void29"),
+    ("method36.rar", "foo\\bar.txt"),
+    ("volume.part1.rar", "LibarchiveAddingTest.html"),
 ];
 
+/// An entry whose extraction fails is parsed empty, and the failure recorded by the name junrar
+/// gives the entry, as tika-app 4.2.0 records it on these documents.
 #[test]
-fn records_the_entries_it_cannot_give_whole() {
-    for (name, reason) in UNREAD {
-        let path = format!("../test_files/documents/rar/{name}");
+fn records_the_entries_whose_extraction_fails() {
+    for (document, entry) in FAILED {
+        let path = format!("../test_files/documents/rar/{document}");
         let (xml, metadata) = crate::Extractor::new()
             .set_xml_output(true)
             .extract_file_to_string(&path)
             .unwrap();
-        assert_eq!(metadata["tk:parsed-by"], ["dijo::RarParser"], "{name}");
-        let failures = &metadata["tk:exception:embedded-stream-exception"];
-        assert_eq!(failures.len(), 1, "{name}: {failures:?}");
-        assert!(
-            failures[0].starts_with(
-                "org.apache.tika.exception.TikaException: Can't read archive stream ("
-            ) && failures[0].contains(reason),
-            "{name}: {failures:?}"
+        assert_eq!(metadata["tk:parsed-by"], ["dijo::RarParser"], "{document}");
+        assert_eq!(
+            metadata["tk:exception:embedded-stream-exception"],
+            [format!("java.io.IOException: RAR entry {entry}\n")],
+            "{document}"
         );
-        assert!(
-            xml.contains(r#"<div class="embedded" id=""#),
-            "{name}: {xml}"
-        );
-        assert!(!xml.contains("package-entry"), "{name}: {xml}");
+        assert!(xml.contains("package-entry"), "{document}: {xml}");
     }
 }
 
 /// The files of the RAR archive `data` but its directories, with their data, empty for an
-/// entry the port cannot give, if the port reads it.
+/// entry whose extraction fails, if the port reads it.
 fn archive_files(data: &[u8]) -> Option<Vec<ArchiveFile<'static>>> {
     let headers = headers::read(data).ok()?;
     let (names, _) = names(&headers);
@@ -332,4 +327,35 @@ fn reads_the_creation_and_access_times_of_the_extended_times() {
     assert_eq!(files[0].modified, DOS_TIME_MILLIS);
     assert_eq!(files[0].created, june_1);
     assert_eq!(files[0].accessed, june_1);
+}
+
+/// A damaged entry, whose stored data no longer matches its CRC, is parsed empty and its
+/// failure recorded, and the archive goes on to the entry after it.
+#[test]
+fn records_a_damaged_entry_and_goes_on() {
+    let mut archive = rar(
+        0,
+        &[
+            stored(b"first.txt", 0, b"damaged"),
+            stored(b"DIR\\second.txt", 0, b"whole"),
+        ],
+    );
+    let damaged = archive
+        .windows(7)
+        .position(|window| window == b"damaged")
+        .expect("the first entry's data");
+    archive[damaged] = b'D';
+    let files = archive_files(&archive).unwrap();
+    assert_eq!(files[0].content.to_vec(), b"");
+    assert_eq!(files[1].content.to_vec(), b"whole");
+    let scratch = crate::formats::testing::Scratch::new("rar-damaged");
+    let path = scratch.write("damaged.rar", &archive);
+    let (text, metadata) = crate::Extractor::new()
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap();
+    assert_eq!(
+        metadata["tk:exception:embedded-stream-exception"],
+        ["java.io.IOException: RAR entry first.txt\n"]
+    );
+    assert!(text.contains("whole"), "{text}");
 }

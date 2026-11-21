@@ -1,4 +1,4 @@
-//! Tika's `RarParser`, which reads RAR 1.4 to 4 archives with junrar 8.1.1, at the start of
+//! Tika's `RarParser`, which reads RAR 1.4 to 4 archives with junrar 8.1.2, at the start of
 //! the file or after a self-extractor's code, and fails on RAR 5:
 //! each file but a directory, in archive order, handed to the embedded document extractor
 //! with the metadata `handleEntryMetadata` gives it. The parser hands the extractor the
@@ -8,9 +8,10 @@
 //! The headers are ported from junrar's `Archive` ([`headers`]), its extraction from
 //! `getInputStream` on ([`extract`]) and its unpackers, PPMd decoder and filters ([`unpack`]),
 //! so an entry's data is junrar's, checked against its CRC, but where junrar slips (#122). An
-//! entry the port cannot give whole, one whose data does not match its CRC, is compressed for
-//! an unknown RAR version, continues in another volume or fails to unpack, is recorded as a
-//! failure where Tika gives it empty.
+//! entry whose extraction fails, as one whose data does not match its CRC, is compressed for an
+//! unknown RAR version, continues in another volume or fails to unpack does, is parsed empty and
+//! its failure recorded, as `RarParser`'s `EntryStream` records it; one the port does not give,
+//! past the most it decodes, is recorded as unread.
 
 mod extract;
 mod headers;
@@ -23,7 +24,7 @@ use super::{entry_metadata, record_unreadable};
 use crate::compress::{ArchiveFile, FileTime};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
-use crate::formats::embedded::Wrapping;
+use crate::formats::embedded::{record_stream_exception, Wrapping};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::{Decline, Difference, Failure, Footprint, Opened, Parser, Prepared};
 use crate::input::{Input, Pages, Paging};
@@ -88,16 +89,27 @@ impl Parser for RarParser {
         let reading: Prepared<'a> = Box::new(move |xhtml| {
             xhtml.element("div", " ")?;
             extract::each(input, &headers, |index, extracted| {
-                let (file, unread) = file(&headers.files[index], &names[index], extracted);
+                let header = &headers.files[index];
+                let (file, read) = file(header, &names[index], extracted);
                 let metadata = entry_metadata(&file, xhtml)?;
-                match unread {
-                    None => xhtml.parse_embedded_input_opened(
-                        &file.content,
-                        &metadata,
-                        Wrapping::UnderlyingPackageEntry,
-                        Opened::Alone,
-                    )?,
-                    Some(reason) => record_unreadable(xhtml.metadata_mut(), &file.name, &reason),
+                match read {
+                    Read::Unread(reason) => {
+                        record_unreadable(xhtml.metadata_mut(), &file.name, &reason);
+                    }
+                    read => {
+                        xhtml.parse_embedded_input_opened(
+                            &file.content,
+                            &metadata,
+                            Wrapping::UnderlyingPackageEntry,
+                            Opened::Alone,
+                        )?;
+                        if read == Read::Failed {
+                            record_stream_exception(
+                                xhtml.metadata_mut(),
+                                &format!("java.io.IOException: RAR entry {}", header.file_name),
+                            );
+                        }
+                    }
                 }
                 paging.release();
                 Ok::<(), Failure>(())
@@ -131,16 +143,28 @@ fn names(headers: &headers::Headers) -> (Vec<String>, Option<Difference>) {
     (names, difference)
 }
 
-/// The file of `header`, named `name`, as extracting it gave it, `extracted`, and why its data
-/// cannot be given, if it cannot.
+/// How Tika's parser reads a file's data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Read {
+    /// Whole.
+    Whole,
+    /// Empty, and its stream's failure is recorded, as `EntryStream` records it.
+    Failed,
+    /// Not at all, as the port does not give it, for this reason, which is recorded.
+    Unread(String),
+}
+
+/// The file of `header`, named `name`, as extracting it gave it, `extracted`, and how its data
+/// is read.
 fn file(
     header: &headers::FileHeader,
     name: &str,
     extracted: Extracted,
-) -> (ArchiveFile<'static>, Option<String>) {
-    let (content, unread) = match extracted {
-        Extracted::Data(content) => (content, None),
-        Extracted::Unread(reason) => (Input::Borrowed(&[]), Some(reason)),
+) -> (ArchiveFile<'static>, Read) {
+    let (content, read) = match extracted {
+        Extracted::Data(content) => (content, Read::Whole),
+        Extracted::Failed => (Input::Borrowed(&[]), Read::Failed),
+        Extracted::Unread(reason) => (Input::Borrowed(&[]), Read::Unread(reason)),
     };
     let file = ArchiveFile {
         name: name.to_owned(),
@@ -151,7 +175,7 @@ fn file(
         directory: false,
         content,
     };
-    (file, unread)
+    (file, read)
 }
 
 #[cfg(test)]

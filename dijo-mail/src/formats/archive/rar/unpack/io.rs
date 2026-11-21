@@ -145,10 +145,12 @@ impl<'a> DataIo<'a> {
     }
 }
 
-const EOF: Thrown = Thrown("an EOFException, the archive ending before the entry's packed data");
-const TOO_LARGE: Thrown = Thrown("unpacked data past the most bytes the port decodes");
-const UNSPOOLED: Thrown = Thrown("unpacked data that cannot be spooled to a temporary file");
-const UNSTARTED: Thrown = Thrown("unpacked data written before its entry is started");
+const EOF: Thrown =
+    Thrown::Java("an EOFException, the archive ending before the entry's packed data");
+const TOO_LARGE: Thrown = Thrown::Unread("unpacked data past the most bytes the port decodes");
+const UNSPOOLED: Thrown =
+    Thrown::Unread("unpacked data that cannot be spooled to a temporary file");
+const UNSTARTED: Thrown = Thrown::Unread("unpacked data written before its entry is started");
 
 /// The packed data an unpacker reads, through its bit input: `Unpack15`'s `readTop` and
 /// `readBorder` over junrar's `BitInput`, refilled from the archive.
