@@ -1,3 +1,42 @@
+# 0.2.19 (2026-11-21)
+
+### Added
+
+* The server answers every route of tika-server 4.2: the multipart `/config` and `/form` uploads of `/tika`, `/rmeta`,
+  `/meta` and `/unpack`, among them `POST /tika/config/text` and `/tika/config/json/text`, which Kontainer extracts
+  through. A config part's content handler and tesseract languages are applied, OCR and timeout tuning dijo decides
+  itself is ignored, and any other component is refused with 400 (#394). Also XMP metadata (`application/rdf+xml`),
+  `GET /`, `GET /status`, the preset routes and `PUT /unpack/all/{handler}`; handlers are named in any case, with
+  `txt`, `markdown` and `body`.
+* An extraction that dies answers tika-server's 503 `{"status":"TIMEOUT"}`, `"OOM"` or `"UNSPECIFIED_CRASH"` on
+  tika-server's routes, which clients read the cause from.
+* Epson, Kodak, Leaf, Olympus/OM System and Panasonic raw images are detected and read as Tika 4.2 reads them, as are
+  Windows icons and cursors (#398). BigTIFF metadata (#400) and GeoTIFF keys with their EPSG descriptions (#401) are
+  read as metadata-extractor 2.22 reads them.
+* An embedded thumbnail is written in its package entry headed by its name, as Tika writes it; its content is still
+  not parsed or OCRed.
+* Old Word and PowerPoint documents carry `meta:line-count` and `meta:paragraph-count` (#404).
+
+### Changed
+
+* Tika 4.2.0 is the reference: `just conformance` and `just server-compare` use it, and no document of its corpus
+  fails any more (1068 of 1117 work or are empty on both sides). `just mime-reference` re-records the detection
+  reference (#409).
+* Documents embedded in one another are read twenty deep, and the zip bomb guard allows twenty nested package
+  entries and a thousand characters per byte, as Tika 4.2's limits do (#397).
+* Dates are parsed as Tika 4.2's `TikaDates` parses them: a date without a zone stays without one, years outside
+  1000 to 2200 are dropped, and a mail attachment's dates go to `fs:*` (#399). Archive entries carry `fs:created`,
+  `fs:modified` and `fs:accessed`, zone-less where the archive stores local times (#402).
+
+### Fixed
+
+* An unknown content handler in a tika-server path is refused with 400 and Tika's message, not 404 (#396).
+* An upload named `embedded` is read like any other (#395).
+* With embedded documents as separate records, each starts from the metadata its container gave it: its entry name
+  and dates (#408).
+* A RAR entry that fails to extract records Tika's `RAR entry <name>` and the archive goes on (#407); an MP4 that ends
+  cleanly carries no end-of-data warning (#406).
+
 # 0.2.18 (2026-11-17)
 
 ### Changed
