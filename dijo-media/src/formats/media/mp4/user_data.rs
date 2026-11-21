@@ -91,19 +91,18 @@ fn item_list<'a>(
             "Malformed ilst length in udta metadata: {length}"
         )));
     }
-    items(reader, length, covers, events)
+    items(reader, length - 8, covers, events)
 }
 
-/// `processIList`: the records of an `ilst` box `length` long, header included, each a field and
-/// its `data` atom. Tika counts the records against the whole length, so it reads one more
-/// record past the box, from the box after it (#118).
+/// `processIList`: the records of an `ilst` box whose header is read, `length` bytes of them,
+/// each a field and its `data` atom.
 fn items<'a>(
     reader: &mut Bytes<'a>,
     length: u64,
     covers: &mut Covers,
     events: &mut Vec<Event<'a>>,
 ) -> Read<()> {
-    let mut read = 8;
+    let mut read = 0;
     while read < length {
         let record_start = reader.position();
         let record_length = u64::from(reader.u32()?);
@@ -247,6 +246,73 @@ fn item(field: &[u8], value: String, events: &mut Vec<Event<'_>>) {
 mod tests {
     use super::*;
 
+    fn described(events: Vec<Event<'_>>) -> Vec<String> {
+        events
+            .into_iter()
+            .map(|event| match event {
+                Event::Set(name, value) => format!("{name}={value}"),
+                Event::Paragraph(value) => format!("p={value}"),
+                other => panic!("an item makes no {other:?}"),
+            })
+            .collect()
+    }
+
+    fn sized(kind: &[u8], body: &[&[u8]]) -> Vec<u8> {
+        let length = 8 + body.iter().map(|part| part.len()).sum::<usize>();
+        let mut sized = u32::try_from(length).unwrap().to_be_bytes().to_vec();
+        sized.extend_from_slice(kind);
+        body.iter().for_each(|part| sized.extend_from_slice(part));
+        sized
+    }
+
+    /// An `ilst` box that ends the `udta` payload is read to its end and no further, where Tika
+    /// 4.1.0 counted its records against its length with the header and read past it.
+    #[test]
+    fn reads_an_ilst_box_to_its_end() {
+        let data = sized(b"data", &[&1u32.to_be_bytes(), &[0; 4], b"Title"]);
+        let ilst = sized(b"ilst", &[&sized(b"\xA9nam", &[&data])]);
+        let handler = sized(b"hdlr", &[&[0; 8], b"mdir", b"appl", &[0; 9]]);
+        let payload = sized(b"meta", &[&[0; 4], &handler, &ilst]);
+        let mut events = Vec::new();
+        let location = read(&payload, &mut Covers::default(), &mut events).unwrap();
+        assert_eq!(location, None);
+        assert_eq!(described(events), ["dc:title=Title", "p=Title"]);
+    }
+
+    /// Tika's audio-only test file, whose `ilst` box ends its `udta` box and which Tika 4.1.0
+    /// read past into an `EOFException`, gives the items tika-app 4.2.0 writes, without one.
+    #[test]
+    #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+    fn reads_the_items_of_tikas_audio_only_test_file() {
+        let file = std::fs::read(dijo_core::testing::conformance_corpus().join(
+            "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/\
+             src/test/resources/test-documents/testMP4AudioOnly.mp4",
+        ))
+        .unwrap();
+        let start = file.windows(4).position(|kind| kind == b"udta").unwrap();
+        let size = u32::from_be_bytes(file[start - 4..start].try_into().unwrap());
+        let payload = &file[start + 4..start - 4 + usize::try_from(size).unwrap()];
+        let mut events = Vec::new();
+        read(payload, &mut Covers::default(), &mut events).unwrap();
+        let events = described(events);
+        for item in [
+            "dc:title=Test Title",
+            "xmpDM:artist=Test Artist",
+            "dc:creator=Test Artist",
+            "xmpDM:album=Test Album",
+            "xmpDM:genre=Rock",
+            "xmpDM:logComment=Test Comment",
+            "xmpDM:releaseDate=2008",
+            "xmpDM:trackNumber=1",
+            "xmp:CreatorTool=Lavf61.7.100",
+        ] {
+            assert!(
+                events.iter().any(|event| event == item),
+                "{item} in {events:?}"
+            );
+        }
+    }
+
     /// An iTunes date is the release date as `TikaDates` keeps it, a year alone too, and is
     /// written as a paragraph whatever it is.
     #[test]
@@ -254,19 +320,15 @@ mod tests {
         let events = |value: &str| {
             let mut events = Vec::new();
             item(b"\xA9day", value.to_owned(), &mut events);
-            events
-                .into_iter()
-                .map(|event| match event {
-                    Event::Set(name, value) => format!("{name}={value}"),
-                    Event::Paragraph(value) => format!("p={value}"),
-                    other => panic!("an item makes no {other:?}"),
-                })
-                .collect::<Vec<_>>()
+            described(events)
         };
         assert_eq!(events("2008"), ["xmpDM:releaseDate=2008", "p=2008"]);
         assert_eq!(
             events("2017-04-26T07:00:00Z"),
-            ["xmpDM:releaseDate=2017-04-26T07:00:00Z", "p=2017-04-26T07:00:00Z"]
+            [
+                "xmpDM:releaseDate=2017-04-26T07:00:00Z",
+                "p=2017-04-26T07:00:00Z"
+            ]
         );
         assert_eq!(events("2018 2018"), ["p=2018 2018"]);
     }
