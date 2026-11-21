@@ -1,5 +1,7 @@
 //! Where documents embedded in an extracted one are copied, for the caller to extract.
 
+use crate::formats::metadata::TikaMetadata;
+
 /// Where documents embedded in an extracted one are copied, and how many bytes they may take in
 /// all. With one, an extraction's text excludes its embedded documents, which are spooled for
 /// the caller to extract in their own right.
@@ -14,8 +16,9 @@ pub struct EmbeddedSpool {
 pub struct SpooledEmbedded {
     /// The name the container gives it, or `embedded-N`.
     pub name: String,
-    /// The media type the container declares, if any.
-    pub content_type: Option<String>,
+    /// The metadata the container gives it, which its own extraction starts from, as Tika's
+    /// `RecursiveParserWrapper` starts an embedded document's parse from it.
+    pub metadata: TikaMetadata,
     pub path: std::path::PathBuf,
     pub size: u64,
     /// The byte budget ran out while copying it; only its start was kept.

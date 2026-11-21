@@ -30,6 +30,12 @@ pub enum OpenedFrom<'a> {
     /// sends none, the length of what it sent: Tika records that only once a detector or
     /// parser happens to spool the stream to a file.
     Url(Headers),
+    /// A document embedded in another, copied to the file at `path`, with the metadata its
+    /// container gave it, which hints at its type and which its parse starts from.
+    Embedded {
+        path: Cow<'a, str>,
+        metadata: &'a TikaMetadata,
+    },
 }
 
 /// What `TikaInputStream.get(URL, metadata)` records of a fetched document, each header's value
@@ -57,7 +63,10 @@ impl Detected {
         input: &[u8],
         intent: Intent,
     ) -> Result<Self, mime::DetectionError> {
-        let mut metadata = TikaMetadata::new();
+        let mut metadata = match from {
+            OpenedFrom::Embedded { metadata, .. } => (*metadata).clone(),
+            OpenedFrom::File(_) | OpenedFrom::Bytes | OpenedFrom::Url(_) => TikaMetadata::new(),
+        };
         let (origin, file) = match from {
             OpenedFrom::File(path) => {
                 let name = java_file_name(path);
@@ -87,6 +96,20 @@ impl Detected {
                     learns_length: false,
                 };
                 (origin, InputFile::Spooled)
+            }
+            OpenedFrom::Embedded {
+                path,
+                metadata: given,
+            } => {
+                if given.get("Content-Length").is_none() {
+                    metadata.set("Content-Length", input.len().to_string());
+                }
+                let origin = Origin::Stream {
+                    name: given.get(embedded::RESOURCE_NAME),
+                    content_type: given.get("Content-Type"),
+                    learns_length: true,
+                };
+                (origin, InputFile::Original(path.to_string()))
             }
         };
         let Detection {

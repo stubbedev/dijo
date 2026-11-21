@@ -23,6 +23,12 @@ pub enum Source<'a> {
     File(&'a str),
     Bytes(&'a [u8]),
     Url(&'a str),
+    /// A document embedded in an extracted one, copied to the file at `path`, with the metadata
+    /// its container gave it.
+    Embedded {
+        path: &'a str,
+        metadata: &'a crate::formats::metadata::TikaMetadata,
+    },
 }
 
 /// A document's bytes.

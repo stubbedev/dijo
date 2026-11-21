@@ -2458,3 +2458,46 @@ fn embedded_documents_are_read_twenty_deep() {
     assert_eq!(levels.len(), 20, "{text}");
     assert!(!text.contains("innermost"), "{text}");
 }
+
+/// Each separate embedded record starts from the metadata its container gave it, as Tika's
+/// `RecursiveParserWrapper` does: here the gzip's file name and modification time (#408).
+#[test]
+fn separate_embedded_records_carry_their_containers_metadata() {
+    let scratch = Scratch::new("separate-entry-metadata");
+    let path = scratch.0.join("letter.gz");
+    let mut encoder = flate2::GzBuilder::new()
+        .filename("letter.txt")
+        .mtime(1_600_000_000)
+        .write(Vec::new(), flate2::Compression::fast());
+    encoder
+        .write_all(b"Dear reader,\nthe entry keeps its name.\n")
+        .unwrap();
+    fs::write(&path, encoder.finish().unwrap()).unwrap();
+    let output = dijo(&[
+        "--embedded",
+        "separate",
+        "--format",
+        "json",
+        "--raw-metadata",
+        path.to_str().unwrap(),
+    ]);
+    let records: Vec<serde_json::Value> = stdout(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let entry = records
+        .iter()
+        .find(|record| record["source"]["embedded_path"] == "letter.txt")
+        .unwrap_or_else(|| panic!("no record of the entry: {records:?}"));
+    let metadata = &entry["raw_metadata"];
+    assert_eq!(
+        metadata["tk:resource-name"],
+        serde_json::json!(["letter.txt"]),
+        "{entry}"
+    );
+    assert_eq!(
+        metadata["fs:modified"],
+        serde_json::json!(["2020-09-13T12:26:40Z"]),
+        "{entry}"
+    );
+}

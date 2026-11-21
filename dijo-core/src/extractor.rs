@@ -193,6 +193,27 @@ impl Extractor {
         self.extract_to_stream(Source::File(file_path), Some(spool))
     }
 
+    /// Like [`Extractor::extract_file_spooling_embedded`], for a document `embedded` in an
+    /// extracted one and spooled: its extraction starts from the metadata its container gave
+    /// it, as Tika's `RecursiveParserWrapper` starts an embedded document's parse.
+    pub fn extract_spooled_embedded(
+        &self,
+        embedded: &SpooledEmbedded,
+        spool: &EmbeddedSpool,
+    ) -> ExtractResult<(StreamReader, Metadata)> {
+        let path = embedded.path.to_str().ok_or_else(|| {
+            Error::IoError(format!(
+                "The spooled embedded document {} has a path that is not UTF-8",
+                embedded.path.display()
+            ))
+        })?;
+        let source = Source::Embedded {
+            path,
+            metadata: &embedded.metadata,
+        };
+        self.extract_to_stream(source, Some(spool))
+    }
+
     /// Extracts text from a byte buffer. Returns a tuple with stream of the extracted text and metadata.
     /// the stream is decoded using the extractor's `encoding`
     pub fn extract_bytes(&self, buffer: &[u8]) -> ExtractResult<(StreamReader, Metadata)> {

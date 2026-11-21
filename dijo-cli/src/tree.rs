@@ -75,7 +75,14 @@ pub fn render_tree(
         child_errors: Vec::new(),
         children_complete: true,
     };
-    let root = walk.document(path, display, None, 0, 0)?;
+    let root = walk.document(
+        Node::Input {
+            path,
+            name: display,
+        },
+        0,
+        0,
+    )?;
     let status = match (root.status, walk.children_complete) {
         (Status::Complete, false) => Status::Partial,
         (status, _) => status,
@@ -141,6 +148,19 @@ impl<'a> DijoRecords<'a> {
     }
 }
 
+/// A document of the tree: the input, or a document embedded in one and spooled, with its
+/// place in the input.
+enum Node<'n> {
+    Input {
+        path: &'n Path,
+        name: &'n str,
+    },
+    Embedded {
+        spooled: &'n SpooledEmbedded,
+        embedded_path: String,
+    },
+}
+
 struct Walk<'a> {
     extractor: &'a Extractor,
     display: &'a str,
@@ -174,15 +194,19 @@ struct Skipped<'a> {
 }
 
 impl Walk<'_> {
-    /// Extracts the document at `path`, known by the file name `name`, then its embedded ones.
-    fn document(
-        &mut self,
-        path: &Path,
-        name: &str,
-        embedded_path: Option<String>,
-        id: usize,
-        depth: usize,
-    ) -> io::Result<Outcome> {
+    /// Extracts the document `node` names, then its embedded ones.
+    fn document(&mut self, node: Node<'_>, id: usize, depth: usize) -> io::Result<Outcome> {
+        let (path, name, embedded_path) = match &node {
+            Node::Input { path, name } => (*path, *name, None),
+            Node::Embedded {
+                spooled,
+                embedded_path,
+            } => (
+                spooled.path.as_path(),
+                spooled.name.as_str(),
+                Some(embedded_path.clone()),
+            ),
+        };
         let source = render::source(path, self.display, embedded_path.clone());
         let spool = EmbeddedSpool {
             dir: self.scratch.join(format!("embedded-{}", self.spools)),
@@ -191,7 +215,12 @@ impl Walk<'_> {
         self.spools += 1;
         fs::create_dir(&spool.dir)?;
         let extractor = self.extractor;
-        let open = || render::open_spooling(extractor, path, &spool);
+        let open = || match &node {
+            Node::Input { path, .. } => render::open_spooling(extractor, path, &spool),
+            Node::Embedded { spooled, .. } => {
+                render::open_spooled_embedded(extractor, spooled, &spool)
+            }
+        };
         let document = Document {
             path,
             name,
@@ -239,9 +268,10 @@ impl Walk<'_> {
         };
         let Some(message) = limit else {
             let outcome = self.document(
-                &child.path,
-                &child.name,
-                Some(embedded_path.clone()),
+                Node::Embedded {
+                    spooled: &child,
+                    embedded_path: embedded_path.clone(),
+                },
                 self.documents,
                 depth,
             )?;

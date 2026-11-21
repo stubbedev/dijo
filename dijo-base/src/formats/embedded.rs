@@ -209,7 +209,7 @@ impl Spooler {
             name: metadata
                 .get(RESOURCE_NAME)
                 .map_or_else(|| format!("embedded-{index}"), str::to_owned),
-            content_type: metadata.get("Content-Type").map(str::to_owned),
+            metadata: metadata.clone(),
             path,
             size,
             truncated: kept < data.len(),

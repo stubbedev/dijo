@@ -114,6 +114,18 @@ pub fn open_spooling(extractor: &Extractor, path: &Path, spool: &EmbeddedSpool) 
         .map_err(|e| ExtractionError::from_error(&e))
 }
 
+/// Starts extracting a document `embedded` in an extracted one and spooled, from the metadata
+/// its container gave it, with the documents embedded in it copied to `spool`.
+pub fn open_spooled_embedded(
+    extractor: &Extractor,
+    embedded: &SpooledEmbedded,
+    spool: &EmbeddedSpool,
+) -> Opened {
+    extractor
+        .extract_spooled_embedded(embedded, spool)
+        .map_err(|e| ExtractionError::from_error(&e))
+}
+
 /// Writes an extraction that was already opened, reporting it under `source`.
 pub fn render_opened(
     opened: Opened,

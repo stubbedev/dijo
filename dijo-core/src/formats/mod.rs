@@ -362,6 +362,13 @@ pub(crate) struct Document<'a> {
 pub(crate) fn open(source: Source<'_>, deadline: Option<Instant>) -> ExtractResult<Document<'_>> {
     match source {
         Source::File(path) => open_file(Cow::Borrowed(path)),
+        Source::Embedded { path, metadata } => Ok(Document {
+            from: OpenedFrom::Embedded {
+                path: Cow::Borrowed(path),
+                metadata,
+            },
+            input: input::read_file(path)?,
+        }),
         Source::Bytes(bytes) => Ok(Document {
             from: OpenedFrom::Bytes,
             input: Input::Borrowed(bytes),
