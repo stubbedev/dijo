@@ -46,6 +46,8 @@ mod pid {
     pub(super) const APPLICATION: u32 = 18;
     pub(super) const SECURITY: u32 = 19;
     pub(super) const CATEGORY: u32 = 2;
+    pub(super) const LINE_COUNT: u32 = 5;
+    pub(super) const PARAGRAPH_COUNT: u32 = 6;
     pub(super) const SLIDE_COUNT: u32 = 7;
     pub(super) const MANAGER: u32 = 14;
     pub(super) const COMPANY: u32 = 15;
@@ -226,6 +228,12 @@ fn parse_document_summary_information(
     });
     set(metadata, "dc:language", language);
     set(metadata, "cp:category", string(section, pid::CATEGORY));
+    set_positive(metadata, "meta:line-count", int(section, pid::LINE_COUNT)?);
+    set_positive(
+        metadata,
+        "meta:paragraph-count",
+        int(section, pid::PARAGRAPH_COUNT)?,
+    );
     let slides = int(section, pid::SLIDE_COUNT)?;
     set_positive(metadata, "meta:slide-count", slides);
     set_positive(metadata, "xmpTPg:NPages", slides);
@@ -523,6 +531,43 @@ mod tests {
         assert_eq!(metadata.values("custom:Big"), ["4294967295"]);
         assert_eq!(metadata.values("custom:Rate"), ["0.5"]);
         assert_eq!(metadata.values("custom:Language"), ["da-DK"]);
+    }
+
+    /// The line and paragraph counts are written where they are positive, before the slide
+    /// count, which a line count of another type keeps from being written.
+    #[test]
+    fn writes_line_and_paragraph_counts_as_tika_does() {
+        let int = |count: i32| typed(3, &count.to_le_bytes());
+        let metadata = summary(&property_set(DSI, &[(5, int(0)), (6, int(4)), (7, int(1))]));
+        assert!(metadata.values("meta:line-count").is_empty());
+        assert_eq!(metadata.values("meta:paragraph-count"), ["4"]);
+        assert_eq!(metadata.values("meta:slide-count"), ["1"]);
+        let metadata = summary(&property_set(DSI, &[(5, lpstr("5")), (7, int(1))]));
+        assert!(metadata.values("meta:line-count").is_empty());
+        assert!(metadata.values("meta:slide-count").is_empty());
+    }
+
+    /// Tika's test document and presentation carry the line and paragraph counts tika-app
+    /// 4.2.0 writes for them, the presentation no line count.
+    #[test]
+    #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+    fn writes_the_counts_tika_writes_for_its_test_documents() {
+        let documents = crate::formats::testing::conformance_corpus().join(
+            "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/\
+             src/test/resources/test-documents",
+        );
+        let counts = |name: &str| {
+            let (_, metadata) = crate::Extractor::new()
+                .extract_file_to_string(documents.join(name).to_str().unwrap())
+                .unwrap();
+            let get = |key: &str| metadata.get(key).cloned().unwrap_or_default();
+            (get("meta:line-count"), get("meta:paragraph-count"))
+        };
+        assert_eq!(
+            counts("testWORD.doc"),
+            (vec!["5".to_owned()], vec!["1".to_owned()])
+        );
+        assert_eq!(counts("testPPT.ppt"), (Vec::new(), vec!["4".to_owned()]));
     }
 
     #[test]
