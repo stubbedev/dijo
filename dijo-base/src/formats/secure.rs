@@ -1,7 +1,7 @@
 //! Tika's `SecureContentHandler`, which `AutoDetectParser` puts between a parser's
 //! `XHTMLContentHandler` and the handler the output goes to: it stops a parse whose elements
-//! nest a hundred deep, whose `package-entry` divs nest ten deep, or whose output passes a
-//! million characters and a hundred per byte of the document, as a suspected zip bomb.
+//! nest a hundred deep, whose `package-entry` divs nest more than twenty deep, or whose output
+//! passes a million characters and a thousand per byte of the document, as a suspected zip bomb.
 //!
 //! `AutoDetectParser` puts one in front of every document it parses, embedded ones included, so
 //! a guard sees the events of the documents embedded in its own, and passes on the stop of a
@@ -21,11 +21,11 @@ pub const ZIP_BOMB_DETECTED: &str = "Zip bomb detected!";
 /// size.
 pub const OUTPUT_THRESHOLD: u64 = 1_000_000;
 /// `OutputLimits`' default zip bomb ratio: the characters a document may write per byte of it.
-pub const MAXIMUM_RATIO: u64 = 100;
+pub const MAXIMUM_RATIO: u64 = 1000;
 /// `OutputLimits`' default maximum XML depth.
 const MAXIMUM_DEPTH: usize = 100;
-/// `OutputLimits`' default maximum package entry depth.
-pub const MAXIMUM_PACKAGE_ENTRY_DEPTH: usize = 10;
+/// `OutputLimits`' default maximum package entry depth, which `package-entry` divs may nest to.
+pub const MAXIMUM_PACKAGE_ENTRY_DEPTH: usize = 20;
 
 /// What `SecureContentHandler` takes a document for a zip bomb by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,7 +134,7 @@ impl<H: ContentHandler> ContentHandler for Secure<H> {
                 .any(|&(attribute, value)| attribute == "class" && value == PACKAGE_ENTRY);
         if package_entry {
             self.package_entries.push(self.depth);
-            if self.package_entries.len() >= MAXIMUM_PACKAGE_ENTRY_DEPTH {
+            if self.package_entries.len() > MAXIMUM_PACKAGE_ENTRY_DEPTH {
                 return Err(self.trip(ZipBomb::PackageEntryNesting(self.package_entries.len())));
             }
         }
@@ -188,15 +188,15 @@ mod tests {
     #[test]
     fn tells_its_own_stop_from_that_of_a_guard_further_out() {
         let mut outer = Secure::new(Held::default(), 100);
-        open_entries(&mut outer, 8).unwrap();
+        open_entries(&mut outer, 19).unwrap();
         let mut inner = Secure::new(&mut outer, 100);
         assert_eq!(
             open_entries(&mut inner, 2),
-            Err(Stop::ZipBomb(ZipBomb::PackageEntryNesting(10)))
+            Err(Stop::ZipBomb(ZipBomb::PackageEntryNesting(21)))
         );
         assert_eq!(inner.tripped(), None);
-        assert_eq!(outer.tripped(), Some(ZipBomb::PackageEntryNesting(10)));
-        let mut outer = Secure::new(Held::default(), 1_000_000);
+        assert_eq!(outer.tripped(), Some(ZipBomb::PackageEntryNesting(21)));
+        let mut outer = Secure::new(Held::default(), 10_000_000);
         let mut inner = Secure::new(&mut outer, 100);
         let bomb = Err(Stop::ZipBomb(ZipBomb::Ratio {
             bytes: 100,
@@ -214,17 +214,17 @@ mod tests {
     }
 
     #[test]
-    fn stops_at_ten_package_entries_open_at_once() {
+    fn stops_past_twenty_package_entries_open_at_once() {
         let mut secure = Secure::new(Held::default(), 100);
-        assert_eq!(open_entries(&mut secure, 9), Ok(()));
+        assert_eq!(open_entries(&mut secure, 19), Ok(()));
         secure.end_element("div").unwrap();
         secure
             .start_element("div", &[("class", "embedded")])
             .unwrap();
-        assert_eq!(open_entries(&mut secure, 1), Ok(()));
+        assert_eq!(open_entries(&mut secure, 2), Ok(()));
         assert_eq!(
             open_entries(&mut secure, 1),
-            Err(Stop::ZipBomb(ZipBomb::PackageEntryNesting(10)))
+            Err(Stop::ZipBomb(ZipBomb::PackageEntryNesting(21)))
         );
     }
 
@@ -242,14 +242,14 @@ mod tests {
 
     #[test]
     fn stops_output_past_the_threshold_and_the_ratio() {
-        let mut secure = Secure::new(Held::default(), 20_000);
+        let mut secure = Secure::new(Held::default(), 2_000);
         let text = "a".repeat(1_000_000);
         secure.characters(&text).unwrap();
         secure.ignorable_whitespace(&text).unwrap();
         assert_eq!(
             secure.characters("é"),
             Err(Stop::ZipBomb(ZipBomb::Ratio {
-                bytes: 20_000,
+                bytes: 2_000,
                 characters: 2_000_001,
             }))
         );

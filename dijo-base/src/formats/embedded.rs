@@ -6,7 +6,7 @@
 //! spools its embedded documents copies each to a file of its own instead, as our Java
 //! `EmbeddedSpooler` does.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io::Write as _;
 
@@ -29,6 +29,10 @@ pub const PARSER_OVERRIDE: &str = "tk:content-type-parser-override";
 const RESOURCE_TYPE: &str = "tk:embedded-resource-type";
 const PARSED_BY_FULL_SET: &str = "tk:parsed-by-full-set";
 const EMBEDDED_EXCEPTION: &str = "tk:exception:embedded-exception";
+/// `TikaCoreProperties.EMBEDDED_DEPTH_LIMIT_REACHED`.
+const EMBEDDED_DEPTH_LIMIT_REACHED: &str = "tk:exception:embedded-depth-limit-reached";
+/// `EmbeddedLimits.DEFAULT_MAX_DEPTH`: how deep documents embedded in one another are parsed.
+pub const MAX_EMBEDDED_DEPTH: usize = 20;
 /// `TikaCoreProperties.EMBEDDED_STREAM_EXCEPTION`.
 pub const EMBEDDED_STREAM_EXCEPTION: &str = "tk:exception:embedded-stream-exception";
 /// `TikaCoreProperties.TIKA_META_EXCEPTION_WARNING`.
@@ -54,6 +58,15 @@ pub struct ParseContext<'c> {
     ocr_language: RefCell<Option<OcrLanguage>>,
     write_limit: Option<usize>,
     pages: Pages<'c>,
+    nesting: Nesting,
+}
+
+/// How deep the parse is in documents embedded in one another, as Tika's shared `ParseRecord`
+/// counts it, and whether a document was left unparsed for [`MAX_EMBEDDED_DEPTH`].
+#[derive(Debug, Default)]
+struct Nesting {
+    depth: Cell<usize>,
+    limit_reached: Cell<bool>,
 }
 
 impl<'c> ParseContext<'c> {
@@ -66,6 +79,7 @@ impl<'c> ParseContext<'c> {
             ocr_language: RefCell::new(None),
             write_limit: None,
             pages: Pages::IN_MEMORY,
+            nesting: Nesting::default(),
         }
     }
 
@@ -82,6 +96,7 @@ impl<'c> ParseContext<'c> {
             ocr_language: RefCell::new(None),
             write_limit: None,
             pages: Pages::IN_MEMORY,
+            nesting: Nesting::default(),
         }
     }
 
@@ -132,6 +147,28 @@ impl<'c> ParseContext<'c> {
     /// The limit of the extraction's text, if it has one.
     pub fn write_limit(&self) -> Option<usize> {
         self.write_limit
+    }
+
+    /// Whether a document embedded in the one being parsed is within [`MAX_EMBEDDED_DEPTH`], as
+    /// `ParsingEmbeddedDocumentExtractor` checks it before it writes the document's div; a
+    /// document past it is left unparsed, and the extraction records that the limit was
+    /// reached.
+    pub(crate) fn admits_embedded(&self) -> bool {
+        if self.nesting.depth.get() < MAX_EMBEDDED_DEPTH {
+            return true;
+        }
+        self.nesting.limit_reached.set(true);
+        false
+    }
+
+    /// Goes one document deeper, as `ParseRecord.enterEmbedded` does around its parse.
+    pub(crate) fn enter_embedded(&self) {
+        self.nesting.depth.set(self.nesting.depth.get() + 1);
+    }
+
+    /// Comes back out of a document [`ParseContext::enter_embedded`] went into.
+    pub(crate) fn exit_embedded(&self) {
+        self.nesting.depth.set(self.nesting.depth.get() - 1);
     }
 
     /// The embedded documents copied to the spool, in order.
@@ -254,7 +291,10 @@ impl<'c> Embedding<'c> {
     }
 
     pub(crate) fn into_record(self) -> EmbeddedRecord {
-        self.record
+        EmbeddedRecord {
+            depth_limit_reached: self.context.nesting.limit_reached.get(),
+            ..self.record
+        }
     }
 }
 
@@ -264,6 +304,9 @@ impl<'c> Embedding<'c> {
 pub struct EmbeddedRecord {
     parsers: Vec<String>,
     exceptions: Vec<String>,
+    /// Whether the extraction left a document unparsed for [`MAX_EMBEDDED_DEPTH`] by the time
+    /// this document's parse ended.
+    depth_limit_reached: bool,
 }
 
 impl EmbeddedRecord {
@@ -281,6 +324,9 @@ impl EmbeddedRecord {
         metadata.set_values(PARSED_BY_FULL_SET, parsers);
         for exception in self.exceptions {
             metadata.add(EMBEDDED_EXCEPTION, exception);
+        }
+        if self.depth_limit_reached {
+            metadata.set(EMBEDDED_DEPTH_LIMIT_REACHED, "true");
         }
     }
 }

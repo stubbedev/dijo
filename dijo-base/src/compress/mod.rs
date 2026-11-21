@@ -46,8 +46,8 @@ pub(crate) const MEMORY_LIMIT_KIB: u32 = 100_000;
 /// may decode into whatever its ratio ([`decode_limit`]).
 pub const MAX_DECODED: usize = 256 * 1024 * 1024;
 
-/// The most bytes a stream of `compressed` bytes is decoded into a spool: [`MAX_DECODED`], or a
-/// hundred bytes per compressed byte where that is more, the ratio of output to input past
+/// The most bytes a stream of `compressed` bytes is decoded into a spool: [`MAX_DECODED`], or
+/// [`MAXIMUM_RATIO`] bytes per compressed byte where that is more, the ratio of output to input past
 /// which Tika's `SecureContentHandler` takes a document for a zip bomb. Tika streams what
 /// it decodes into the parser, whose output that guard stops; the native path decodes a stream
 /// to a spool before its parser reads it, so it stops a bomb as it decodes, before the bomb
@@ -474,24 +474,24 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn decodes_up_to_a_hundred_bytes_per_compressed_byte_beyond_the_floor() {
+    fn decodes_up_to_a_thousand_bytes_per_compressed_byte_beyond_the_floor() {
         assert_eq!(decode_limit(0), MAX_DECODED as u64);
-        assert_eq!(decode_limit(MAX_DECODED / 100), MAX_DECODED as u64);
-        assert_eq!(decode_limit(10 << 20), 1000 << 20);
+        assert_eq!(decode_limit(MAX_DECODED / 1000), MAX_DECODED as u64);
+        assert_eq!(decode_limit(10 << 20), 10_000 << 20);
     }
 
     #[test]
     fn stops_decoding_past_the_limit_into_a_mapped_spool() {
         let small = deflated_zeros(3);
-        let inflate = |data: &[u8]| {
-            spool_limited(flate2::bufread::DeflateDecoder::new(data), data.len(), None)
+        let inflate = |data: &[u8], compressed: usize| {
+            spool_limited(flate2::bufread::DeflateDecoder::new(data), compressed, None)
         };
         assert_eq!(
-            inflate(&small),
+            inflate(&small, small.len()),
             Ok(Limited::Whole(Input::Borrowed(&[0; 775])))
         );
         let bomb = deflated_zeros(MAX_DECODED / 258 + 1);
-        let Ok(Limited::Cut(cut)) = inflate(&bomb) else {
+        let Ok(Limited::Cut(cut)) = inflate(&bomb, MAX_DECODED / MAXIMUM_RATIO as usize) else {
             panic!("a bomb is decoded whole");
         };
         assert!(cut.is_mapped());

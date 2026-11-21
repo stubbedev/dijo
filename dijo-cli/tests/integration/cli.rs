@@ -2426,3 +2426,35 @@ fn kindle_books_are_read_with_their_metadata() {
         serde_json::json!(["Charlotte Perkins Gilman"])
     );
 }
+
+/// A gzip `levels` deep, each level named `level-{n}` and the innermost holding `innermost`.
+fn nested_gzip(levels: usize) -> Vec<u8> {
+    (1..=levels)
+        .rev()
+        .fold(b"innermost".to_vec(), |inner, level| {
+            let mut encoder = flate2::GzBuilder::new()
+                .filename(format!("level-{level}"))
+                .write(Vec::new(), flate2::Compression::fast());
+            encoder.write_all(&inner).unwrap();
+            encoder.finish().unwrap()
+        })
+}
+
+/// Documents embedded in one another are read twenty deep, as Tika 4.2's `EmbeddedLimits`
+/// reads them, and the ones below are left unread without stopping the extraction (#397).
+#[test]
+fn embedded_documents_are_read_twenty_deep() {
+    let scratch = Scratch::new("nested-gzip");
+    let path = scratch.0.join("nested.gz");
+    fs::write(&path, nested_gzip(25)).unwrap();
+    let output = dijo(&["--format", "json", path.to_str().unwrap()]);
+    let document: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(document["status"], "complete", "{document}");
+    let text = document["text"].as_str().unwrap();
+    let levels: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("level-"))
+        .collect();
+    assert_eq!(levels.len(), 20, "{text}");
+    assert!(!text.contains("innermost"), "{text}");
+}

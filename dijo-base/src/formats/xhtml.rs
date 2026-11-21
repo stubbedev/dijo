@@ -1067,6 +1067,10 @@ impl<'h> Xhtml<'h> {
         if !embedded::is_parsed(metadata) || self.embedding.spool(spooled, metadata)? {
             return Ok(false);
         }
+        let context = self.embedding.context();
+        if !context.admits_embedded() {
+            return Ok(false);
+        }
         if wrapping != Wrapping::Bare {
             let target = Target::of(wrapping);
             self.start_in(target, XHTML_NAMESPACE, "div", &[("class", PACKAGE_ENTRY)])?;
@@ -1076,6 +1080,7 @@ impl<'h> Xhtml<'h> {
                 self.end_in(target, XHTML_NAMESPACE, "h1")?;
             }
         }
+        context.enter_embedded();
         Ok(true)
     }
 
@@ -1135,6 +1140,7 @@ impl<'h> Xhtml<'h> {
         mut open: Vec<ExpandedName>,
         wrapping: Wrapping,
     ) -> Result<(), Failure> {
+        self.embedding.context().exit_embedded();
         let (clean, failure) = match ended {
             Ended::Clean => (true, None),
             Ended::Recorded => (false, None),

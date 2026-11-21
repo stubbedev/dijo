@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 
 use super::ebml::{self, Malformed};
-use crate::compress::{Decoding, Limited};
+use crate::compress::{Decoding, Limited, MAX_DECODED};
 use crate::formats::secure::{MAXIMUM_RATIO, OUTPUT_THRESHOLD};
 
 /// The bits of a block's flags that say how its frames are laced.
@@ -160,9 +160,12 @@ impl Encoding {
 }
 
 /// The zlib stream `encoded` decoded into memory, up to the output Tika's `SecureContentHandler`
-/// allows of so many bytes, past which it takes a document for a zip bomb.
+/// allows of so many bytes, past which it takes a document for a zip bomb, and no more than
+/// [`MAX_DECODED`], as any stream decoded into memory.
 fn inflate(encoded: &[u8]) -> Result<Vec<u8>, Malformed> {
-    let limit = OUTPUT_THRESHOLD.max((encoded.len() as u64).saturating_mul(MAXIMUM_RATIO));
+    let limit = OUTPUT_THRESHOLD
+        .max((encoded.len() as u64).saturating_mul(MAXIMUM_RATIO))
+        .min(MAX_DECODED as u64);
     let mut decoding = Decoding::in_memory_up_to(limit);
     decoding
         .read_from(flate2::bufread::ZlibDecoder::new(encoded))
@@ -243,7 +246,7 @@ mod tests {
         );
         assert_eq!(decode(b"plain", &[]).unwrap().as_ref(), b"plain");
         assert!(decode(b"not zlib", &[Encoding::Zlib]).is_err());
-        let bomb = zlib(&vec![b' '; OUTPUT_THRESHOLD as usize + 1]);
+        let bomb = zlib(&vec![b' '; 4 * OUTPUT_THRESHOLD as usize]);
         assert!(decode(&bomb, &[Encoding::Zlib])
             .unwrap_err()
             .0

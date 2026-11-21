@@ -6,6 +6,7 @@ use crate::compress::gzip::tests::gzip;
 use crate::compress::tar_header::tests::tar;
 use crate::compress::zip::file::tests::zip;
 use crate::compress::zstd::tests::zstd;
+use crate::formats::secure::MAXIMUM_RATIO;
 use crate::formats::testing::Scratch;
 
 #[test]
@@ -169,7 +170,7 @@ fn leaves_a_stream_decoding_past_the_most_the_native_path_decodes_to_a_limit() {
 }
 
 #[test]
-fn stops_archives_nested_ten_package_entries_deep_with_what_they_wrote() {
+fn reads_archives_nested_twenty_deep_and_leaves_the_deeper_documents_unread() {
     let mut archive = zip(&[("level1.txt", b"Text at nesting level 1.")]);
     for level in 2..=300 {
         let text = format!("Text at nesting level {level}.");
@@ -180,20 +181,24 @@ fn stops_archives_nested_ten_package_entries_deep_with_what_they_wrote() {
     }
     let (text, ended) = extract(&archive);
     assert!(text.contains("Text at nesting level 300."), "{text}");
-    assert!(text.contains("Text at nesting level 292."), "{text}");
-    assert!(!text.contains("Text at nesting level 291."), "{text}");
-    assert_zip_bomb(ended, "10 levels of package entry nesting");
+    assert!(text.contains("Text at nesting level 281."), "{text}");
+    assert!(!text.contains("Text at nesting level 280."), "{text}");
+    let recorded = ended.expect("the extraction goes on past the depth limit");
+    assert_eq!(recorded, ["true"], "only the depth limit is recorded");
 }
 
+/// The characters a document may write per byte of it.
+const RATIO: usize = MAXIMUM_RATIO as usize;
+
 #[test]
-fn stops_an_entry_that_inflates_a_hundredfold_past_a_million_characters() {
-    let line = "All work and no play makes Jack a dull boy.\n";
-    let bomb = zip(&[("bomb.txt", line.repeat(700_000).as_bytes())]);
-    assert!(bomb.len() * 100 < line.len() * 700_000, "{}", bomb.len());
+fn stops_an_entry_that_inflates_past_the_ratio_and_a_million_characters() {
+    let content = "a".repeat(30_000_000);
+    let bomb = zip(&[("bomb.txt", content.as_bytes())]);
+    assert!(bomb.len() * RATIO < content.len(), "{}", bomb.len());
     let (text, ended) = extract(&bomb);
-    assert!(text.contains(line), "{}", &text[..100.min(text.len())]);
+    assert!(text.contains("aaaa"), "{}", &text[..100.min(text.len())]);
     assert!(text.len() > 1_000_000, "{}", text.len());
-    assert!(text.len() < line.len() * 700_000);
+    assert!(text.len() < content.len());
     assert_zip_bomb(ended, "output characters");
 }
 
@@ -212,25 +217,21 @@ fn incompressible(length: usize) -> Vec<u8> {
 
 #[test]
 fn records_a_bomb_in_an_entry_and_goes_on_with_the_entries_after_it() {
-    let line = "All work and no play makes Jack a dull boy.\n";
-    let bomb = gzip(line.repeat(70_000).as_bytes(), Some("bomb.txt"));
+    let content = "a".repeat(3_000_000);
+    let bomb = gzip(content.as_bytes(), Some("bomb.txt"));
     let archive = zip(&[
         ("before.txt", b"Before the bomb."),
         ("padding.bin", &incompressible(50_000)),
         ("bomb.txt.gz", &bomb),
         ("after.txt", b"After the bomb."),
     ]);
-    assert!(bomb.len() * 100 < line.len() * 70_000, "{}", bomb.len());
-    assert!(
-        archive.len() * 100 > line.len() * 70_000,
-        "{}",
-        archive.len()
-    );
+    assert!(bomb.len() * RATIO < content.len(), "{}", bomb.len());
+    assert!(archive.len() * RATIO > content.len(), "{}", archive.len());
     let (text, ended) = extract(&archive);
     assert!(text.contains("Before the bomb."), "{}", &text[..100]);
-    assert!(text.contains(line), "{}", &text[..100]);
+    assert!(text.contains("aaaa"), "{}", &text[..100]);
     assert!(
-        text.len().abs_diff(bomb.len() * 100) < 10_000,
+        text.len().abs_diff(bomb.len() * RATIO) < 10_000,
         "{} characters of {} bytes",
         text.len(),
         bomb.len()
