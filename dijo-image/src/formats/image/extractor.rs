@@ -13,7 +13,9 @@ use crate::java::time::{self, TimeZone};
 
 use super::metadata_extractor::dates::parse_gps_date;
 use super::metadata_extractor::exif::tags::*;
-use super::metadata_extractor::{geo, icc, iptc, jpeg, Directory, Kind, Metadata, Value};
+use super::metadata_extractor::{
+    geo, icc, iptc, jpeg, Directory, Kind, Metadata, Thrown, Value,
+};
 
 pub(crate) const UNKNOWN_IMG: &str = "img:";
 const ICC: &str = "icc:";
@@ -250,8 +252,10 @@ fn copy_unknown_fields(directory: &Directory, target: &mut Target) -> Result<(),
         ) {
             continue;
         }
-        let Some(description) = directory.description(tag)? else {
-            continue;
+        let description = match directory.description(tag) {
+            Ok(Some(description)) => description,
+            Ok(None) | Err(Thrown::OutOfBounds(_)) => continue,
+            Err(Thrown::Unported(unported)) => return Err(unported),
         };
         let mut value = crate::java::trim(&description).to_owned();
         if crate::java::equals_ignore_case(&value, "true") {
@@ -562,4 +566,24 @@ fn gps_date(directory: &Directory) -> Option<i64> {
         minutes.int_value(),
         seconds.double_value(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An ICC tag metadata-extractor throws an `IndexOutOfBoundsException` describing is left
+    /// out, as Tika's `CopyUnknownFieldsHandler` leaves it out, and the others are copied.
+    #[test]
+    fn leaves_out_a_tag_whose_description_is_out_of_bounds() {
+        const COPYRIGHT: i32 = 0x6370_7274;
+        const CMM_TYPE: i32 = 0x0004;
+        let mut directory = Directory::new(Kind::Icc);
+        directory.set(COPYRIGHT, Value::Bytes(b"text\0\0\0\0".to_vec()));
+        directory.set(CMM_TYPE, Value::Text("lcms".to_owned()));
+        let mut metadata = TikaMetadata::new();
+        copy_unknown_fields(&directory, &mut Target::new(&mut metadata)).unwrap();
+        assert_eq!(metadata.values("icc:CMM Type"), ["lcms"]);
+        assert!(metadata.names().all(|name| !name.contains("Copyright")));
+    }
 }

@@ -1,8 +1,8 @@
 //! Documents embedded in one a native parser reads, parsed as Tika's
 //! `ParsingEmbeddedDocumentExtractor` parses them under our Java `ContentEmbeddedDocumentExtractor`:
-//! every one but a thumbnail, by the extraction's own parser and settings, OCR included, its body
-//! written into the embedding document, in a `package-entry` div headed by its name when the
-//! parser asks for one. One no native parser reads is recorded as unread. An extraction that
+//! every one but a thumbnail, whose name alone is written, by the extraction's own parser and
+//! settings, OCR included, its body written into the embedding document, in a `package-entry`
+//! div headed by its name when the parser asks for one. One no native parser reads is recorded as unread. An extraction that
 //! spools its embedded documents copies each to a file of its own instead, as our Java
 //! `EmbeddedSpooler` does.
 
@@ -238,13 +238,15 @@ impl<'c> Embedding<'c> {
         self.context
     }
 
-    /// Copies an embedded document to the spool, when the extraction spools them: whether it
-    /// did.
+    /// Hands an embedded document to the spool, when the extraction spools them rather than
+    /// parsing them, a thumbnail being left out of it: whether the extraction spools them.
     pub(crate) fn spool(&self, data: &[u8], metadata: &TikaMetadata) -> Result<bool, Failure> {
         let Some(spooler) = &self.context.spooler else {
             return Ok(false);
         };
-        spooler.borrow_mut().spool(data, metadata)?;
+        if is_parsed(metadata) {
+            spooler.borrow_mut().spool(data, metadata)?;
+        }
         Ok(true)
     }
 
@@ -380,8 +382,9 @@ impl ResourceType {
     }
 }
 
-/// Whether Tika parses a document embedded with `metadata`: every one but a thumbnail, which
-/// would only add a garbled copy of the front page's text.
+/// Whether the content of a document embedded with `metadata` is parsed: every one's but a
+/// thumbnail's, which would only add a garbled copy of the front page's text. Tika parses a
+/// thumbnail too; dijo writes only the package entry it heads with its name.
 pub fn is_parsed(metadata: &TikaMetadata) -> bool {
     !ResourceType::Thumbnail.is_of(metadata)
 }

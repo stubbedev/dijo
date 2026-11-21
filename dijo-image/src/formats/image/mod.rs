@@ -10,6 +10,7 @@ mod bpg;
 pub mod enricher;
 mod extractor;
 mod icns;
+mod ico;
 mod image_xmp;
 mod imageio;
 mod jxl;
@@ -46,6 +47,7 @@ use crate::java::time::TimeZone;
 use enricher::Enricher;
 use extractor::Target;
 pub use icns::IcnsParser;
+pub use ico::IcoParser;
 use metadata_extractor::{exif, heif, jpeg, webp, Directory, Kind, Metadata, Value};
 pub use raw::RawTiffParser;
 
@@ -345,7 +347,6 @@ impl Parser for ImageParser {
             "image/gif",
             "image/bmp",
             "image/vnd.wap.wbmp",
-            "image/vnd.microsoft.icon",
             "image/x-xcf",
             "image/x-jbig2",
             "image/jp2",
@@ -683,24 +684,51 @@ fn extract_metadata(
             heif::read(input, &mut directories)?;
         }
         Format::Tiff => {
-            image_xmp::scan_and_extract(input, paging, &mut metadata)?;
-            match exif::read_tiff(input, 0, &mut directories) {
-                Ok(()) => {}
-                Err(exif::TiffError::Processing(message)) => {
-                    return Err(fails(format!("Can't read TIFF metadata: {message}")))
-                }
-                Err(exif::TiffError::Bounds(bounds)) => return Err(fails(bounds.0)),
-                Err(exif::TiffError::Unported(unported)) => return Err(unported.into()),
-            }
+            return extract_tiff_metadata(input, paging, metadata, zone, exif::MakerNotes::Decline)
+                .map(|(read, _)| read)
         }
     }
+    copy_directories(metadata, &directories, zone, format != Format::Heif)
+}
+
+/// [`extract_metadata`] of a TIFF, the maker notes the port does not read treated as
+/// `maker_notes` says: with the maker of the first one left out.
+fn extract_tiff_metadata(
+    input: &[u8],
+    paging: &Paging<'_>,
+    mut metadata: TikaMetadata,
+    zone: &'static TimeZone,
+    maker_notes: exif::MakerNotes,
+) -> Result<(Read, Option<&'static str>), Decline<'static>> {
+    image_xmp::scan_and_extract(input, paging, &mut metadata)?;
+    let mut directories = Metadata::default();
+    let skipped = exif::read_tiff_with(input, 0, &mut directories, maker_notes).map_err(
+        |error| match error {
+            exif::TiffError::Processing(message) => {
+                fails(format!("Can't read TIFF metadata: {message}"))
+            }
+            exif::TiffError::Bounds(bounds) => fails(bounds.0),
+            exif::TiffError::Unported(unported) => unported.into(),
+        },
+    )?;
+    Ok((copy_directories(metadata, &directories, zone, true)?, skipped))
+}
+
+/// metadata-extractor's `directories` copied into `metadata` by `ImageMetadataExtractor`, and
+/// whether metadata-extractor read the file too, `reads_file`.
+fn copy_directories(
+    mut metadata: TikaMetadata,
+    directories: &Metadata,
+    zone: &'static TimeZone,
+    reads_file: bool,
+) -> Result<Read, Decline<'static>> {
     let mut target = Target::new(&mut metadata);
-    extractor::handle(&directories, &mut target, zone)?;
+    extractor::handle(directories, &mut target, zone)?;
     let prefix_route_names = target.prefix_route_names();
     Ok(Read {
         metadata,
         prefix_route_names,
-        reads_file: format != Format::Heif,
+        reads_file,
     })
 }
 

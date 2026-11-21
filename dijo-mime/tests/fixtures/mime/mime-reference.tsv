@@ -755,7 +755,7 @@ quality	prose-scan.pdf	bytes	application/pdf	tk:content-type-magic-detected=appl
 quality	prose-scan.psd	file	image/vnd.adobe.photoshop	tk:content-type-magic-detected=image/vnd.adobe.photoshop
 quality	prose-scan.psd	bytes	image/vnd.adobe.photoshop	tk:content-type-magic-detected=image/vnd.adobe.photoshop
 quality	prose-scan.tga	file	image/x-tga	tk:content-type-magic-detected=image/x-tga
-quality	prose-scan.tga	bytes	application/octet-stream	tk:content-type-magic-detected=application/octet-stream
+quality	prose-scan.tga	bytes	image/x-tga	tk:content-type-magic-detected=image/x-tga
 quality	prose-scan.webp	file	image/webp	tk:content-type-magic-detected=image/webp
 quality	prose-scan.webp	bytes	image/webp	tk:content-type-magic-detected=image/webp
 quality	prose-typewriter-scan.png	file	image/png	tk:content-type-magic-detected=image/png
@@ -1181,7 +1181,7 @@ tika	tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/reso
 tika	tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDNG.dng	file	image/x-raw-adobe	tk:content-type-magic-detected=image/x-raw-adobe
 tika	tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDNG.dng	bytes	image/x-raw-adobe	tk:content-type-magic-detected=image/tiff
 tika	tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDNG_bigtiff.dng	file	image/x-raw-adobe	tk:content-type-magic-detected=image/x-raw-adobe
-tika	tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDNG_bigtiff.dng	bytes	image/x-raw-adobe	tk:content-type-magic-detected=application/octet-stream
+tika	tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDNG_bigtiff.dng	bytes	image/x-raw-adobe	tk:content-type-magic-detected=image/tiff
 tika	tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDSAKEY.der	file	application/x-x509-key; format=der	tk:content-type-magic-detected=application/x-x509-key; format=der
 tika	tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDSAKEY.der	bytes	application/x-x509-key; format=der	tk:content-type-magic-detected=application/x-x509-key; format=der
 tika	tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDSAKEY.pem	file	application/x-x509-key; format=pem	tk:content-type-magic-detected=application/x-x509-key; format=pem
@@ -1863,7 +1863,7 @@ tika	tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-modul
 tika	tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testDNG.dng	file	image/x-raw-adobe	tk:content-type-magic-detected=image/x-raw-adobe
 tika	tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testDNG.dng	bytes	image/x-raw-adobe	tk:content-type-magic-detected=image/tiff
 tika	tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testDNG_bigtiff.dng	file	image/x-raw-adobe	tk:content-type-magic-detected=image/x-raw-adobe
-tika	tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testDNG_bigtiff.dng	bytes	image/x-raw-adobe	tk:content-type-magic-detected=application/octet-stream
+tika	tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testDNG_bigtiff.dng	bytes	image/x-raw-adobe	tk:content-type-magic-detected=image/tiff
 tika	tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testGIF.gif	file	image/gif	tk:content-type-magic-detected=image/gif
 tika	tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testGIF.gif	bytes	image/gif	tk:content-type-magic-detected=image/gif
 tika	tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testHEIC_livePhoto.heic	file	image/heic	tk:content-type-magic-detected=image/heic

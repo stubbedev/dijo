@@ -1,7 +1,7 @@
 //! metadata-extractor's `IccReader` and `IccDescriptor`: the header of an ICC profile and its
 //! tag table, each tag's data kept as bytes and described by its type.
 
-use super::descriptions::{base, decimal, named, Described};
+use super::descriptions::{base, decimal, named, Described, Thrown};
 use super::reader::Reader;
 use super::{java_string, Directory, Kind, Metadata, Unported, Value};
 use crate::java::printf;
@@ -241,9 +241,7 @@ fn signature(text: &str) -> Option<i32> {
 }
 
 fn thrown(what: &str) -> Described {
-    Err(Unported::new(format!(
-        "an ICC {what} tag metadata-extractor throws on describing"
-    )))
+    Err(Thrown::OutOfBounds(format!("an ICC {what} tag")))
 }
 
 /// `getTagDataString`.

@@ -1,4 +1,4 @@
-//! A port of the media type detection of Tika 4.1 as dijo's former Java implementation ran
+//! A port of the media type detection of Tika 4.2 as dijo's former Java implementation ran
 //! it: `new DefaultDetector()` on its class path, as `TikaNativeMain.detect` called it.
 //!
 //! `DefaultDetector` asks `MimeTypes` first (the magic, names and XML roots of

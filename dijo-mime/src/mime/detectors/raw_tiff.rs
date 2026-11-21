@@ -21,6 +21,7 @@ const NIKON: &str = "image/x-raw-nikon";
 const PENTAX: &str = "image/x-raw-pentax";
 const SONY: &str = "image/x-raw-sony";
 const SAMSUNG: &str = "image/x-raw-samsung";
+const EPSON: &str = "image/x-raw-epson";
 const ADOBE: &str = "image/x-raw-adobe";
 
 /// The bytes the detector has read: it reads the stream in 64 KiB chunks as offsets demand,
@@ -238,6 +239,8 @@ fn vendor_by_make(make: &str) -> Option<&'static str> {
         Some(SONY)
     } else if make.starts_with("SAMSUNG") {
         Some(SAMSUNG)
+    } else if make.starts_with("SEIKO EPSON") || make.starts_with("EPSON") {
+        Some(EPSON)
     } else {
         None
     }
@@ -361,6 +364,18 @@ mod tests {
         let cfa = (TAG_PHOTOMETRIC_INTERPRETATION, 3, 1, 32803);
         assert_eq!(detect(&tiff(&[make(2), cfa], b"SONY \0")), Some(SONY));
         assert_eq!(detect(&tiff(&[make(1)], b"SONY \0")), None);
+        assert_eq!(detect(&tiff(&[make(2), cfa], b"EPSON\0")), Some(EPSON));
+    }
+
+    #[test]
+    fn tells_an_epson_raw_by_its_make_and_not_its_compression() {
+        let make = (TAG_MAKE, 2, 12, 8 + 2 + 2 * 12 + 4);
+        let cfa = (TAG_PHOTOMETRIC_INTERPRETATION, 3, 1, 32803);
+        assert_eq!(
+            detect(&tiff(&[make, cfa], b"SEIKO EPSON\0")),
+            Some(EPSON)
+        );
+        assert_eq!(detect(&tiff(&[(TAG_COMPRESSION, 3, 1, 32769)], &[])), None);
     }
 
     #[test]

@@ -700,3 +700,4 @@ impl Metadata {
 }
 
 pub(crate) use crate::formats::Unported;
+pub(crate) use descriptions::Thrown;

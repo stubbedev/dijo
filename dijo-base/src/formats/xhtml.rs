@@ -1056,7 +1056,9 @@ impl<'h> Xhtml<'h> {
     }
 
     /// Starts an embedded document that is parsed rather than spooled, `spooled` being what an
-    /// extraction that spools copies of it: whether it is parsed.
+    /// extraction that spools copies of it: whether it is parsed. A thumbnail is written as
+    /// Tika writes it, in its package entry headed by its name, but its content is not
+    /// parsed.
     fn enter_embedded(
         &mut self,
         spooled: &[u8],
@@ -1064,9 +1066,10 @@ impl<'h> Xhtml<'h> {
         wrapping: Wrapping,
     ) -> Result<bool, Failure> {
         within_budget()?;
-        if !embedded::is_parsed(metadata) || self.embedding.spool(spooled, metadata)? {
+        if self.embedding.spool(spooled, metadata)? {
             return Ok(false);
         }
+        let parsed = embedded::is_parsed(metadata);
         let context = self.embedding.context();
         if !context.admits_embedded() {
             return Ok(false);
@@ -1079,9 +1082,14 @@ impl<'h> Xhtml<'h> {
                 self.characters_in(target, name)?;
                 self.end_in(target, XHTML_NAMESPACE, "h1")?;
             }
+            if !parsed {
+                self.end_in(target, XHTML_NAMESPACE, "div")?;
+            }
         }
-        context.enter_embedded();
-        Ok(true)
+        if parsed {
+            context.enter_embedded();
+        }
+        Ok(parsed)
     }
 
     /// Parses an embedded document with its native parser, if it has one, and records it as

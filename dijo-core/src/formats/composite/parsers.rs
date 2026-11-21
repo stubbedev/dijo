@@ -580,7 +580,7 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
     ("image/vnd.dxf", "dijo::DxfParser"),
     (
         "image/vnd.microsoft.icon",
-        "org.apache.tika.parser.image.ImageParser",
+        "org.apache.tika.parser.image.ICOParser",
     ),
     (
         "image/vnd.wap.wbmp",
@@ -601,7 +601,27 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "org.apache.tika.parser.image.RawTiffParser",
     ),
     (
+        "image/x-raw-epson",
+        "org.apache.tika.parser.image.RawTiffParser",
+    ),
+    (
+        "image/x-raw-kodak",
+        "org.apache.tika.parser.image.RawTiffParser",
+    ),
+    (
+        "image/x-raw-leaf",
+        "org.apache.tika.parser.image.RawTiffParser",
+    ),
+    (
         "image/x-raw-nikon",
+        "org.apache.tika.parser.image.RawTiffParser",
+    ),
+    (
+        "image/x-raw-olympus",
+        "org.apache.tika.parser.image.RawTiffParser",
+    ),
+    (
+        "image/x-raw-panasonic",
         "org.apache.tika.parser.image.RawTiffParser",
     ),
     (
@@ -617,6 +637,10 @@ pub(super) const TIKA_PARSERS: &[(&str, &str)] = &[
         "org.apache.tika.parser.image.RawTiffParser",
     ),
     ("image/x-tga", "dijo::RecognizedImageParser"),
+    (
+        "image/x-win-bitmap",
+        "org.apache.tika.parser.image.ICOParser",
+    ),
     ("image/x-xcf", "org.apache.tika.parser.image.ImageParser"),
     ("message/rfc822", "org.apache.tika.parser.mail.RFC822Parser"),
     ("message/x-emlx", "dijo::EmlxParser"),

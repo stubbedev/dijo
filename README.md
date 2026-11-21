@@ -184,6 +184,9 @@ Where the answers differ from tika-server's:
 - An OpenDocument spreadsheet writes only the page styles its sheets are printed with, and their header and footer
   fields without the placeholder text LibreOffice stores (`???`, `00/00/0000`); Tika writes every page style.
 - `/mime-types/{type}/{subtype}` has no description, acronym or links, which dijo's media types do not carry.
+- An embedded thumbnail (a raw camera image's preview, a video's cover art, an EPUB's cover) is written as its
+  package entry headed by its name, as Tika writes it, but its content is not parsed or OCRed: it would only repeat
+  the document it previews, garbled.
 - An XMP packet carries the properties Tika's XMP converters map, from dijo's metadata.
 - `GET /` lists dijo's routes, not tika-server's Java resource classes and methods.
 

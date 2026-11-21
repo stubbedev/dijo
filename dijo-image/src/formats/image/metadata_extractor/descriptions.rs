@@ -13,9 +13,35 @@ use super::{
     apple, dates, geo, heif, icc, iptc, jpeg, photoshop, webp, Directory, Kind, Unported, Value,
 };
 
-/// A description, or the exception metadata-extractor throws describing the tag, which the port
-/// does not reproduce: the document is not read.
-pub(crate) type Described = Result<Option<String>, Unported>;
+/// A description, or the exception metadata-extractor throws describing the tag.
+pub(crate) type Described = Result<Option<String>, Thrown>;
+
+/// An exception metadata-extractor throws describing a tag, which the port does not reproduce.
+#[derive(Debug)]
+pub(crate) enum Thrown {
+    /// An `IndexOutOfBoundsException` on the value, of what it was described as: Tika's
+    /// `CopyUnknownFieldsHandler` leaves the tag out, any other reading of it is not ported.
+    OutOfBounds(String),
+    /// Any other exception: the document is not read.
+    Unported(Unported),
+}
+
+impl From<Unported> for Thrown {
+    fn from(unported: Unported) -> Self {
+        Self::Unported(unported)
+    }
+}
+
+impl From<Thrown> for Unported {
+    fn from(thrown: Thrown) -> Self {
+        match thrown {
+            Thrown::OutOfBounds(what) => Unported::new(format!(
+                "{what}, which metadata-extractor throws an IndexOutOfBoundsException describing"
+            )),
+            Thrown::Unported(unported) => unported,
+        }
+    }
+}
 
 /// `getDescription`, dispatched to the directory's descriptor.
 pub(super) fn describe(directory: &Directory, tag: i32) -> Described {
@@ -313,21 +339,23 @@ fn cfa_colors(pattern: &[i32]) -> Described {
         return Ok(Some("<invalid pattern size>".to_owned()));
     }
     const COLORS: [&str; 7] = ["Red", "Green", "Blue", "Cyan", "Magenta", "Yellow", "White"];
-    let thrown = || {
-        Err(Unported::new(
-            "a CFA pattern metadata-extractor throws on: a negative colour or no columns",
-        ))
-    };
     let mut text = String::from("[");
     for position in 2..end.max(2) {
         let color = pattern[position as usize];
         match usize::try_from(color) {
             Ok(index) if index < COLORS.len() => text.push_str(COLORS[index]),
             Ok(_) => text.push_str("Unknown"),
-            Err(_) => return thrown(),
+            Err(_) => {
+                return Err(Thrown::OutOfBounds(
+                    "a CFA pattern of a negative colour".to_owned(),
+                ))
+            }
         }
         if pattern[1] == 0 {
-            return thrown();
+            return Err(Unported::new(
+                "a CFA pattern of no columns, which metadata-extractor divides by",
+            )
+            .into());
         }
         if (position - 2) % pattern[1] == 0 {
             text.push(',');
@@ -853,8 +881,8 @@ fn gps(directory: &Directory, tag: i32) -> Described {
     if tag == GPS_TIME_STAMP {
         if let Some(components) = directory.rationals(tag) {
             if components.len() < 3 {
-                return Err(Unported::new(
-                    "a GPS time stamp of fewer than three values, which metadata-extractor throws on",
+                return Err(Thrown::OutOfBounds(
+                    "a GPS time stamp of fewer than three values".to_owned(),
                 ));
             }
         }

@@ -1,5 +1,5 @@
-//! metadata-extractor's `TiffReader` with its `ExifTiffHandler`: the IFDs of a TIFF structure, in
-//! a TIFF file or an Exif segment, read into the directories of Exif: IFD0, its Exif and GPS
+//! metadata-extractor's `TiffReader` with its `ExifTiffHandler`: the IFDs of a TIFF or BigTIFF
+//! structure, in a TIFF file or an Exif segment, read into the directories of Exif: IFD0, its Exif and GPS
 //! sub-IFDs, the interoperability IFD, the thumbnail or the further pages that follow IFD0, and
 //! the IPTC, ICC, Photoshop and PrintIM data some tags hold, and Apple's maker note. Other maker
 //! notes and Panasonic's raw IFD0 are not read; XMP held in a tag is read by [`xmp`].
@@ -185,17 +185,64 @@ const CODE_SINGLE: u16 = 11;
 const CODE_DOUBLE: u16 = 12;
 const CODE_INT64_U: u16 = 16;
 const CODE_INT64_S: u16 = 17;
+/// BigTIFF's eight-byte IFD offset.
+const CODE_IFD8: u16 = 18;
 
 /// `TiffDataFormat.fromTiffFormatCode(code).getComponentSizeBytes()`.
-fn component_size(code: u16) -> Option<i64> {
+fn component_size(code: u16, standard: Standard) -> Option<i64> {
     Some(match code {
         CODE_INT8_U | CODE_STRING | CODE_INT8_S | CODE_UNDEFINED => 1,
         CODE_INT16_U | CODE_INT16_S => 2,
         CODE_INT32_U | CODE_INT32_S | CODE_SINGLE => 4,
         CODE_RATIONAL_U | CODE_RATIONAL_S | CODE_DOUBLE | CODE_INT64_U | CODE_INT64_S => 8,
+        CODE_IFD8 if standard == Standard::BigTiff => 8,
         _ => return None,
     })
 }
+
+/// `TiffStandard`: how a TIFF lays out its IFDs, as the marker of its header says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Standard {
+    /// Two-byte counts, twelve-byte entries and four-byte offsets.
+    Tiff,
+    /// Eight-byte counts and offsets and twenty-byte entries.
+    BigTiff,
+}
+
+impl Standard {
+    fn count_size(self) -> i64 {
+        match self {
+            Self::Tiff => 2,
+            Self::BigTiff => 8,
+        }
+    }
+
+    fn entry_size(self) -> i64 {
+        match self {
+            Self::Tiff => 12,
+            Self::BigTiff => 20,
+        }
+    }
+
+    /// The size of the pointer to the follower IFD, and of a value held in its entry.
+    fn pointer_size(self) -> i64 {
+        match self {
+            Self::Tiff => 4,
+            Self::BigTiff => 8,
+        }
+    }
+
+    /// The offset an entry's `field` holds.
+    fn pointer(self, reader: &Reader, field: i64) -> Result<i64, Bounds> {
+        match self {
+            Self::Tiff => reader.u32(field).map(i64::from),
+            Self::BigTiff => reader.i64(field),
+        }
+    }
+}
+
+/// `Integer.MAX_VALUE`, the largest offset metadata-extractor reads at.
+const MAX_OFFSET: i64 = i32::MAX as i64;
 
 /// `ExifTiffHandler` over `DirectoryTiffHandler`: the directory being filled, the ones it
 /// interrupted, and where the Exif data starts, from which thumbnail offsets count.
@@ -204,6 +251,19 @@ struct Handler<'m> {
     current: Option<usize>,
     stack: Vec<usize>,
     exif_start: i32,
+    maker_notes: MakerNotes,
+    /// The maker of the first maker note [`MakerNotes::Skip`] left out.
+    skipped: Option<&'static str>,
+}
+
+/// What the reader does with a maker note metadata-extractor reads as directories of its own,
+/// which the port does not read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MakerNotes {
+    /// The TIFF is not read: the note is [`Unported`].
+    Decline,
+    /// The note is left out, as if no directory came of it, and the rest is read.
+    Skip,
 }
 
 impl Handler<'_> {
@@ -245,11 +305,16 @@ impl Handler<'_> {
         self.directory().add_error(message);
     }
 
-    fn set_tiff_marker(&mut self, marker: u16) -> Result<(), TiffError> {
+    /// `processTiffMarker`: IFD0 entered, and the layout of the IFDs.
+    fn process_tiff_marker(&mut self, marker: u16) -> Result<Standard, TiffError> {
         match marker {
             0x002A | 0x4F52 | 0x5352 => {
                 self.push(Kind::ExifIfd0);
-                Ok(())
+                Ok(Standard::Tiff)
+            }
+            0x002B => {
+                self.push(Kind::ExifIfd0);
+                Ok(Standard::BigTiff)
             }
             0x0055 => Err(Unported::new("a Panasonic raw IFD0").into()),
             other => Err(TiffError::Processing(format!(
@@ -467,7 +532,7 @@ impl Handler<'_> {
             let order = reader.motorola;
             reader.motorola = true;
             self.push(Kind::AppleMakernote);
-            let read = process_ifd(self, reader, processed, offset + 14, offset);
+            let read = process_ifd(self, reader, processed, offset + 14, offset, Standard::Tiff);
             reader.motorola = order;
             read?;
             return Ok(true);
@@ -484,7 +549,15 @@ impl Handler<'_> {
         } else {
             return Ok(false);
         };
-        Err(Unported::new(format!("an Exif maker note of {maker}")).into())
+        match self.maker_notes {
+            MakerNotes::Decline => {
+                Err(Unported::new(format!("an Exif maker note of {maker}")).into())
+            }
+            MakerNotes::Skip => {
+                self.skipped.get_or_insert(maker);
+                Ok(true)
+            }
+        }
     }
 }
 
@@ -543,14 +616,28 @@ pub(crate) fn read_tiff(
     header: i64,
     metadata: &mut Metadata,
 ) -> Result<(), TiffError> {
+    read_tiff_with(data, header, metadata, MakerNotes::Decline).map(|_| ())
+}
+
+/// [`read_tiff`], the maker notes the port does not read treated as `maker_notes` says: the maker
+/// of the first one left out.
+pub(crate) fn read_tiff_with(
+    data: &[u8],
+    header: i64,
+    metadata: &mut Metadata,
+    maker_notes: MakerNotes,
+) -> Result<Option<&'static str>, TiffError> {
     let mut reader = Reader::new(data);
     let mut handler = Handler {
         metadata,
         current: None,
         stack: Vec::new(),
         exif_start: header as i32,
+        maker_notes,
+        skipped: None,
     };
-    process_tiff(&mut reader, &mut handler, header)
+    process_tiff(&mut reader, &mut handler, header)?;
+    Ok(handler.skipped)
 }
 
 fn process_tiff(reader: &mut Reader, handler: &mut Handler, header: i64) -> Result<(), TiffError> {
@@ -564,22 +651,48 @@ fn process_tiff(reader: &mut Reader, handler: &mut Handler, header: i64) -> Resu
         }
     }
     let marker = reader.u16(2 + header)?;
-    handler.set_tiff_marker(marker)?;
-    let mut first = i64::from(reader.i32(4 + header)?) + header;
-    if first >= reader.len() - 1 {
-        handler.error(
-            "First IFD offset is beyond the end of the TIFF data segment -- trying default offset",
-        );
-        first = header + 2 + 2 + 4;
-    }
+    let standard = handler.process_tiff_marker(marker)?;
+    let first = match standard {
+        Standard::BigTiff => {
+            let size = reader.u16(4 + header)?;
+            if size != 8 {
+                handler.error(format!("Unsupported BigTIFF offset byte size: {size}"));
+                return Ok(());
+            }
+            let reserved = reader.u16(6 + header)?;
+            if reserved != 0 {
+                handler.error(format!(
+                    "Unsupported BigTIFF reserved header value: {reserved}"
+                ));
+                return Ok(());
+            }
+            let first = reader.i64(8 + header)?;
+            if first < 0 || first > MAX_OFFSET - header {
+                handler.error(format!("First IFD offset is out of range: {first}"));
+                return Ok(());
+            }
+            first + header
+        }
+        Standard::Tiff => {
+            let first = i64::from(reader.i32(4 + header)?) + header;
+            if first >= reader.len() - 1 {
+                handler.error(
+                    "First IFD offset is beyond the end of the TIFF data segment -- trying default offset",
+                );
+                header + 2 + 2 + 4
+            } else {
+                first
+            }
+        }
+    };
     let mut processed = HashSet::new();
-    process_ifd(handler, reader, &mut processed, first, header)
+    process_ifd(handler, reader, &mut processed, first, header, standard)
 }
 
-/// `TiffReader.processIfd`: the IFD at `offset`, then the sub-IFDs its tags point at and the
-/// IFD that follows it; each IFD ends, whatever happens, with `endingIFD` and the byte order it
-/// started with. Java follows the chain of IFDs, a page of a TIFF each, by recursion; it is
-/// followed here in a loop, the IFDs ending together at its end, so that a TIFF of any number of
+/// `TiffReader.processIfd`: the IFD at `offset`, laid out as `standard` says, then the sub-IFDs
+/// its tags point at and the IFD that follows it; each IFD ends, whatever happens, with
+/// `endingIFD` and the byte order it started with. The chain of IFDs, a page of a TIFF each, is
+/// followed in a loop, the IFDs ending together at its end, so that a TIFF of any number of
 /// pages is read in a bounded stack.
 fn process_ifd(
     handler: &mut Handler,
@@ -587,13 +700,15 @@ fn process_ifd(
     processed: &mut HashSet<i64>,
     offset: i64,
     header: i64,
+    standard: Standard,
 ) -> Result<(), TiffError> {
     let mut offset = offset;
     let mut chained = 0usize;
     let mut first_order = None;
     let result = loop {
         let mut reset = None;
-        let followed = process_ifd_body(handler, reader, processed, offset, header, &mut reset);
+        let followed =
+            process_ifd_body(handler, reader, processed, (offset, header), standard, &mut reset);
         chained += 1;
         first_order = first_order.or(reset);
         match followed {
@@ -611,14 +726,14 @@ fn process_ifd(
     result
 }
 
-/// The IFD at `offset` and the sub-IFDs its tags point at: the offset of the IFD that follows
-/// it, if the handler follows it.
+/// The IFD at `offset` and the sub-IFDs its tags point at, offsets counting from `header`: the
+/// offset of the IFD that follows it, if the handler follows it.
 fn process_ifd_body(
     handler: &mut Handler,
     reader: &mut Reader,
     processed: &mut HashSet<i64>,
-    offset: i64,
-    header: i64,
+    (offset, header): (i64, i64),
+    standard: Standard,
     reset: &mut Option<bool>,
 ) -> Result<Option<i64>, TiffError> {
     let offset_key = i64::from(offset as i32);
@@ -629,24 +744,46 @@ fn process_ifd_body(
         handler.error("Ignored IFD marked to start outside data segment");
         return Ok(None);
     }
-    let mut count = i64::from(reader.u16(offset)?);
-    if count > 0xFF && count & 0xFF == 0 {
+    let (count_size, entry_size, pointer_size) = (
+        standard.count_size(),
+        standard.entry_size(),
+        standard.pointer_size(),
+    );
+    let available = reader.len().min(MAX_OFFSET + 1) - offset;
+    if available < count_size + pointer_size {
+        handler.error("Illegally sized IFD");
+        return Ok(None);
+    }
+    let mut count = match standard {
+        Standard::Tiff => i64::from(reader.u16(offset)?),
+        Standard::BigTiff => reader.i64(offset)?,
+    };
+    if standard == Standard::Tiff && count > 0xFF && count & 0xFF == 0 {
         *reset = Some(reader.motorola);
         count >>= 8;
         reader.motorola = !reader.motorola;
     }
-    let length = 2 + 12 * count + 4;
-    if length + offset > reader.len() {
+    if count < 0 || count > (available - count_size - pointer_size) / entry_size {
         handler.error("Illegally sized IFD");
         return Ok(None);
     }
     let mut invalid_formats = 0;
     for number in 0..count {
-        let entry = offset + 2 + 12 * number;
+        let entry = offset + count_size + entry_size * number;
+        let field = entry + 4 + pointer_size;
         let tag = i32::from(reader.u16(entry)?);
         let format = reader.u16(entry + 2)?;
-        let components = i64::from(reader.u32(entry + 4)?);
-        let byte_count = match component_size(format) {
+        let components = match standard {
+            Standard::Tiff => i64::from(reader.u32(entry + 4)?),
+            Standard::BigTiff => reader.i64(entry + 4)?,
+        };
+        if !(0..=MAX_OFFSET).contains(&components) {
+            handler.error(format!(
+                "Illegal number of components for TIFF tag: {components}"
+            ));
+            continue;
+        }
+        let byte_count = match component_size(format, standard) {
             Some(size) => components * size,
             None => match format {
                 13 => components * 4,
@@ -664,34 +801,64 @@ fn process_ifd_body(
                 }
             },
         };
-        let value_offset = if byte_count > 4 {
-            let pointer = i64::from(reader.u32(entry + 8)?);
-            if pointer + byte_count > reader.len() {
-                handler.error("Illegal TIFF tag pointer offset");
-                continue;
-            }
-            header + pointer
-        } else {
-            entry + 8
-        };
-        if value_offset < 0 || value_offset > reader.len() {
-            handler.error("Illegal TIFF tag pointer offset");
-            continue;
-        }
-        if byte_count < 0 || value_offset + byte_count > reader.len() {
+        if !(0..=MAX_OFFSET).contains(&byte_count) {
             handler.error(format!(
                 "Illegal number of bytes for TIFF tag data: {byte_count}"
             ));
             continue;
         }
+        let value_offset = if byte_count > pointer_size {
+            let pointer = standard.pointer(reader, field)?;
+            if !(0..=MAX_OFFSET).contains(&pointer) {
+                handler.error("Illegal TIFF tag pointer offset");
+                continue;
+            }
+            header + pointer
+        } else {
+            field
+        };
+        if value_offset < 0 || value_offset > MAX_OFFSET || value_offset > reader.len() {
+            handler.error("Illegal TIFF tag pointer offset");
+            continue;
+        }
+        if byte_count > reader.len() - value_offset || byte_count > MAX_OFFSET + 1 - value_offset
+        {
+            handler.error(format!(
+                "Illegal number of bytes for TIFF tag data: {byte_count}"
+            ));
+            continue;
+        }
+        let ifd_pointer_size = if byte_count == 4 * components {
+            4
+        } else if standard == Standard::BigTiff && byte_count == 8 * components {
+            8
+        } else {
+            0
+        };
         let mut is_ifd_pointer = false;
-        if byte_count == 4 * components {
+        if components != 0 && ifd_pointer_size != 0 {
             for index in 0..components {
-                if handler.try_enter_sub_ifd(tag) {
-                    is_ifd_pointer = true;
-                    let sub = header + i64::from(reader.i32(value_offset + index * 4)?);
-                    process_ifd(handler, reader, processed, sub, header)?;
+                if !handler.try_enter_sub_ifd(tag) {
+                    break;
                 }
+                is_ifd_pointer = true;
+                let mut sub = if ifd_pointer_size == 4 {
+                    i64::from(reader.i32(value_offset + index * 4)?)
+                } else {
+                    reader.i64(value_offset + index * 8)?
+                };
+                if ifd_pointer_size == 8 && (sub < 0 || sub > MAX_OFFSET - header) {
+                    handler.error(format!("Illegal sub-IFD offset: {sub}"));
+                    handler.ending_ifd();
+                    continue;
+                }
+                sub += header;
+                if i32::try_from(sub).is_err() {
+                    handler.error(format!("Illegal sub-IFD offset: {sub}"));
+                    handler.ending_ifd();
+                    continue;
+                }
+                process_ifd(handler, reader, processed, sub, header, standard)?;
             }
         }
         if !is_ifd_pointer
@@ -707,10 +874,18 @@ fn process_ifd_body(
             )?;
         }
     }
-    let next = reader.i32(offset + 2 + 12 * count)?;
+    let follower = offset + count_size + entry_size * count;
+    let next = match standard {
+        Standard::Tiff => i64::from(reader.i32(follower)?),
+        Standard::BigTiff => reader.i64(follower)?,
+    };
     if next != 0 {
-        let next = i64::from(next) + header;
-        if next >= reader.len() || next < offset {
+        if standard == Standard::BigTiff && (next < 0 || next > MAX_OFFSET - header) {
+            handler.error(format!("Illegal follower IFD offset: {next}"));
+            return Ok(None);
+        }
+        let next = next + header;
+        if next < 0 || next >= reader.len() || next < offset {
             return Ok(None);
         }
         if handler.has_follower_ifd() {
@@ -798,7 +973,7 @@ fn process_tag(
                     .collect::<Result<_, _>>()?,
             ),
         },
-        CODE_INT64_S | CODE_INT64_U => match count {
+        CODE_INT64_S | CODE_INT64_U | CODE_IFD8 => match count {
             1 => Value::Long(reader.i64(offset)?),
             _ => Value::Longs(many(8).map(|at| reader.i64(at)).collect::<Result<_, _>>()?),
         },
@@ -811,4 +986,43 @@ fn process_tag(
     };
     handler.directory().set(tag, value);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A little endian TIFF whose IFD0 points at an Exif IFD holding an Olympus maker note.
+    fn with_olympus_maker_note() -> Vec<u8> {
+        let entry = |tag: i32, kind: u16, count: u32, value: u32| {
+            let mut entry = (tag as u16).to_le_bytes().to_vec();
+            entry.extend_from_slice(&kind.to_le_bytes());
+            entry.extend_from_slice(&count.to_le_bytes());
+            entry.extend_from_slice(&value.to_le_bytes());
+            entry
+        };
+        let mut tiff = b"II*\0\x08\0\0\0\x01\0".to_vec();
+        tiff.extend(entry(TAG_EXIF_SUB_IFD_OFFSET, 4, 1, 26));
+        tiff.extend_from_slice(&0u32.to_le_bytes());
+        tiff.extend_from_slice(b"\x01\0");
+        tiff.extend(entry(TAG_MAKERNOTE, 7, 16, 44));
+        tiff.extend_from_slice(&0u32.to_le_bytes());
+        tiff.extend_from_slice(b"OLYMPUS\0II\x03\0\0\0\0\0");
+        tiff
+    }
+
+    #[test]
+    fn skips_a_maker_note_it_does_not_read_only_when_asked() {
+        let tiff = with_olympus_maker_note();
+        let mut metadata = Metadata::default();
+        assert!(matches!(
+            read_tiff(&tiff, 0, &mut metadata),
+            Err(TiffError::Unported(_))
+        ));
+        let mut metadata = Metadata::default();
+        let skipped = read_tiff_with(&tiff, 0, &mut metadata, MakerNotes::Skip).unwrap();
+        assert_eq!(skipped, Some("Olympus"));
+        let exif = metadata.first(Kind::ExifSubIfd).unwrap();
+        assert!(!exif.contains(TAG_MAKERNOTE));
+    }
 }

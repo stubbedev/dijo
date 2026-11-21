@@ -343,8 +343,7 @@ fn embedded_entry(
     cover: bool,
 ) -> Option<(ZipEntry, TikaMetadata)> {
     let entry = book.readable(path)?;
-    let metadata = embedded_metadata(item, path, cover);
-    embedded::is_parsed(&metadata).then_some((entry, metadata))
+    Some((entry, embedded_metadata(item, path, cover)))
 }
 
 /// `handleEmbedded`: a manifest item outside the spine at `path`, parsed as an embedded

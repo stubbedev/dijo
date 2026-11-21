@@ -75,7 +75,8 @@ pub(super) fn describe_run_time(directory: &Directory, tag: i32) -> Described {
             if scale == 0 {
                 return Err(Unported::new(
                     "an Apple run time of scale zero, whose description divides by it",
-                ));
+                )
+                .into());
             }
             Ok(Some(format!("{} seconds", value.wrapping_div(scale))))
         }

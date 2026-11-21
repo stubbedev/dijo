@@ -163,6 +163,7 @@ static PARSERS: &[&dyn Parser] = &[
     &image::BpgParser,
     &image::HeifParser,
     &image::IcnsParser,
+    &image::IcoParser,
     &image::ImageParser,
     &image::JpegParser,
     &image::JxlParser,
