@@ -10,7 +10,7 @@
 //! the index of the file in the package's header: [`package_files`] reads it with the files
 //! that header lists.
 
-use super::{throws, ArchiveFile, Undecoded};
+use super::{throws, ArchiveFile, FileTime, Undecoded};
 use crate::input::{Input, Pages};
 
 const NEW: &[u8; 6] = b"070701";
@@ -94,8 +94,9 @@ impl<'a> Entry<'a> {
         ArchiveFile {
             name: self.name,
             size: self.content.len() as i64,
-            modified_millis: Some(self.mtime * 1000),
-            created_millis: None,
+            modified: Some(FileTime::Instant(self.mtime * 1000)),
+            created: None,
+            accessed: None,
             directory,
             content: if directory {
                 Input::Borrowed(&[])
@@ -381,7 +382,7 @@ pub mod tests {
     #[test]
     fn reads_stripped_entries_as_the_package_lists_their_files() {
         let data = stripped(&[(0, b""), (1, b"odd")]);
-        let found: Vec<(String, bool, Vec<u8>, Option<i64>)> =
+        let found: Vec<(String, bool, Vec<u8>, Option<FileTime>)> =
             package_files(&data, Pages::IN_MEMORY, &listed)
                 .unwrap()
                 .into_iter()
@@ -390,7 +391,7 @@ pub mod tests {
                         file.name,
                         file.directory,
                         file.content.to_vec(),
-                        file.modified_millis,
+                        file.modified,
                     )
                 })
                 .collect();
@@ -401,13 +402,13 @@ pub mod tests {
                     "./usr/share/doc".to_owned(),
                     true,
                     Vec::new(),
-                    Some(1_700_000_000_000)
+                    Some(FileTime::Instant(1_700_000_000_000))
                 ),
                 (
                     "./usr/share/doc/odd.txt".to_owned(),
                     false,
                     b"odd".to_vec(),
-                    Some(1_700_000_000_000)
+                    Some(FileTime::Instant(1_700_000_000_000))
                 ),
             ]
         );
@@ -480,7 +481,7 @@ mod old_format_tests {
         ("even.txt", 0o100644, b"even"),
     ];
 
-    fn found(data: &[u8]) -> Vec<(String, bool, Vec<u8>, Option<i64>)> {
+    fn found(data: &[u8]) -> Vec<(String, bool, Vec<u8>, Option<FileTime>)> {
         files(data, Pages::IN_MEMORY)
             .unwrap()
             .into_iter()
@@ -489,13 +490,13 @@ mod old_format_tests {
                     file.name,
                     file.directory,
                     file.content.to_vec(),
-                    file.modified_millis,
+                    file.modified,
                 )
             })
             .collect()
     }
 
-    fn expected() -> Vec<(String, bool, Vec<u8>, Option<i64>)> {
+    fn expected() -> Vec<(String, bool, Vec<u8>, Option<FileTime>)> {
         ENTRIES
             .iter()
             .map(|(name, mode, content)| {
@@ -507,7 +508,7 @@ mod old_format_tests {
                     } else {
                         content.to_vec()
                     },
-                    Some(1_700_000_000_000),
+                    Some(FileTime::Instant(1_700_000_000_000)),
                 )
             })
             .collect()

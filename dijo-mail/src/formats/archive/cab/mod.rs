@@ -17,7 +17,7 @@ use cabinet::{Cabinet, File, Place};
 use folder::{Copied, End, FolderStream, Uncopied};
 
 use super::{entry_metadata, record_unreadable, within_limit, write_file, Cut};
-use crate::compress::{decode_limit, ArchiveFile, Decoding, Limited};
+use crate::compress::{decode_limit, ArchiveFile, Decoding, FileTime, Limited};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::TikaMetadata;
@@ -107,8 +107,9 @@ fn write<'a>(
         let listed = |content| ArchiveFile {
             name: file.name.clone(),
             size: i64::from(file.size),
-            modified_millis: file.modified_millis,
-            created_millis: None,
+            modified: file.modified_millis.map(FileTime::Local),
+            created: None,
+            accessed: None,
             directory: false,
             content,
         };

@@ -11,7 +11,9 @@ use std::mem::size_of;
 
 use sevenz_rust2::{ArchiveEntry, ArchiveReader, EncoderMethod, NtTime, Password};
 
-use super::{throws, ArchiveFile, Decoding, Held, Limited, Undecoded, CHUNK, MEMORY_LIMIT_KIB};
+use super::{
+    throws, ArchiveFile, Decoding, FileTime, Held, Limited, Undecoded, CHUNK, MEMORY_LIMIT_KIB,
+};
 use crate::input::{Input, Pages};
 
 /// The milliseconds from 1601, where NTFS times start, to 1970.
@@ -88,8 +90,9 @@ fn entry_name(file: &ArchiveEntry) -> String {
 pub struct Listed {
     name: String,
     size: u64,
-    modified_millis: Option<i64>,
-    created_millis: Option<i64>,
+    modified: Option<FileTime>,
+    created: Option<FileTime>,
+    accessed: Option<FileTime>,
     directory: bool,
     /// Whether it has data, which the archive's blocks hold.
     has_data: bool,
@@ -100,10 +103,15 @@ impl Listed {
         Self {
             name: entry_name(file),
             size: file.size,
-            modified_millis: file
+            modified: file
                 .has_last_modified_date
-                .then(|| millis(file.last_modified_date)),
-            created_millis: file.has_creation_date.then(|| millis(file.creation_date)),
+                .then(|| FileTime::Instant(millis(file.last_modified_date))),
+            created: file
+                .has_creation_date
+                .then(|| FileTime::Instant(millis(file.creation_date))),
+            accessed: file
+                .has_access_date
+                .then(|| FileTime::Instant(millis(file.access_date))),
             directory: file.is_directory,
             has_data: file.has_stream && file.size > 0,
         }
@@ -114,8 +122,9 @@ impl Listed {
         ArchiveFile {
             name: self.name.clone(),
             size: self.size as i64,
-            modified_millis: self.modified_millis,
-            created_millis: self.created_millis,
+            modified: self.modified,
+            created: self.created,
+            accessed: self.accessed,
             directory: self.directory,
             content,
         }

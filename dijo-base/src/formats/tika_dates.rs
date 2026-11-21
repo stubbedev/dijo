@@ -102,11 +102,26 @@ impl LocalDateTime {
             - offset
     }
 
+    /// The wall-clock time in UTC of `epoch_second`, seconds since the epoch.
+    pub fn of_epoch_second(epoch_second: i64) -> Self {
+        let (year, month, day) = civil::civil_from_days(epoch_second.div_euclid(SECONDS_PER_DAY));
+        let of_day = epoch_second.rem_euclid(SECONDS_PER_DAY);
+        Self {
+            year,
+            month,
+            day,
+            hour: of_day / 3600,
+            minute: of_day / 60 % 60,
+            second: of_day % 60,
+        }
+    }
+
     fn date_text(self) -> String {
         format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
     }
 
-    fn date_time_text(self) -> String {
+    /// `yyyy-MM-dd'T'HH:mm:ss`, the form a time without a zone is stored in.
+    pub fn to_metadata_string(self) -> String {
         format!(
             "{}T{:02}:{:02}:{:02}",
             self.date_text(),
@@ -161,14 +176,9 @@ impl ParsedDate {
 
     /// `toCanonicalString`: `yyyy-MM-dd'T'HH:mm:ss'Z'` in UTC.
     pub fn to_canonical_string(&self) -> String {
-        let second = self.epoch_second();
-        let (year, month, day) = civil::civil_from_days(second.div_euclid(SECONDS_PER_DAY));
-        let of_day = second.rem_euclid(SECONDS_PER_DAY);
         format!(
-            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-            of_day / 3600,
-            of_day / 60 % 60,
-            of_day % 60
+            "{}Z",
+            LocalDateTime::of_epoch_second(self.epoch_second()).to_metadata_string()
         )
     }
 
@@ -181,7 +191,7 @@ impl ParsedDate {
         if self.offset.is_some() {
             return self.to_canonical_string();
         }
-        self.local.date_time_text()
+        self.local.to_metadata_string()
     }
 }
 

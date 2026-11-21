@@ -29,7 +29,7 @@ use rock_ridge::RockRidge;
 use volume::{Descriptor, Recognized};
 
 use super::{record_unreadable, write_file, Cut};
-use crate::compress::{decode_limit, ArchiveFile};
+use crate::compress::{decode_limit, ArchiveFile, FileTime};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::EXCEPTION_WARNING;
@@ -235,8 +235,9 @@ impl<'a> Tree<'a> {
                         let file = ArchiveFile {
                             name: path,
                             size: i64::try_from(size).expect("at most the decode limit"),
-                            modified_millis: entry.modified,
-                            created_millis: entry.created,
+                            modified: entry.modified.map(FileTime::Instant),
+                            created: entry.created.map(FileTime::Instant),
+                            accessed: None,
                             directory: false,
                             content,
                         };

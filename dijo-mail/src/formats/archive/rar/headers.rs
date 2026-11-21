@@ -78,10 +78,11 @@ pub(super) struct FileHeader {
     pub(super) unp_version: i32,
     pub(super) unp_method: u8,
     pub(super) name: Name,
-    /// `getMTime()` and `getCTime()` in milliseconds since the epoch, their DOS times read as
-    /// wall-clock times in UTC, none where a DOS time is out of range.
+    /// `getMTime()`, `getCTime()` and `getATime()` in milliseconds since the epoch, their DOS
+    /// times read as wall-clock times in UTC, none where a DOS time is out of range.
     pub(super) modified_millis: Option<i64>,
     pub(super) created_millis: Option<i64>,
+    pub(super) accessed_millis: Option<i64>,
     /// Whether the header announced fields it does not hold, or its CRC does not match,
     /// which junrar refuses to extract.
     pub(super) broken: bool,
@@ -261,6 +262,7 @@ fn parse_file_header14(position: usize, fixed: &[u8], name: &[u8]) -> Result<Fil
         name,
         modified_millis: dos_millis(int_at(12) as i32),
         created_millis: None,
+        accessed_millis: None,
         broken: false,
     })
 }
@@ -667,6 +669,7 @@ fn parse_file_header(
     }
     let mut modified_millis = dos_millis(file_time);
     let mut created_millis = None;
+    let mut accessed_millis = None;
     if flags & LHD_EXTTIME != 0 {
         let ext_flags = if position + 1 < body.len() {
             let ext_flags = u16::from_le_bytes([body[position], body[position + 1]]);
@@ -683,7 +686,7 @@ fn parse_file_header(
         };
         modified_millis = times.next(12, Base::Header(modified_millis));
         created_millis = times.next(8, Base::Own);
-        times.next(4, Base::Own);
+        accessed_millis = times.next(4, Base::Own);
         times.next(0, Base::Own);
         broken |= times.broken;
     }
@@ -699,6 +702,7 @@ fn parse_file_header(
         name,
         modified_millis,
         created_millis,
+        accessed_millis,
         broken,
     };
     Ok((header, position.min(body.len())))

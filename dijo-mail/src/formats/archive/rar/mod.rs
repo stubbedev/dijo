@@ -20,7 +20,7 @@ use extract::Extracted;
 use headers::{Name, Unopened};
 
 use super::{entry_metadata, record_unreadable};
-use crate::compress::ArchiveFile;
+use crate::compress::{ArchiveFile, FileTime};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::Wrapping;
@@ -145,8 +145,9 @@ fn file(
     let file = ArchiveFile {
         name: name.to_owned(),
         size: header.full_unpack_size,
-        modified_millis: header.modified_millis,
-        created_millis: header.created_millis,
+        modified: header.modified_millis.map(FileTime::Local),
+        created: header.created_millis.map(FileTime::Local),
+        accessed: header.accessed_millis.map(FileTime::Local),
         directory: false,
         content,
     };

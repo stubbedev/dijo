@@ -322,3 +322,30 @@ fn writes_an_entry_cut_short_as_far_as_it_decodes_and_goes_on() {
         "{recorded:?}"
     );
 }
+
+/// An archive's file times are stored as `setInstant` and `setLocalTime` store them: an instant
+/// in UTC, a wall-clock time without a zone, and neither of a year out of `TikaDates`' bounds.
+#[test]
+fn stores_file_times_as_instants_or_wall_clock_times_within_bounds() {
+    let mut metadata = TikaMetadata::new();
+    set_file_time(
+        &mut metadata,
+        FS_MODIFIED,
+        Some(FileTime::Instant(1_614_834_368_500)),
+    );
+    set_file_time(
+        &mut metadata,
+        FS_CREATED,
+        Some(FileTime::Local(1_614_834_368_500)),
+    );
+    set_file_time(
+        &mut metadata,
+        FS_ACCESSED,
+        Some(FileTime::Instant(-62_009_370_000_000)),
+    );
+    set_file_time(&mut metadata, "fs:other", None);
+    assert_eq!(metadata.values(FS_MODIFIED), ["2021-03-04T05:06:08Z"]);
+    assert_eq!(metadata.values(FS_CREATED), ["2021-03-04T05:06:08"]);
+    assert!(metadata.values(FS_ACCESSED).is_empty());
+    assert_eq!(metadata.names().count(), 2);
+}

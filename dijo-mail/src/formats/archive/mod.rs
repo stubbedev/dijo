@@ -31,10 +31,11 @@ pub use rpm::RpmParser;
 pub use seven_z::SevenZParser;
 pub use zip::ZipParser;
 
-use crate::compress::{ArchiveFile, Limited, Undecoded};
+use crate::compress::{ArchiveFile, FileTime, Limited, Undecoded};
 use crate::formats::embedded::{record_stream_exception, Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::thrown::{Exception, Thrown};
+use crate::formats::tika_dates::{self, LocalDateTime};
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::{Decline, Failure};
 use crate::java::time::format_instant;
@@ -50,23 +51,51 @@ fn write_entry_div(xhtml: &mut Xhtml, name: &str) -> Result<(), Stop> {
     xhtml.end_element("div")
 }
 
-/// `handleEntryMetadata`: the creation and modification dates, the length and the name, the
-/// file's div written for a named one.
+/// `handleEntryMetadata`: the file-system times the archive records as instants, the length and
+/// the name, the file's div written for a named one; then those it records as wall-clock times,
+/// and the access time, as Tika's parsers set them after.
 fn entry_metadata(file: &ArchiveFile, xhtml: &mut Xhtml) -> Result<TikaMetadata, Stop> {
     let mut metadata = TikaMetadata::new();
-    if let Some(created) = file.created_millis {
-        metadata.set("dcterms:created", format_instant(created));
-    }
-    if let Some(modified) = file.modified_millis {
-        metadata.set("dcterms:modified", format_instant(modified));
-    }
+    let instant = |time: Option<FileTime>| time.filter(|time| matches!(time, FileTime::Instant(_)));
+    let local = |time: Option<FileTime>| time.filter(|time| matches!(time, FileTime::Local(_)));
+    set_file_time(&mut metadata, FS_CREATED, instant(file.created));
+    set_file_time(&mut metadata, FS_MODIFIED, instant(file.modified));
     metadata.set("Content-Length", file.size.to_string());
     if !file.name.is_empty() {
         metadata.set(RESOURCE_NAME, file.name.clone());
         metadata.set(INTERNAL_PATH, file.name.clone());
         write_entry_div(xhtml, &file.name)?;
     }
+    set_file_time(&mut metadata, FS_CREATED, local(file.created));
+    set_file_time(&mut metadata, FS_MODIFIED, local(file.modified));
+    set_file_time(&mut metadata, FS_ACCESSED, file.accessed);
     Ok(metadata)
+}
+
+/// `FileSystem.CREATED`, `MODIFIED` and `ACCESSED`.
+const FS_CREATED: &str = "fs:created";
+const FS_MODIFIED: &str = "fs:modified";
+const FS_ACCESSED: &str = "fs:accessed";
+
+/// `setInstant` and `setLocalTime`: an instant in UTC, a wall-clock time without a zone, unless
+/// its year is out of `TikaDates`' bounds, as a junk header time's often is.
+fn set_file_time(metadata: &mut TikaMetadata, name: &str, time: Option<FileTime>) {
+    let Some(time) = time else {
+        return;
+    };
+    let (FileTime::Instant(millis) | FileTime::Local(millis)) = time;
+    if !tika_dates::in_year_bounds(millis) {
+        return;
+    }
+    metadata.set(
+        name,
+        match time {
+            FileTime::Instant(millis) => format_instant(millis),
+            FileTime::Local(millis) => {
+                LocalDateTime::of_epoch_second(millis.div_euclid(1000)).to_metadata_string()
+            }
+        },
+    );
 }
 
 /// An entry whose data cannot be read whole, for `reason`: recorded as a failure of the archive

@@ -35,7 +35,7 @@ use hfs::{Found, Item, Kind, Volume, ROOT_FOLDER};
 use udif::{Partition, Unread, SECTOR};
 
 use super::{past_the_limit, record_unreadable, write_file, Cut};
-use crate::compress::{decode_limit, ArchiveFile, Decoding, Undecoded};
+use crate::compress::{decode_limit, ArchiveFile, Decoding, FileTime, Undecoded};
 use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::embedded::EXCEPTION_WARNING;
@@ -395,8 +395,9 @@ impl Walk {
         let file = ArchiveFile {
             size: i64::try_from(file.fork.size).expect("at most the decode limit"),
             name: path,
-            modified_millis: modified,
-            created_millis: created,
+            modified: modified.map(FileTime::Instant),
+            created: created.map(FileTime::Instant),
+            accessed: None,
             directory: false,
             content,
         };

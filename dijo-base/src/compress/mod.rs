@@ -109,16 +109,25 @@ fn throws(reason: impl Into<String>) -> Undecoded {
     Undecoded::Fails(reason.into())
 }
 
+/// A time an archive records for a file, in milliseconds since the epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileTime {
+    /// An instant.
+    Instant(i64),
+    /// A wall-clock time the archive records without a zone, such as a DOS time, as though in
+    /// UTC.
+    Local(i64),
+}
+
 /// A file of an archive, as the archive readers give it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveFile<'a> {
     pub name: String,
     /// `getSize`: its size, -1 where the archive does not give it before its data.
     pub size: i64,
-    /// The modification time in milliseconds since the epoch, if the archive records one.
-    pub modified_millis: Option<i64>,
-    /// The creation time in milliseconds since the epoch, if the archive records one.
-    pub created_millis: Option<i64>,
+    pub modified: Option<FileTime>,
+    pub created: Option<FileTime>,
+    pub accessed: Option<FileTime>,
     pub directory: bool,
     /// The data, none for a directory: the archive's own bytes where it stores them whole, else
     /// decoded to a spool.

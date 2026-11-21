@@ -16,7 +16,7 @@ use crate::compress::arj::{self, ArjData};
 use crate::compress::dump;
 use crate::compress::zip::stream::{Failure as ZipFailure, ZipStream};
 use crate::compress::zip::Decoded;
-use crate::compress::{ar, cpio, tar, ArchiveFile, Limited, Undecoded};
+use crate::compress::{ar, cpio, tar, ArchiveFile, FileTime, Limited, Undecoded};
 use crate::config::ParserConfigs;
 use crate::formats::embedded::record_stream_exception;
 use crate::formats::metadata::TikaMetadata;
@@ -141,8 +141,9 @@ fn read<'a>(
                     .map(|entry| ArchiveFile {
                         name: entry.name,
                         size: entry.size,
-                        modified_millis: Some(entry.modified_millis),
-                        created_millis: None,
+                        modified: Some(FileTime::Instant(entry.modified_millis)),
+                        created: None,
+                        accessed: None,
                         directory: entry.directory,
                         content: entry.content,
                     })
@@ -164,8 +165,9 @@ fn read_arj<'a>(input: &'a [u8], pages: Pages<'a>) -> Result<Package<'a>, arj::U
             data => Packaged::Read(ArchiveFile {
                 name: entry.name,
                 size: entry.size,
-                modified_millis: entry.modified_millis,
-                created_millis: None,
+                modified: entry.modified,
+                created: None,
+                accessed: None,
                 directory: entry.directory,
                 content: match data {
                     ArjData::Stored(bytes) => crate::input::Input::Within(bytes, pages),
@@ -216,10 +218,11 @@ fn read_zip<'a>(
         let file = |content| ArchiveFile {
             name: entry.name.clone(),
             size: entry.size,
-            modified_millis: entry
-                .modified()
-                .map(|modified| modified.seconds * 1000 + i64::from(modified.nanos / 1_000_000)),
-            created_millis: None,
+            modified: entry.modified().map(|modified| {
+                FileTime::Instant(modified.seconds * 1000 + i64::from(modified.nanos / 1_000_000))
+            }),
+            created: None,
+            accessed: None,
             directory: false,
             content,
         };

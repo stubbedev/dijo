@@ -11,7 +11,7 @@ use std::cell::Cell;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::rc::Rc;
 
-use super::{ascii, throws, ArchiveFile, Undecoded};
+use super::{ascii, throws, ArchiveFile, FileTime, Undecoded};
 use crate::input::{Input, Pages};
 
 /// The files of the `ar` archive `data`, whose pages are `pages`, each file's data in place, or
@@ -40,8 +40,9 @@ pub fn files<'a>(data: &'a [u8], pages: Pages<'a>) -> Result<Vec<ArchiveFile<'a>
         files.push(ArchiveFile {
             name,
             size,
-            modified_millis: modified.checked_mul(1000),
-            created_millis: None,
+            modified: modified.checked_mul(1000).map(FileTime::Instant),
+            created: None,
+            accessed: None,
             directory: false,
             content: Input::Within(&data[start..end], pages),
         });

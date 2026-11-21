@@ -3,12 +3,14 @@
 //! what `ZipArchiveEntry` reports of them: names and comments with their Unicode extra fields,
 //! sizes, CRC, attributes and times.
 
-use super::extra::{self, ExtraFields, Field, Instant, Times};
+use std::num::NonZeroU32;
+
+use super::extra::{self, ExtraFields, Field, Instant, Instants, Times};
 use super::{
     decode_into, decode_name, decompresses, inflate_into, method_name, u16_at, u32_at, u64_at,
     Content, Corrupt, Decoded, Spooled, CFH_SIG, DEFLATED, LFH_SIG, STORED, XZ, ZSTD,
 };
-use crate::compress::{crc32, Decoding, Held, Undecoded};
+use crate::compress::{crc32, Decoding, FileTime, Held, Undecoded};
 use crate::input::Pages;
 
 const EOCD_SIG: [u8; 4] = *b"PK\x05\x06";
@@ -54,7 +56,19 @@ pub struct ZipEntry {
     pub size: i64,
     pub(super) external_attributes: i64,
     pub(super) times: Times,
+    /// The times of the extra fields, none where they hold none, which most entries' do not.
+    pub(super) instants: Option<Box<Instants>>,
+    /// The DOS time of the entry's local header, where it can be read and is a valid date.
+    pub(super) local_dos_time: Option<NonZeroU32>,
     pub(super) data_offset: i64,
+}
+
+/// The file-system times `ZipParser.setEntryTimes` gives an entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntryTimes {
+    pub modified: Option<FileTime>,
+    pub created: Option<FileTime>,
+    pub accessed: Option<FileTime>,
 }
 
 impl ZipEntry {
@@ -132,6 +146,30 @@ impl ZipEntry {
     pub fn created(&self) -> Option<Instant> {
         self.times.created
     }
+
+    /// `ZipParser.setEntryTimes`: the modification time of the extended timestamp or NTFS
+    /// field as an instant, else the local header's DOS time, else the central directory's, as
+    /// a wall-clock time; and the creation and access times of those fields.
+    pub fn file_times(&self) -> EntryTimes {
+        let instant = |time: Option<Instant>| {
+            time.map(|time| {
+                FileTime::Instant(time.seconds * 1000 + i64::from(time.nanos / 1_000_000))
+            })
+        };
+        let instants = self.instants.as_deref().copied().unwrap_or_default();
+        let local_dos = self.local_dos_time.map(|dos| i64::from(dos.get()));
+        let modified = instant(instants.modified).or_else(|| {
+            local_dos
+                .or(Some(self.dos_time))
+                .and_then(crate::compress::dos_millis)
+                .map(FileTime::Local)
+        });
+        EntryTimes {
+            modified,
+            created: instant(instants.created),
+            accessed: instant(instants.accessed),
+        }
+    }
 }
 
 /// An archive `ZipFile` opened.
@@ -167,6 +205,24 @@ impl<'a> Cursor<'a> {
         self.position = target;
         Ok(())
     }
+}
+
+/// `ZipParser.readDosTime`: the DOS time of the local header at `offset`, where the header is
+/// there and its date valid.
+fn local_dos_time(data: &[u8], offset: i64) -> Option<NonZeroU32> {
+    let header = data.get(usize::try_from(offset).ok()?..)?.get(..14)?;
+    if header[..4] != LFH_SIG {
+        return None;
+    }
+    let dos = u32::from(u16_at(header, 12)) << 16 | u32::from(u16_at(header, 10));
+    crate::compress::dos_millis(i64::from(dos))?;
+    NonZeroU32::new(dos)
+}
+
+/// The times of `fields`, boxed where there are any.
+pub(super) fn boxed_instants(fields: &ExtraFields) -> Result<Option<Box<Instants>>> {
+    let instants = fields.instants()?;
+    Ok((instants != Instants::default()).then(|| Box::new(instants)))
 }
 
 /// The raw data of each field of an extra field block, for the ZIP64 field the sizes come from.
@@ -284,6 +340,7 @@ impl<'a> ZipFile<'a> {
         let extra = cursor.read(extra_length)?;
         let mut times = Times::default();
         let fields = ExtraFields::from_central(extra, &mut times)?;
+        let instants = boxed_instants(&fields)?;
         if let Some(z64) = zip64_field(extra) {
             let wanted = [
                 size == ZIP64_MAGIC,
@@ -341,6 +398,8 @@ impl<'a> ZipFile<'a> {
                 size,
                 external_attributes,
                 times,
+                instants,
+                local_dos_time: None,
                 data_offset: 0,
             },
             fields,
@@ -370,6 +429,8 @@ impl<'a> ZipFile<'a> {
         local.skip(i64::from(name_length))?;
         let local_extra = local.read(usize::from(extra_length))?;
         fields.merge_local(local_extra, &mut entry.times)?;
+        entry.instants = boxed_instants(&fields)?;
+        entry.local_dos_time = local_dos_time(data, local_header_offset);
         if entry.name_source == NameSource::NameWithEfsFlag {
             return Ok(entry);
         }
@@ -604,5 +665,112 @@ pub mod tests {
         let file = ZipFile::open(&data).unwrap();
         let entry = file.entry("a").unwrap().clone();
         assert_eq!(file.read(&entry).unwrap().bytes().len(), 5000);
+    }
+
+    #[cfg(test)]
+    mod times {
+        use super::super::*;
+
+        /// A DOS time of `year`, `month`, `day`, `hour`, `minute` and `second`.
+        fn dos(year: u32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> u32 {
+            (year - 1980) << 25 | month << 21 | day << 16 | hour << 11 | minute << 5 | (second / 2)
+        }
+
+        /// An archive of one stored entry `x` of one byte, its local and central headers holding
+        /// the DOS times and extra fields given.
+        fn dated(local: (u32, &[u8]), central: (u32, &[u8])) -> Vec<u8> {
+            let data = b"x";
+            let crc = crc32(data);
+            let header = |dos: u32| {
+                let mut fields = Vec::new();
+                fields.extend_from_slice(&0u16.to_le_bytes());
+                fields.extend_from_slice(&STORED.to_le_bytes());
+                fields.extend_from_slice(&dos.to_le_bytes());
+                fields.extend_from_slice(&crc.to_le_bytes());
+                fields.extend_from_slice(&1u32.to_le_bytes());
+                fields.extend_from_slice(&1u32.to_le_bytes());
+                fields
+            };
+            let mut archive = LFH_SIG.to_vec();
+            archive.extend_from_slice(&20u16.to_le_bytes());
+            archive.extend(header(local.0));
+            archive.extend_from_slice(&1u16.to_le_bytes());
+            archive.extend_from_slice(&(local.1.len() as u16).to_le_bytes());
+            archive.push(b'x');
+            archive.extend_from_slice(local.1);
+            archive.extend_from_slice(data);
+            let central_at = archive.len();
+            archive.extend_from_slice(&CFH_SIG);
+            archive.extend_from_slice(&[20, 0, 20, 0]);
+            archive.extend(header(central.0));
+            archive.extend_from_slice(&1u16.to_le_bytes());
+            archive.extend_from_slice(&(central.1.len() as u16).to_le_bytes());
+            archive.extend_from_slice(&[0; 14]);
+            archive.push(b'x');
+            archive.extend_from_slice(central.1);
+            let central_size = archive.len() - central_at;
+            archive.extend_from_slice(b"PK\x05\x06\0\0\0\0\x01\0\x01\0");
+            archive.extend_from_slice(&(central_size as u32).to_le_bytes());
+            archive.extend_from_slice(&(central_at as u32).to_le_bytes());
+            archive.extend_from_slice(&[0, 0]);
+            archive
+        }
+
+        fn times(archive: &[u8]) -> EntryTimes {
+            ZipFile::open(archive).unwrap().entries()[0].file_times()
+        }
+
+        /// 2021-03-04 05:06:08, as a wall-clock time in milliseconds since the epoch.
+        const MARCH_4: i64 = 1_614_834_368_000;
+
+        #[test]
+        fn dates_an_entry_by_its_local_header_dos_time_else_the_central_one() {
+            let march = dos(2021, 3, 4, 5, 6, 8);
+            let june = dos(2022, 6, 1, 0, 0, 0);
+            assert_eq!(
+                times(&dated((march, &[]), (june, &[]))),
+                EntryTimes {
+                    modified: Some(FileTime::Local(MARCH_4)),
+                    created: None,
+                    accessed: None,
+                }
+            );
+            let invalid = dos(2021, 0, 4, 5, 6, 8);
+            assert_eq!(
+                times(&dated((invalid, &[]), (march, &[]))).modified,
+                Some(FileTime::Local(MARCH_4))
+            );
+        }
+
+        #[test]
+        fn dates_an_entry_by_its_extended_timestamp_else_its_ntfs_times_as_instants() {
+            let march = dos(2021, 3, 4, 5, 6, 8);
+            let mut stamp = vec![0x55, 0x54, 13, 0, 0b111];
+            for seconds in [1_000_000_000u32, 1_100_000_000, 1_200_000_000] {
+                stamp.extend_from_slice(&seconds.to_le_bytes());
+            }
+            let ntfs_time = |seconds: u64| (seconds + 11_644_473_600) * 10_000_000;
+            let mut ntfs = vec![0x0A, 0x00, 32, 0, 0, 0, 0, 0, 1, 0, 24, 0];
+            for time in [ntfs_time(1_300_000_000), ntfs_time(1_400_000_000), 0] {
+                ntfs.extend_from_slice(&time.to_le_bytes());
+            }
+            let both = [stamp.clone(), ntfs.clone()].concat();
+            assert_eq!(
+                times(&dated((march, &both), (march, &[]))),
+                EntryTimes {
+                    modified: Some(FileTime::Instant(1_000_000_000_000)),
+                    accessed: Some(FileTime::Instant(1_100_000_000_000)),
+                    created: Some(FileTime::Instant(1_200_000_000_000)),
+                }
+            );
+            assert_eq!(
+                times(&dated((march, &ntfs), (march, &[]))),
+                EntryTimes {
+                    modified: Some(FileTime::Instant(1_300_000_000_000)),
+                    accessed: Some(FileTime::Instant(1_400_000_000_000)),
+                    created: None,
+                }
+            );
+        }
     }
 }

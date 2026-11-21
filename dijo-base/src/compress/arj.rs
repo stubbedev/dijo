@@ -9,7 +9,7 @@
 //! either, its `&&` where `||` was meant (#184). A DOS time is read as a wall-clock time in UTC,
 //! where commons-compress reads it in the JVM's time zone.
 
-use super::{crc32, dos_millis, throws, Undecoded};
+use super::{crc32, dos_millis, throws, FileTime, Undecoded};
 
 const MAGIC: [u8; 2] = [0x60, 0xEA];
 /// The largest basic header the stream reads, past which it looks for another.
@@ -44,8 +44,9 @@ pub struct ArjEntry<'a> {
     pub directory: bool,
     /// `getSize`: the original size.
     pub size: i64,
-    /// `getLastModifiedDate`, in milliseconds since the epoch; none for a DOS time out of range.
-    pub modified_millis: Option<i64>,
+    /// `getLastModifiedDate`: an instant on a Unix host, else a DOS time; none for a DOS time
+    /// out of range.
+    pub modified: Option<FileTime>,
     pub data: ArjData<'a>,
 }
 
@@ -249,16 +250,16 @@ impl<'a> Stream<'a> {
         } else {
             ArjData::Compressed
         };
-        let modified_millis = if host == HOST_UNIX || host == HOST_NEXT {
-            Some(i64::from(modified as i32) * 1000)
+        let modified = if host == HOST_UNIX || host == HOST_NEXT {
+            Some(FileTime::Instant(i64::from(modified as i32) * 1000))
         } else {
-            dos_millis(i64::from(modified))
+            dos_millis(i64::from(modified)).map(FileTime::Local)
         };
         Ok(Some(ArjEntry {
             name,
             directory: file_type == FILE_TYPE_DIRECTORY,
             size: i64::from(original_size),
-            modified_millis,
+            modified,
             data,
         }))
     }
@@ -356,7 +357,11 @@ pub mod tests {
             ]
         );
         assert_eq!(entries[1].size, 11);
-        assert!(entries[1].modified_millis.is_some());
+        assert_eq!(
+            entries[1].modified,
+            Some(FileTime::Local(1_614_879_260_000)),
+            "an MS-DOS archive's DOS time is a wall-clock time"
+        );
     }
 
     #[test]

@@ -12,8 +12,9 @@
 
 use std::collections::HashSet;
 
-use super::{record_unreadable, write_entry_div, Cut};
-use crate::compress::zip::extra::Instant;
+use super::{
+    record_unreadable, set_file_time, write_entry_div, Cut, FS_ACCESSED, FS_CREATED, FS_MODIFIED,
+};
 use crate::compress::zip::file::{self as zip_file, NameSource, ZipEntry, ZipFile};
 use crate::compress::zip::salvage::{salvage, Unsalvaged};
 use crate::compress::zip::stream::ZipStream;
@@ -29,7 +30,6 @@ use crate::formats::metadata::TikaMetadata;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages, Paging};
-use crate::java::time::instant_string;
 use crate::mime::{Key, MediaType};
 use crate::text::charset;
 
@@ -624,10 +624,6 @@ const TRUNCATED: &str = "Truncated ZIP file: its data is cut short or corrupt";
 const TRUNCATED_SEGMENT: &str = "Truncated ZIP file: its data ends with the archive, as the \
                                  last entry of a split archive's segment does";
 
-fn instant(time: Instant) -> String {
-    instant_string(time.seconds, time.nanos)
-}
-
 /// `buildEntryMetadata`: the entry's name and path, times, sizes, method, CRC, Unix mode,
 /// platform, version and comment.
 fn entry_metadata(entry: &ZipEntry, name: &str) -> TikaMetadata {
@@ -636,12 +632,10 @@ fn entry_metadata(entry: &ZipEntry, name: &str) -> TikaMetadata {
         metadata.set(RESOURCE_NAME, name);
         metadata.set(INTERNAL_PATH, name);
     }
-    if let Some(created) = entry.created() {
-        metadata.set("dcterms:created", instant(created));
-    }
-    if let Some(modified) = entry.modified() {
-        metadata.set("dcterms:modified", instant(modified));
-    }
+    let times = entry.file_times();
+    set_file_time(&mut metadata, FS_MODIFIED, times.modified);
+    set_file_time(&mut metadata, FS_CREATED, times.created);
+    set_file_time(&mut metadata, FS_ACCESSED, times.accessed);
     if entry.size >= 0 {
         metadata.set("Content-Length", entry.size.to_string());
         metadata.set("zip:uncompressed-size", entry.size.to_string());

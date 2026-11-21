@@ -347,6 +347,51 @@ fn reparse_local(existing: &Field, data: &[u8]) -> Field {
     }
 }
 
+/// The times `ZipParser.setEntryTimes` takes from an entry's extra fields: the extended
+/// timestamp field's, else the NTFS field's that are not zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Instants {
+    pub(crate) modified: Option<Instant>,
+    pub(crate) created: Option<Instant>,
+    pub(crate) accessed: Option<Instant>,
+}
+
+impl ExtraFields {
+    /// The times the extended timestamp field flags, else those of the NTFS field.
+    pub(crate) fn instants(&self) -> Result<Instants, Corrupt> {
+        let stamped = match self.get(EXTENDED_TIMESTAMP) {
+            Some(Field::ExtendedTimestamp {
+                modify,
+                access,
+                create,
+            }) => [*modify, *access, *create],
+            _ => [None; 3],
+        };
+        let ntfs = match self.get(NTFS) {
+            Some(Field::Ntfs {
+                modify,
+                access,
+                create,
+            }) => [*modify, *access, *create],
+            _ => [0; 3],
+        };
+        let pick = |index: usize| -> Result<Option<Instant>, Corrupt> {
+            if let Some(seconds) = stamped[index] {
+                return Ok(Some(Instant::from_seconds(i64::from(seconds))));
+            }
+            match ntfs[index] {
+                0 => Ok(None),
+                time => ntfs_instant(time).map(Some),
+            }
+        };
+        Ok(Instants {
+            modified: pick(0)?,
+            accessed: pick(1)?,
+            created: pick(2)?,
+        })
+    }
+}
+
 /// `FileTimes.ntfsTimeToFileTime`, whose exact addition throws past `long`'s range.
 fn ntfs_instant(ntfs: u64) -> Result<Instant, Corrupt> {
     let hundreds = (ntfs as i64)

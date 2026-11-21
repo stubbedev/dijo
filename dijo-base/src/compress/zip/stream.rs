@@ -13,7 +13,7 @@
 use std::ops::Range;
 
 use super::extra::{self, ExtraFields, Times};
-use super::file::{entry_name, unicode_text, NameSource, ZipEntry};
+use super::file::{boxed_instants, entry_name, unicode_text, NameSource, ZipEntry};
 use super::{
     decode_into, decode_name, decoded, decompresses, inflate64_into, inflate_into, u16_at, u32_at,
     Content, Decoded, Spooled, CFH_SIG, DEFLATE64, DEFLATED, LFH_SIG, STORED, XZ, ZSTD,
@@ -185,6 +185,7 @@ impl<'a> ZipStream<'a> {
         let extra = self.bytes(header_at + 30 + name_length, extra_length)?;
         let mut times = Times::default();
         let fields = ExtraFields::from_central(extra, &mut times).map_err(|_| Failure::Io)?;
+        let instants = boxed_instants(&fields).map_err(|_| Failure::Io)?;
         let mut name = entry_name(decode_name(raw_name), version);
         let mut name_source = if flags & 0x0800 != 0 {
             NameSource::NameWithEfsFlag
@@ -246,6 +247,8 @@ impl<'a> ZipStream<'a> {
             size: current.size,
             external_attributes: 0,
             times,
+            instants,
+            local_dos_time: None,
             data_offset: current.data_start as i64,
         };
         self.current = Some(current);

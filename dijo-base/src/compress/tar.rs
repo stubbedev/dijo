@@ -21,7 +21,7 @@ use super::tar_header::{
     normalize, sparse_structs, Header, EXTENSION_IS_EXTENDED, RECORD, SPARSE_STRUCTS_IN_EXTENSION,
 };
 use super::zip::decode_name;
-use super::{throws, ArchiveFile, Decoding, Limited, Undecoded};
+use super::{throws, ArchiveFile, Decoding, FileTime, Limited, Undecoded};
 use crate::input::{Input, Pages};
 use crate::java;
 
@@ -918,8 +918,9 @@ pub fn files<'a>(
         let file = content.map(|content| ArchiveFile {
             name: entry.name,
             size: entry.size,
-            modified_millis: Some(entry.modified_millis),
-            created_millis: None,
+            modified: Some(FileTime::Instant(entry.modified_millis)),
+            created: None,
+            accessed: None,
             directory,
             content,
         });
@@ -1003,7 +1004,13 @@ mod tests {
             .and_then(Limited::whole)
             .unwrap()
             .into_iter()
-            .map(|file| (file.name, file.modified_millis))
+            .map(|file| {
+                let millis = file.modified.map(|time| match time {
+                    FileTime::Instant(millis) => millis,
+                    FileTime::Local(_) => panic!("a tar entry's time is an instant"),
+                });
+                (file.name, millis)
+            })
             .collect()
     }
 

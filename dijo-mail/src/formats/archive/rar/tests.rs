@@ -102,13 +102,13 @@ fn archive_files(data: &[u8]) -> Option<Vec<ArchiveFile<'static>>> {
 }
 
 #[test]
-fn dates_entries_in_utc_and_drops_dates_out_of_range() {
+fn dates_entries_by_wall_clock_and_drops_dates_out_of_range() {
     let entries = [stored(b"a.txt", 0, b"tekst")];
     let files = archive_files(&rar(0, &entries)).unwrap();
-    assert_eq!(files[0].modified_millis, Some(1_614_834_368_000));
+    assert_eq!(files[0].modified, DOS_TIME_MILLIS);
     let february_30 = (41 << 25) | (2 << 21) | (30 << 16);
     let files = archive_files(&rar_dated(0, &entries, february_30)).unwrap();
-    assert_eq!(files[0].modified_millis, None);
+    assert_eq!(files[0].modified, None);
 }
 
 #[test]
@@ -227,16 +227,16 @@ fn rar14(main_flags: u8, entries: &[Stored14]) -> Vec<u8> {
 }
 
 /// The name, data and modification time of each file `archive_files` gives of `archive`.
-fn read_files(archive: &[u8]) -> Vec<(String, Vec<u8>, Option<i64>)> {
+fn read_files(archive: &[u8]) -> Vec<(String, Vec<u8>, Option<FileTime>)> {
     archive_files(archive)
         .expect("the port reads the archive")
         .into_iter()
-        .map(|file| (file.name, file.content.to_vec(), file.modified_millis))
+        .map(|file| (file.name, file.content.to_vec(), file.modified))
         .collect()
 }
 
-/// 2021-03-04 05:06:08 UTC, [`DOS_TIME`], in milliseconds since the epoch.
-const DOS_TIME_MILLIS: Option<i64> = Some(1_614_834_368_000);
+/// 2021-03-04 05:06:08, [`DOS_TIME`], a wall-clock time in milliseconds since the epoch.
+const DOS_TIME_MILLIS: Option<FileTime> = Some(FileTime::Local(1_614_834_368_000));
 
 #[test]
 fn reads_rar_1_4_archives_as_junrar_does() {
@@ -301,4 +301,35 @@ fn finds_the_marker_of_a_self_extracting_archive_past_its_code() {
     let mut uncorroborated = old.clone();
     uncorroborated[28..32].copy_from_slice(b"XXXX");
     assert!(headers::read(&uncorroborated).is_err());
+}
+
+/// A file header's extended times give the creation and access times, wall-clock times as
+/// junrar's `getCTime` and `getATime` read them.
+#[test]
+fn reads_the_creation_and_access_times_of_the_extended_times() {
+    let data = b"tekst";
+    let june = (42u32 << 25) | (6 << 21) | (1 << 16);
+    let mut body = Vec::new();
+    body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    body.push(2);
+    body.extend_from_slice(&crate::compress::crc32(data).to_le_bytes());
+    body.extend_from_slice(&DOS_TIME.to_le_bytes());
+    body.extend_from_slice(&[20, 0x30]);
+    body.extend_from_slice(&5u16.to_le_bytes());
+    body.extend_from_slice(&0x20u32.to_le_bytes());
+    body.extend_from_slice(b"a.txt");
+    body.extend_from_slice(&0x8880u16.to_le_bytes());
+    body.extend_from_slice(&june.to_le_bytes());
+    body.extend_from_slice(&june.to_le_bytes());
+    let mut archive = b"Rar!\x1a\x07\x00".to_vec();
+    block(&mut archive, 0x73, 0, &[0; 6]);
+    block(&mut archive, 0x74, 0x8000 | 0x1000, &body);
+    archive.extend_from_slice(data);
+    archive.extend_from_slice(&[0xc4, 0x3d, 0x7b, 0x00, 0x40, 0x07, 0x00]);
+    let files = archive_files(&archive).unwrap();
+    let june_1 = Some(FileTime::Local(1_654_041_600_000));
+    assert_eq!(files[0].modified, DOS_TIME_MILLIS);
+    assert_eq!(files[0].created, june_1);
+    assert_eq!(files[0].accessed, june_1);
 }
