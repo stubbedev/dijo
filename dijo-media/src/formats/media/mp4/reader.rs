@@ -28,6 +28,11 @@ impl Thrown {
             Self::Malformed(message) => format!("java.io.IOException: {message}"),
         }
     }
+
+    /// Whether it is an `EOFException`.
+    pub(super) fn is_end_of_file(&self) -> bool {
+        matches!(self, Self::EndOfData | Self::SkippedPastEnd { .. })
+    }
 }
 
 pub(super) type Read<T> = Result<T, Thrown>;

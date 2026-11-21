@@ -1,7 +1,8 @@
 //! `TikaMp4Reader`: the boxes of a file walked as metadata-extractor's `Mp4Reader` walks them,
 //! under Tika's limits, by `TikaMp4BoxHandler` and the media handler a track's handler box
 //! hands the rest of its media box to. An `IOException` ends the boxes it was thrown among,
-//! recorded, and the walk goes on after the box that held them, from wherever it stopped.
+//! recorded, and the walk goes on after the box that held them, from wherever it stopped. The
+//! file ending where a box would begin ends the walk unrecorded.
 
 use super::directory::{Directory, MetaTrack, Movie, Rational, Sound, Track, Video};
 use super::reader::{Bytes, Read, Stream};
@@ -100,7 +101,7 @@ impl<'a> Walk<'a> {
     }
 
     /// `processBoxes`: the boxes up to `end`, or to the end of the file, an exception among
-    /// them recorded.
+    /// them recorded, but for the `EOFException` of the file ending where a box would begin.
     fn boxes(&mut self, end: Option<u64>, handler: Handler, depth: u32) {
         if depth > MAX_BOX_DEPTH {
             self.errors(handler).push(format!(
@@ -115,54 +116,73 @@ impl<'a> Walk<'a> {
 
     fn read_boxes(&mut self, end: Option<u64>, mut handler: Handler, depth: u32) -> Read<()> {
         while end.is_none_or(|end| self.stream.position() < end) {
-            let size = self.stream.u32()?;
-            let kind = four_cc(self.stream.take(4)?);
-            let (size, header) = if size == 1 {
-                (self.stream.i64()?, 16)
-            } else {
-                (i64::from(size), 8)
-            };
-            if size > i64::from(i32::MAX) {
-                self.errors(handler).push("Box size too large.".to_owned());
-                break;
-            }
-            if size < header {
-                self.errors(handler).push("Box size too small.".to_owned());
-                break;
-            }
-            let payload_length = (size - header) as u64;
-            if self.accepts_container(handler, &kind) {
-                let container_end = self.stream.position() + payload_length;
-                let inner = self.container(handler, &kind);
-                self.boxes(Some(container_end), inner, depth + 1);
-                // The next box starts where the container ends, even when a box in it failed:
-                // metadata-extractor reads on from wherever the failure left it (#118).
-                let position = self.stream.position();
-                if position < container_end && container_end <= self.input_length {
-                    self.stream.skip(container_end - position)?;
+            let box_start = self.stream.position();
+            match self.read_box(handler, depth) {
+                Ok(Some(next)) => handler = next,
+                Ok(None) => break,
+                Err(thrown)
+                    if end.is_none()
+                        && thrown.is_end_of_file()
+                        && self.stream.position() == box_start =>
+                {
+                    break
                 }
-            } else if self.accepts_box(handler, &kind) {
-                let too_large = payload_length > MAX_BOX_SIZE;
-                if too_large || self.stream.position() + payload_length > self.input_length {
-                    let limit = if too_large {
-                        format!("maximum of {MAX_BOX_SIZE} bytes")
-                    } else {
-                        "input size".to_owned()
-                    };
-                    self.errors(handler).push(format!(
-                        "MP4 box '{kind}' payload ({payload_length} bytes) exceeds the {limit}; \
-                         skipping."
-                    ));
-                    self.stream.skip(payload_length)?;
-                } else {
-                    let payload = self.stream.take(payload_length)?;
-                    handler = self.leaf(handler, &kind, payload, size)?;
-                }
-            } else {
-                self.stream.skip(payload_length)?;
+                Err(thrown) => return Err(thrown),
             }
         }
         Ok(())
+    }
+
+    /// A box of `processBoxes`: the handler the boxes after it are read by, or `None` where its
+    /// size ends the boxes.
+    fn read_box(&mut self, handler: Handler, depth: u32) -> Read<Option<Handler>> {
+        let size = self.stream.u32()?;
+        let kind = four_cc(self.stream.take(4)?);
+        let (size, header) = if size == 1 {
+            (self.stream.i64()?, 16)
+        } else {
+            (i64::from(size), 8)
+        };
+        if size > i64::from(i32::MAX) {
+            self.errors(handler).push("Box size too large.".to_owned());
+            return Ok(None);
+        }
+        if size < header {
+            self.errors(handler).push("Box size too small.".to_owned());
+            return Ok(None);
+        }
+        let payload_length = (size - header) as u64;
+        if self.accepts_container(handler, &kind) {
+            let container_end = self.stream.position() + payload_length;
+            let inner = self.container(handler, &kind);
+            self.boxes(Some(container_end), inner, depth + 1);
+            // The next box starts where the container ends, even when a box in it failed:
+            // metadata-extractor reads on from wherever the failure left it (#118).
+            let position = self.stream.position();
+            if position < container_end && container_end <= self.input_length {
+                self.stream.skip(container_end - position)?;
+            }
+        } else if self.accepts_box(handler, &kind) {
+            let too_large = payload_length > MAX_BOX_SIZE;
+            if too_large || self.stream.position() + payload_length > self.input_length {
+                let limit = if too_large {
+                    format!("maximum of {MAX_BOX_SIZE} bytes")
+                } else {
+                    "input size".to_owned()
+                };
+                self.errors(handler).push(format!(
+                    "MP4 box '{kind}' payload ({payload_length} bytes) exceeds the {limit}; \
+                     skipping."
+                ));
+                self.stream.skip(payload_length)?;
+            } else {
+                let payload = self.stream.take(payload_length)?;
+                return self.leaf(handler, &kind, payload, size).map(Some);
+            }
+        } else {
+            self.stream.skip(payload_length)?;
+        }
+        Ok(Some(handler))
     }
 
     fn accepts_container(&self, handler: Handler, kind: &str) -> bool {
@@ -578,4 +598,90 @@ fn still_image_time(meta: &mut MetaTrack, events: &mut Vec<Event<'_>>) {
         ));
     }
     meta.key_names.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::formats::media::mp4::reader::Thrown;
+
+    fn recorded(input: &[u8]) -> Vec<Thrown> {
+        walk(input)
+            .events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Recorded(thrown) => Some(thrown),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn sized(kind: &[u8], payload: &[u8]) -> Vec<u8> {
+        let mut sized = u32::try_from(8 + payload.len())
+            .unwrap()
+            .to_be_bytes()
+            .to_vec();
+        sized.extend_from_slice(kind);
+        sized.extend_from_slice(payload);
+        sized
+    }
+
+    /// The file ending where a top-level box would begin ends the walk unrecorded, and ending
+    /// inside a box's header or payload, or where a box in a container would begin, is
+    /// recorded, as Tika 4.2.0 records it.
+    #[test]
+    fn records_the_end_of_the_file_only_inside_a_box() {
+        let file_type = sized(b"ftyp", b"isom\0\0\0\0isom");
+        assert_eq!(recorded(&file_type), []);
+        assert_eq!(
+            recorded(&[&file_type[..], b"\0\0"].concat()),
+            [Thrown::EndOfData]
+        );
+        let mut free = 100u32.to_be_bytes().to_vec();
+        free.extend_from_slice(b"free");
+        free.extend_from_slice(&[0; 10]);
+        assert_eq!(
+            recorded(&[&file_type[..], &free].concat()),
+            [Thrown::SkippedPastEnd {
+                requested: 92,
+                remained: 10
+            }]
+        );
+        let mut movie = 16u32.to_be_bytes().to_vec();
+        movie.extend_from_slice(b"moov");
+        assert_eq!(
+            recorded(&[&file_type[..], &movie].concat()),
+            [Thrown::EndOfData]
+        );
+    }
+
+    /// Tika's test files record what tika-app 4.2.0 records for them: nothing but where the
+    /// truncated one's movie header runs past its end.
+    #[test]
+    #[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+    fn records_what_tika_records_for_its_test_files() {
+        let documents = dijo_core::testing::conformance_corpus().join(
+            "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-audiovideo-module/\
+             src/test/resources/test-documents",
+        );
+        let mut files: Vec<_> = std::fs::read_dir(&documents)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.starts_with("testMP4"))
+            .collect();
+        files.sort();
+        assert_eq!(files.len(), 15);
+        for name in files {
+            let exceptions: Vec<_> = recorded(&std::fs::read(documents.join(&name)).unwrap())
+                .iter()
+                .map(Thrown::exception)
+                .collect();
+            let expected: &[&str] = if name == "testMP4_truncated.m4a" {
+                &["java.io.EOFException: Unable to skip. Requested 100 bytes but only 30 remained."]
+            } else {
+                &[]
+            };
+            assert_eq!(exceptions, expected, "{name}");
+        }
+    }
 }
