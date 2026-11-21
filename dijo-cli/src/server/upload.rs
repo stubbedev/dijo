@@ -22,14 +22,27 @@ const MAX_PART_HEADER_BYTES: usize = 16 << 10;
 pub const MAX_CONFIG_BYTES: usize = 1 << 20;
 const BUFFER_BYTES: usize = 64 << 10;
 
+/// The directory of a request's own that its document is spooled to, under whatever name the
+/// client gives it, apart from [`EMBEDDED_DIR`].
+const DOCUMENT_DIR: &str = "document";
+/// The directory of a request's own that the documents embedded in its document go to.
+const EMBEDDED_DIR: &str = "embedded";
+
 /// A request's own directory in the spool, removed with everything in it when this is dropped.
 struct SpoolDir(PathBuf);
 
 impl SpoolDir {
     async fn create(root: &Path, id: u64) -> io::Result<Self> {
-        let dir = root.join(format!("request-{id}"));
-        tokio::fs::create_dir(&dir).await?;
-        Ok(SpoolDir(dir))
+        let path = root.join(format!("request-{id}"));
+        tokio::fs::create_dir(&path).await?;
+        let dir = SpoolDir(path);
+        tokio::fs::create_dir(dir.0.join(DOCUMENT_DIR)).await?;
+        Ok(dir)
+    }
+
+    /// Where the document is spooled under the file name `file`.
+    fn document(&self, file: &str) -> PathBuf {
+        self.0.join(DOCUMENT_DIR).join(file)
     }
 }
 
@@ -51,7 +64,7 @@ pub struct Upload {
 impl Upload {
     /// A directory, inside this upload's own, for documents embedded in it.
     pub fn scratch(&self) -> PathBuf {
-        self.dir.0.join("embedded")
+        self.dir.0.join(EMBEDDED_DIR)
     }
 
     pub fn files(&self) -> Files {
@@ -223,7 +236,7 @@ pub async fn receive(
 ) -> Result<Upload, UploadError> {
     let dir = SpoolDir::create(spooling.root, spooling.id).await?;
     let upload = Upload {
-        path: dir.0.join(&name.file),
+        path: dir.document(&name.file),
         dir,
         display: name.display,
     };
@@ -325,7 +338,7 @@ pub async fn receive_multipart(
                             head.file_name.as_deref(),
                             head.content_type.as_deref(),
                         );
-                        let path = dir.0.join(&name.file);
+                        let path = dir.document(&name.file);
                         let file = tokio::fs::File::create_new(&path).await?;
                         document = Some((path, name.display));
                         Part::Document(file)

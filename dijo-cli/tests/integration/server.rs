@@ -892,6 +892,21 @@ fn a_dead_worker_process_is_answered_as_a_dead_forked_parser() {
     );
 }
 
+/// An upload named as the directory its embedded documents go to is read like any other
+/// (#395).
+#[test]
+fn an_upload_named_embedded_is_unpacked() {
+    let server = Server::start(&[]);
+    let named = [("X-Dijo-Filename", "embedded")];
+    let separate = server.post_file("/extract?format=json&embedded=separate", &named, "nested.zip");
+    assert_eq!(separate.status, 200, "{}", separate.text());
+    assert_eq!(separate.text().lines().count(), 8);
+    let disposition = [("Content-Disposition", "attachment; filename=\"embedded\"")];
+    let records = put_file(&server, "/rmeta/ignore", &disposition, "nested.zip");
+    assert_eq!(records.status, 200, "{}", records.text());
+    assert_eq!(records.json().as_array().map(Vec::len), Some(8));
+}
+
 #[test]
 fn tika_reads_and_unpacks_embedded_documents() {
     let server = Server::start(&[]);
