@@ -19,7 +19,6 @@ use std::io::{self, BufWriter, Write};
 use std::ops::Range;
 
 use super::address::{flatten, parse_address_list, Address};
-use super::date::parse_date;
 use super::handler::set_name_and_email;
 use super::structured::ContentType;
 use super::Unported;
@@ -28,6 +27,7 @@ use crate::errors::Error;
 use crate::formats::auto_detect_reader::line_ranges;
 use crate::formats::embedded::{Wrapping, EXCEPTION_WARNING};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::tika_dates;
 use crate::formats::{Decline, Difference, Failure, Footprint, Parser, Prepared};
 use crate::input::{Input, Pages, Paging, Spool};
 use crate::java::to_lower_case;
@@ -265,8 +265,8 @@ fn save(metadata: &mut TikaMetadata, line: &str) -> Result<(), Unported> {
         }
         "subject" => metadata.add("dc:subject", content),
         "date" => {
-            if let Some(date) = parse_date(content)? {
-                metadata.set("dcterms:created", date.format());
+            if let Some(date) = tika_dates::to_metadata_string(content) {
+                metadata.set("dcterms:created", date);
             }
         }
         "message-id" => metadata.set("dc:identifier", content),

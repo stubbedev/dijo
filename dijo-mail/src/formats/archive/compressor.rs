@@ -5,14 +5,16 @@
 //! than a file read whole, so the parser's memory stays bounded whatever the file's size.
 
 use super::{undecoded, within_limit, Cut};
-use crate::compress::compressor::Compressor;
+use crate::compress::compressor::{Compressor, Decoded};
 use crate::compress::gzip;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{Wrapping, INTERNAL_PATH, RESOURCE_NAME};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::tika_dates;
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::{Pages, Paging};
 use crate::java::is_blank;
+use crate::java::time::format_instant;
 use crate::Error;
 
 /// `MIMES_TO_NAME`'s compressors that the port decodes.
@@ -107,7 +109,7 @@ impl Parser for CompressorParser {
             .map_err(|reason| undecoded(&what, reason, self.tika_name()))?;
         paging.release();
         let (decoded, cut) = within_limit(what, decoded);
-        let entry = entry_metadata(decoded.file_name, metadata.get(RESOURCE_NAME));
+        let entry = entry_metadata(&decoded, metadata.get(RESOURCE_NAME));
         let content = decoded.content;
         // The document ends whatever the entry's parse does, short of the output stopping:
         // Tika leaves it open when the parse fails (#100).
@@ -135,13 +137,21 @@ fn detected_media_type(compressor: Compressor) -> Option<&'static str> {
     }
 }
 
-/// The metadata of the entry: the name in the gzip header (`extractGzipMetadata`) unless blank,
-/// else the name `setName` makes of the compressed file's `resource_name`.
-fn entry_metadata(file_name: Option<String>, resource_name: Option<&str>) -> TikaMetadata {
+/// The metadata of the entry: the gzip header's modification time unless its year is out of
+/// `TikaDates`' bounds, and its name unless blank (`extractGzipMetadata`), else the name
+/// `setName` makes of the compressed file's `resource_name`.
+fn entry_metadata(decoded: &Decoded, resource_name: Option<&str>) -> TikaMetadata {
     let mut entry = TikaMetadata::new();
-    if let Some(name) = file_name.filter(|name| !is_blank(name)) {
+    if let Some(millis) = decoded
+        .modified
+        .map(|seconds| seconds * 1000)
+        .filter(|&millis| tika_dates::in_year_bounds(millis))
+    {
+        entry.set("fs:modified", format_instant(millis));
+    }
+    if let Some(name) = decoded.file_name.as_ref().filter(|name| !is_blank(name)) {
         entry.set(INTERNAL_PATH, name.clone());
-        entry.set(RESOURCE_NAME, name);
+        entry.set(RESOURCE_NAME, name.clone());
     } else if let Some(name) = resource_name.and_then(entry_name) {
         entry.set(RESOURCE_NAME, name);
     }
@@ -196,6 +206,35 @@ mod tests {
             metadata.set(RESOURCE_NAME, name);
         }
         CompressorParser.shortfall(input, &metadata, &ParserConfigs::default())
+    }
+
+    /// A gzip member of `content` whose header holds the modification time `mtime`.
+    fn gzip_modified(content: &[u8], mtime: u32) -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder = flate2::GzBuilder::new()
+            .mtime(mtime)
+            .write(Vec::new(), flate2::Compression::default());
+        encoder.write_all(content).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn dates_the_entry_by_the_gzip_header_within_bounds() {
+        let modified = |mtime: u32| {
+            let decoded = Compressor::Gzip
+                .decode(&gzip_modified(b"text", mtime))
+                .unwrap()
+                .whole()
+                .unwrap();
+            entry_metadata(&decoded, None)
+                .get("fs:modified")
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            modified(1_577_836_800).as_deref(),
+            Some("2020-01-01T00:00:00Z")
+        );
+        assert_eq!(modified(0), None);
     }
 
     #[test]

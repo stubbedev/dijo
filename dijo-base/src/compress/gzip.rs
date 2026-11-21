@@ -47,6 +47,9 @@ pub struct Member {
     /// The original file name of the header: UTF-8 when it is valid UTF-8, else ISO-8859-1,
     /// which RFC 1952 names and commons-compress always decodes it as (#100).
     pub(crate) file_name: Option<String>,
+    /// The header's modification time in seconds since the epoch; none where it is 0, which
+    /// RFC 1952 makes no time.
+    pub(crate) modified: Option<i64>,
     pub content: Input<'static>,
 }
 
@@ -68,14 +71,22 @@ pub fn declared_size(data: &[u8]) -> Option<u64> {
 pub fn decode(data: &[u8]) -> Result<Limited<Member>, Undecoded> {
     let mut decoder = flate2::bufread::GzDecoder::new(data);
     let content = spool_limited(&mut decoder, data.len(), declared_size(data))?;
-    let file_name = decoder
-        .header()
-        .and_then(flate2::GzHeader::filename)
-        .map(|name| match std::str::from_utf8(name) {
-            Ok(name) => name.to_owned(),
-            Err(_) => name.iter().map(|&byte| char::from(byte)).collect(),
-        });
-    Ok(content.map(|content| Member { file_name, content }))
+    let header = decoder.header();
+    let file_name =
+        header
+            .and_then(flate2::GzHeader::filename)
+            .map(|name| match std::str::from_utf8(name) {
+                Ok(name) => name.to_owned(),
+                Err(_) => name.iter().map(|&byte| char::from(byte)).collect(),
+            });
+    let modified = header
+        .map(|header| i64::from(header.mtime()))
+        .filter(|&seconds| seconds != 0);
+    Ok(content.map(|content| Member {
+        file_name,
+        modified,
+        content,
+    }))
 }
 
 /// [`decode`] keeping nothing, to tell whether the first member of `data` decodes whole: how

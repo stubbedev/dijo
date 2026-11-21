@@ -11,8 +11,9 @@
 
 use std::borrow::Cow;
 
-use crate::formats::element_metadata::{set_unless_equal, ElementMetadata, Values};
+use crate::formats::element_metadata::{set_unless_equal, ElementMetadata, Values, DUBLIN_CORE_NS};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::tika_dates;
 use crate::formats::odf::{normalized_attributes, normalized_namespace, META_NS, OFFICE_NS};
 use crate::formats::xml::{self, Attribute, SaxHandler};
 use crate::formats::Failure;
@@ -75,6 +76,55 @@ impl MetaValue {
 
     fn characters(&mut self, text: &str) {
         if self.open > 0 {
+            self.buffer.push_str(text);
+        }
+    }
+}
+
+/// Tika's `DateElementHandler`: the text of the last such element, as `TikaDates` stores it, a
+/// value that is no date dropped.
+struct DateElement {
+    namespace: &'static str,
+    local_name: &'static str,
+    name: &'static str,
+    open: bool,
+    buffer: String,
+}
+
+impl DateElement {
+    fn new(namespace: &'static str, local_name: &'static str, name: &'static str) -> Self {
+        Self {
+            namespace,
+            local_name,
+            name,
+            open: false,
+            buffer: String::new(),
+        }
+    }
+
+    fn matches(&self, namespace: &str, local_name: &str) -> bool {
+        namespace == self.namespace && local_name == self.local_name
+    }
+
+    fn start(&mut self, namespace: &str, local_name: &str) {
+        if self.matches(namespace, local_name) {
+            self.open = true;
+            self.buffer.clear();
+        }
+    }
+
+    fn end(&mut self, namespace: &str, local_name: &str, metadata: &mut TikaMetadata) {
+        if !self.open || !self.matches(namespace, local_name) {
+            return;
+        }
+        self.open = false;
+        if let Some(value) = tika_dates::to_metadata_string(&self.buffer) {
+            metadata.set(self.name, value);
+        }
+    }
+
+    fn characters(&mut self, text: &str) {
+        if self.open {
             self.buffer.push_str(text);
         }
     }
@@ -161,8 +211,8 @@ const STATISTICS: [(&str, &str); 8] = [
 pub(super) struct MetaHandlers {
     depth: usize,
     dublin_core: [ElementMetadata; 10],
-    created: MetaValue,
-    modified: ElementMetadata,
+    created: DateElement,
+    modified: DateElement,
     subject: ElementMetadata,
     keyword: ElementMetadata,
     initial_creator: ElementMetadata,
@@ -186,8 +236,8 @@ impl MetaHandlers {
                 ElementMetadata::dublin_core("language", "dc:language", Values::Bag),
                 ElementMetadata::dublin_core("rights", "dc:rights", Values::Bag),
             ],
-            created: MetaValue::new("creation-date", "dcterms:created"),
-            modified: ElementMetadata::dublin_core("date", "dcterms:modified", Values::Single),
+            created: DateElement::new(META_NS, "creation-date", "dcterms:created"),
+            modified: DateElement::new(DUBLIN_CORE_NS, "date", "dcterms:modified"),
             subject: ElementMetadata::dublin_core("subject", SUBJECT, Values::Bag),
             keyword: ElementMetadata::new(META_NS, "keyword", KEYWORD, Values::Bag),
             initial_creator: ElementMetadata::new(
@@ -382,6 +432,30 @@ mod tests {
         assert_eq!(metadata.values("meta:page-count"), ["2"]);
         assert_eq!(metadata.values("xmpTPg:NPages"), ["2"]);
         assert_eq!(metadata.values("meta:word-count"), ["10"]);
+    }
+
+    #[test]
+    fn stores_the_dates_as_tika_dates_does_and_drops_what_is_no_date() {
+        let dates = |created: &str, modified: &str| {
+            let metadata = meta(&format!(
+                r#"<office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+ xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><office:meta>
+<meta:creation-date>{created}</meta:creation-date><dc:date>{modified}</dc:date>
+</office:meta></office:document-meta>"#
+            ));
+            (
+                metadata.get("dcterms:created").map(str::to_owned),
+                metadata.get("dcterms:modified").map(str::to_owned),
+            )
+        };
+        assert_eq!(
+            dates("2009-10-28T18:46:00.13", "2010-01-05T10:00:00+01:00"),
+            (
+                Some("2009-10-28T18:46:00".to_owned()),
+                Some("2010-01-05T09:00:00Z".to_owned())
+            )
+        );
+        assert_eq!(dates("not a date", "0000-00-00T00:00:00"), (None, None));
     }
 
     #[test]

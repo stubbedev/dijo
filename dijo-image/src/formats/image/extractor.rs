@@ -4,18 +4,16 @@
 //! fields, the dimensions, the GPS position and the IPTC fields Tika maps.
 
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::tika_dates;
 use crate::formats::xmp::{self, bag, text, Property};
 use crate::formats::Unported;
 use crate::java::decimal::Rounding;
 use crate::java::decimal_format::DecimalFormat;
 use crate::java::simple_date_format::SimpleDateFormat;
-use crate::java::time::{self, TimeZone};
+use crate::java::time::{self, civil, TimeZone};
 
-use super::metadata_extractor::dates::parse_gps_date;
 use super::metadata_extractor::exif::tags::*;
-use super::metadata_extractor::{
-    geo, icc, iptc, jpeg, Directory, Kind, Metadata, Thrown, Value,
-};
+use super::metadata_extractor::{geo, icc, iptc, jpeg, Directory, Kind, Metadata, Thrown, Value};
 
 pub(crate) const UNKNOWN_IMG: &str = "img:";
 const ICC: &str = "icc:";
@@ -201,11 +199,7 @@ impl<'m> Target<'m> {
 }
 
 /// `ImageMetadataExtractor.handle`: each directory through the handlers that support it.
-pub(crate) fn handle(
-    directories: &Metadata,
-    target: &mut Target,
-    zone: &TimeZone,
-) -> Result<(), Unported> {
+pub(crate) fn handle(directories: &Metadata, target: &mut Target) -> Result<(), Unported> {
     for directory in &directories.directories {
         copy_unknown_fields(directory, target)?;
         page_number(directory, target.metadata);
@@ -215,7 +209,7 @@ pub(crate) fn handle(
             }
         }
         if matches!(directory.kind, Kind::ExifIfd0 | Kind::ExifSubIfd) {
-            exif(directory, target.metadata, zone)?;
+            exif(directory, target.metadata)?;
         }
         if matches!(
             directory.kind,
@@ -338,12 +332,8 @@ fn trim_pixels(text: &str) -> Result<String, Unported> {
 }
 
 /// `ExifHandler`: dates, camera fields and the image description.
-fn exif(
-    directory: &Directory,
-    metadata: &mut TikaMetadata,
-    zone: &TimeZone,
-) -> Result<(), Unported> {
-    exif_dates(directory, metadata, zone);
+fn exif(directory: &Directory, metadata: &mut TikaMetadata) -> Result<(), Unported> {
+    exif_dates(directory, metadata);
     photo_tags(directory, metadata)?;
     if metadata.get(DESCRIPTION.name).is_none() && directory.contains(TAG_IMAGE_DESCRIPTION) {
         if let Some(description) = directory.string(TAG_IMAGE_DESCRIPTION) {
@@ -361,16 +351,31 @@ fn unspecified_zone(millis: i64) -> String {
         .expect("Tika's Exif date pattern names no zone")
 }
 
-fn exif_dates(directory: &Directory, metadata: &mut TikaMetadata, zone: &TimeZone) {
+/// `exifDate`: a date metadata-extractor read, unless its year is out of `TikaDates`' bounds, or
+/// a text, or the number `toString` writes, as `TikaDates` reads it, a value without a zone in
+/// UTC.
+fn exif_date(directory: &Directory, tag: i32) -> Option<i64> {
+    let text = match directory.object(tag)? {
+        Value::Date(millis, _) => {
+            return Some(*millis).filter(|&millis| tika_dates::in_year_bounds(millis))
+        }
+        Value::Int(value) => value.to_string(),
+        Value::Long(value) => value.to_string(),
+        value => value.text()?,
+    };
+    tika_dates::parse(&text).map(|date| date.epoch_millis())
+}
+
+fn exif_dates(directory: &Directory, metadata: &mut TikaMetadata) {
     if directory.contains(TAG_DATETIME_ORIGINAL) {
-        if let Some(original) = directory.date(TAG_DATETIME_ORIGINAL, zone) {
+        if let Some(original) = exif_date(directory, TAG_DATETIME_ORIGINAL) {
             let text = unspecified_zone(original);
             xmp::set(metadata, &CREATED, &text);
             xmp::set(metadata, &ORIGINAL_DATE, &text);
         }
     }
     if directory.contains(TAG_DATETIME) {
-        if let Some(modified) = directory.date(TAG_DATETIME, zone) {
+        if let Some(modified) = exif_date(directory, TAG_DATETIME) {
             let text = unspecified_zone(modified);
             xmp::set(metadata, &MODIFIED, &text);
             if metadata.get(CREATED.name).is_none() {
@@ -554,22 +559,32 @@ fn gps(directory: &Directory, metadata: &mut TikaMetadata) -> Result<(), Unporte
     Ok(())
 }
 
-/// `GpsDirectory.getGpsDate`.
+/// `GeotagHandler.gpsDate`: the date stamp as `TikaDates` reads it, at the time stamp's whole
+/// hours, minutes and seconds, in UTC; none where a field is out of range.
 fn gps_date(directory: &Directory) -> Option<i64> {
-    let date = directory.string(GPS_DATE_STAMP)?;
+    let stamp = directory.string(GPS_DATE_STAMP)?;
     let [hours, minutes, seconds] = directory.rationals(GPS_TIME_STAMP)? else {
         return None;
     };
-    parse_gps_date(
-        &date,
+    let day = tika_dates::parse(&stamp)?.local();
+    let (hour, minute, second) = (
         hours.int_value(),
         minutes.int_value(),
-        seconds.double_value(),
+        seconds.double_value() as i32,
+    );
+    if !(0..24).contains(&hour) || !(0..60).contains(&minute) || !(0..60).contains(&second) {
+        return None;
+    }
+    let days = civil::days_from_civil(day.year, day.month, day.day);
+    Some(
+        ((days * 24 + i64::from(hour)) * 60 + i64::from(minute)) * 60_000
+            + i64::from(second) * 1000,
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::metadata_extractor::Rational;
     use super::*;
 
     /// An ICC tag metadata-extractor throws an `IndexOutOfBoundsException` describing is left
@@ -585,5 +600,54 @@ mod tests {
         copy_unknown_fields(&directory, &mut Target::new(&mut metadata)).unwrap();
         assert_eq!(metadata.values("icc:CMM Type"), ["lcms"]);
         assert!(metadata.names().all(|name| !name.contains("Copyright")));
+    }
+
+    /// Exif dates are read as `TikaDates` reads them, a date without a zone in UTC, and kept
+    /// only within its years.
+    #[test]
+    fn reads_exif_dates_as_tika_dates_does() {
+        let date = |value: Value| {
+            let mut directory = Directory::new(Kind::ExifSubIfd);
+            directory.set(TAG_DATETIME_ORIGINAL, value);
+            exif_date(&directory, TAG_DATETIME_ORIGINAL).map(unspecified_zone)
+        };
+        assert_eq!(
+            date(Value::Text("2009:08:11 09:09:45".to_owned())).as_deref(),
+            Some("2009-08-11T09:09:45")
+        );
+        assert_eq!(
+            date(Value::Text("2009-08-11T09:09:45+02:00".to_owned())).as_deref(),
+            Some("2009-08-11T07:09:45")
+        );
+        assert_eq!(
+            date(Value::Text("2009".to_owned())).as_deref(),
+            Some("2009-01-01T12:00:00")
+        );
+        assert_eq!(
+            date(Value::Int(2009)).as_deref(),
+            Some("2009-01-01T12:00:00")
+        );
+        assert_eq!(date(Value::Text("0000:00:00 00:00:00".to_owned())), None);
+        assert_eq!(date(Value::Text("2009:02:30 09:09:45".to_owned())), None);
+    }
+
+    /// The GPS date is the date stamp at the time stamp's whole seconds, in UTC.
+    #[test]
+    fn reads_gps_dates_at_whole_seconds() {
+        let date = |stamp: &str, time: [(i64, i64); 3]| {
+            let mut directory = Directory::new(Kind::Gps);
+            directory.set(GPS_DATE_STAMP, Value::Text(stamp.to_owned()));
+            directory.set(
+                GPS_TIME_STAMP,
+                Value::Rationals(time.iter().map(|&(n, d)| Rational::new(n, d)).collect()),
+            );
+            gps_date(&directory).map(time::format_instant)
+        };
+        assert_eq!(
+            date("2018:02:05", [(7, 1), (11, 1), (4307, 100)]).as_deref(),
+            Some("2018-02-05T07:11:43Z")
+        );
+        assert_eq!(date("bad", [(7, 1), (11, 1), (43, 1)]), None);
+        assert_eq!(date("2018:02:05", [(25, 1), (11, 1), (43, 1)]), None);
     }
 }

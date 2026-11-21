@@ -125,8 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_creation_dates_as_utc_wall_clock_times() {
-        // Tika reads them in the JVM's default zone, and makes something of any fields (#65).
+    fn reads_creation_dates_as_written_without_a_zone() {
         let created = |info: &str| {
             let xhtml = extract(format!(r"{{\rtf1\ansi{{\info{info}}}\pard a\par}}").as_bytes());
             let start = xhtml.find(r#"<meta name="dcterms:created" content=""#)?;
@@ -136,26 +135,32 @@ mod tests {
         let date = |text: &str| Some(text.to_owned());
         assert_eq!(
             created(r"{\creatim\yr2006\mo3\dy1\hr10\min15}"),
-            date("2006-03-01T10:15:00Z")
+            date("2006-03-01T10:15:00")
         );
         assert_eq!(
             created(r"{\creatim\yr2024\mo3\dy31\hr2\min30}"),
-            date("2024-03-31T02:30:00Z")
+            date("2024-03-31T02:30:00")
+        );
+        assert_eq!(created(r"{\creatim\yr2024\mo2\dy29}"), date("2024-02-29"));
+        assert_eq!(
+            created(r"{\creatim\yr2024\mo2\dy29\hr-5\min7}"),
+            date("2024-02-29")
         );
         assert_eq!(
-            created(r"{\creatim\yr2024\mo2\dy29}"),
-            date("2024-02-29T00:00:00Z")
+            created(r"{\creatim\yr2024\mo2\dy29\hr5\min-7}"),
+            date("2024-02-29T05:00:00")
         );
         assert_eq!(created(r"{\creatim\yr2023\mo2\dy29}"), None);
+        assert_eq!(created(r"{\creatim\yr999\mo1\dy1}"), None);
+        assert_eq!(created(r"{\creatim\yr2201\mo1\dy1}"), None);
         assert_eq!(created(r"{\creatim\yr1500\mo14\dy-3\hr30\min-5}"), None);
         assert_eq!(created(r"{\creatim\yr2024\mo1\dy1\hr24}"), None);
         assert_eq!(created(r"{\creatim}"), None);
         assert_eq!(created(r"{\creatim\yr0\mo0\dy0\hr0\min0}"), None);
-        // Each date group names its own fields: the revision date's do not fill in creation's.
         assert_eq!(created(r"{\revtim\yr2007\mo4\dy2}{\creatim\hr1}"), None);
         assert_eq!(
             created(r"{\creatim\yr2007\mo4\dy2}{\revtim\yr2008\mo5\dy3}"),
-            date("2007-04-02T00:00:00Z")
+            date("2007-04-02")
         );
     }
 }

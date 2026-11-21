@@ -15,6 +15,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::tika_dates;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
@@ -153,7 +154,9 @@ fn extract_comments(comments: &Comments, xhtml: &mut Xhtml) -> Result<Vec<Pictur
     set_nullable(metadata, "xmpDM:artist", artist);
     set_nullable(metadata, "xmpDM:album", album);
     set_nullable(metadata, "xmpDM:genre", genre);
-    set_nullable(metadata, "xmpDM:releaseDate", date);
+    if let Some(date) = date.and_then(tika_dates::to_metadata_string_keep_partial) {
+        metadata.set("xmpDM:releaseDate", date);
+    }
     metadata.set("xmp:CreatorTool", comments.vendor.clone());
     metadata.set("vorbis:vendor", comments.vendor.clone());
     if let Some(copyright) = first(&fields, "copyright") {

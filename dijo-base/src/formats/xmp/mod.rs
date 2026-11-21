@@ -1,17 +1,18 @@
 //! Tika's `XmpExtractor` from `tika-parser-xmp-commons`, which the PDF and image parsers share:
 //! an XMP packet flattened into leaves as `XmpSaxFlattener` flattens it, mapped to Tika's
-//! metadata properties, its dates normalized as `XmpDates` normalizes them with PDFBox's
-//! `DateConverter` ([`date`]), and unmapped leaves kept under `xmp-raw:`.
+//! metadata properties, its dates normalized as `XmpDates` normalizes them with `TikaDates`, and
+//! unmapped leaves kept under `xmp-raw:`. PDFBox's `DateConverter`, which the PDF parsers read
+//! dates with, is [`date`].
 
 use std::collections::{BTreeMap, HashMap};
 
 pub mod date;
 
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::tika_dates;
 use crate::formats::xml::{self, Attribute, SaxHandler, StartTag};
 use crate::formats::Failure;
 use crate::formats::Unported;
-use crate::java::time::format_instant;
 
 /// Where the properties of an XMP packet are written: a document's metadata, or a recording
 /// of what its extraction writes.
@@ -549,28 +550,15 @@ impl SaxHandler for Flattener {
     }
 }
 
-/// `XmpDates.normalize`: a date's instant as Tika writes dates, if PDFBox reads it, or else
-/// Tika's `DateUtils`.
-fn normalize_date(raw: &str) -> Result<Option<String>, Unported> {
-    let trimmed = crate::java::trim(raw);
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    let millis = match date::to_calendar(trimmed)? {
-        Some(millis) => Some(millis),
-        None => date::try_to_parse(trimmed)?,
-    };
-    Ok(millis.map(format_instant))
-}
-
-/// `valueFor`: a date property's value normalized when it reads as a date.
-fn value_for(property: &Property, value: &str) -> Result<String, Unported> {
+/// `valueFor`: a date property's value as `XmpDates.normalize` stores it, when it reads as a
+/// date.
+fn value_for(property: &Property, value: &str) -> String {
     if property.date {
-        if let Some(normalized) = normalize_date(value)? {
-            return Ok(normalized);
+        if let Some(normalized) = tika_dates::to_metadata_string(value) {
+            return normalized;
         }
     }
-    Ok(value.to_owned())
+    value.to_owned()
 }
 
 /// `Metadata.set(Property, String)`.
@@ -613,7 +601,7 @@ pub fn add(metadata: &mut dyn Sink, property: &Property, value: &str) -> Result<
 
 /// `emit`.
 fn emit(metadata: &mut dyn Sink, property: &Property, value: &str) -> Result<(), Unported> {
-    let value = value_for(property, value)?;
+    let value = value_for(property, value);
     if property.multi {
         add(metadata, property, &value)
     } else {
@@ -685,7 +673,7 @@ fn emit_history(leaves: &[Leaf], metadata: &mut dyn Sink, decode: Decoder) -> Re
         }
         let local = leaf.local_name();
         if local == "when" {
-            if let Some(normalized) = normalize_date(&value)? {
+            if let Some(normalized) = tika_dates::to_metadata_string(&value) {
                 value = normalized;
             }
         }
@@ -753,7 +741,7 @@ fn emit_lang_alternatives(
                     let lang = alternative.lang.as_deref().unwrap_or_default();
                     metadata.add(
                         &format!("{}:{lang}", property.name),
-                        value_for(property, &value)?,
+                        value_for(property, &value),
                     );
                 }
             }
@@ -788,8 +776,9 @@ fn map_leaf(leaf: &Leaf, metadata: &mut dyn Sink, decode: Decoder) -> Result<(),
     let top_level = !leaf.path.contains('/');
     if let Some(fill) = fill_if_absent(namespace, local) {
         if top_level && metadata.get(fill.name).is_none() {
-            let value = value_for(&fill, &value)?;
-            set(metadata, &fill, &value);
+            if let Some(normalized) = tika_dates::to_metadata_string(&value) {
+                set(metadata, &fill, &normalized);
+            }
         }
     }
     if let (true, Some(properties)) = (top_level, table(namespace, local)) {

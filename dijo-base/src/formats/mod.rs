@@ -17,6 +17,7 @@ pub mod ole10_native;
 pub mod secure;
 pub mod sheet_table;
 pub mod thrown;
+pub mod tika_dates;
 pub mod wmf_placeable;
 pub mod xhtml;
 pub mod xml;

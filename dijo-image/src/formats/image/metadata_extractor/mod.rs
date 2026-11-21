@@ -300,7 +300,7 @@ impl Value {
     }
 
     /// The text of a `String` or `StringValue`.
-    fn text(&self) -> Option<String> {
+    pub(crate) fn text(&self) -> Option<String> {
         match self {
             Value::Text(text) => Some(text.clone()),
             Value::StringValue(value) => Some(value.to_string()),
@@ -633,17 +633,6 @@ impl Directory {
                 ..
             } => jpeg::component_text(*sampling, *quantization),
         })
-    }
-
-    /// `getDate` with the date patterns metadata-extractor tries, in Java's default time zone.
-    pub(crate) fn date(&self, tag: i32, zone: &TimeZone) -> Option<i64> {
-        match self.object(tag)? {
-            Value::Date(millis, _) => Some(*millis),
-            value @ (Value::Text(_) | Value::StringValue(_)) => {
-                dates::parse_text_date(&value.text()?, zone)
-            }
-            _ => None,
-        }
     }
 }
 

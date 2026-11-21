@@ -14,6 +14,7 @@ use crate::config::ParserConfigs;
 use crate::errors::Error;
 use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::tika_dates;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{Decline, Failure, Footprint, Parser, Prepared};
 use crate::input::Pages;
@@ -470,7 +471,9 @@ fn write(read: &TagsAndAudio, xhtml: &mut Xhtml) -> Result<(), Failure> {
             "xmpDM:compilation",
             first(tags, |tag| &tag.compilation),
         );
-        set_nullable(metadata, "xmpDM:releaseDate", year);
+        if let Some(date) = year.and_then(tika_dates::to_metadata_string_keep_partial) {
+            metadata.set("xmpDM:releaseDate", date);
+        }
         set_nullable(metadata, "xmpDM:genre", genre);
         let tag_comments = tags
             .iter()

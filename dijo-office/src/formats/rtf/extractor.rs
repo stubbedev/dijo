@@ -11,11 +11,12 @@ use super::embedded::{hex_value, Embedded, Handed, Thrown};
 use super::input::Input;
 use crate::formats::embedded::{record_exception, record_stream_exception, Wrapping};
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::tika_dates;
 use crate::formats::xhtml::{Stop, Xhtml};
 use crate::formats::Failure;
 use crate::input::Pages;
 use crate::java;
-use crate::java::time::{civil, format_instant};
+use crate::java::time::civil;
 use crate::text::charset::Charset;
 
 /// The UTF-16 units `TextExtractor` decodes into at a time, each batch written as one
@@ -293,15 +294,14 @@ struct DateParts {
 }
 
 impl DateParts {
-    /// The date as an instant, its fields read as a wall-clock time in UTC; none when the year,
-    /// month or day is missing or any field is out of range.
-    ///
-    /// Tika reads the fields with a lenient `Calendar` in the JVM's default time zone, so the
-    /// same document gives different instants on machines in different zones, an empty group
-    /// gives year 0 (-0001-11-27 in Copenhagen) and out-of-range fields roll over (#65).
-    fn instant(&self) -> Option<String> {
-        let (year, month, day) = (self.year?, self.month?, self.day?);
-        let (hour, minute) = (self.hour.unwrap_or(0), self.minute.unwrap_or(0));
+    /// `creationDate`: the date as written, without a zone, `yyyy-MM-dd` without an hour and
+    /// else `yyyy-MM-dd'T'HH:mm:ss`, a missing or negative minute taken as 0; none when the year
+    /// is out of `TikaDates`' bounds or the month or day is missing, or a field is out of range.
+    fn created(&self) -> Option<String> {
+        let year = self.year.filter(|&year| {
+            (tika_dates::MIN_YEAR..=tika_dates::MAX_YEAR).contains(&i64::from(year))
+        })?;
+        let (month, day) = (self.month?, self.day?);
         let days_in_month = match month {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
             4 | 6 | 9 | 11 => 30,
@@ -309,16 +309,18 @@ impl DateParts {
             2 => 28,
             _ => return None,
         };
-        if !(1..=9999).contains(&year)
-            || !(1..=days_in_month).contains(&day)
-            || !(0..24).contains(&hour)
-            || !(0..60).contains(&minute)
-        {
+        if !(1..=days_in_month).contains(&day) {
             return None;
         }
-        let days = civil::days_from_civil(i64::from(year), i64::from(month), i64::from(day));
-        let seconds = days * 86_400 + i64::from(hour) * 3_600 + i64::from(minute) * 60;
-        Some(format_instant(seconds * 1_000))
+        let date = format!("{year:04}-{month:02}-{day:02}");
+        let Some(hour) = self.hour.filter(|&hour| hour >= 0) else {
+            return Some(date);
+        };
+        let minute = self.minute.unwrap_or(0).max(0);
+        if hour >= 24 || minute >= 60 {
+            return None;
+        }
+        Some(format!("{date}T{hour:02}:{minute:02}:00"))
     }
 }
 
@@ -1222,7 +1224,7 @@ impl<'a, 'x, 'h> Extractor<'a, 'x, 'h> {
     /// Ends an `\info` property's group: its text, or for `\creatim` its date, is the value.
     fn write_info(&mut self, property: InfoProperty) -> Step {
         if !property.is_text() {
-            if let Some(created) = self.date.instant() {
+            if let Some(created) = self.date.created() {
                 self.metadata().set("dcterms:created", created);
             }
             return Ok(());

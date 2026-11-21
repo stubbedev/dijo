@@ -10,6 +10,7 @@ use crate::formats::metadata::set_nullable;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::pdf::truetype::{Failure, TrueType};
 use crate::formats::thrown::{Exception, Thrown};
+use crate::formats::tika_dates;
 use crate::formats::{Decline, Footprint, Parser, Prepared};
 use crate::input::{Pages, Paging};
 use crate::java::dtoa::java_float_to_string;
@@ -31,9 +32,11 @@ const DOC_VERSION: &str = "DocVersion";
 const FONT_NAME: &str = "FontName";
 const FONT_FAMILY_NAME: &str = "FontFamilyName";
 
-/// `readInternationalDate` of `seconds` since 1904, as `DateUtils.formatDate` writes it.
-fn international_date(seconds: i64) -> String {
-    format_instant(MILLIS_1904.wrapping_add(seconds.wrapping_mul(1000)))
+/// `readInternationalDate` of `seconds` since 1904, as `DateUtils.formatDate` writes it, unless
+/// its year is out of `TikaDates`' bounds, as a junk header date's often is.
+fn international_date(seconds: i64) -> Option<String> {
+    let millis = MILLIS_1904.wrapping_add(seconds.wrapping_mul(1000));
+    tika_dates::in_year_bounds(millis).then(|| format_instant(millis))
 }
 
 pub struct TrueTypeParser;
@@ -81,8 +84,12 @@ impl Parser for TrueTypeParser {
         Ok(Box::new(move |xhtml| {
             let metadata = xhtml.metadata_mut();
             metadata.set("Content-Type", "application/x-font-ttf");
-            metadata.set("dcterms:created", international_date(header.created));
-            metadata.set("dcterms:modified", international_date(header.modified));
+            if let Some(created) = international_date(header.created) {
+                metadata.set("dcterms:created", created);
+            }
+            if let Some(modified) = international_date(header.modified) {
+                metadata.set("dcterms:modified", modified);
+            }
             metadata.set(DOC_VERSION, java_float_to_string(header.version));
             for record in &names {
                 let string = record.string.as_deref();
@@ -215,6 +222,20 @@ impl Parser for AdobeFontMetricParser {
             }
             Ok(())
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaves_out_a_header_date_of_a_junk_year() {
+        assert_eq!(
+            international_date(3_786_912_000).as_deref(),
+            Some("2024-01-01T00:00:00Z")
+        );
+        assert_eq!(international_date(4_365_538_368_409), None);
     }
 }
 

@@ -5,7 +5,7 @@
 
 use super::extractor::{self, Target};
 use super::metadata_extractor::{exif, Metadata};
-use super::{dates_zone, fails, Decline, Read};
+use super::{fails, Decline, Read};
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xmp;
 
@@ -130,7 +130,7 @@ pub(super) fn extract_metadata(
                         Err(exif::TiffError::Unported(unported)) => return Err(unported.into()),
                     }
                     let mut target = Target::continuing(&mut metadata, prefix_route_names);
-                    extractor::handle(&directories, &mut target, dates_zone())?;
+                    extractor::handle(&directories, &mut target)?;
                     prefix_route_names = target.prefix_route_names();
                 }
                 EXTENSION_TAG_XMP => xmp::extract(data, &mut metadata, xmp::as_is)?,

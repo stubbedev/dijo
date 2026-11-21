@@ -1,11 +1,7 @@
-//! PDFBox's `DateConverter.toCalendar`: the dates of the document information dictionary and of
-//! XMP, read big-endian (`D:YYYYMMDDHHmmSS` with an optional time zone, separators allowed) as
+//! PDFBox's `DateConverter.toCalendar`: the dates of a PDF's document information dictionary,
+//! read big-endian (`D:YYYYMMDDHHmmSS` with an optional time zone, separators allowed) as
 //! PDFBox reads them, its time zone an offset or a name the JDK knows. A date PDFBox would go on
 //! to try its `SimpleDateFormat` patterns on is unported.
-
-use std::sync::LazyLock;
-
-use regex::Regex;
 
 use crate::formats::Unported;
 use crate::java::time::{CalendarFields, TimeZone};
@@ -151,60 +147,6 @@ fn unread(rest: &[char], text: &str) -> Result<Option<Zoned>, Unported> {
     }
 }
 
-/// `new DateUtils().tryToParse`, which `XmpDates.normalize` falls back to where PDFBox reads no
-/// date: the first of its ISO 8601 patterns the text starts with, a date and time without a
-/// zone read in Java's default zone, which the port takes to be UTC as the image parsers do
-/// (#114), and a date alone at midday UTC. A text whose start is not two-digit fields after a
-/// four-digit year, or whose zone `SimpleDateFormat` would look up by name or offset, is
-/// unported.
-pub fn try_to_parse(text: &str) -> Result<Option<i64>, Unported> {
-    static DATE_TIME: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^(\d{4})([-:])(\d{2})([-:])(\d{2})(?:[T ](\d{2}):(\d{2}):(\d{2}))?")
-            .expect("the pattern compiles")
-    });
-    if text.encode_utf16().count() < 6 {
-        return Ok(None);
-    }
-    let start = text.trim_start_matches([' ', '\t']);
-    let unported = || Unported(format!("a date Tika's DateUtils reads leniently: {text:?}"));
-    let Some(captures) = DATE_TIME.captures(start) else {
-        return match start.chars().next().is_some_and(char::is_alphabetic) {
-            true => Ok(None),
-            false => Err(unported()),
-        };
-    };
-    let field = |index: usize| -> i32 { captures[index].parse().expect("digits") };
-    if captures[2] != captures[4] {
-        return Ok(None);
-    }
-    let timed = &captures[2] == "-" && captures.get(6).is_some();
-    let rest = &start[captures[0].len()..];
-    if rest.starts_with(|c: char| c.is_ascii_digit()) {
-        return Err(unported());
-    }
-    let zone = rest.trim_start_matches([' ', '\t']);
-    if timed
-        && !rest.starts_with('Z')
-        && zone.starts_with(|c: char| c == '+' || c == '-' || c.is_alphabetic())
-    {
-        return Err(unported());
-    }
-    let (hour, minute, second) = match timed {
-        true => (field(6), field(7), field(8)),
-        false => (12, 0, 0),
-    };
-    let fields = CalendarFields {
-        year: field(1),
-        month: field(3) - 1,
-        day: field(5),
-        hour,
-        minute,
-        second,
-        millisecond: 0,
-    };
-    Ok(fields.epoch_millis(&TimeZone::fixed(0)))
-}
-
 fn simple_date_formats(text: &str) -> Unported {
     Unported(format!(
         "a date PDFBox reads with its SimpleDateFormat patterns: {text:?}"
@@ -330,34 +272,8 @@ mod tests {
         assert!(to_calendar("Tuesday, May 26 2000").is_err());
     }
 
-    /// Dates PDFBox reads none of, read as Tika's `DateUtils.tryToParse` reads them with Java's
-    /// default zone UTC; those whose zone it looks up by name unported.
     #[test]
-    fn falls_back_to_tikas_date_utils() {
-        let parsed = |text| try_to_parse(text).unwrap().map(format_instant);
-        assert_eq!(
-            parsed("2010-07-28T11:02:12.000CEST").as_deref(),
-            Some("2010-07-28T11:02:12Z")
-        );
-        assert_eq!(
-            parsed("2010-07-28TCEST").as_deref(),
-            Some("2010-07-28T12:00:00Z")
-        );
-        assert_eq!(
-            parsed("2010:07:28 11:02:12").as_deref(),
-            Some("2010-07-28T12:00:00Z")
-        );
-        assert_eq!(
-            parsed("2010-13-28T25:02:12.0x").as_deref(),
-            Some("2011-01-29T01:02:12Z")
-        );
-        assert_eq!(
-            parsed("2010-07-28T11:02:12Zulu").as_deref(),
-            Some("2010-07-28T11:02:12Z")
-        );
-        assert_eq!(parsed("2010-07:28"), None);
-        assert_eq!(parsed("abcdef"), None);
-        assert!(try_to_parse("2010-07-28 11:02:12 CEST").is_err());
+    fn knows_no_zone_of_a_name_the_jdk_does_not() {
         assert_eq!(
             to_zoned("2010-07-28T11:02:12.000CEST").unwrap(),
             None,

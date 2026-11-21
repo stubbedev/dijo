@@ -5,6 +5,7 @@
 use super::reader::{Bytes, Read, Thrown};
 use super::{Cover, Event};
 use crate::formats::embedded::ResourceType;
+use crate::formats::tika_dates;
 use crate::java;
 
 /// The bytes of a `meta` box Tika has read once it has its handler type.
@@ -220,7 +221,12 @@ fn item(field: &[u8], value: String, events: &mut Vec<Event<'_>>) {
         b"\xA9wrt" => (&["xmpDM:composer"], true),
         b"\xA9alb" => (&["xmpDM:album"], true),
         b"\xA9gen" => (&["xmpDM:genre"], true),
-        b"\xA9day" => (&["xmpDM:releaseDate"], true),
+        b"\xA9day" => {
+            if let Some(date) = tika_dates::to_metadata_string_keep_partial(&value) {
+                events.push(Event::Set("xmpDM:releaseDate", date));
+            }
+            (&[], true)
+        }
         b"\xA9cmt" => (&["xmpDM:logComment"], true),
         b"cprt" => (&["xmpDM:copyright"], true),
         b"keyw" => (&["dc:subject"], true),
@@ -234,5 +240,34 @@ fn item(field: &[u8], value: String, events: &mut Vec<Event<'_>>) {
     }
     if paragraph {
         events.push(Event::Paragraph(value));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An iTunes date is the release date as `TikaDates` keeps it, a year alone too, and is
+    /// written as a paragraph whatever it is.
+    #[test]
+    fn keeps_the_release_date_tika_dates_reads() {
+        let events = |value: &str| {
+            let mut events = Vec::new();
+            item(b"\xA9day", value.to_owned(), &mut events);
+            events
+                .into_iter()
+                .map(|event| match event {
+                    Event::Set(name, value) => format!("{name}={value}"),
+                    Event::Paragraph(value) => format!("p={value}"),
+                    other => panic!("an item makes no {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(events("2008"), ["xmpDM:releaseDate=2008", "p=2008"]);
+        assert_eq!(
+            events("2017-04-26T07:00:00Z"),
+            ["xmpDM:releaseDate=2017-04-26T07:00:00Z", "p=2017-04-26T07:00:00Z"]
+        );
+        assert_eq!(events("2018 2018"), ["p=2018 2018"]);
     }
 }

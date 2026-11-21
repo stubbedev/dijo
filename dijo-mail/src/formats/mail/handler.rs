@@ -10,11 +10,11 @@
 
 use super::address::{flatten, parse_address_list, Address, Mailbox};
 use super::codec::decode_encoded_words;
-use super::date::parse_date;
 use super::stream::{events, BodyDescriptor, Event, MimeError};
 use super::Unported;
 use crate::formats::embedded::ResourceType;
 use crate::formats::metadata::TikaMetadata;
+use crate::formats::tika_dates;
 use crate::input::{Input, Paging};
 use crate::java::is_blank;
 use crate::mime::MediaType;
@@ -228,10 +228,9 @@ impl<S: Sink> Handler<'_, S> {
                     self.add_raw_header(name, body);
                 }
             }
-            // A date that does not parse leaves the one before it, which Tika removes (#80).
             "date" => {
-                if let Some(date) = parse_date(body)? {
-                    self.sink.metadata().set("dcterms:created", date.format());
+                if let Some(date) = tika_dates::to_metadata_string(body) {
+                    self.sink.metadata().set("dcterms:created", date);
                 }
             }
             _ => self.add_raw_header(name, body),
@@ -419,15 +418,17 @@ fn disposition_metadata(
     for (name, value) in disposition.parameters.iter() {
         description.push_str(&format!("; {name}=\"{value}\""));
         let property = if name.eq_ignore_ascii_case("creation-date") {
-            Some("dcterms:created")
+            Some("fs:created")
         } else if name.eq_ignore_ascii_case("modification-date") {
-            Some("dcterms:modified")
+            Some("fs:modified")
+        } else if name.eq_ignore_ascii_case("read-date") {
+            Some("fs:accessed")
         } else {
             None
         };
         if let Some(property) = property {
-            if let Some(date) = parse_date(value)? {
-                metadata.set(property, date.format());
+            if let Some(date) = tika_dates::to_metadata_string(value) {
+                metadata.set(property, date);
             }
         }
     }
@@ -540,6 +541,27 @@ mod tests {
             Some("attachment; filename=\"b.pdf\"")
         );
         assert!(ResourceType::Attachment.is_of(embedded));
+    }
+
+    /// A part's `Content-Disposition` dates are the attached file's file-system dates, stored
+    /// as `TikaDates` stores them; the message's own date without a zone stays without one.
+    #[test]
+    fn dates_an_attachment_by_its_disposition_as_file_system_dates() {
+        let message = b"Date: Tue, 05 Mar 2024 14:30:00\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf; creation-date=\"Mon, 04 Mar 2024 10:00:00 +0000\"; modification-date=\"2024-03-04\"; read-date=\"not a date\"\r\n\r\n%PDF\r\n--b--\r\n";
+        let mut metadata = TikaMetadata::new();
+        let (items, _) = collect(message, &mut metadata);
+        assert_eq!(metadata.get("dcterms:created"), Some("2024-03-05T14:30:00"));
+        let embedded = items
+            .iter()
+            .find_map(|item| match item {
+                Item::Embedded(_, embedded) => Some(embedded),
+                _ => None,
+            })
+            .expect("the attachment is embedded");
+        assert_eq!(embedded.get("fs:created"), Some("2024-03-04T10:00:00Z"));
+        assert_eq!(embedded.get("fs:modified"), Some("2024-03-04"));
+        assert_eq!(embedded.get("fs:accessed"), None);
+        assert_eq!(embedded.get("dcterms:created"), None);
     }
 
     #[test]

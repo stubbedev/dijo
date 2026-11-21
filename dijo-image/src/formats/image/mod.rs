@@ -95,9 +95,8 @@ fn enriched(content_type: &str) -> bool {
     OCR_TYPES.contains(&base)
 }
 
-/// The zone an image's dates are read and written in: UTC, so that a date naming no zone, as
-/// Exif's do, keeps the time it gives. Tika reads them in Java's default zone and writes them
-/// in UTC, shifting them by the machine's offset (#114).
+/// The zone the dates metadata-extractor describes are written in, Java's default zone, which
+/// the port takes to be UTC (#114).
 fn dates_zone() -> &'static TimeZone {
     static UTC: LazyLock<TimeZone> = LazyLock::new(|| TimeZone::fixed(0));
     &UTC
@@ -578,7 +577,7 @@ fn webp_metadata(
         Err(webp::RiffError::Unported(unported)) => return Err(unported.into()),
     }
     let mut target = Target::new(read);
-    extractor::handle(&directories, &mut target, zone)?;
+    extractor::handle(&directories, &mut target)?;
     Ok((zone, target.prefix_route_names()))
 }
 
@@ -597,8 +596,7 @@ fn add_file_directory(
     let mut directories = Metadata::default();
     directories.add(file.directory(zone));
     let mut target = Target::continuing(xhtml.metadata_mut(), prefix_route_names);
-    extractor::handle(&directories, &mut target, zone)
-        .expect("the file's directory describes every tag");
+    extractor::handle(&directories, &mut target).expect("the file's directory describes every tag");
     Ok(())
 }
 
@@ -631,7 +629,7 @@ fn prepare<'a>(
     let content_type = metadata.get("Content-Type").unwrap_or_default();
     let enriched = enriched(content_type);
     let zone = dates_zone();
-    let read = extract_metadata(format, input, &Paging::new(pages), metadata.clone(), zone)?;
+    let read = extract_metadata(format, input, &Paging::new(pages), metadata.clone())?;
     let trailer = motion_photo::trailer(&read.metadata, input)?;
     let enricher = Enricher::of(enriched, content_type, input, pages, configs, tika_name)?;
     Ok(Box::new(move |xhtml| {
@@ -659,7 +657,6 @@ fn extract_metadata(
     input: &[u8],
     paging: &Paging<'_>,
     mut metadata: TikaMetadata,
-    zone: &'static TimeZone,
 ) -> Result<Read, Decline<'static>> {
     let mut directories = Metadata::default();
     match format {
@@ -684,11 +681,11 @@ fn extract_metadata(
             heif::read(input, &mut directories)?;
         }
         Format::Tiff => {
-            return extract_tiff_metadata(input, paging, metadata, zone, exif::MakerNotes::Decline)
+            return extract_tiff_metadata(input, paging, metadata, exif::MakerNotes::Decline)
                 .map(|(read, _)| read)
         }
     }
-    copy_directories(metadata, &directories, zone, format != Format::Heif)
+    copy_directories(metadata, &directories, format != Format::Heif)
 }
 
 /// [`extract_metadata`] of a TIFF, the maker notes the port does not read treated as
@@ -697,7 +694,6 @@ fn extract_tiff_metadata(
     input: &[u8],
     paging: &Paging<'_>,
     mut metadata: TikaMetadata,
-    zone: &'static TimeZone,
     maker_notes: exif::MakerNotes,
 ) -> Result<(Read, Option<&'static str>), Decline<'static>> {
     image_xmp::scan_and_extract(input, paging, &mut metadata)?;
@@ -711,7 +707,7 @@ fn extract_tiff_metadata(
             exif::TiffError::Unported(unported) => unported.into(),
         },
     )?;
-    Ok((copy_directories(metadata, &directories, zone, true)?, skipped))
+    Ok((copy_directories(metadata, &directories, true)?, skipped))
 }
 
 /// metadata-extractor's `directories` copied into `metadata` by `ImageMetadataExtractor`, and
@@ -719,11 +715,10 @@ fn extract_tiff_metadata(
 fn copy_directories(
     mut metadata: TikaMetadata,
     directories: &Metadata,
-    zone: &'static TimeZone,
     reads_file: bool,
 ) -> Result<Read, Decline<'static>> {
     let mut target = Target::new(&mut metadata);
-    extractor::handle(directories, &mut target, zone)?;
+    extractor::handle(directories, &mut target)?;
     let prefix_route_names = target.prefix_route_names();
     Ok(Read {
         metadata,

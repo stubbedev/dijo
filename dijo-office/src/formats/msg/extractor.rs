@@ -15,10 +15,11 @@ use super::types::property;
 use crate::config::ParserConfigs;
 use crate::formats::embedded::{ResourceType, Wrapping, EXCEPTION_WARNING, RESOURCE_NAME};
 use crate::formats::handlers::parse_inline;
-use crate::formats::mail::{decode_encoded_words, parse_date, MailDate};
+use crate::formats::mail::decode_encoded_words;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::ole2::{office_document, Embedded, Handed};
 use crate::formats::poi::{Reading, Thrown};
+use crate::formats::tika_dates;
 use crate::formats::xhtml::Xhtml;
 use crate::formats::{html, noted, rtf, Difference, Failure, Prepared, Unported};
 use crate::java::is_blank;
@@ -265,7 +266,7 @@ fn write_metadata(message: &Message, metadata: &mut TikaMetadata) -> Reading<()>
     }
     let date = match message_date(message)? {
         Some(date) => Some(format_instant(date)),
-        None => header_date(&headers)?,
+        None => header_date(&headers),
     };
     if let Some(date) = date {
         metadata.set(name::CREATED, date.clone());
@@ -274,20 +275,13 @@ fn write_metadata(message: &Message, metadata: &mut TikaMetadata) -> Reading<()>
     Ok(())
 }
 
-/// The date of the first `Date` transport header, for a message without a date of its own.
-/// Tika looks for a header named `date:`, which no header's name is, so that it never falls back
-/// to it (#112).
-fn header_date(headers: &[(String, Vec<String>)]) -> Reading<Option<String>> {
-    let Some(value) = headers
+/// The date of the first `Date` transport header that has a value, for a message without a
+/// date of its own, as `TikaDates` stores it.
+fn header_date(headers: &[(String, Vec<String>)]) -> Option<String> {
+    let (_, values) = headers
         .iter()
-        .find(|(key, _)| key.eq_ignore_ascii_case("date"))
-        .and_then(|(_, values)| values.first())
-    else {
-        return Ok(None);
-    };
-    let date = parse_date(value)
-        .map_err(|_| Unported("a Date header naming a time zone Tika looks up".to_owned()))?;
-    Ok(date.map(MailDate::format))
+        .find(|(key, values)| key.eq_ignore_ascii_case("date") && !values.is_empty())?;
+    tika_dates::to_metadata_string(&values[0])
 }
 
 /// `handleFromTo`.
@@ -889,6 +883,28 @@ fn attachment_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first `Date` transport header with a value dates a message without a date of its own,
+    /// as `TikaDates` stores it.
+    #[test]
+    fn dates_a_message_by_its_date_header() {
+        let header = |key: &str, values: &[&str]| {
+            (
+                key.to_owned(),
+                values.iter().map(|&value| value.to_owned()).collect(),
+            )
+        };
+        assert_eq!(
+            header_date(&[
+                header("Subject", &["x"]),
+                header("DATE", &[]),
+                header("Date", &["Fri, 01 Dec 2006 00:06:00 GMT"]),
+            ])
+            .as_deref(),
+            Some("2006-12-01T00:06:00Z")
+        );
+        assert_eq!(header_date(&[header("Date", &["not a date"])]), None);
+    }
 
     #[test]
     fn reads_header_lines_as_tikas_pattern_does() {

@@ -707,8 +707,14 @@ fn process_ifd(
     let mut first_order = None;
     let result = loop {
         let mut reset = None;
-        let followed =
-            process_ifd_body(handler, reader, processed, (offset, header), standard, &mut reset);
+        let followed = process_ifd_body(
+            handler,
+            reader,
+            processed,
+            (offset, header),
+            standard,
+            &mut reset,
+        );
         chained += 1;
         first_order = first_order.or(reset);
         match followed {
@@ -821,8 +827,7 @@ fn process_ifd_body(
             handler.error("Illegal TIFF tag pointer offset");
             continue;
         }
-        if byte_count > reader.len() - value_offset || byte_count > MAX_OFFSET + 1 - value_offset
-        {
+        if byte_count > reader.len() - value_offset || byte_count > MAX_OFFSET + 1 - value_offset {
             handler.error(format!(
                 "Illegal number of bytes for TIFF tag data: {byte_count}"
             ));

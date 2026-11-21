@@ -26,6 +26,9 @@ pub enum Compressor {
 pub struct Decoded {
     /// The original file name a gzip header holds.
     pub file_name: Option<String>,
+    /// The modification time a gzip header holds, in seconds since the epoch, unless it holds
+    /// none.
+    pub modified: Option<i64>,
     pub content: Input<'static>,
 }
 
@@ -109,6 +112,7 @@ impl Compressor {
         let content = |content: Limited<Input<'static>>| {
             content.map(|content| Decoded {
                 file_name: None,
+                modified: None,
                 content,
             })
         };
@@ -116,6 +120,7 @@ impl Compressor {
             Compressor::Gzip => gzip::decode(data).map(|member| {
                 member.map(|member| Decoded {
                     file_name: member.file_name,
+                    modified: member.modified,
                     content: member.content,
                 })
             }),

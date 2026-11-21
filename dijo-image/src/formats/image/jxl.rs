@@ -6,7 +6,7 @@
 
 use super::extractor::{self, Target};
 use super::metadata_extractor::{exif, Metadata};
-use super::{dates_zone, fails, Decline, Read};
+use super::{fails, Decline, Read};
 use crate::formats::embedded::record_exception;
 use crate::formats::metadata::TikaMetadata;
 use crate::formats::xmp;
@@ -49,7 +49,7 @@ pub(super) fn extract_metadata(
                     Err(exif::TiffError::Unported(unported)) => return Err(unported.into()),
                 }
                 let mut target = Target::new(&mut metadata);
-                extractor::handle(&directories, &mut target, dates_zone())?;
+                extractor::handle(&directories, &mut target)?;
                 prefix_route_names = target.prefix_route_names();
             }
             Err(reason) => unreadable_box(&mut metadata, "Exif", &reason),

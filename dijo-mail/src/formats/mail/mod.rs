@@ -7,17 +7,16 @@
 //!   [`structured`], [`address`]), encoded words and bodies decoded as its codecs decode them
 //!   ([`codec`]);
 //! - a port of Tika's `MailContentHandler` makes metadata of the message's headers, its dates
-//!   read in the forms `MailDateParser` reads ([`date`]), and of its parts the message's body
+//!   read by `TikaDates`, and of its parts the message's body
 //!   ([`handler`]): text and HTML parsed inline by the native text and HTML parsers, other parts
 //!   handed to the embedded document extractor.
 //!
 //! Where mime4j and Tika slip, the port reads mail as the RFCs say instead: the modules name
 //! each such place with the issue that records Tika's behaviour.
 //!
-//! A header that needs a charset the native decoders do not decode, or names a time zone
-//! java.time would look up in its time-zone database, is left out, and an HTML part the native
-//! HTML parser reads otherwise than Tika's is read so: the message's reading then differs from
-//! Tika's. A message fails when it holds a text or HTML part the native parsers of those do not
+//! A header that needs a charset the native decoders do not decode is left out, and an HTML part
+//! the native HTML parser reads otherwise than Tika's is read so: the message's reading then
+//! differs from Tika's. A message fails when it holds a text or HTML part the native parsers of those do not
 //! read.
 //!
 //! The message is written as it is read: each part as it is read, its body spooled, HTML written
@@ -25,7 +24,6 @@
 
 mod address;
 mod codec;
-mod date;
 mod field;
 mod handler;
 #[cfg(test)]
@@ -37,7 +35,6 @@ mod stream;
 mod structured;
 
 pub use codec::decode_encoded_words;
-pub use date::{parse_date, MailDate};
 use handler::Sink;
 use handler::{read, Inline, Item};
 pub use mbox::MboxParser;
@@ -417,17 +414,19 @@ pub(crate) mod tests {
         b"From: a@example.org\r\nSubject: Zoned\r\nDate: 5 Mar 2024 14:30 EST\r\n\r\nBody.\r\n";
 
     #[test]
-    fn leaves_out_a_date_that_names_a_zone_recording_the_difference() {
+    fn reads_a_date_that_names_a_zone_as_tika_dates_does() {
         let (text, metadata) = crate::Extractor::new()
             .extract_bytes_to_string(ZONED)
             .unwrap();
         assert!(text.contains("Body."), "{text}");
         assert_eq!(metadata.get("dc:title"), Some(&vec!["Zoned".to_owned()]));
-        assert_eq!(metadata.get("dcterms:created"), None);
-        let warnings = &metadata[crate::formats::embedded::EXCEPTION_WARNING];
-        assert!(
-            warnings.iter().any(|warning| warning.contains("time zone")),
-            "{warnings:?}"
+        assert_eq!(
+            metadata.get("dcterms:created"),
+            Some(&vec!["2024-03-05T19:30:00Z".to_owned()])
+        );
+        assert_eq!(
+            metadata.get(crate::formats::embedded::EXCEPTION_WARNING),
+            None
         );
     }
 

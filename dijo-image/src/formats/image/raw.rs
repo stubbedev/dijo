@@ -181,13 +181,8 @@ impl Parser for RawTiffParser {
                 Some("the raw IFD0 of a Panasonic RW2".to_owned()),
             ),
             Magic::Tiff | Magic::BigTiff | Magic::Olympus => {
-                let (read, skipped) = extract_tiff_metadata(
-                    input,
-                    &paging,
-                    metadata.clone(),
-                    zone,
-                    MakerNotes::Skip,
-                )?;
+                let (read, skipped) =
+                    extract_tiff_metadata(input, &paging, metadata.clone(), MakerNotes::Skip)?;
                 (
                     read,
                     skipped.map(|maker| format!("an Exif maker note of {maker}")),
@@ -629,9 +624,7 @@ fn read_ifd(
             TAG_BITS_PER_SAMPLE => values.bits_per_sample = read()?,
             TAG_STRIP_OFFSETS => values.strip_offsets = read()?,
             TAG_STRIP_BYTE_COUNTS => values.strip_byte_counts = read()?,
-            TAG_PANASONIC_JPG_FROM_RAW
-                if layout.panasonic && is_blob(kind, count, inline_size) =>
-            {
+            TAG_PANASONIC_JPG_FROM_RAW if layout.panasonic && is_blob(kind, count, inline_size) => {
                 values.panasonic = Some((get_u32(table, field, big_endian), count));
             }
             TAG_LEAF_DATA
@@ -1048,7 +1041,12 @@ mod tests {
         let start = 100usize;
         let mut mos = file(
             42,
-            &[entry(TAG_LEAF_DATA, 2, data_block.len() as u32, start as u32)],
+            &[entry(
+                TAG_LEAF_DATA,
+                2,
+                data_block.len() as u32,
+                start as u32,
+            )],
             start,
             &[],
         );
@@ -1081,7 +1079,10 @@ mod tests {
     fn finds_the_thumbnail_and_preview_of_an_olympus_maker_note() {
         for (name, header_length) in [
             (OLYMPUS_MAKER_NOTE_NAME, OLYMPUS_MAKER_NOTE_HEADER_LENGTH),
-            (OM_SYSTEM_MAKER_NOTE_NAME, OM_SYSTEM_MAKER_NOTE_HEADER_LENGTH),
+            (
+                OM_SYSTEM_MAKER_NOTE_NAME,
+                OM_SYSTEM_MAKER_NOTE_HEADER_LENGTH,
+            ),
         ] {
             let mut note = name.to_vec();
             note.extend_from_slice(b"II\x03\0");

@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use super::codepage;
 use super::property_set::{self, Fault, PropertySet, Section, Value, FILETIME_EPOCH_MILLIS};
 use crate::formats::metadata::{TikaMetadata, USER_DEFINED_PREFIX};
+use crate::formats::tika_dates;
 use crate::formats::Unported;
 use crate::java;
 use crate::java::dtoa::{java_double_to_string, java_float_to_string};
@@ -127,8 +128,9 @@ fn set(metadata: &mut TikaMetadata, name: &str, value: Option<String>) {
     }
 }
 
+/// A date, unless its year is out of `TikaDates`' bounds, as a junk FILETIME's often is.
 fn set_date(metadata: &mut TikaMetadata, name: &str, millis: Option<i64>) {
-    if let Some(millis) = millis {
+    if let Some(millis) = millis.filter(|&millis| tika_dates::in_year_bounds(millis)) {
         metadata.set(name, format_instant(millis));
     }
 }
@@ -426,6 +428,23 @@ mod tests {
         assert_eq!(metadata.values("meta:page-count"), ["3"]);
         assert_eq!(metadata.values("xmpTPg:NPages"), ["3"]);
         assert!(metadata.values("meta:word-count").is_empty());
+    }
+
+    /// A FILETIME of a year out of `TikaDates`' bounds, 31135 here, is left out.
+    #[test]
+    fn leaves_out_a_date_of_a_junk_year() {
+        let metadata = summary(&property_set(
+            SI,
+            &[
+                (12, typed(64, &i64::MAX.to_le_bytes())),
+                (13, typed(64, &FILETIME_2020.to_le_bytes())),
+            ],
+        ));
+        assert!(metadata.values("dcterms:created").is_empty());
+        assert_eq!(
+            metadata.values("dcterms:modified"),
+            ["2020-01-01T00:00:00Z"]
+        );
     }
 
     #[test]
