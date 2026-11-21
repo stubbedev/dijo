@@ -2031,9 +2031,9 @@ dependencies = [
 
 [[package]]
 name = "lcms2-sys"
-version = "4.0.7"
+version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "264db0b78119c5a37d78bb41fb355daab29b3b29430b53cd92e3da51f0ab06cc"
+checksum = "9a0fc4c537f27eb6fd5497862c47072f731c96fc914eba9f63f385240d5978b3"
 dependencies = [
  "cc",
  "dunce",
