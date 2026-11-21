@@ -10,7 +10,8 @@ use crate::text::charset::Charset;
 
 use super::exif::tags::*;
 use super::{
-    apple, dates, geo, heif, icc, iptc, jpeg, photoshop, webp, Directory, Kind, Unported, Value,
+    apple, dates, geo, geotiff, heif, icc, iptc, jpeg, photoshop, webp, Directory, Kind, Unported,
+    Value,
 };
 
 /// A description, or the exception metadata-extractor throws describing the tag.
@@ -62,6 +63,7 @@ pub(super) fn describe(directory: &Directory, tag: i32) -> Described {
         | Kind::Ducky
         | Kind::Huffman => jpeg::describe(directory, tag),
         Kind::Webp => webp::describe(directory, tag),
+        Kind::GeoTiff => geotiff::describe(directory, tag),
         Kind::FileSystem => Ok(file_system(directory, tag)),
         Kind::AppleMakernote => apple::describe(directory, tag),
         Kind::AppleRunTime => apple::describe_run_time(directory, tag),

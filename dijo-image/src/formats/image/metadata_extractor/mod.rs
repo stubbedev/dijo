@@ -9,6 +9,7 @@ pub(crate) mod dates;
 mod descriptions;
 pub(crate) mod exif;
 pub(crate) mod geo;
+mod geotiff;
 pub(crate) mod heif;
 pub(crate) mod icc;
 pub(crate) mod iptc;
@@ -333,6 +334,7 @@ pub(crate) enum Kind {
     Ducky,
     Huffman,
     Webp,
+    GeoTiff,
     FileSystem,
     AppleMakernote,
     AppleRunTime,
@@ -363,6 +365,7 @@ impl Kind {
             Kind::Ducky => "Ducky",
             Kind::Huffman => "Huffman",
             Kind::Webp => "WebP",
+            Kind::GeoTiff => "GeoTIFF",
             Kind::FileSystem => "File",
             Kind::AppleMakernote => "Apple Makernote",
             Kind::AppleRunTime => "Apple Run Time",
@@ -402,6 +405,7 @@ impl Kind {
             Kind::Ducky => names::DUCKY,
             Kind::Huffman => names::HUFFMAN,
             Kind::Webp => names::WEBP,
+            Kind::GeoTiff => names::GEOTIFF,
             Kind::FileSystem => names::FILE_SYSTEM,
             Kind::AppleMakernote => names::APPLE_MAKERNOTE,
             Kind::AppleRunTime => names::APPLE_RUN_TIME,

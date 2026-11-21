@@ -451,3 +451,30 @@ fn reads_jpeg_xl_scans_as_the_same_png() {
     assert!(png.contains("fyr"), "{png}");
     assert_eq!(text(&jxl_fixture("scan.jxl")), png);
 }
+
+/// The GeoTIFF of `tests/fixtures/image/geotiff`, which `harbour.py` writes, read as
+/// `harbour-reference.tsv` records tika-app 4.2.0 reading it: its Exif IFD0 and the GeoTIFF
+/// directory of its GeoKeys, each name of the image metadata with its values.
+#[test]
+fn reads_a_geotiff_as_tika_does() {
+    let input = std::fs::read("tests/fixtures/image/geotiff/harbour.tif").unwrap();
+    let read = extract_metadata(
+        Format::Tiff,
+        &input,
+        &Paging::new(Pages::IN_MEMORY),
+        TikaMetadata::new(),
+    )
+    .unwrap();
+    let mut actual: Vec<String> = read
+        .metadata
+        .names()
+        .filter(|name| name.starts_with("img:") || name.starts_with("tiff:"))
+        .map(|name| format!("{name}\t{}", read.metadata.values(name).join("|")))
+        .collect();
+    actual.sort_unstable();
+    let expected: Vec<&str> =
+        include_str!("../../../tests/fixtures/image/geotiff/harbour-reference.tsv")
+            .lines()
+            .collect();
+    assert_eq!(actual, expected);
+}

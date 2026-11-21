@@ -1,15 +1,16 @@
 //! metadata-extractor's `TiffReader` with its `ExifTiffHandler`: the IFDs of a TIFF or BigTIFF
 //! structure, in a TIFF file or an Exif segment, read into the directories of Exif: IFD0, its
 //! Exif and GPS sub-IFDs, the interoperability IFD, the thumbnail or the further pages that follow IFD0, and
-//! the IPTC, ICC, Photoshop and PrintIM data some tags hold, and Apple's maker note. Other maker
+//! the IPTC, ICC, Photoshop and PrintIM data some tags hold, the GeoTIFF keys ([`geotiff`]), and
+//! Apple's maker note. Other maker
 //! notes and Panasonic's raw IFD0 are not read; XMP held in a tag is read by [`xmp`].
 
 use std::collections::HashSet;
 
 use super::reader::{Bounds, Reader};
 use super::{
-    apple, icc, iptc, java_string, photoshop, xmp, Directory, Kind, Metadata, Rational, Unported,
-    Value,
+    apple, geotiff, icc, iptc, java_string, photoshop, xmp, Directory, Kind, Metadata, Rational,
+    Unported, Value,
 };
 use crate::text::charset::Charset;
 use tags::*;
@@ -78,6 +79,9 @@ pub(crate) mod tags {
     pub(crate) const TAG_FLASH: i32 = 0x9209;
     pub(crate) const TAG_FOCAL_LENGTH: i32 = 0x920a;
     pub(crate) const TAG_MAKERNOTE: i32 = 0x927c;
+    pub(crate) const TAG_GEOTIFF_GEO_KEYS: i32 = 0x87af;
+    pub(crate) const TAG_GEOTIFF_GEO_DOUBLE_PARAMS: i32 = 0x87b0;
+    pub(crate) const TAG_GEOTIFF_GEO_ASCII_PARAMS: i32 = 0x87b1;
     pub(crate) const TAG_USER_COMMENT: i32 = 0x9286;
     pub(crate) const TAG_TEMPERATURE: i32 = 0x9400;
     pub(crate) const TAG_HUMIDITY: i32 = 0x9401;
@@ -254,6 +258,9 @@ struct Handler<'m> {
     maker_notes: MakerNotes,
     /// The maker of the first maker note [`MakerNotes::Skip`] left out.
     skipped: Option<&'static str>,
+    /// The directories whose GeoTIFF key directory was read as shorts, as `int[]` holds a
+    /// signed long's values too.
+    short_geo_keys: HashSet<usize>,
 }
 
 /// What the reader does with a maker note metadata-extractor reads as directories of its own,
@@ -275,7 +282,21 @@ impl Handler<'_> {
         self.current = Some(self.metadata.directories.len() - 1);
     }
 
+    /// `endingIFD`: the GeoTIFF directory of an Exif IFD's GeoKeys, which may refer to tags that
+    /// come later in the IFD, then the directory the IFD interrupted.
     fn ending_ifd(&mut self) {
+        if let Some(index) = self.current {
+            let short_keys = self.short_geo_keys.remove(&index);
+            let source = &self.metadata.directories[index];
+            if matches!(
+                source.kind,
+                Kind::ExifIfd0 | Kind::ExifImage | Kind::ExifSubIfd | Kind::ExifThumbnail { .. }
+            ) && source.contains(TAG_GEOTIFF_GEO_KEYS)
+            {
+                let geotiff = geotiff::directory(source, short_keys);
+                self.metadata.add(geotiff);
+            }
+        }
         self.current = self.stack.pop();
     }
 
@@ -371,6 +392,11 @@ impl Handler<'_> {
         byte_count: i64,
         processed: &mut HashSet<i64>,
     ) -> Result<bool, TiffError> {
+        if tag == TAG_GEOTIFF_GEO_KEYS {
+            if let Some(current) = self.current {
+                self.short_geo_keys.remove(&current);
+            }
+        }
         let kind = self.current_kind();
         if tag == 0 {
             if self.directory().contains(tag) {
@@ -635,6 +661,7 @@ pub(crate) fn read_tiff_with(
         exif_start: header as i32,
         maker_notes,
         skipped: None,
+        short_geo_keys: HashSet::new(),
     };
     process_tiff(&mut reader, &mut handler, header)?;
     Ok(handler.skipped)
@@ -990,6 +1017,12 @@ fn process_tag(
         }
     };
     handler.directory().set(tag, value);
+    if tag == TAG_GEOTIFF_GEO_KEYS && format == CODE_INT16_U {
+        let current = handler
+            .current
+            .expect("a TIFF tag is read into the IFD the handler entered");
+        handler.short_geo_keys.insert(current);
+    }
     Ok(())
 }
 

@@ -1,0 +1,30 @@
+img:Citation	WGS 84 / harbour chart
+img:Exif IFD0:Bits Per Sample	8 bits/component/pixel
+img:Exif IFD0:Compression	Uncompressed
+img:Exif IFD0:GDAL NoData	255
+img:Exif IFD0:GeoTIFF Geo ASCII Params	WGS 84 / harbour chart|WGS 84|
+img:Exif IFD0:GeoTIFF Geo Double Params	6378137 298.257
+img:Exif IFD0:GeoTIFF Geo Keys	[50 values]
+img:Exif IFD0:Image Height	4 pixels
+img:Exif IFD0:Image Width	4 pixels
+img:Exif IFD0:Model Tie Point	0 0 0 10.58 57.72 0
+img:Exif IFD0:Photometric Interpretation	BlackIsZero
+img:Exif IFD0:Pixel Scale	0.25 0.25 0
+img:Exif IFD0:Planar Configuration	Chunky (contiguous for each subsampling pixel)
+img:Exif IFD0:Rows Per Strip	4 rows/strip
+img:Exif IFD0:Samples Per Pixel	1 samples/pixel
+img:Exif IFD0:Strip Byte Counts	16 bytes
+img:Exif IFD0:Strip Offsets	206
+img:Geographic Angular Units	Angular Degree
+img:Geographic Citation	WGS 84
+img:Geographic Type	WGS 84
+img:Inv. Flattening	298.257
+img:Model Type	Geographic
+img:Projection	Unknown (12345)
+img:Projection Linear Units	Linear Meter
+img:Raster Type	PixelIsArea
+img:Semi-major axis	6378137
+tiff:BitsPerSample	8
+tiff:ImageLength	4
+tiff:ImageWidth	4
+tiff:SamplesPerPixel	1
