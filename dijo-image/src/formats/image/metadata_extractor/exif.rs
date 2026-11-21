@@ -1,6 +1,6 @@
 //! metadata-extractor's `TiffReader` with its `ExifTiffHandler`: the IFDs of a TIFF or BigTIFF
-//! structure, in a TIFF file or an Exif segment, read into the directories of Exif: IFD0, its Exif and GPS
-//! sub-IFDs, the interoperability IFD, the thumbnail or the further pages that follow IFD0, and
+//! structure, in a TIFF file or an Exif segment, read into the directories of Exif: IFD0, its
+//! Exif and GPS sub-IFDs, the interoperability IFD, the thumbnail or the further pages that follow IFD0, and
 //! the IPTC, ICC, Photoshop and PrintIM data some tags hold, and Apple's maker note. Other maker
 //! notes and Panasonic's raw IFD0 are not read; XMP held in a tag is read by [`xmp`].
 
@@ -817,7 +817,7 @@ fn process_ifd_body(
         } else {
             field
         };
-        if value_offset < 0 || value_offset > MAX_OFFSET || value_offset > reader.len() {
+        if !(0..=MAX_OFFSET).contains(&value_offset) || value_offset > reader.len() {
             handler.error("Illegal TIFF tag pointer offset");
             continue;
         }
@@ -1024,5 +1024,85 @@ mod tests {
         assert_eq!(skipped, Some("Olympus"));
         let exif = metadata.first(Kind::ExifSubIfd).unwrap();
         assert!(!exif.contains(TAG_MAKERNOTE));
+    }
+
+    /// A little endian BigTIFF entry of a tag of `kind` with `count` values and the value field
+    /// `value`.
+    fn big_entry(tag: i32, kind: u16, count: u64, value: u64) -> Vec<u8> {
+        let mut entry = (tag as u16).to_le_bytes().to_vec();
+        entry.extend_from_slice(&kind.to_le_bytes());
+        entry.extend_from_slice(&count.to_le_bytes());
+        entry.extend_from_slice(&value.to_le_bytes());
+        entry
+    }
+
+    /// A little endian BigTIFF whose IFD0 has a make held outside it, a width held inline and an
+    /// Exif IFD it points at with an eight-byte IFD offset, which has an ISO speed.
+    fn big_tiff() -> Vec<u8> {
+        let mut tiff = b"II\x2b\0\x08\0\0\0".to_vec();
+        tiff.extend_from_slice(&16u64.to_le_bytes());
+        let ifd0_end = 16 + 8 + 3 * 20 + 8;
+        let exif = ifd0_end as u64;
+        let exif_end = ifd0_end + 8 + 20 + 8;
+        tiff.extend_from_slice(&3u64.to_le_bytes());
+        tiff.extend(big_entry(TAG_MAKE, CODE_STRING, 15, exif_end as u64));
+        tiff.extend(big_entry(TAG_IMAGE_WIDTH, CODE_INT16_U, 1, 16));
+        tiff.extend(big_entry(TAG_EXIF_SUB_IFD_OFFSET, CODE_IFD8, 1, exif));
+        tiff.extend_from_slice(&0u64.to_le_bytes());
+        tiff.extend_from_slice(&1u64.to_le_bytes());
+        tiff.extend(big_entry(TAG_ISO_EQUIVALENT, CODE_INT16_U, 1, 200));
+        tiff.extend_from_slice(&0u64.to_le_bytes());
+        tiff.extend_from_slice(b"Apache BigTIFF\0");
+        tiff
+    }
+
+    #[test]
+    fn reads_the_ifds_of_a_big_tiff() {
+        let mut metadata = Metadata::default();
+        read_tiff(&big_tiff(), 0, &mut metadata).unwrap();
+        let ifd0 = metadata.first(Kind::ExifIfd0).unwrap();
+        assert_eq!(ifd0.string(TAG_MAKE).as_deref(), Some("Apache BigTIFF"));
+        assert_eq!(ifd0.integer(TAG_IMAGE_WIDTH), Some(16));
+        assert!(!ifd0.contains(TAG_EXIF_SUB_IFD_OFFSET));
+        let exif = metadata.first(Kind::ExifSubIfd).unwrap();
+        assert_eq!(exif.integer(TAG_ISO_EQUIVALENT), Some(200));
+    }
+
+    #[test]
+    fn records_a_big_tiff_header_it_does_not_support() {
+        let mut tiff = big_tiff();
+        tiff[4] = 4;
+        let mut metadata = Metadata::default();
+        read_tiff(&tiff, 0, &mut metadata).unwrap();
+        let ifd0 = metadata.first(Kind::ExifIfd0).unwrap();
+        assert_eq!(ifd0.errors, ["Unsupported BigTIFF offset byte size: 4"]);
+        assert_eq!(ifd0.tags().count(), 0);
+    }
+
+    #[test]
+    fn takes_an_eight_byte_ifd_offset_only_in_a_big_tiff() {
+        assert_eq!(component_size(CODE_IFD8, Standard::BigTiff), Some(8));
+        assert_eq!(component_size(CODE_IFD8, Standard::Tiff), None);
+    }
+
+    #[test]
+    fn describes_an_exposure_under_a_second_as_a_fraction() {
+        let mut directory = Directory::new(Kind::ExifSubIfd);
+        let described = |directory: &Directory| directory.description(TAG_EXPOSURE_TIME).unwrap();
+        directory.set(TAG_EXPOSURE_TIME, Value::Rational(Rational::new(3, 10)));
+        assert_eq!(described(&directory).as_deref(), Some("3/10 sec"));
+        directory.set(TAG_EXPOSURE_TIME, Value::Rational(Rational::new(4, 1000)));
+        assert_eq!(described(&directory).as_deref(), Some("1/250 sec"));
+        directory.set(TAG_EXPOSURE_TIME, Value::Rational(Rational::new(5, 2)));
+        assert_eq!(described(&directory).as_deref(), Some("2.5 sec"));
+    }
+
+    #[test]
+    fn names_the_geotiff_and_gdal_tags() {
+        let directory = Directory::new(Kind::ExifIfd0);
+        assert_eq!(directory.tag_name(0x87af), "GeoTIFF Geo Keys");
+        assert_eq!(directory.tag_name(0xa481), "GDAL NoData");
+        let thumbnail = Directory::new(Kind::ExifThumbnail { exif_start: 0 });
+        assert_eq!(thumbnail.tag_name(0x830e), "Pixel Scale");
     }
 }

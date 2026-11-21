@@ -687,7 +687,12 @@ fn exif_value(directory: &Directory, tag: i32) -> Option<String> {
         }
         TAG_YCBCR_POSITIONING => named(d, tag, 1, &["Center of pixel array", "Datum point"]),
         TAG_REFERENCE_BLACK_WHITE => reference_black_white(d),
-        TAG_EXPOSURE_TIME => suffixed(d, tag, " sec"),
+        TAG_EXPOSURE_TIME => match d.rational(tag) {
+            Some(time) if time.double_value() < 1.0 => {
+                Some(format!("{} sec", time.to_simple_string(false)))
+            }
+            _ => suffixed(d, tag, " sec"),
+        },
         TAG_FNUMBER => Some(f_stop(d.rational(tag)?.double_value())),
         TAG_EXPOSURE_PROGRAM => named(
             d,
