@@ -163,8 +163,9 @@ quality-compare:
     QUALITY_COMPARE="$dir/tools" QUALITY_COMPARISON={{justfile_directory()}}/quality/COMPARISON.md \
         cargo nextest run --package dijo --test integration -E 'test(/^quality::/)'
 
-# Load tika-server of the pinned Tika version and `dijo serve` alike on this machine, and
-# write their throughput, latency and memory to target/server-compare/comparison.md;
+# Load tika-server of the pinned Tika version, with per-request configuration allowed, and
+# `dijo serve` alike on this machine, and write their throughput, latency and memory to
+# target/server-compare/comparison.md;
 # SERVER_COMPARE_BINARY serves another build, such as target/static/dijo.
 [unix]
 server-compare:
@@ -174,7 +175,8 @@ server-compare:
     server=$(conformance/fetch-tika.sh "$dir" server-standard)
     version=$(conformance/tika-version.sh)
     port=19998
-    java -jar "$server/tika-server-standard-$version.jar" -p "$port" > "$dir/tika-server.log" 2>&1 &
+    java -jar "$server/tika-server-standard-$version.jar" -p "$port" \
+        -c {{justfile_directory()}}/conformance/tika-server-config.json > "$dir/tika-server.log" 2>&1 &
     pid=$!
     trap 'kill "$pid"' EXIT
     until curl --silent --fail --output /dev/null "http://127.0.0.1:$port/tika"; do

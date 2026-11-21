@@ -254,11 +254,6 @@
     "outcome": "works",
     "similarity": 1.0
   },
-  "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/mock/heavy_hang.xml": {
-    "mime_type": "application/xml",
-    "outcome": "works",
-    "similarity": 1.0
-  },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/mock/nothing_bad.xml": {
     "mime_type": "application/xml",
     "outcome": "works",
@@ -279,32 +274,7 @@
     "outcome": "works",
     "similarity": 1.0
   },
-  "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/mock/real_oom.xml": {
-    "mime_type": "application/xml",
-    "outcome": "works",
-    "similarity": 1.0
-  },
-  "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/mock/sleep.xml": {
-    "mime_type": "application/xml",
-    "outcome": "works",
-    "similarity": 1.0
-  },
-  "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/mock/sleep_interruptible.xml": {
-    "mime_type": "application/xml",
-    "outcome": "works",
-    "similarity": 1.0
-  },
-  "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/mock/sleep_not_interruptible.xml": {
-    "mime_type": "application/xml",
-    "outcome": "works",
-    "similarity": 1.0
-  },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/mock/system_exit.xml": {
-    "mime_type": "application/xml",
-    "outcome": "works",
-    "similarity": 1.0
-  },
-  "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/mock/thread_interrupt.xml": {
     "mime_type": "application/xml",
     "outcome": "works",
     "similarity": 1.0
@@ -396,8 +366,8 @@
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testARW.arw": {
     "mime_type": "image/x-raw-sony",
-    "outcome": "differs",
-    "similarity": 0.6666666666666666
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testASF.asf": {
     "mime_type": "video/x-ms-asf",
@@ -479,6 +449,11 @@
     "outcome": "works",
     "similarity": 1.0
   },
+  "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testBigTIFF.tif": {
+    "mime_type": "image/tiff",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testBrokenHTMLContainingRFC822.html": {
     "mime_type": "text/html",
     "outcome": "works",
@@ -501,8 +476,8 @@
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testCR2.cr2": {
     "mime_type": "image/x-canon-cr2",
-    "outcome": "differs",
-    "similarity": 0.6666666666666666
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testCSS.css": {
     "mime_type": "text/css",
@@ -512,6 +487,11 @@
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testCSV.csv": {
     "mime_type": "text/plain",
     "outcome": "works",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testCUR.cur": {
+    "mime_type": "image/x-win-bitmap",
+    "outcome": "both-empty",
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testComment.pdf": {
@@ -546,13 +526,13 @@
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDNG.dng": {
     "mime_type": "image/x-raw-adobe",
-    "outcome": "fails",
-    "similarity": 0.0
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDNG_bigtiff.dng": {
     "mime_type": "image/x-raw-adobe",
-    "outcome": "fails",
-    "similarity": 0.0
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testDSAKEY.der": {
     "mime_type": "application/x-x509-key",
@@ -719,6 +699,11 @@
     "outcome": "works",
     "similarity": 1.0
   },
+  "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testICO.ico": {
+    "mime_type": "image/vnd.microsoft.icon",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testICalendar.ics": {
     "mime_type": "text/calendar",
     "outcome": "replaced",
@@ -866,8 +851,8 @@
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testNEF.nef": {
     "mime_type": "image/x-raw-nikon",
-    "outcome": "fails",
-    "similarity": 0.0
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testNLS1.nls": {
     "mime_type": "application/x-ms-nls",
@@ -936,8 +921,8 @@
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testPEF.pef": {
     "mime_type": "image/x-raw-pentax",
-    "outcome": "differs",
-    "similarity": 0.6666666666666666
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-integration-tests/src/test/resources/test-documents/testPGM.pgm": {
     "mime_type": "image/x-portable-graymap",
@@ -1889,7 +1874,42 @@
     "outcome": "works",
     "similarity": 1.0
   },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/test/resources/test-documents/testWindows-icons-app-rebuilt.ico": {
+    "mime_type": "image/vnd.microsoft.icon",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/test/resources/test-documents/testWindows-icons-app.ico": {
+    "mime_type": "image/vnd.microsoft.icon",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/test/resources/test-documents/testWindows-icons-doc-rebuilt.ico": {
+    "mime_type": "image/vnd.microsoft.icon",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/test/resources/test-documents/testWindows-icons-doc.ico": {
+    "mime_type": "image/vnd.microsoft.icon",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/test/resources/test-documents/testWindows-x86-32-icons.exe": {
+    "mime_type": "application/x-msdownload",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/test/resources/test-documents/testWindows-x86-32.exe": {
+    "mime_type": "application/x-msdownload",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/test/resources/test-documents/testWindows-x86-64-icons-lang.dll": {
+    "mime_type": "application/x-msdownload",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-code-module/src/test/resources/test-documents/testWindows-x86-64-icons.dll": {
     "mime_type": "application/x-msdownload",
     "outcome": "both-empty",
     "similarity": 1.0
@@ -2206,8 +2226,8 @@
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testARW.arw": {
     "mime_type": "image/x-raw-sony",
-    "outcome": "differs",
-    "similarity": 0.6666666666666666
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testAVIF.avif": {
     "mime_type": "image/avif",
@@ -2244,20 +2264,40 @@
     "outcome": "both-empty",
     "similarity": 1.0
   },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testBigTIFF.tif": {
+    "mime_type": "image/tiff",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testCR2.cr2": {
     "mime_type": "image/x-canon-cr2",
-    "outcome": "differs",
-    "similarity": 0.6666666666666666
+    "outcome": "works",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testCUR.cur": {
+    "mime_type": "image/x-win-bitmap",
+    "outcome": "both-empty",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testDNG.dng": {
     "mime_type": "image/x-raw-adobe",
-    "outcome": "fails",
-    "similarity": 0.0
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testDNG_bigtiff.dng": {
     "mime_type": "image/x-raw-adobe",
-    "outcome": "fails",
-    "similarity": 0.0
+    "outcome": "works",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testERF.erf": {
+    "mime_type": "image/x-raw-epson",
+    "outcome": "works",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testERF_nopreview.erf": {
+    "mime_type": "image/x-raw-epson",
+    "outcome": "both-empty",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testGIF.gif": {
     "mime_type": "image/gif",
@@ -2281,6 +2321,16 @@
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testICNS_basic.icns": {
     "mime_type": "image/icns",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testICO.ico": {
+    "mime_type": "image/vnd.microsoft.icon",
+    "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testICO_bmpOnly.ico": {
+    "mime_type": "image/vnd.microsoft.icon",
     "outcome": "both-empty",
     "similarity": 1.0
   },
@@ -2354,20 +2404,45 @@
     "outcome": "both-empty",
     "similarity": 1.0
   },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testKDC.kdc": {
+    "mime_type": "image/x-raw-kodak",
+    "outcome": "works",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testMOS.mos": {
+    "mime_type": "image/x-raw-leaf",
+    "outcome": "works",
+    "similarity": 1.0
+  },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testNEF.nef": {
     "mime_type": "image/x-raw-nikon",
-    "outcome": "fails",
-    "similarity": 0.0
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testNEF_dup.nef": {
     "mime_type": "image/x-raw-nikon",
-    "outcome": "fails",
-    "similarity": 0.0
+    "outcome": "works",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testORF.orf": {
+    "mime_type": "image/x-raw-olympus",
+    "outcome": "works",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testORF_bigendian.orf": {
+    "mime_type": "image/x-raw-olympus",
+    "outcome": "works",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testORF_omsystem.orf": {
+    "mime_type": "image/x-raw-olympus",
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testPEF.pef": {
     "mime_type": "image/x-raw-pentax",
-    "outcome": "differs",
-    "similarity": 0.6666666666666666
+    "outcome": "works",
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testPNG.png": {
     "mime_type": "image/png",
@@ -2387,6 +2462,11 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testPSD_xmp.psd": {
     "mime_type": "image/vnd.adobe.photoshop",
     "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testRW2.rw2": {
+    "mime_type": "image/x-raw-panasonic",
+    "outcome": "works",
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-image-module/src/test/resources/test-documents/testTIFF.tif": {
@@ -3284,6 +3364,16 @@
     "outcome": "works",
     "similarity": 1.0
   },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testMSG_dateHeaderOnly.msg": {
+    "mime_type": "application/vnd.ms-outlook",
+    "outcome": "works",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testMSG_dateHeaderUnparseable.msg": {
+    "mime_type": "application/vnd.ms-outlook",
+    "outcome": "works",
+    "similarity": 1.0
+  },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testMSG_forwarded.msg": {
     "mime_type": "application/vnd.ms-outlook",
     "outcome": "works",
@@ -3365,6 +3455,11 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testOneNoteFromOffice365.one": {
+    "mime_type": "application/onenote",
+    "outcome": "works",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testOneNoteTablesLists.one": {
     "mime_type": "application/onenote",
     "outcome": "works",
     "similarity": 1.0
@@ -3989,6 +4084,11 @@
     "outcome": "works",
     "similarity": 1.0
   },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_characterStyles.docx": {
+    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "outcome": "works",
+    "similarity": 1.0
+  },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_charts.docx": {
     "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "outcome": "works",
@@ -4139,6 +4239,11 @@
     "outcome": "works",
     "similarity": 1.0
   },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_omml.docx": {
+    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "outcome": "works",
+    "similarity": 1.0
+  },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_override_list_numbering.doc": {
     "mime_type": "application/msword",
     "outcome": "works",
@@ -4172,6 +4277,11 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_protected_passtika.docx": {
     "mime_type": "undetected",
     "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_refFields.docx": {
+    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "outcome": "works",
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_sdtInTextBox.docx": {
@@ -4222,6 +4332,11 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_truncated.docx": {
     "mime_type": "undetected",
     "outcome": "both-empty",
+    "similarity": 1.0
+  },
+  "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_unclosedFields.docx": {
+    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "outcome": "works",
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-microsoft-module/src/test/resources/test-documents/testWORD_various.doc": {
@@ -4387,12 +4502,12 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testEPUB.epub": {
     "mime_type": "application/epub+zip",
     "outcome": "works",
-    "similarity": 0.9784172661870504
+    "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testEPUB_multi-metadata-vals.epub": {
     "mime_type": "application/epub+zip",
     "outcome": "works",
-    "similarity": 0.9996894940305228
+    "similarity": 0.9997205533044572
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testEPUB_xml_ext.epub": {
     "mime_type": "application/epub+zip",
@@ -4657,7 +4772,7 @@
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/testiBooks.ibooks": {
     "mime_type": "application/x-ibooks+zip",
     "outcome": "works",
-    "similarity": 0.990923651895355
+    "similarity": 0.9941458222458754
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-miscoffice-module/src/test/resources/test-documents/versions/LibreOfficeBase_odb_1.3.odb": {
     "mime_type": "application/vnd.oasis.opendocument.base",
@@ -5050,7 +5165,7 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/droste.zip": {
-    "mime_type": "undetected",
+    "mime_type": "application/zip",
     "outcome": "works",
     "similarity": 1.0
   },
@@ -5075,7 +5190,7 @@
     "similarity": 1.0
   },
   "tika-parsers-standard/tika-parsers-standard-modules/tika-parser-pkg-module/src/test/resources/test-documents/quine.gz": {
-    "mime_type": "undetected",
+    "mime_type": "application/gzip",
     "outcome": "works",
     "similarity": 1.0
   },
