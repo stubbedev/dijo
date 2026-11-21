@@ -427,7 +427,7 @@ fn submission<'m>(message: &'m Message<'_>) -> Option<&'m Submission> {
 
 /// The date of a submission id, in UTC, as the `Z` that ends it says. POI reads it in the JVM's
 /// default time zone, so the same message gives different instants on machines in different
-/// zones.
+/// zones (#403).
 fn submission_date(submission: &Submission) -> Option<i64> {
     let [year, month, day, hour, minute, second] = submission.date?;
     CalendarFields {
@@ -1022,6 +1022,19 @@ mod tests {
         let (body, _, difference) = body(&read).unwrap();
         assert_eq!(difference, None);
         assert!(matches!(body, Body::Text(text) if text == "Hi Bob"));
+    }
+
+    /// A submission id's date is its wall-clock time in UTC, as the `Z` after it says (#403).
+    #[test]
+    fn dates_a_submission_in_utc() {
+        let submission = Submission {
+            id: Some("c=TW;a= ;p=FT GROUP;l=FTM02-110329085248Z-89735\0".to_owned()),
+            date: Some([2011, 3, 29, 8, 52, 48]),
+        };
+        assert_eq!(
+            submission_date(&submission).map(format_instant).as_deref(),
+            Some("2011-03-29T08:52:48Z")
+        );
     }
 
     #[test]

@@ -33,6 +33,34 @@ fn names_recipients_by_their_display_names() {
     assert_eq!(get("message:to-display-name"), [""]);
 }
 
+/// A submitted message is dated by its submission id, whose `l=` part ends in a wall-clock time
+/// and `Z`, as UTC (#403). POI reads that time in the JVM's default zone, so tika-app 4.2.0
+/// gives `2011-03-29T08:52:48Z` for Tika's Chinese test message only in a JVM in UTC, and
+/// `06:52:48Z` in one in Central European Summer Time.
+#[test]
+#[ignore = "needs Tika's test documents, from conformance/prepare.sh"]
+fn dates_a_submitted_message_by_its_submission_id_in_utc() {
+    let path = corpus(&[&testing::conformance_corpus()])
+        .into_iter()
+        .find(|path| path.ends_with("testMSG_chinese.msg"))
+        .expect("Tika's Chinese test message");
+    let (_, metadata) = crate::Extractor::new()
+        .extract_file_to_string(path.to_str().unwrap())
+        .unwrap();
+    let get = |name: &str| metadata.get(name).cloned().unwrap_or_default();
+    assert_eq!(
+        get("mapi:msg-submission-id"),
+        ["c=TW;a= ;p=FT GROUP;l=FTM02-110329085248Z-89735\0"]
+    );
+    for name in [
+        "dcterms:created",
+        "dcterms:modified",
+        "mapi:msg-submission-accepted-at-time",
+    ] {
+        assert_eq!(get(name), ["2011-03-29T08:52:48Z"], "{name}");
+    }
+}
+
 /// A message whose attachment is too large to read whole is read in place, the attachment
 /// handed on where it lies and the attachments after it written, in memory that does not grow
 /// with it.
