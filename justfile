@@ -70,6 +70,11 @@ crypt-fixtures:
 mime-tables:
     MIME_TABLES_BLESS=1 cargo nextest run --package dijo-mime --lib the_tables_are_generated_from_the_xml
 
+# Re-record dijo-mime/tests/fixtures/mime/mime-reference.tsv: what the pinned Tika's DefaultDetector
+# answers for each document of test_files/documents, quality/corpus and Tika's own test documents.
+mime-reference:
+    conformance/mime-reference.sh {{justfile_directory()}}/target/conformance dijo-mime/tests/fixtures/mime/mime-reference.tsv
+
 # The image is the one `nix build .#container` builds (ci/container.nix).
 # Build the container image dijo:local around target/static/dijo and load it into Docker.
 [linux]
