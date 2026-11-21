@@ -20,7 +20,8 @@ use crate::cli::{Embedded, Ocr, PROCESSORS_VARIABLE};
 use crate::render::RenderOptions;
 use crate::schema::ErrorCategory;
 use crate::server::handlers::{
-    self, error_head, status_for, ExtractRequest, Files, Head, Report, Respond, Task,
+    self, crash_head, error_head, status_for, Crash, ExtractRequest, Files, Head, Report, Respond,
+    Task,
 };
 use crate::server::metrics::Metrics;
 use crate::server::workers::{client_gone, Chunk, Job};
@@ -381,7 +382,7 @@ fn relay(
     let sent = write_frame(&mut process.input, JOB, &payload).and_then(|()| process.input.flush());
     if let Err(error) = sent {
         let message = format!("The worker process is gone ({}): {error}", process.stop());
-        fail(&mut head, &body, metrics, ErrorCategory::Internal, &message);
+        fail(&mut head, &body, metrics, Crash::Unspecified, &message);
         return None;
     }
 
@@ -425,22 +426,22 @@ fn relay(
     };
     let stopped = *stopped.lock().expect("watchdog lock");
     let status = process.stop();
-    let (category, message) = match stopped {
+    let (crash, message) = match stopped {
         Some(Stopped::Deadline) => (
-            ErrorCategory::Timeout,
+            Crash::Timeout,
             "The extraction overran --timeout; its worker process was stopped".to_string(),
         ),
         Some(Stopped::Memory) => (
-            ErrorCategory::LimitExceeded,
+            Crash::OutOfMemory,
             "The extraction exceeded --worker-max-rss-bytes; its worker process was stopped"
                 .to_string(),
         ),
         None => (
-            ErrorCategory::Internal,
+            Crash::Unspecified,
             format!("The worker process died ({status}): {error}"),
         ),
     };
-    fail(&mut head, &body, metrics, category, &message);
+    fail(&mut head, &body, metrics, crash, &message);
     None
 }
 
@@ -505,18 +506,19 @@ fn relay_answer(
     }
 }
 
-/// Fails a job: with an error head when none was sent yet, or else by cutting the body short.
+/// Fails a job whose worker process died: with its head when none was sent yet, or else by
+/// cutting the body short.
 fn fail(
     head: &mut Option<oneshot::Sender<Head>>,
     body: &async_mpsc::Sender<Chunk>,
     metrics: &Metrics,
-    category: ErrorCategory,
+    crash: Crash,
     message: &str,
 ) {
-    metrics.record(Report::Failure(category));
+    metrics.record(Report::Failure(crash.category()));
     match head.take() {
         Some(head) => {
-            let _ = head.send(error_head(status_for(category), message));
+            let _ = head.send(crash_head(crash, message));
         }
         None => {
             let _ = body.blocking_send(Err(io::Error::other(message.to_string())));

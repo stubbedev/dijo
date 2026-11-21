@@ -467,6 +467,431 @@ fn dijo_answers_tika_3_clients_as_tika_server_3_does() {
 
 /// Every document of the upload has an object, numbered in the order it is found, duplicates
 /// too, and `/unpack` names each file by its number.
+const BOUNDARY: &str = "dijo-test-boundary";
+
+/// A part of a `multipart/form-data` body: its name, file name, media type and content.
+struct FormPart<'a> {
+    name: Option<&'a str>,
+    file_name: Option<&'a str>,
+    content_type: &'a str,
+    content: Vec<u8>,
+}
+
+/// The document `name` as the part named `file`, as Tika clients send it.
+fn file_part(name: &str, content_type: &'static str) -> FormPart<'static> {
+    FormPart {
+        name: Some("file"),
+        file_name: None,
+        content_type,
+        content: std::fs::read(format!("{DOCUMENTS}/{name}")).unwrap(),
+    }
+}
+
+fn config_part(json: &str) -> FormPart<'static> {
+    FormPart {
+        name: Some("config"),
+        file_name: None,
+        content_type: "application/json",
+        content: json.as_bytes().to_vec(),
+    }
+}
+
+fn post_form(
+    server: &Server,
+    target: &str,
+    headers: &[(&str, &str)],
+    parts: &[FormPart<'_>],
+) -> Response {
+    let mut body = Vec::new();
+    for part in parts {
+        body.extend_from_slice(
+            format!("--{BOUNDARY}\r\nContent-Disposition: form-data").as_bytes(),
+        );
+        if let Some(name) = part.name {
+            body.extend_from_slice(format!("; name=\"{name}\"").as_bytes());
+        }
+        if let Some(file_name) = part.file_name {
+            body.extend_from_slice(format!("; filename=\"{file_name}\"").as_bytes());
+        }
+        body.extend_from_slice(
+            format!("\r\nContent-Type: {}\r\n\r\n", part.content_type).as_bytes(),
+        );
+        body.extend_from_slice(&part.content);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{BOUNDARY}--\r\n").as_bytes());
+    let content_type = format!("multipart/form-data; boundary={BOUNDARY}");
+    server.request(
+        "POST",
+        target,
+        &[&[("Content-Type", content_type.as_str())], headers].concat(),
+        &body,
+    )
+}
+
+/// Kontainer's requests to tika-server 4.2's `/tika/config` endpoints: a text pass, an OCR pass
+/// and office documents, as plain text and as JSON (#394).
+#[test]
+fn tika_config_endpoints_answer_kontainers_requests() {
+    let server = Server::start(&[]);
+    let text_config = r#"{"pdf-parser": {"pages": {"text": "EXTRACT"}},
+        "timeout-limits": {"totalTaskTimeoutMillis": 120000, "progressTimeoutMillis": 120000}}"#;
+    let pdf = || file_part("2022_Q3_AAPL.pdf", "application/pdf");
+
+    let text = post_form(
+        &server,
+        "/tika/config/text",
+        &[],
+        &[pdf(), config_part(text_config)],
+    );
+    assert_eq!(text.status, 200, "{}", text.text());
+    assert_eq!(
+        text.header("content-type"),
+        Some("text/plain; charset=utf-8")
+    );
+    assert_eq!(
+        text.text(),
+        server.post_file("/extract", &[], "2022_Q3_AAPL.pdf").text()
+    );
+
+    let json = post_form(
+        &server,
+        "/tika/config/json/text",
+        &[],
+        &[pdf(), config_part(text_config)],
+    );
+    assert_eq!(json.status, 200, "{}", json.text());
+    let object = json.json();
+    assert_eq!(object["tk:content-handler-type"], "TEXT");
+    assert_eq!(object["tk:content"].as_str(), Some(text.text().as_str()));
+    assert_eq!(
+        object["pdf:chars-per-page"].as_array().map(Vec::len),
+        Some(28)
+    );
+
+    let ocr_config = r#"{"tesseract-ocr-parser": {"language": "eng"}, "pdf-parser": {"pages": {"render": {"dpi": 150}}}}"#;
+    let scan = post_form(
+        &server,
+        "/tika/config/text",
+        &[],
+        &[
+            file_part("eng-ocr.pdf", "application/pdf"),
+            config_part(ocr_config),
+        ],
+    );
+    assert_eq!(scan.status, 200, "{}", scan.text());
+    assert_eq!(
+        scan.text(),
+        server
+            .post_file("/extract?ocr_lang=eng", &[], "eng-ocr.pdf")
+            .text()
+    );
+
+    let office = "application/vnd.oasis.opendocument.text";
+    for config in [
+        r#"{"tesseract-ocr-parser": {"skipOcr": true}}"#,
+        r#"{"tesseract-ocr-parser": {"language": "eng+dan", "minFileSizeToOcr": 100000}}"#,
+    ] {
+        let answer = post_form(
+            &server,
+            "/tika/config/json/text",
+            &[],
+            &[file_part("simple.odt", office), config_part(config)],
+        );
+        assert_eq!(answer.status, 200, "{config}: {}", answer.text());
+        assert!(answer.json()["tk:content"]
+            .as_str()
+            .unwrap()
+            .contains("These are a few of my favorite things"));
+    }
+
+    let unconfigured = post_form(
+        &server,
+        "/tika/config/md",
+        &[],
+        &[file_part("simple.odt", office)],
+    );
+    assert_eq!(
+        unconfigured.text(),
+        server
+            .post_file("/extract?format=markdown", &[], "simple.odt")
+            .text()
+    );
+    let configured_xml = post_form(
+        &server,
+        "/tika/config",
+        &[],
+        &[
+            file_part("simple.odt", office),
+            config_part(r#"{"basic-content-handler-factory": {"type": "XML"}}"#),
+        ],
+    );
+    assert_eq!(configured_xml.status, 200);
+    assert!(configured_xml.text().contains("<html"));
+}
+
+#[test]
+fn tika_config_endpoints_refuse_what_they_cannot_honour() {
+    let server = Server::start(&[]);
+    let office = "application/vnd.oasis.opendocument.text";
+    let document = || file_part("simple.odt", office);
+    let refused = |target: &str, headers: &[(&str, &str)], parts: &[FormPart<'_>]| {
+        let answer = post_form(&server, target, headers, parts);
+        (
+            answer.status,
+            answer.json()["error"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    };
+    assert_eq!(
+        refused("/tika/config/text", &[], &[document(), config_part("{")]).0,
+        400
+    );
+    assert_eq!(
+        refused(
+            "/tika/config/text",
+            &[],
+            &[document(), config_part(r#"{"unpack-config": {}}"#)]
+        ),
+        (
+            400,
+            "The Tika config component unpack-config is not supported".to_string()
+        )
+    );
+    assert_eq!(
+        refused(
+            "/tika/config/xml",
+            &[],
+            &[
+                document(),
+                config_part(r#"{"basic-content-handler-factory": {"type": "TEXT"}}"#)
+            ]
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        refused(
+            "/tika/config/text",
+            &[("X-Tika-OCRLanguage", "eng")],
+            &[
+                document(),
+                config_part(r#"{"tesseract-ocr-parser": {"language": "dan"}}"#)
+            ]
+        )
+        .0,
+        400
+    );
+    assert_eq!(
+        refused("/tika/config/text", &[], &[config_part("{}")]),
+        (
+            400,
+            "Missing file attachment (use name='file' or send single unnamed attachment)"
+                .to_string()
+        )
+    );
+    let raw = put_file(&server, "/tika/config/text", &[], "simple.odt");
+    assert_eq!(raw.status, 404);
+    let unformed = std::fs::read(format!("{DOCUMENTS}/simple.odt")).unwrap();
+    let not_multipart = server.request(
+        "POST",
+        "/tika/config/text",
+        &[("Content-Type", office)],
+        &unformed,
+    );
+    assert_eq!(not_multipart.status, 415);
+}
+
+/// The `/form` and `/config` uploads answer as the `PUT` endpoints they mirror.
+#[test]
+fn tika_multipart_uploads_answer_as_their_put_endpoints() {
+    let server = Server::start(&[]);
+    let zip = || file_part("nested.zip", "application/zip");
+
+    let put_rmeta = put_file(&server, "/rmeta/ignore", &[], "nested.zip").json();
+    let form_rmeta = post_form(&server, "/rmeta/form/ignore", &[], &[zip()]);
+    assert_eq!(form_rmeta.status, 200, "{}", form_rmeta.text());
+    assert_eq!(form_rmeta.json(), put_rmeta);
+    let config_rmeta = post_form(
+        &server,
+        "/rmeta/config/text",
+        &[],
+        &[zip(), config_part("{}")],
+    )
+    .json();
+    assert_eq!(config_rmeta[4]["tk:content-handler-type"], "TEXT");
+    let body_rmeta = put_file(&server, "/rmeta/body", &[], "nested.zip").json();
+    assert_eq!(body_rmeta[4]["tk:content-handler-type"], "BODY");
+
+    let named = FormPart {
+        file_name: Some("a.odt"),
+        ..file_part("simple.odt", "application/vnd.oasis.opendocument.text")
+    };
+    let meta = post_form(&server, "/meta/form", &[], &[named]);
+    assert_eq!(meta.status, 200, "{}", meta.text());
+    assert_eq!(meta.json()["tk:resource-name"], "a.odt");
+    let csv = post_form(
+        &server,
+        "/meta/config",
+        &[("Accept", "text/csv")],
+        &[file_part(
+            "simple.odt",
+            "application/vnd.oasis.opendocument.text",
+        )],
+    );
+    assert!(
+        csv.text().contains("Content-Length,7649\n"),
+        "{}",
+        csv.text()
+    );
+
+    let rdf = [("Accept", "application/rdf+xml")];
+    let xmp = put_file(&server, "/meta", &rdf, "simple.odt");
+    assert_eq!(
+        xmp.header("content-type"),
+        Some("application/rdf+xml; charset=utf-8")
+    );
+    assert!(xmp
+        .text()
+        .contains(r#"dc:format="application/vnd.oasis.opendocument.text""#));
+    let form_xmp = post_form(
+        &server,
+        "/meta/form",
+        &rdf,
+        &[file_part(
+            "simple.odt",
+            "application/vnd.oasis.opendocument.text",
+        )],
+    );
+    assert_eq!(form_xmp.text(), xmp.text());
+    let field_xmp = put_file(&server, "/meta/Content-Type", &rdf, "simple.odt").text();
+    assert!(field_xmp.contains("dc:format=") && !field_xmp.contains("xmp:CreateDate"));
+    let config_xmp = post_form(
+        &server,
+        "/meta/config",
+        &rdf,
+        &[file_part(
+            "simple.odt",
+            "application/vnd.oasis.opendocument.text",
+        )],
+    );
+    assert_eq!(config_xmp.status, 406);
+
+    let names = |archive: &[u8]| -> Vec<String> {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive.to_vec())).unwrap();
+        (0..zip.len())
+            .map(|index| zip.by_index(index).unwrap().name().unwrap().to_string())
+            .collect()
+    };
+    let unpacked = post_form(&server, "/unpack", &[], &[zip()]);
+    assert_eq!(unpacked.status, 200);
+    assert_eq!(
+        names(&unpacked.body),
+        names(&put_file(&server, "/unpack", &[], "nested.zip").body)
+    );
+    let sidecar = |archive: &[u8]| -> serde_json::Value {
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive.to_vec())).unwrap();
+        let mut json = String::new();
+        zip.by_name("4.txt.metadata.json")
+            .unwrap()
+            .read_to_string(&mut json)
+            .unwrap();
+        serde_json::from_str(&json).unwrap()
+    };
+    let all_text = post_form(
+        &server,
+        "/unpack/all/config/text",
+        &[],
+        &[zip(), config_part("{}")],
+    );
+    assert_eq!(names(&all_text.body).len(), 16);
+    assert_eq!(sidecar(&all_text.body)["tk:content-handler-type"], "TEXT");
+    let put_all_text = put_file(&server, "/unpack/all/text", &[], "nested.zip");
+    assert_eq!(
+        sidecar(&put_all_text.body)["tk:content-handler-type"],
+        "TEXT"
+    );
+    assert!(
+        sidecar(&put_file(&server, "/unpack/all", &[], "nested.zip").body)
+            .get("tk:content")
+            .is_none()
+    );
+}
+
+/// The routes of tika-server 4.2 that answer without extracting: its welcome, its status, and
+/// the presets and pipes that a tika-server without configuration does not serve.
+#[test]
+fn tika_servers_other_routes_answer_as_it_does_unconfigured() {
+    let server = Server::start(&[]);
+    let html = server.request("GET", "/", &[], b"");
+    assert_eq!(html.status, 200);
+    assert_eq!(
+        html.header("content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert!(html
+        .text()
+        .contains("<b>POST</b> <i>/tika/config/json/{handler}</i>"));
+    let plain = server.request("GET", "/", &[("Accept", "text/plain")], b"");
+    assert!(plain
+        .text()
+        .contains("POST /tika/config/text\n => text/plain\n"));
+
+    let status = server.request("GET", "/status", &[], b"").json();
+    assert_eq!(status["status"], "OPERATING");
+    assert_eq!(status["files_processed"], 0);
+    put_file(&server, "/tika", &[], "simple.odt");
+    let status = server.request("GET", "/status", &[], b"").json();
+    assert_eq!(status["files_processed"], 1);
+    assert_eq!(status["active_tasks"], 0);
+    assert!(status["millis_since_last_parse_started"].is_u64());
+
+    for target in [
+        "/tika/preset/fast",
+        "/rmeta/preset/fast/text",
+        "/unpack/preset/fast/all",
+    ] {
+        let preset = put_file(&server, target, &[], "simple.odt");
+        assert_eq!(preset.status, 404, "{target}");
+        assert_eq!(preset.json()["error"], "No such preset: fast");
+    }
+    for target in ["/pipes", "/async"] {
+        assert_eq!(server.request("POST", target, &[], b"{}").status, 404);
+    }
+}
+
+/// A forked parser's death is answered as tika-server answers it, which clients read the cause
+/// from (#394).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_dead_worker_process_is_answered_as_a_dead_forked_parser() {
+    let server = Server::start(&[
+        "--isolation",
+        "process",
+        "--workers",
+        "1",
+        "--worker-max-rss-bytes",
+        "1048576",
+    ]);
+    let stopped = put_file(&server, "/tika/json", &[], "2022_Q3_AAPL.pdf");
+    assert_eq!(stopped.status, 503);
+    assert_eq!(stopped.json(), serde_json::json!({ "status": "OOM" }));
+    let text = post_form(
+        &server,
+        "/tika/config/text",
+        &[],
+        &[file_part("2022_Q3_AAPL.pdf", "application/pdf")],
+    );
+    assert_eq!(text.status, 503);
+    assert_eq!(text.json()["status"], "OOM");
+    assert_eq!(
+        server.post_file("/extract", &[], "2022_Q3_AAPL.pdf").status,
+        413
+    );
+}
+
 #[test]
 fn tika_reads_and_unpacks_embedded_documents() {
     let server = Server::start(&[]);

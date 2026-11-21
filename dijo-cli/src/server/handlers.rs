@@ -49,6 +49,31 @@ pub struct Head {
     pub status: u16,
     pub content_type: ContentType,
     pub body: Option<Vec<u8>>,
+    /// Set when the extraction died, which tika-server reports as its forked parser's death.
+    pub crash: Option<Crash>,
+}
+
+/// How an extraction died before it answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Crash {
+    Timeout,
+    OutOfMemory,
+    Unspecified,
+}
+
+impl Crash {
+    /// The death of an extraction that failed for `category`, if it is one.
+    pub fn of(category: ErrorCategory) -> Option<Self> {
+        (category == ErrorCategory::Timeout).then_some(Crash::Timeout)
+    }
+
+    pub fn category(self) -> ErrorCategory {
+        match self {
+            Crash::Timeout => ErrorCategory::Timeout,
+            Crash::OutOfMemory => ErrorCategory::LimitExceeded,
+            Crash::Unspecified => ErrorCategory::Internal,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +85,7 @@ pub enum ContentType {
     NdJson,
     Csv,
     Zip,
+    RdfXml,
 }
 
 impl ContentType {
@@ -82,6 +108,7 @@ impl ContentType {
             ContentType::NdJson => "application/x-ndjson",
             ContentType::Csv => "text/csv; charset=utf-8",
             ContentType::Zip => "application/zip",
+            ContentType::RdfXml => "application/rdf+xml; charset=utf-8",
         }
     }
 }
@@ -132,6 +159,23 @@ pub fn error_head(status: u16, message: &str) -> Head {
         status,
         content_type: ContentType::Json,
         body: Some(error_body(message).into_bytes()),
+        crash: None,
+    }
+}
+
+/// The head of an extraction that failed for `category`.
+pub fn failure_head(category: ErrorCategory, message: &str) -> Head {
+    Head {
+        crash: Crash::of(category),
+        ..error_head(status_for(category), message)
+    }
+}
+
+/// The head of an extraction that died.
+pub fn crash_head(crash: Crash, message: &str) -> Head {
+    Head {
+        crash: Some(crash),
+        ..error_head(status_for(crash.category()), message)
     }
 }
 
@@ -140,6 +184,7 @@ pub fn streaming(content_type: ContentType) -> Head {
         status: 200,
         content_type,
         body: None,
+        crash: None,
     }
 }
 
@@ -219,6 +264,7 @@ fn extract(
                 status: status_for(error.category),
                 content_type: ContentType::Json,
                 body: Some(document),
+                crash: Crash::of(error.category),
             });
         }
         return;
@@ -324,6 +370,7 @@ fn detect(files: &Files, respond: &mut dyn Respond) {
             status: 200,
             content_type: ContentType::Text,
             body: Some(format!("{media_type}\n").into_bytes()),
+            crash: None,
         },
         Err(message) => error_head(500, &message),
     };

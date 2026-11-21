@@ -13,11 +13,12 @@ use zip::{CompressionMethod, ZipWriter};
 
 use super::iso639;
 use super::keys::{self, Field, Keys, Named};
+use super::xmp;
 use crate::cli::Format;
 use crate::render::{self, Opened, Outcome, RenderOptions};
 use crate::schema::{self, ExtractionError, Source, Status};
 use crate::server::handlers::{
-    self, error_head, status_for, BodyWriter, ContentType, ExtractRequest, Files, Head, Report,
+    self, error_head, failure_head, BodyWriter, ContentType, ExtractRequest, Files, Head, Report,
     Respond, BODY_CHUNK_SIZE,
 };
 use crate::server::upload;
@@ -32,7 +33,7 @@ const EMBEDDED_DEPTH: &str = "tk:embedded-depth";
 const EMBEDDED_PATH: &str = "tk:embedded-resource-path";
 const EMBEDDED_ID: &str = "tk:embedded-id";
 const RESOURCE_NAME: &str = "tk:resource-name";
-const CONTENT_TYPE: &str = "Content-Type";
+pub(super) const CONTENT_TYPE: &str = "Content-Type";
 /// As much of an upload as `/language` reads, in characters, as tika-server does.
 const LANGUAGE_CHARS: usize = 100_000;
 /// The extension `/unpack` names a document by when its type has none.
@@ -44,6 +45,8 @@ const METADATA_SUFFIX: &str = ".metadata.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Handler {
     Text,
+    /// The text of the body alone, which is all dijo's text has.
+    Body,
     Html,
     Xml,
     Markdown,
@@ -51,14 +54,15 @@ pub enum Handler {
 }
 
 impl Handler {
-    /// The handler a path names, as in tika-server's `/tika/json/{handler}` and
-    /// `/rmeta/{handler}`.
+    /// The handler a name means to Tika, in any case, as in tika-server's
+    /// `/tika/json/{handler}` and `/rmeta/{handler}` and a configuration's handler type.
     pub fn named(name: &str) -> Option<Self> {
-        match name {
-            "text" => Some(Handler::Text),
+        match name.to_ascii_lowercase().as_str() {
+            "text" | "txt" => Some(Handler::Text),
+            "body" => Some(Handler::Body),
             "html" => Some(Handler::Html),
             "xml" => Some(Handler::Xml),
-            "md" => Some(Handler::Markdown),
+            "md" | "markdown" => Some(Handler::Markdown),
             "ignore" => Some(Handler::Ignore),
             _ => None,
         }
@@ -67,7 +71,7 @@ impl Handler {
     /// The format the content is extracted in; plain text, unwritten, for [`Handler::Ignore`].
     pub fn format(self) -> Format {
         match self {
-            Handler::Text | Handler::Ignore => Format::Text,
+            Handler::Text | Handler::Body | Handler::Ignore => Format::Text,
             Handler::Html | Handler::Xml => Format::Xhtml,
             Handler::Markdown => Format::Markdown,
         }
@@ -76,6 +80,7 @@ impl Handler {
     fn tika_name(self) -> &'static str {
         match self {
             Handler::Text => "TEXT",
+            Handler::Body => "BODY",
             Handler::Html => "HTML",
             Handler::Xml => "XML",
             Handler::Markdown => "MARKDOWN",
@@ -89,6 +94,8 @@ impl Handler {
 pub enum MetaForm {
     Json,
     Csv,
+    /// An XMP packet, as tika-server-standard answers `application/rdf+xml`.
+    Xmp,
 }
 
 /// How `/meta/{field}` writes one field.
@@ -98,6 +105,18 @@ pub enum FieldForm {
     Csv,
     /// The first value alone.
     Plain,
+    /// An XMP packet of the field alone.
+    Xmp,
+}
+
+/// What `/unpack` archives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Unpacked {
+    /// The embedded documents.
+    Embedded,
+    /// `/unpack/all`: the upload and the embedded documents, each with its metadata, which has
+    /// the content as the handler writes it, if one is named.
+    All(Option<Handler>),
 }
 
 /// What a worker answers an upload with.
@@ -113,9 +132,8 @@ pub enum Output {
     Meta(MetaForm),
     /// `/meta/{field}`: one field of the metadata.
     MetaField { field: String, form: FieldForm },
-    /// `/unpack`: the embedded documents as a ZIP archive; `/unpack/all` adds the upload and
-    /// every document's metadata.
-    Unpack { all: bool },
+    /// `/unpack`: documents as a ZIP archive.
+    Unpack(Unpacked),
     /// `/detect`: the media type, without a line end.
     Detect,
     /// `/language`: the language of the upload, which is text.
@@ -130,9 +148,9 @@ pub fn run(request: &ExtractRequest, output: &Output, files: &Files, respond: &m
         Output::Rmeta(handler) => rmeta(request, *handler, files, respond),
         Output::Meta(form) => meta(request, *form, files, respond),
         Output::MetaField { field, form } => meta_field(request, field, *form, files, respond),
-        Output::Unpack { all } => unpack(request, *all, files, respond),
+        Output::Unpack(unpacked) => unpack(request, *unpacked, files, respond),
         Output::Detect => respond.head(match handlers::detected_type(files) {
-            Ok(media_type) => text_head(200, media_type),
+            Ok(media_type) => text_head(media_type),
             Err(message) => error_head(500, &message),
         }),
         Output::Language => language(files, respond),
@@ -322,30 +340,37 @@ fn report(respond: &mut dyn Respond, outcome: &Outcome, started: Instant) {
     });
 }
 
-fn text_head(status: u16, body: impl Into<Vec<u8>>) -> Head {
+fn full_head(content_type: ContentType, body: impl Into<Vec<u8>>) -> Head {
     Head {
-        status,
-        content_type: ContentType::Text,
+        status: 200,
+        content_type,
         body: Some(body.into()),
+        crash: None,
     }
 }
 
+fn text_head(body: impl Into<Vec<u8>>) -> Head {
+    full_head(ContentType::Text, body)
+}
+
 fn json_head(value: &impl Serialize) -> io::Result<Head> {
-    Ok(Head {
-        status: 200,
-        content_type: ContentType::Json,
-        body: Some(serde_json::to_vec(value)?),
-    })
+    Ok(full_head(ContentType::Json, serde_json::to_vec(value)?))
 }
 
 /// The head of an answer that failed for its first error, which a document that did not open
 /// has.
-fn failure_head(outcome: &Outcome) -> Option<Head> {
+fn failed_head(outcome: &Outcome) -> Option<Head> {
     if !matches!(outcome.status, Status::Failed | Status::Encrypted) {
         return None;
     }
     let error = outcome.errors.first()?;
-    Some(error_head(status_for(error.category), &error.message))
+    Some(failure_head(error.category, &error.message))
+}
+
+/// The head of an answer whose extraction died, which tika-server answers with its forked
+/// parser's death even where it embeds the errors of a parse in a 200.
+fn crashed_head(outcome: &Outcome) -> Option<Head> {
+    failed_head(outcome).filter(|head| head.crash.is_some())
 }
 
 fn json(
@@ -358,6 +383,9 @@ fn json(
     let started = Instant::now();
     let (object, outcome) = upload_record(request, Some(handler), files)?;
     report(respond, &outcome, started);
+    if let Some(head) = crashed_head(&outcome) {
+        return respond.head(head);
+    }
     respond.head(json_head(&Named::new(&object, keys))?)
 }
 
@@ -370,10 +398,14 @@ fn meta(
     let started = Instant::now();
     let (object, outcome) = upload_record(request, None, files)?;
     report(respond, &outcome, started);
+    if let Some(head) = crashed_head(&outcome) {
+        return respond.head(head);
+    }
     let named = Named::new(&object, Keys::Both);
     respond.head(match form {
         MetaForm::Json => json_head(&named)?,
         MetaForm::Csv => csv_head(named.iter()),
+        MetaForm::Xmp => full_head(ContentType::RdfXml, xmp::packet(&object)),
     })
 }
 
@@ -387,7 +419,7 @@ fn meta_field(
     let started = Instant::now();
     let (object, outcome) = upload_record(request, None, files)?;
     report(respond, &outcome, started);
-    if let Some(head) = failure_head(&outcome) {
+    if let Some(head) = failed_head(&outcome) {
         return respond.head(head);
     }
     let named = Named::new(&object, Keys::Both);
@@ -400,7 +432,22 @@ fn meta_field(
     respond.head(match form {
         FieldForm::Json => json_head(&BTreeMap::from([(field, Field(values))]))?,
         FieldForm::Csv => csv_head([(field, values)]),
-        FieldForm::Plain => text_head(200, keys::strings(values).next().unwrap_or_default()),
+        FieldForm::Plain => text_head(keys::strings(values).next().unwrap_or_default()),
+        FieldForm::Xmp => {
+            let value = match values {
+                [value] => (*value).clone(),
+                values => Value::from(
+                    values
+                        .iter()
+                        .map(|value| (*value).clone())
+                        .collect::<Vec<_>>(),
+                ),
+            };
+            full_head(
+                ContentType::RdfXml,
+                xmp::packet(&Object::from([(field.to_string(), value)])),
+            )
+        }
     })
 }
 
@@ -417,11 +464,7 @@ fn csv_head<'f, 'v: 'f>(
         }
         csv.push('\n');
     }
-    Head {
-        status: 200,
-        content_type: ContentType::Csv,
-        body: Some(csv.into_bytes()),
-    }
+    full_head(ContentType::Csv, csv)
 }
 
 fn csv_field(csv: &mut String, field: &str) {
@@ -533,7 +576,7 @@ impl Records for RmetaRecords<'_> {
 
 fn unpack(
     request: &ExtractRequest,
-    all: bool,
+    unpacked: Unpacked,
     files: &Files,
     respond: &mut dyn Respond,
 ) -> io::Result<()> {
@@ -545,12 +588,12 @@ fn unpack(
     }
     let mut records = UnpackRecords {
         request,
-        all,
+        unpacked,
         named: is_named(files),
         state: Unpacking::Unanswered(respond),
     };
     tree::render_tree(
-        &extractor(request, None),
+        &extractor(request, unpacked.handler()),
         &files.path,
         &files.display,
         request.limits,
@@ -560,11 +603,20 @@ fn unpack(
     match records.state {
         Unpacking::Unanswered(respond) => respond.head(Head {
             status: 204,
-            content_type: ContentType::Text,
-            body: Some(Vec::new()),
+            ..text_head(Vec::new())
         }),
         Unpacking::Zipping(zip) => zip.finish()?.into_inner().flush(),
         Unpacking::Answered => Ok(()),
+    }
+}
+
+impl Unpacked {
+    /// The handler that writes the content into each document's metadata.
+    fn handler(self) -> Option<Handler> {
+        match self {
+            Unpacked::Embedded => None,
+            Unpacked::All(handler) => handler,
+        }
     }
 }
 
@@ -582,7 +634,7 @@ enum Unpacking<'a> {
 /// number and its type's extension.
 struct UnpackRecords<'a> {
     request: &'a ExtractRequest,
-    all: bool,
+    unpacked: Unpacked,
     named: bool,
     state: Unpacking<'a>,
 }
@@ -620,7 +672,7 @@ impl<'a> UnpackRecords<'a> {
         let options = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
             .large_file(size > u64::from(u32::MAX));
-        let all = self.all;
+        let all = matches!(self.unpacked, Unpacked::All(_));
         let zip = self.archive()?;
         zip.start_file(name.as_str(), options)?;
         io::copy(&mut File::open(document.path)?, zip)?;
@@ -642,14 +694,14 @@ impl Records for UnpackRecords<'_> {
             open,
             document.source,
             self.request,
-            None,
+            self.unpacked.handler(),
             &Place::of(document, self.named),
         )?;
         if document.id != 0 {
             self.entry(document, &object)?;
             return Ok(outcome);
         }
-        if let Some(head) = failure_head(&outcome) {
+        if let Some(head) = failed_head(&outcome) {
             if let Unpacking::Unanswered(respond) =
                 std::mem::replace(&mut self.state, Unpacking::Answered)
             {
@@ -658,7 +710,7 @@ impl Records for UnpackRecords<'_> {
             outcome.embedded.clear();
             return Ok(outcome);
         }
-        if self.all {
+        if let Unpacked::All(_) = self.unpacked {
             self.entry(document, &object)?;
         }
         Ok(outcome)
@@ -691,5 +743,5 @@ fn language(files: &Files, respond: &mut dyn Respond) -> io::Result<()> {
     let code = language::detect(&text).map_or("", |detected| {
         iso639::two_letter(detected.code).unwrap_or(detected.code)
     });
-    respond.head(text_head(200, code))
+    respond.head(text_head(code))
 }

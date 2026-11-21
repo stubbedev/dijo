@@ -290,9 +290,10 @@ Tika reads none of these, or only their summary information or raw lines; dijo r
 
 ## Compatibility
 
-- **tika-server 4.1 API.** Implemented in full: `/tika[/handler]`, `/rmeta`, `/meta`, `/unpack`, `/detect`,
-  `/language`, `/version`, `/parsers`, `/detectors` and `/mime-types` (#320). A client switches by changing its base
-  URL. The README lists every difference from tika-server.
+- **tika-server 4.2 API.** Every route: `/tika[/handler]`, `/rmeta`, `/meta`, `/unpack`, `/detect`, `/language`,
+  `/version`, `/parsers`, `/detectors` and `/mime-types` (#320), and the multipart `/config` and `/form` uploads with
+  their parse configuration, XMP, `/status`, `/`, the presets and the forked parser's death statuses (#394). A client
+  switches by changing its base URL. The README lists every difference from tika-server.
 - **tika-server 3.x clients.** The JSON forms of 3.x are served. Every 3.x metadata key is derived from Tika's own
   3.x-to-4.x key table and `LegacyKeyMigrationFilter`'s prefix rules, and the endpoints both versions share carry
   both keys (#363).

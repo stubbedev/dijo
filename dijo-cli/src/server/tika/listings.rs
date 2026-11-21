@@ -1,5 +1,5 @@
-//! tika-server's endpoints that answer without an upload: its greeting, its version and what it
-//! detects and parses.
+//! tika-server's endpoints that answer without an upload: its welcome and greeting, its version
+//! and what it detects and parses.
 
 use std::fmt::Write as _;
 
@@ -25,8 +25,79 @@ const DETECTORS: [&str; 8] = [
     "dijo::DefaultZipContainerDetector",
 ];
 
+const HTML: &str = "text/html; charset=utf-8";
+const DOCS: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "#tika-servers-api");
+const ZIP: &[&str] = &["application/zip"];
+const JSON_ONLY: &[&str] = &["application/json"];
+const TEXT_ONLY: &[&str] = &["text/plain"];
+const META: &[&str] = &["application/json", "text/csv", "application/rdf+xml"];
+const LISTED: &[&str] = &["application/json", "text/plain"];
+/// The endpoints of tika-server's API dijo serves: method, path and the media types answered.
+const ENDPOINTS: &[(&str, &str, &[&str])] = &[
+    ("GET", "/", &["text/html", "text/plain"]),
+    ("GET", "/tika", TEXT_ONLY),
+    (
+        "PUT",
+        "/tika",
+        &["text/plain", "text/html", "text/xml", "application/json"],
+    ),
+    ("PUT", "/tika/text", &["text/plain", "application/json"]),
+    ("PUT", "/tika/html", &["text/html", "application/json"]),
+    ("PUT", "/tika/xml", &["text/xml", "application/json"]),
+    ("PUT", "/tika/md", &["text/plain", "application/json"]),
+    ("PUT", "/tika/json", JSON_ONLY),
+    ("PUT", "/tika/json/{handler}", JSON_ONLY),
+    ("POST", "/tika/config", TEXT_ONLY),
+    ("POST", "/tika/config/text", TEXT_ONLY),
+    ("POST", "/tika/config/html", &["text/html"]),
+    ("POST", "/tika/config/xml", &["text/xml"]),
+    ("POST", "/tika/config/md", TEXT_ONLY),
+    ("POST", "/tika/config/json", JSON_ONLY),
+    ("POST", "/tika/config/json/{handler}", JSON_ONLY),
+    ("PUT", "/rmeta", JSON_ONLY),
+    ("PUT", "/rmeta/{handler}", JSON_ONLY),
+    ("POST", "/rmeta/form", JSON_ONLY),
+    ("POST", "/rmeta/form/{handler}", JSON_ONLY),
+    ("POST", "/rmeta/config", JSON_ONLY),
+    ("POST", "/rmeta/config/{handler}", JSON_ONLY),
+    ("PUT", "/meta", META),
+    (
+        "PUT",
+        "/meta/{field}",
+        &[
+            "application/json",
+            "text/csv",
+            "text/plain",
+            "application/rdf+xml",
+        ],
+    ),
+    ("POST", "/meta/form", META),
+    ("POST", "/meta/config", &["application/json", "text/csv"]),
+    ("PUT", "/unpack", ZIP),
+    ("POST", "/unpack", ZIP),
+    ("PUT", "/unpack/all", ZIP),
+    ("PUT", "/unpack/all/{handler}", ZIP),
+    ("POST", "/unpack/all", ZIP),
+    ("POST", "/unpack/all/{handler}", ZIP),
+    ("POST", "/unpack/all/config", ZIP),
+    ("POST", "/unpack/all/config/{handler}", ZIP),
+    ("PUT", "/detect/stream", TEXT_ONLY),
+    ("PUT", "/language/stream", TEXT_ONLY),
+    ("POST", "/language/stream", TEXT_ONLY),
+    ("PUT", "/language/string", TEXT_ONLY),
+    ("POST", "/language/string", TEXT_ONLY),
+    ("GET", "/version", TEXT_ONLY),
+    ("GET", "/parsers", LISTED),
+    ("GET", "/parsers/details", LISTED),
+    ("GET", "/detectors", LISTED),
+    ("GET", "/mime-types", LISTED),
+    ("GET", "/mime-types/{type}/{subtype}", JSON_ONLY),
+    ("GET", "/status", JSON_ONLY),
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Listing {
+    Welcome,
     Hello,
     Version,
     Parsers { details: bool },
@@ -44,6 +115,7 @@ enum Form {
 /// The status, media type and body tika-server answers a listing with.
 pub fn answer(listing: &Listing, headers: &HeaderMap) -> (u16, &'static str, String) {
     match listing {
+        Listing::Welcome => welcome(headers),
         Listing::Hello => (200, PLAIN, hello()),
         Listing::Version => (200, PLAIN, format!("dijo {}", env!("CARGO_PKG_VERSION"))),
         Listing::Parsers { details } => listed(headers, |form| parsers(form, *details)),
@@ -66,6 +138,48 @@ pub fn hello() -> String {
         "This is dijo {}, serving tika-server's API. Please PUT\n",
         env!("CARGO_PKG_VERSION")
     )
+}
+
+/// What tika-server answers `GET /` with: the endpoints it serves, as HTML or, when `Accept`
+/// names plain text before HTML, as plain text.
+fn welcome(headers: &HeaderMap) -> (u16, &'static str, String) {
+    let plain = media_ranges(headers)
+        .find_map(|range| match range.as_str() {
+            "text/plain" => Some(true),
+            "text/html" | "text/*" | "*/*" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(false);
+    let title = format!("dijo {}", env!("CARGO_PKG_VERSION"));
+    if plain {
+        let mut text = format!("{title}\nFor endpoints, please see {DOCS}\n\n");
+        for (method, path, produces) in ENDPOINTS {
+            let _ = writeln!(text, "{method} {path}");
+            for media_type in *produces {
+                let _ = writeln!(text, " => {media_type}");
+            }
+        }
+        return (200, PLAIN, text);
+    }
+    let mut html = format!(
+        "<html><head><title>Welcome to the {title} Server</title></head><body>\
+         <h1>Welcome to the {title} Server</h1>\
+         <p>For endpoints, please see <a href=\"{DOCS}\">{DOCS}</a></p>\n<ul>\n"
+    );
+    for (method, path, produces) in ENDPOINTS {
+        let shown = if path.contains('{') {
+            path.to_string()
+        } else {
+            format!("<a href=\"{path}\">{path}</a>")
+        };
+        let _ = write!(html, "<li><b>{method}</b> <i>{shown}</i>");
+        for media_type in *produces {
+            let _ = write!(html, "<br />Produces: {media_type}");
+        }
+        html.push_str("</li>\n");
+    }
+    html.push_str("</ul>\n</body></html>\n");
+    (200, HTML, html)
 }
 
 /// A listing as JSON or plain text, whichever `Accept` names first; plain text when it names

@@ -110,22 +110,52 @@ curl --data-binary @mystery.bin localhost:9998/detect
 | `POST /detect` | The detected media type, as text. |
 | `GET /healthz`, `GET /readyz` | Liveness, and whether a request would be accepted now. |
 | `GET /metrics` | Prometheus metrics. |
-| tika-server's API | The endpoints of tika-server 4.1, and what clients of tika-server 3 ask of them, so a Tika client can switch to dijo by its base URL alone. See below. |
+| tika-server's API | Every route of tika-server 4.2, and what clients of tika-server 3 ask of them, so a Tika client can switch to dijo by its base URL alone. See below. |
 
 ### tika-server's API
 
 | Endpoint | Answer |
 | --- | --- |
+| `GET /` | The routes dijo serves, as HTML or, by `Accept`, plain text. |
 | `GET /tika` | The greeting Tika clients check the server is up by. |
 | `PUT /tika` | The text, as `POST /extract` answers it. `Accept: text/html` or `text/xml` answers the XHTML, and `application/json` the JSON object of `/tika/xml` below, as tika-server 3 did. |
 | `PUT /tika/text`, `/tika/html`, `/tika/xml`, `/tika/md` | The text, the XHTML (as `text/html` or `text/xml`) or Markdown. `Accept: application/json` answers one JSON object, as tika-server 3 did: the metadata in tika-server 3's keys and the content in `X-TIKA:content` as the handler writes it. |
-| `PUT /tika/json[/{handler}]` | One JSON object: the metadata under Tika's keys, the content in `tk:content` as the handler (`text`, `html`, `xml`, `md`, the default, or `ignore`) writes it, and errors in `tk:exception:container-exception`. 200 even when the document could not be read. |
+| `PUT /tika/json[/{handler}]` | One JSON object: the metadata under Tika's keys, the content in `tk:content` as the handler (`text`, `body`, `html`, `xml`, `md`, the default, or `ignore`, in any case) writes it, and errors in `tk:exception:container-exception`. 200 even when the document could not be read. |
+| `POST /tika/config[/{text,html,xml,md}]` | As `PUT /tika/{text,html,xml,md}`, from a multipart upload (see below); Markdown, or the handler its configuration names, without a format in the path. |
+| `POST /tika/config/json[/{handler}]` | As `PUT /tika/json[/{handler}]`, from a multipart upload. |
 | `PUT /rmeta[/{handler}]` | A JSON array of such objects: the upload, then every document embedded in it, with `tk:embedded-id`, `tk:embedded-resource-path`, `tk:embedded-depth` and `tk:resource-name`. |
-| `PUT /meta`, `PUT /meta/{field}` | The metadata alone, as JSON or, by `Accept`, CSV; one field also as plain text, 404 when the document has none. |
-| `PUT /unpack`, `PUT /unpack/all` | The embedded documents as a ZIP archive, each named by its `tk:embedded-id` and its type's extension; 204 when there are none. `/all` adds the upload as `0` and each document's metadata as `<name>.metadata.json`. |
+| `POST /rmeta/form[/{handler}]`, `POST /rmeta/config[/{handler}]` | As `PUT /rmeta[/{handler}]`, from a multipart upload. |
+| `PUT /meta`, `PUT /meta/{field}` | The metadata alone, as JSON or, by `Accept`, CSV or an XMP packet (`application/rdf+xml`); one field also as plain text, 404 when the document has none. |
+| `POST /meta/form`, `POST /meta/config` | As `PUT /meta`, from a multipart upload; `/meta/config` as JSON or CSV alone, as tika-server answers it. |
+| `PUT /unpack`, `PUT /unpack/all[/{handler}]` | The embedded documents as a ZIP archive, each named by its `tk:embedded-id` and its type's extension; 204 when there are none. `/all` adds the upload as `0` and each document's metadata as `<name>.metadata.json`, with its content in `tk:content` as a named handler writes it. |
+| `POST /unpack`, `POST /unpack/all[/config][/{handler}]` | As `PUT /unpack` and `PUT /unpack/all[/{handler}]`, from a multipart upload. |
 | `PUT /detect` (and `/detect/stream`) | The detected media type. |
 | `PUT` or `POST /language` (and `/language/stream`, `/language/string`) | The language of the body, which is text, as an ISO 639-1 code where there is one. |
 | `GET /version`, `/parsers`, `/parsers/details`, `/detectors`, `/mime-types`, `/mime-types/{type}/{subtype}` | dijo's version, parsers, detectors and media types, as JSON or plain text by `Accept`. |
+| `GET /status` | `status`, `active_tasks`, `millis_since_last_parse_started` and `files_processed`, as tika-server answers them when it serves `/status`. |
+| `PUT /tika/preset/{name}/…`, `/rmeta/preset/{name}/…`, `/unpack/preset/{name}/…` | 404 `No such preset`, as tika-server answers without presets configured: dijo has none. |
+| `POST /pipes`, `POST /async` | 404, as tika-server answers unless configured with fetchers and emitters, which dijo has none of. |
+
+A multipart upload is `multipart/form-data`. The `/form` endpoints read the document from the first part. The
+`/config` endpoints read it from the part named `file`, or the first unnamed part, and a parse configuration, as Tika's
+JSON, from the part named `config`; other parts are ignored. The file name and media type of the document come from its
+part's `Content-Disposition` and `Content-Type`. Of the configuration dijo applies or decides by itself:
+
+| Configuration | |
+| --- | --- |
+| `basic-content-handler-factory` `type` | Applied: the handler, on the endpoints without one in the path; naming one in both is refused with 400, as tika-server refuses it. Any other setting is refused. |
+| `tesseract-ocr-parser` `language` | Applied, as `X-Tika-OCRLanguage`; naming the languages in both is refused with 400. |
+| The rest of `tesseract-ocr-parser` (`skipOcr`, `minFileSizeToOcr`, …) and all of `pdf-parser` (`pages.text`, `pages.render.dpi`, `ocrStrategy`, …) | Ignored: dijo OCRs only the images and pages without usable text, at the resolution it picks. |
+| `timeout-limits` | Ignored: dijo stops at `--timeout`. |
+| Any other component | Refused with 400, rather than extracted as if it had not been asked for. |
+
+tika-server answers its `/config` endpoints only when started with `allowPerRequestConfig`; dijo always does, since none
+of the configuration it accepts can do more than these choices.
+
+When an extraction dies, an upload endpoint answers 503 with tika-server's JSON for its forked parser's death, which
+clients read the cause from: `{"status":"TIMEOUT"}` when it overran `--timeout`, `{"status":"OOM"}` when its worker
+process exceeded `--worker-max-rss-bytes`, and `{"status":"UNSPECIFIED_CRASH"}` when its worker died. A document whose
+extraction timed out after some of its text is answered 200 with that text, as tika-server answers a partial timeout.
 
 Every upload endpoint reads the passwords in `Password` headers, a file name in `Content-Disposition` and the tesseract
 languages in `X-Tika-OCRLanguage`. dijo decides when and how to OCR and when to stop, so it ignores
@@ -154,7 +184,8 @@ Where the answers differ from tika-server's:
 - An OpenDocument spreadsheet writes only the page styles its sheets are printed with, and their header and footer
   fields without the placeholder text LibreOffice stores (`???`, `00/00/0000`); Tika writes every page style.
 - `/mime-types/{type}/{subtype}` has no description, acronym or links, which dijo's media types do not carry.
-- The presets, the `/config` and `/form` uploads, the XMP endpoints, `/translate`, `/pipes` and `/async` are not served.
+- An XMP packet carries the properties Tika's XMP converters map, from dijo's metadata.
+- `GET /` lists dijo's routes, not tika-server's Java resource classes and methods.
 
 Where the answers differ from tika-server 3's:
 

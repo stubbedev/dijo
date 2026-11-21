@@ -11,7 +11,7 @@ use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Tika 4.1.0's `metadata-migration-3x-4x.json`: a 3.x key and its 4.x successor per row.
+/// Tika 4.2.0's `metadata-migration-3x-4x.json`: a 3.x key and its 4.x successor per row.
 const TABLE: &str = include_str!("metadata-migration-3x-4x.json");
 /// The 4.x key of a row whose 3.x key has no successor.
 const DROPPED: &str = "DROPPED";

@@ -20,6 +20,9 @@ pub struct Metrics {
     pub workers: AtomicUsize,
     pub cache_hits: AtomicU64,
     pub cache_misses: AtomicU64,
+    /// When the last extraction started, in milliseconds since the server started.
+    pub last_parse_started: AtomicU64,
+    pub files_processed: AtomicU64,
 }
 
 #[derive(Default)]
@@ -81,6 +84,12 @@ impl Metrics {
         }
         histogram.count += 1;
         histogram.sum += seconds;
+    }
+
+    /// Records that an extraction started `since_start` after the server did.
+    pub fn parse_started(&self, since_start: Duration) {
+        let millis = u64::try_from(since_start.as_millis()).unwrap_or(u64::MAX);
+        self.last_parse_started.store(millis, Ordering::Relaxed);
     }
 
     pub fn bytes_in(&self, bytes: u64) {

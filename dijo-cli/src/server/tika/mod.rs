@@ -1,18 +1,23 @@
 //! tika-server's API, answered by dijo's extraction, so that a Tika client can be pointed at
-//! dijo unchanged: the endpoints of tika-server 4.1, and the paths, `Accept` types and
+//! dijo unchanged: the endpoints of tika-server 4.2, and the paths, `Accept` types and
 //! metadata keys of tika-server 3 they replaced.
 
+pub mod config;
 mod iso639;
 pub mod keys;
 pub mod listings;
 pub mod output;
+mod xmp;
 
 use hyper::header::{HeaderMap, ACCEPT};
 use hyper::Method;
 
+use crate::server::handlers::Crash;
+use crate::server::upload::Parts;
+use config::RequestConfig;
 use keys::Keys;
 use listings::Listing;
-use output::{FieldForm, Handler, MetaForm, Output};
+use output::{FieldForm, Handler, MetaForm, Output, Unpacked};
 
 pub const PASSWORD_HEADER: &str = "password";
 const OCR_LANGUAGE_HEADER: &str = "x-tika-ocrlanguage";
@@ -27,6 +32,7 @@ const IGNORED_OPTIONS: &[&str] = &[
     "x-tika-timeout-millis",
 ];
 const JSON_RANGES: &[&str] = &["application/json"];
+const XMP_RANGES: &[&str] = &["application/rdf+xml"];
 /// The ranges that accept any content handler's answer.
 const ANY_TEXT_RANGES: &[&str] = &["text/*", "*/*"];
 
@@ -45,6 +51,60 @@ pub enum Endpoint {
     MetaField(String),
     /// Answered from an upload in a worker.
     Upload(Output),
+    /// `GET /status`: what the server is doing.
+    Status,
+    /// An endpoint of a named preset. tika-server has presets only when configured with them,
+    /// and dijo has none.
+    Preset(String),
+    /// Answered from the parts of a `multipart/form-data` upload.
+    Multipart(Multipart),
+}
+
+/// A `multipart/form-data` endpoint: which parts it reads, and what it answers from them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Multipart {
+    pub parts: Parts,
+    pub target: Target,
+}
+
+/// What a `multipart/form-data` endpoint answers with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// `/tika/config[/{format}]`: the content.
+    Content(Choice),
+    /// `/tika/config/json[/{handler}]`: as `PUT /tika/json`.
+    Json(Choice),
+    /// `/rmeta/{form,config}[/{handler}]`: as `PUT /rmeta`.
+    Rmeta(Choice),
+    /// `/meta/{form,config}`: as `PUT /meta`; tika-server-standard answers XMP on `/meta/form`
+    /// alone.
+    Meta { xmp: bool },
+    /// `/unpack`: as `PUT /unpack`.
+    Unpack,
+    /// `/unpack/all[/config][/{handler}]`: as `PUT /unpack/all`.
+    UnpackAll(Choice),
+}
+
+/// The content handler of a `multipart/form-data` endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Choice {
+    /// Named by the path, which a configuration may not name too.
+    Named(Handler),
+    /// Named by the configuration, if at all.
+    Configured,
+}
+
+impl Choice {
+    /// The handler, named by the path or the configuration, or the refusal of naming it in both.
+    pub fn resolve(self, configured: Option<Handler>) -> Result<Option<Handler>, String> {
+        match (self, configured) {
+            (Choice::Named(_), Some(_)) => Err("The path names a content handler and so does the \
+                 config part. Use one or the other."
+                .to_string()),
+            (Choice::Named(handler), None) => Ok(Some(handler)),
+            (Choice::Configured, configured) => Ok(configured),
+        }
+    }
 }
 
 impl Endpoint {
@@ -58,9 +118,18 @@ impl Endpoint {
             Endpoint::Upload(Output::Json(..)) => "tika_json",
             Endpoint::Upload(Output::Rmeta(_)) => "tika_rmeta",
             Endpoint::Upload(Output::Meta(_) | Output::MetaField { .. }) => "tika_meta",
-            Endpoint::Upload(Output::Unpack { .. }) => "tika_unpack",
+            Endpoint::Upload(Output::Unpack(_)) => "tika_unpack",
             Endpoint::Upload(Output::Detect) => "tika_detect",
             Endpoint::Upload(Output::Language) => "tika_language",
+            Endpoint::Status => "tika_status",
+            Endpoint::Preset(_) => "tika_preset",
+            Endpoint::Multipart(multipart) => match multipart.target {
+                Target::Content(_) => "tika",
+                Target::Json(_) => "tika_json",
+                Target::Rmeta(_) => "tika_rmeta",
+                Target::Meta { .. } => "tika_meta",
+                Target::Unpack | Target::UnpackAll(_) => "tika_unpack",
+            },
         }
     }
 }
@@ -74,8 +143,11 @@ pub fn route(method: &Method, path: &str) -> Option<Endpoint> {
         .split('/')
         .collect();
     let upload = |output| Some(Endpoint::Upload(output));
+    let multipart = |parts, target| Some(Endpoint::Multipart(Multipart { parts, target }));
+    let named = |name: &str| Some(Choice::Named(Handler::named(name)?));
     if method == Method::GET {
         let listing = match segments.as_slice() {
+            [""] => Listing::Welcome,
             ["tika"] => Listing::Hello,
             ["version"] => Listing::Version,
             ["parsers"] => Listing::Parsers { details: false },
@@ -83,13 +155,37 @@ pub fn route(method: &Method, path: &str) -> Option<Endpoint> {
             ["detectors"] => Listing::Detectors,
             ["mime-types"] => Listing::MimeTypes,
             ["mime-types", kind, subtype] => Listing::MimeType(format!("{kind}/{subtype}")),
+            ["status"] => return Some(Endpoint::Status),
             _ => return None,
         };
         return Some(Endpoint::Listing(listing));
     }
     if method == Method::POST {
+        use Parts::{Config, Form};
         return match segments.as_slice() {
             ["language"] | ["language", "stream" | "string"] => upload(Output::Language),
+            ["tika", "config"] => multipart(Config, Target::Content(Choice::Configured)),
+            ["tika", "config", "text"] => {
+                multipart(Config, Target::Content(Choice::Named(Handler::Body)))
+            }
+            ["tika", "config", format @ ("html" | "xml" | "md")] => {
+                multipart(Config, Target::Content(named(format)?))
+            }
+            ["tika", "config", "json"] => multipart(Config, Target::Json(Choice::Configured)),
+            ["tika", "config", "json", handler] => multipart(Config, Target::Json(named(handler)?)),
+            ["rmeta", "form"] => multipart(Form, Target::Rmeta(Choice::Configured)),
+            ["rmeta", "form", handler] => multipart(Form, Target::Rmeta(named(handler)?)),
+            ["rmeta", "config"] => multipart(Config, Target::Rmeta(Choice::Configured)),
+            ["rmeta", "config", handler] => multipart(Config, Target::Rmeta(named(handler)?)),
+            ["meta", "form"] => multipart(Form, Target::Meta { xmp: true }),
+            ["meta", "config"] => multipart(Config, Target::Meta { xmp: false }),
+            ["unpack"] => multipart(Config, Target::Unpack),
+            ["unpack", "all"] | ["unpack", "all", "config"] => {
+                multipart(Config, Target::UnpackAll(Choice::Configured))
+            }
+            ["unpack", "all", handler] | ["unpack", "all", "config", handler] => {
+                multipart(Config, Target::UnpackAll(named(handler)?))
+            }
             _ => None,
         };
     }
@@ -98,22 +194,83 @@ pub fn route(method: &Method, path: &str) -> Option<Endpoint> {
     }
     match segments.as_slice() {
         ["tika"] => Some(Endpoint::Negotiated),
+        ["tika", "text"] => Some(Endpoint::Content(Handler::Text)),
+        ["tika", "html"] => Some(Endpoint::Content(Handler::Html)),
+        ["tika", "xml"] => Some(Endpoint::Content(Handler::Xml)),
+        ["tika", "md"] => Some(Endpoint::Content(Handler::Markdown)),
         ["tika", "json"] => upload(Output::Json(Handler::Markdown, Keys::Tika4)),
         ["tika", "json", handler] => upload(Output::Json(Handler::named(handler)?, Keys::Tika4)),
-        ["tika", handler] => match Handler::named(handler)? {
-            Handler::Ignore => None,
-            handler => Some(Endpoint::Content(handler)),
-        },
+        ["tika", "preset", name, ..] | ["rmeta" | "unpack", "preset", name, ..] => {
+            Some(Endpoint::Preset(name.to_string()))
+        }
         ["rmeta"] => upload(Output::Rmeta(Handler::Markdown)),
         ["rmeta", handler] => upload(Output::Rmeta(Handler::named(handler)?)),
         ["meta"] => Some(Endpoint::Meta),
         ["meta", field] => Some(Endpoint::MetaField(field.to_string())),
         ["detect"] | ["detect", "stream"] => upload(Output::Detect),
         ["language"] | ["language", "stream" | "string"] => upload(Output::Language),
-        ["unpack"] => upload(Output::Unpack { all: false }),
-        ["unpack", "all"] => upload(Output::Unpack { all: true }),
+        ["unpack"] => upload(Output::Unpack(Unpacked::Embedded)),
+        ["unpack", "all"] => upload(Output::Unpack(Unpacked::All(None))),
+        ["unpack", "all", handler] => upload(Output::Unpack(Unpacked::All(Some(Handler::named(
+            handler,
+        )?)))),
         _ => None,
     }
+}
+
+/// What a `multipart/form-data` endpoint answers, once its configuration is read.
+pub enum Resolved {
+    /// The content as the handler writes it, labelled with the media type.
+    Content(Handler, &'static str),
+    Output(Output),
+}
+
+/// What `target` answers given the request's configuration, or why it is refused.
+pub fn resolve(
+    target: Target,
+    config: &RequestConfig,
+    headers: &HeaderMap,
+) -> Result<Resolved, (u16, String)> {
+    let handler = |choice: Choice| {
+        choice
+            .resolve(config.handler)
+            .map_err(|message| (400, message))
+    };
+    Ok(match target {
+        Target::Content(choice) => {
+            let label = match choice {
+                Choice::Named(handler) => content_media_type(handler),
+                Choice::Configured => content_media_type(Handler::Text),
+            };
+            Resolved::Content(handler(choice)?.unwrap_or(Handler::Markdown), label)
+        }
+        Target::Json(choice) => Resolved::Output(Output::Json(
+            handler(choice)?.unwrap_or(Handler::Markdown),
+            Keys::Tika4,
+        )),
+        Target::Rmeta(choice) => {
+            Resolved::Output(Output::Rmeta(handler(choice)?.unwrap_or(Handler::Markdown)))
+        }
+        Target::Meta { xmp } => Resolved::Output(Output::Meta(
+            meta_form(headers, xmp)
+                .ok_or((406, "No form of this endpoint is acceptable".to_string()))?,
+        )),
+        Target::Unpack => Resolved::Output(Output::Unpack(Unpacked::Embedded)),
+        Target::UnpackAll(choice) => {
+            Resolved::Output(Output::Unpack(Unpacked::All(handler(choice)?)))
+        }
+    })
+}
+
+/// The body tika-server answers with when its forked parser dies, which clients read the
+/// cause from.
+pub fn crash_body(crash: Crash) -> String {
+    let status = match crash {
+        Crash::Timeout => "TIMEOUT",
+        Crash::OutOfMemory => "OOM",
+        Crash::Unspecified => "UNSPECIFIED_CRASH",
+    };
+    serde_json::json!({ "status": status }).to_string()
 }
 
 /// The media ranges of the request's `Accept`, in the order it lists them, lowercase and
@@ -161,7 +318,7 @@ pub enum Answer {
 /// The media ranges that name the content `handler` writes.
 fn handler_ranges(handler: Handler) -> &'static [&'static str] {
     match handler {
-        Handler::Text | Handler::Ignore => &["text/plain"],
+        Handler::Text | Handler::Body | Handler::Ignore => &["text/plain"],
         Handler::Markdown => &["text/plain", "text/markdown"],
         Handler::Html => &["text/html", "application/xhtml+xml"],
         Handler::Xml => &["text/xml", "application/xml"],
@@ -200,14 +357,14 @@ pub fn content_answer(headers: &HeaderMap, handler: Handler) -> Option<Answer> {
     )
 }
 
-pub fn meta_form(headers: &HeaderMap) -> Option<MetaForm> {
-    negotiate(
-        headers,
-        &[
-            (&["application/json", "*/*"], MetaForm::Json),
-            (&["text/csv"], MetaForm::Csv),
-        ],
-    )
+/// The form `/meta` answers in by `Accept`; XMP where tika-server-standard answers it.
+pub fn meta_form(headers: &HeaderMap, xmp: bool) -> Option<MetaForm> {
+    let forms: &[(&[&str], MetaForm)] = &[
+        (&["application/json", "*/*"], MetaForm::Json),
+        (&["text/csv"], MetaForm::Csv),
+        (XMP_RANGES, MetaForm::Xmp),
+    ];
+    negotiate(headers, if xmp { forms } else { &forms[..2] })
 }
 
 pub fn field_form(headers: &HeaderMap) -> Option<FieldForm> {
@@ -217,6 +374,7 @@ pub fn field_form(headers: &HeaderMap) -> Option<FieldForm> {
             (&["application/json", "*/*"], FieldForm::Json),
             (&["text/csv"], FieldForm::Csv),
             (&["text/plain"], FieldForm::Plain),
+            (XMP_RANGES, FieldForm::Xmp),
         ],
     )
 }
@@ -224,7 +382,9 @@ pub fn field_form(headers: &HeaderMap) -> Option<FieldForm> {
 /// The media type tika-server labels content of `handler` with.
 pub fn content_media_type(handler: Handler) -> &'static str {
     match handler {
-        Handler::Text | Handler::Markdown | Handler::Ignore => "text/plain; charset=utf-8",
+        Handler::Text | Handler::Body | Handler::Markdown | Handler::Ignore => {
+            "text/plain; charset=utf-8"
+        }
         Handler::Html => "text/html; charset=utf-8",
         Handler::Xml => "text/xml; charset=utf-8",
     }
@@ -306,8 +466,33 @@ mod tests {
         );
         assert_eq!(
             put("/unpack/"),
-            Some(Endpoint::Upload(Output::Unpack { all: false }))
+            Some(Endpoint::Upload(Output::Unpack(Unpacked::Embedded)))
         );
+        assert_eq!(
+            put("/unpack/all/TEXT"),
+            Some(Endpoint::Upload(Output::Unpack(Unpacked::All(Some(
+                Handler::Text
+            )))))
+        );
+        assert_eq!(
+            put("/rmeta/body"),
+            Some(Endpoint::Upload(Output::Rmeta(Handler::Body)))
+        );
+        assert_eq!(
+            put("/tika/preset/fast/json/text"),
+            Some(Endpoint::Preset("fast".to_string()))
+        );
+        assert_eq!(
+            put("/unpack/preset/fast/all"),
+            Some(Endpoint::Preset("fast".to_string()))
+        );
+        assert_eq!(
+            route(&Method::GET, "/"),
+            Some(Endpoint::Listing(Listing::Welcome))
+        );
+        assert_eq!(route(&Method::GET, "/status"), Some(Endpoint::Status));
+        assert_eq!(route(&Method::POST, "/pipes"), None);
+        assert_eq!(route(&Method::POST, "/async"), None);
         assert_eq!(
             route(&Method::POST, "/language/string"),
             Some(Endpoint::Upload(Output::Language))
@@ -320,6 +505,98 @@ mod tests {
             )))
         );
         assert_eq!(route(&Method::GET, "/extract"), None);
+    }
+
+    #[test]
+    fn multipart_paths_route_to_their_parts_and_targets() {
+        let post = |path| match route(&Method::POST, path) {
+            Some(Endpoint::Multipart(Multipart { parts, target })) => Some((parts, target)),
+            _ => None,
+        };
+        assert_eq!(
+            post("/tika/config"),
+            Some((Parts::Config, Target::Content(Choice::Configured)))
+        );
+        assert_eq!(
+            post("/tika/config/text"),
+            Some((Parts::Config, Target::Content(Choice::Named(Handler::Body))))
+        );
+        assert_eq!(
+            post("/tika/config/json/text"),
+            Some((Parts::Config, Target::Json(Choice::Named(Handler::Text))))
+        );
+        assert_eq!(post("/tika/config/body"), None);
+        assert_eq!(
+            post("/rmeta/form/ignore"),
+            Some((Parts::Form, Target::Rmeta(Choice::Named(Handler::Ignore))))
+        );
+        assert_eq!(
+            post("/meta/form"),
+            Some((Parts::Form, Target::Meta { xmp: true }))
+        );
+        assert_eq!(
+            post("/meta/config"),
+            Some((Parts::Config, Target::Meta { xmp: false }))
+        );
+        assert_eq!(post("/unpack"), Some((Parts::Config, Target::Unpack)));
+        assert_eq!(
+            post("/unpack/all/config"),
+            Some((Parts::Config, Target::UnpackAll(Choice::Configured)))
+        );
+        assert_eq!(
+            post("/unpack/all/config/md"),
+            Some((
+                Parts::Config,
+                Target::UnpackAll(Choice::Named(Handler::Markdown))
+            ))
+        );
+        assert_eq!(post("/rmeta/config/bogus"), None);
+    }
+
+    #[test]
+    fn a_handler_is_named_by_the_path_or_the_config_but_not_both() {
+        let config = |handler| RequestConfig {
+            handler,
+            ocr_language: None,
+        };
+        let resolved = |target, handler| match resolve(target, &config(handler), &headers(&[])) {
+            Ok(Resolved::Content(handler, label)) => Ok(format!("{handler:?} {label}")),
+            Ok(Resolved::Output(output)) => Ok(format!("{output:?}")),
+            Err((status, _)) => Err(status),
+        };
+        assert_eq!(
+            resolved(Target::Content(Choice::Configured), None),
+            Ok("Markdown text/plain; charset=utf-8".to_string())
+        );
+        assert_eq!(
+            resolved(Target::Content(Choice::Configured), Some(Handler::Xml)),
+            Ok("Xml text/plain; charset=utf-8".to_string())
+        );
+        assert_eq!(
+            resolved(Target::Content(Choice::Named(Handler::Html)), None),
+            Ok("Html text/html; charset=utf-8".to_string())
+        );
+        assert_eq!(
+            resolved(
+                Target::Json(Choice::Named(Handler::Text)),
+                Some(Handler::Xml)
+            ),
+            Err(400)
+        );
+        assert_eq!(
+            resolved(Target::UnpackAll(Choice::Configured), None),
+            Ok("Unpack(All(None))".to_string())
+        );
+    }
+
+    #[test]
+    fn a_dead_parser_is_reported_as_tika_server_reports_it() {
+        assert_eq!(crash_body(Crash::Timeout), r#"{"status":"TIMEOUT"}"#);
+        assert_eq!(crash_body(Crash::OutOfMemory), r#"{"status":"OOM"}"#);
+        assert_eq!(
+            crash_body(Crash::Unspecified),
+            r#"{"status":"UNSPECIFIED_CRASH"}"#
+        );
     }
 
     #[test]
@@ -349,10 +626,18 @@ mod tests {
             None
         );
         assert_eq!(
-            meta_form(&headers(&[("accept", "text/csv")])),
+            meta_form(&headers(&[("accept", "text/csv")]), false),
             Some(MetaForm::Csv)
         );
-        assert_eq!(meta_form(&headers(&[("accept", "text/plain")])), None);
+        assert_eq!(meta_form(&headers(&[("accept", "text/plain")]), true), None);
+        assert_eq!(
+            meta_form(&headers(&[("accept", "application/rdf+xml")]), true),
+            Some(MetaForm::Xmp)
+        );
+        assert_eq!(
+            meta_form(&headers(&[("accept", "application/rdf+xml")]), false),
+            None
+        );
         assert_eq!(
             field_form(&headers(&[("accept", "text/plain")])),
             Some(FieldForm::Plain)
