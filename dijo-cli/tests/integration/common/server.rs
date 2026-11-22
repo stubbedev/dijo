@@ -44,10 +44,8 @@ impl Server {
             }
         };
         std::thread::spawn(move || {
-            let mut sink = String::new();
-            while stderr.read_line(&mut sink).unwrap_or(0) > 0 {
-                sink.clear();
-            }
+            std::io::copy(&mut stderr, &mut std::io::sink())
+                .expect("draining the server's standard error");
         });
         Self { child, address }
     }
