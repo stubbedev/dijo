@@ -1,3 +1,14 @@
+# 0.2.20 (2026-11-22)
+
+### Fixed
+
+* A worker stopped over `--worker-max-rss-bytes` or `--timeout` is answered with 413 or 504 even when it dies between
+  writing its head and the server reading it; it could answer 200 with a cut or empty body instead (#410).
+
+### Security
+
+* `url` is updated to 2.5.9, past RUSTSEC-2026-0592.
+
 # 0.2.19 (2026-11-21)
 
 ### Added
