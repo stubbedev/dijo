@@ -268,7 +268,7 @@ impl Extractor {
     /// with each configured password in turn. A wrong password does not always surface as an
     /// encryption error (a 7z archive fails its checksum), so any failure with a password moves
     /// on to the next one; when none opens the document, the encryption error is returned.
-    fn with_passwords<T>(
+    fn unlocking<T>(
         &self,
         attempt: impl Fn(&ParserConfigs) -> ExtractResult<T>,
     ) -> ExtractResult<T> {
@@ -297,7 +297,7 @@ impl Extractor {
     ) -> ExtractResult<(StreamReader, Metadata)> {
         let deadline = self.timeout.map(|timeout| Instant::now() + timeout);
         let document = formats::open_to_extract(source, deadline)?;
-        self.with_passwords(|configs| {
+        self.unlocking(|configs| {
             let streamed = match &document {
                 Ok(document) => self.stream_natively(document, configs, deadline, embedded)?,
                 Err(unsupported) => Err(unsupported.clone()),
@@ -355,7 +355,7 @@ impl Extractor {
 
     fn extract_to_string(&self, source: Source) -> ExtractResult<(String, Metadata)> {
         let document = formats::open_to_extract(source, None)?;
-        self.with_passwords(|configs| {
+        self.unlocking(|configs| {
             let extracted = match &document {
                 Ok(document) => self.extract_natively(document, configs)?,
                 Err(unsupported) => Err(unsupported.clone()),
