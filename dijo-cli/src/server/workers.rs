@@ -92,7 +92,7 @@ impl Pool {
 /// A worker ready for jobs.
 enum Worker {
     Thread(Option<Arc<Cache>>),
-    Process(ProcessOptions, WorkerProcess),
+    Process(ProcessOptions, Box<WorkerProcess>),
 }
 
 impl Worker {
@@ -101,7 +101,7 @@ impl Worker {
         match workers {
             Workers::Threads(cache) => Ok(Worker::Thread(cache)),
             Workers::Processes(options) => WorkerProcess::start(&options)
-                .map(|process| Worker::Process(options, process))
+                .map(|process| Worker::Process(options, Box::new(process)))
                 .map_err(|e| format!("Failed to start a worker process: {e}")),
         }
     }
@@ -109,7 +109,7 @@ impl Worker {
     fn run(self, receiver: &Mutex<mpsc::Receiver<Job>>, metrics: &Metrics) {
         match self {
             Worker::Thread(cache) => work(receiver, metrics, cache.as_deref()),
-            Worker::Process(options, process) => supervise(receiver, metrics, &options, process),
+            Worker::Process(options, process) => supervise(receiver, metrics, &options, *process),
         }
     }
 }
