@@ -5,7 +5,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -235,14 +235,14 @@ pub struct ProcessOptions {
 }
 
 /// Why the server stopped a worker process.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stopped {
     Deadline,
     Memory,
 }
 
 pub struct WorkerProcess {
-    child: Arc<Mutex<Child>>,
+    child: Mutex<Child>,
     input: BufWriter<ChildStdin>,
     output: BufReader<ChildStdout>,
     /// The payload of the last frame read from `output`, whose buffer the next one reuses.
@@ -268,7 +268,7 @@ impl WorkerProcess {
         let ready = read_frame(&mut output, &mut payload);
         if let Ok(Some(READY)) = ready {
             return Ok(WorkerProcess {
-                child: Arc::new(Mutex::new(child)),
+                child: Mutex::new(child),
                 input,
                 output,
                 payload,
@@ -386,35 +386,27 @@ fn relay(
         return None;
     }
 
-    let stopped = Arc::new(Mutex::new(None));
-    let (finished, watching) = mpsc::channel::<()>();
-    let watchdog = {
-        let child = Arc::clone(&process.child);
-        let stopped = Arc::clone(&stopped);
-        let max_rss_bytes = options.max_rss_bytes;
-        thread::spawn(move || watch(&child, &stopped, deadline, max_rss_bytes, &watching))
-    };
-    let mut within_limits = || {
-        let mut child = process.child.lock().expect("worker process lock");
-        match exceeded(&child, deadline, options.max_rss_bytes) {
+    let enforcer = Enforcer::new(&process.child, deadline, options.max_rss_bytes);
+    let answered = thread::scope(|scope| {
+        let (finished, watching) = mpsc::channel::<()>();
+        let enforcer = &enforcer;
+        scope.spawn(move || watch(enforcer, &watching));
+        let mut within_limits = || match enforcer.overrun() {
             None => Ok(()),
-            Some(reason) => {
-                *stopped.lock().expect("watchdog lock") = Some(reason);
-                let _ = child.kill();
-                Err(io::Error::other("it overran its limits before answering"))
-            }
-        }
-    };
-    let answered = relay_answer(
-        &mut process.output,
-        &mut process.payload,
-        &mut head,
-        &body,
-        metrics,
-        &mut within_limits,
-    );
-    drop(finished);
-    watchdog.join().expect("the watchdog does not panic");
+            Some(_) => Err(io::Error::other("it overran its limits before answering")),
+        };
+        let answered = relay_answer(
+            &mut process.output,
+            &mut process.payload,
+            &mut head,
+            &body,
+            metrics,
+            &mut within_limits,
+        );
+        drop(finished);
+        answered
+    });
+    let stopped = enforcer.stopped();
 
     let error = match answered {
         Ok(Answered::Completely) => return Some(process),
@@ -424,7 +416,6 @@ fn relay(
         }
         Err(error) => error,
     };
-    let stopped = *stopped.lock().expect("watchdog lock");
     let status = process.stop();
     let (crash, message) = match stopped {
         Some(Stopped::Deadline) => (
@@ -526,20 +517,49 @@ fn fail(
     }
 }
 
-/// Stops the worker process when its job overruns the deadline or the memory limit, until the
-/// job is finished.
-fn watch(
-    child: &Mutex<Child>,
-    stopped: &Mutex<Option<Stopped>>,
+struct Enforcer<'a> {
+    child: &'a Mutex<Child>,
     deadline: Option<Instant>,
     max_rss_bytes: Option<NonZeroU64>,
-    finished: &mpsc::Receiver<()>,
-) {
+    stopped: Mutex<Option<Stopped>>,
+}
+
+impl<'a> Enforcer<'a> {
+    fn new(
+        child: &'a Mutex<Child>,
+        deadline: Option<Instant>,
+        max_rss_bytes: Option<NonZeroU64>,
+    ) -> Self {
+        Enforcer {
+            child,
+            deadline,
+            max_rss_bytes,
+            stopped: Mutex::new(None),
+        }
+    }
+
+    fn overrun(&self) -> Option<Stopped> {
+        let mut child = self.child.lock().expect("worker process lock");
+        let mut stopped = self.stopped.lock().expect("enforcer lock");
+        if stopped.is_none() {
+            *stopped = exceeded(&child, self.deadline, self.max_rss_bytes);
+            if stopped.is_some() {
+                let _ = child.kill();
+            }
+        }
+        *stopped
+    }
+
+    fn stopped(&self) -> Option<Stopped> {
+        *self.stopped.lock().expect("enforcer lock")
+    }
+}
+
+/// Stops the worker process when its job overruns the deadline or the memory limit, until the
+/// job is finished.
+fn watch(enforcer: &Enforcer, finished: &mpsc::Receiver<()>) {
     while let Err(RecvTimeoutError::Timeout) = finished.recv_timeout(WATCH_INTERVAL) {
-        let mut child = child.lock().expect("worker process lock");
-        if let Some(reason) = exceeded(&child, deadline, max_rss_bytes) {
-            *stopped.lock().expect("watchdog lock") = Some(reason);
-            let _ = child.kill();
+        if enforcer.overrun().is_some() {
             return;
         }
     }
@@ -631,6 +651,26 @@ mod tests {
         stream.truncate(stream.len() - 2);
         let error = read_frame(&mut stream.as_slice(), &mut Vec::new()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_job_over_its_memory_limit_stays_over_it_once_its_worker_process_is_dead() {
+        let child = Mutex::new(Command::new("sleep").arg("60").spawn().unwrap());
+        let pid = child.lock().unwrap().id();
+        let enforcer = Enforcer::new(&child, None, NonZeroU64::new(1));
+        assert_eq!(enforcer.overrun(), Some(Stopped::Memory));
+        let started = Instant::now();
+        while resident_bytes(pid).is_some() {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the worker process was not stopped"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(enforcer.overrun(), Some(Stopped::Memory));
+        assert_eq!(enforcer.stopped(), Some(Stopped::Memory));
+        assert!(!child.lock().unwrap().wait().unwrap().success());
     }
 
     #[cfg(target_os = "linux")]
