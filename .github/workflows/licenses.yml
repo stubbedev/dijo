@@ -1,0 +1,25 @@
+name: Licenses
+
+on:
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+jobs:
+  licenses:
+    name: just licenses
+    uses: stubbedev/lys-ci/.github/workflows/regenerate.yml@1637cefd1614eafc73e1f11c2cdff559ba4d3930
+    with:
+      recipe: licenses
+      paths: THIRD-PARTY-LICENSES.md
+      message: |
+        Regenerate THIRD-PARTY-LICENSES.md for the bumped crates (#${{ github.event.pull_request.number }})
+
+        Dependabot rewrites Cargo.toml and Cargo.lock but not the licence list
+        generated from them, so just deps would fail on every cargo bump.
+    secrets:
+      REGENERATE_DEPLOY_KEY: ${{ secrets.REGENERATE_DEPLOY_KEY }}
